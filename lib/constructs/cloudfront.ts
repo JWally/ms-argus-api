@@ -2,34 +2,37 @@
 import * as cloudfront from 'aws-cdk-lib/aws-cloudfront';
 import * as origins from 'aws-cdk-lib/aws-cloudfront-origins';
 import * as wafv2 from 'aws-cdk-lib/aws-wafv2';
-import * as cdk from 'aws-cdk-lib';
-import * as apigwv2 from 'aws-cdk-lib/aws-apigatewayv2';
+import * as acm from 'aws-cdk-lib/aws-certificatemanager';
+import * as route53 from 'aws-cdk-lib/aws-route53';
+import * as route53targets from 'aws-cdk-lib/aws-route53-targets';
+import * as elbv2 from 'aws-cdk-lib/aws-elasticloadbalancingv2';
 import { Construct } from 'constructs';
+
+interface CloudFrontWafConstructProps {
+  environment: string;
+  stackName: string;
+  loadBalancer: elbv2.IApplicationLoadBalancer;
+  domainName?: string;
+  hostedZone?: route53.IHostedZone;
+  certificate?: acm.ICertificate;
+}
 
 export class CloudFrontWafConstruct extends Construct {
   public readonly distribution: cloudfront.Distribution;
   public readonly webAcl: wafv2.CfnWebACL;
 
-  constructor(
-    scope: Construct,
-    id: string,
-    props: {
-      httpApi: apigwv2.IHttpApi;
-      stage: apigwv2.IStage;
-      environment: string;
-    },
-  ) {
+  constructor(scope: Construct, id: string, props: CloudFrontWafConstructProps) {
     super(scope, id);
 
-    const { environment } = props;
+    const { environment, stackName, loadBalancer, domainName, hostedZone, certificate } = props;
 
-    // WAF for CloudFront (global)
+    // WAF for CloudFront (must be in us-east-1, CLOUDFRONT scope)
     this.webAcl = new wafv2.CfnWebACL(this, 'WebACL', {
       scope: 'CLOUDFRONT',
       defaultAction: { allow: {} },
       visibilityConfig: {
         cloudWatchMetricsEnabled: true,
-        metricName: `${environment}-argus-waf-metrics`,
+        metricName: `${stackName}-waf-metrics`,
         sampledRequestsEnabled: true,
       },
       customResponseBodies: {
@@ -39,9 +42,22 @@ export class CloudFrontWafConstruct extends Construct {
         },
       },
       rules: [
+        // Geo-blocking BEFORE other rules (saves WAF request costs)
         {
-          name: 'AWSManagedCommonVulns',
+          name: 'GeoBlockCNRU',
           priority: 0,
+          statement: { geoMatchStatement: { countryCodes: ['CN', 'RU'] } },
+          action: { block: {} },
+          visibilityConfig: {
+            sampledRequestsEnabled: true,
+            cloudWatchMetricsEnabled: true,
+            metricName: `${stackName}-GeoBlock`,
+          },
+        },
+        // AWS Managed Common Rules
+        {
+          name: 'AWSManagedCommonRules',
+          priority: 1,
           statement: {
             managedRuleGroupStatement: {
               name: 'AWSManagedRulesCommonRuleSet',
@@ -53,9 +69,10 @@ export class CloudFrontWafConstruct extends Construct {
           visibilityConfig: {
             sampledRequestsEnabled: true,
             cloudWatchMetricsEnabled: true,
-            metricName: `${environment}-CommonRuleSet`,
+            metricName: `${stackName}-CommonRuleSet`,
           },
         },
+        // Rate limiting per IP
         {
           name: 'RateLimitIP',
           priority: 2,
@@ -77,9 +94,10 @@ export class CloudFrontWafConstruct extends Construct {
           visibilityConfig: {
             sampledRequestsEnabled: true,
             cloudWatchMetricsEnabled: true,
-            metricName: `${environment}-IpRateLimit`,
+            metricName: `${stackName}-IpRateLimit`,
           },
         },
+        // Body size limit (100KB)
         {
           name: 'LimitBodySize100KB',
           priority: 3,
@@ -95,34 +113,47 @@ export class CloudFrontWafConstruct extends Construct {
           visibilityConfig: {
             sampledRequestsEnabled: true,
             cloudWatchMetricsEnabled: true,
-            metricName: `${environment}-BodySizeLimit`,
-          },
-        },
-        {
-          name: 'BlockCertainCountry',
-          priority: 5,
-          statement: { geoMatchStatement: { countryCodes: ['CN', 'RU'] } },
-          action: { block: {} },
-          visibilityConfig: {
-            sampledRequestsEnabled: true,
-            cloudWatchMetricsEnabled: true,
-            metricName: `${environment}-GeoMatchBlock`,
+            metricName: `${stackName}-BodySizeLimit`,
           },
         },
       ],
     });
 
-    this.distribution = new cloudfront.Distribution(this, 'Distribution', {
+    // CloudFront distribution with ALB origin
+    const distributionProps: cloudfront.DistributionProps = {
       defaultBehavior: {
-        origin: new origins.HttpOrigin(
-          `${props.httpApi.apiId}.execute-api.${cdk.Stack.of(this).region}.amazonaws.com`,
-          { originPath: `/${props.stage.stageName}` },
-        ),
+        origin: new origins.HttpOrigin(loadBalancer.loadBalancerDnsName, {
+          protocolPolicy: cloudfront.OriginProtocolPolicy.HTTP_ONLY, // ALB is HTTP, CloudFront handles HTTPS
+          httpPort: 80,
+        }),
         viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
         allowedMethods: cloudfront.AllowedMethods.ALLOW_ALL,
         cachePolicy: cloudfront.CachePolicy.CACHING_DISABLED,
+        originRequestPolicy: cloudfront.OriginRequestPolicy.ALL_VIEWER,
       },
       webAclId: this.webAcl.attrArn,
-    });
+      comment: `${stackName} - Argus API`,
+    };
+
+    // Add custom domain if provided
+    if (domainName && certificate) {
+      Object.assign(distributionProps, {
+        domainNames: [`api.${domainName}`],
+        certificate,
+      });
+    }
+
+    this.distribution = new cloudfront.Distribution(this, 'Distribution', distributionProps);
+
+    // Create Route53 record if hosted zone is provided
+    if (hostedZone && domainName) {
+      new route53.ARecord(this, 'ApiDnsRecord', {
+        zone: hostedZone,
+        recordName: `api.${domainName}`,
+        target: route53.RecordTarget.fromAlias(
+          new route53targets.CloudFrontTarget(this.distribution),
+        ),
+      });
+    }
   }
 }

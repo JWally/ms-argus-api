@@ -1,10 +1,13 @@
 #!/usr/bin/env node
 // bin/ms-argus-api.ts
-import { App } from 'aws-cdk-lib';
+import { App, CliCredentialsStackSynthesizer } from 'aws-cdk-lib';
 import { ArgusApiStack } from '../lib/stacks/app-stack';
 import { ROOT_DOMAIN, AWS_ACCOUNT_ID, PIPELINE_HOME_REGION } from './config';
 
 const app = new App();
+
+// Use CLI credentials directly to avoid bootstrap role issues
+const synthesizer = new CliCredentialsStackSynthesizer();
 
 // /////////////////////////////////
 // Development stack (jw)
@@ -18,6 +21,7 @@ new ArgusApiStack(app, 'ms-argus-api-dev-jw', {
   stage: 'dev',
   region: PIPELINE_HOME_REGION,
   account: AWS_ACCOUNT_ID,
+  synthesizer,
 });
 
 // /////////////////////////////////
