@@ -95,8 +95,11 @@ export class WorkersConstruct extends Construct {
         environment: { NODE_ENV: 'production' },
         // Include ioredis for Redis connectivity
         nodeModules: ['ioredis'],
+        // Bundle all dependencies - don't rely on Lambda runtime SDK
+        // This ensures version consistency
       },
-      tracing: Tracing.ACTIVE,
+      // Tracing disabled temporarily due to @smithy bundling issues with Powertools Tracer
+      tracing: Tracing.DISABLED,
       vpc,
       vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
       securityGroups: [this.workerSecurityGroup],
