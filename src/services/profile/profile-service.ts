@@ -3,6 +3,8 @@ import {
   DynamoDBClient,
   GetItemCommand,
   PutItemCommand,
+  BatchWriteItemCommand,
+  WriteRequest,
 } from "@aws-sdk/client-dynamodb";
 import { marshall, unmarshall } from "@aws-sdk/util-dynamodb";
 import type { Redis } from "ioredis";
@@ -350,6 +352,7 @@ export class ProfileService {
 
   /**
    * Update Tier 1 indexes (O(1) hash lookups)
+   * Uses BatchWriteItem to reduce round-trips to DynamoDB
    */
   async updateTier1Indexes(
     tenantId: string,
@@ -358,7 +361,6 @@ export class ProfileService {
   ): Promise<number> {
     const ttlSeconds = this.deps.config.profileTtlDays * 24 * 60 * 60;
     const ttl = Math.floor(Date.now() / 1000) + ttlSeconds;
-    const writes: Promise<unknown>[] = [];
 
     // Build index entries
     const indexEntries = this.buildTier1IndexEntries(
@@ -368,19 +370,69 @@ export class ProfileService {
       ttl,
     );
 
-    for (const entry of indexEntries) {
-      writes.push(
-        this.deps.dynamodb.send(
-          new PutItemCommand({
-            TableName: this.deps.config.tier1IndexTable,
-            Item: marshall(entry),
-          }),
-        ),
-      );
+    if (indexEntries.length === 0) {
+      return 0;
     }
 
-    await Promise.all(writes);
-    return writes.length;
+    // Use BatchWriteItem for efficiency (max 4 entries, well under 25 limit)
+    await this.batchWriteTier1Indexes(indexEntries);
+    return indexEntries.length;
+  }
+
+  /**
+   * Batch write Tier 1 index entries with retry logic for unprocessed items
+   */
+  private async batchWriteTier1Indexes(
+    entries: Array<{
+      tenant_id: string;
+      hash_key: string;
+      device_id: string;
+      ttl: number;
+    }>,
+    maxRetries: number = 3,
+  ): Promise<void> {
+    const tableName = this.deps.config.tier1IndexTable;
+    let unprocessedItems: WriteRequest[] = entries.map((entry) => ({
+      PutRequest: {
+        Item: marshall(entry),
+      },
+    }));
+
+    let attempt = 0;
+
+    while (unprocessedItems.length > 0 && attempt < maxRetries) {
+      const result = await this.deps.dynamodb.send(
+        new BatchWriteItemCommand({
+          RequestItems: {
+            [tableName]: unprocessedItems,
+          },
+        }),
+      );
+
+      // Check for unprocessed items (can happen during throttling)
+      const remaining = result.UnprocessedItems?.[tableName];
+      if (remaining && remaining.length > 0) {
+        unprocessedItems = remaining;
+        attempt++;
+        // Exponential backoff: 100ms, 200ms, 400ms
+        await this.sleep(Math.pow(2, attempt) * 100);
+      } else {
+        unprocessedItems = [];
+      }
+    }
+
+    if (unprocessedItems.length > 0) {
+      throw new Error(
+        `Failed to write ${unprocessedItems.length} Tier1 index items after ${maxRetries} retries`,
+      );
+    }
+  }
+
+  /**
+   * Sleep utility for retry backoff
+   */
+  private sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
   /**
