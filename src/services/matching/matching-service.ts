@@ -20,6 +20,7 @@ import {
   FNV1A_PRIME,
   TIER2_BUCKET_LIMIT,
 } from "../../helpers/constants";
+import { BloomFilter } from "../bloom";
 
 /**
  * Configuration for the matching service
@@ -41,6 +42,7 @@ export interface MatchingServiceDeps {
   sqs: SQSClient;
   redis: Redis;
   config: MatchingServiceConfig;
+  bloomFilter?: BloomFilter;
 }
 
 /**
@@ -71,29 +73,64 @@ export class MatchingService {
   async runTieredMatching(
     tenantId: string,
     fingerprint: Fingerprint,
-  ): Promise<{ result: MatchResult; tier2TimedOut: boolean }> {
+  ): Promise<{
+    result: MatchResult;
+    tier2TimedOut: boolean;
+    bloomFilterHit: boolean;
+    bloomFilterMiss: boolean;
+  }> {
     // Tier 0.5: Evercookie/Cookie lookup
     if (fingerprint.evercookie_id) {
       const result = await this.tier05CookieLookup(
         tenantId,
         fingerprint.evercookie_id,
       );
-      if (result) return { result, tier2TimedOut: false };
+      if (result) {
+        return {
+          result,
+          tier2TimedOut: false,
+          bloomFilterHit: false,
+          bloomFilterMiss: false,
+        };
+      }
     }
 
-    // Tier 1: Strong hash match
-    const tier1Result = await this.tier1HashMatch(tenantId, fingerprint);
-    if (tier1Result) return { result: tier1Result, tier2TimedOut: false };
+    // Tier 1: Strong hash match (with bloom filter optimization)
+    const {
+      result: tier1Result,
+      bloomFilterHit,
+      bloomFilterMiss,
+    } = await this.tier1HashMatch(tenantId, fingerprint);
+    if (tier1Result) {
+      return {
+        result: tier1Result,
+        tier2TimedOut: false,
+        bloomFilterHit,
+        bloomFilterMiss,
+      };
+    }
 
     // Tier 2: Compound filter match (with timeout)
     const { result: tier2Result, timedOut } =
       await this.tier2CompoundMatchWithTimeout(tenantId, fingerprint);
-    if (tier2Result) return { result: tier2Result, tier2TimedOut: timedOut };
+    if (tier2Result) {
+      return {
+        result: tier2Result,
+        tier2TimedOut: timedOut,
+        bloomFilterHit,
+        bloomFilterMiss,
+      };
+    }
 
     // Tier 3: Vector similarity (TODO: implement when Qdrant is deployed)
 
     // New device - no match found
-    return { result: this.createNewDevice(), tier2TimedOut: timedOut };
+    return {
+      result: this.createNewDevice(),
+      tier2TimedOut: timedOut,
+      bloomFilterHit,
+      bloomFilterMiss,
+    };
   }
 
   /**
@@ -131,26 +168,56 @@ export class MatchingService {
   /**
    * Tier 1: Match by stable or fuzzy hash
    * High confidence - these hashes are computed from multiple signals
+   * Uses bloom filter to skip DynamoDB reads for non-existent devices
    */
   async tier1HashMatch(
     tenantId: string,
     fingerprint: Fingerprint,
-  ): Promise<MatchResult | null> {
+  ): Promise<{
+    result: MatchResult | null;
+    bloomFilterHit: boolean;
+    bloomFilterMiss: boolean;
+  }> {
+    let bloomFilterHit = false;
+    let bloomFilterMiss = false;
+
     // Try stable hash first (higher confidence)
     if (fingerprint.stable_hash) {
-      const result = await this.lookupTier1Index(
-        tenantId,
-        `stable#${fingerprint.stable_hash}`,
-      );
-      if (result) {
-        return {
-          device_id: result.device_id,
-          confidence: 0.95,
-          match_tier: 1,
-          is_new_device: false,
-          risk_score: result.risk_score ?? 0.3,
-          flags: result.flags ?? [],
-        };
+      // Check bloom filter first (if available)
+      if (this.deps.bloomFilter) {
+        const mightExist = await this.deps.bloomFilter.mightContain(
+          tenantId,
+          "stable_hash",
+          fingerprint.stable_hash,
+        );
+        if (!mightExist) {
+          // Bloom filter says definitely not present - skip DynamoDB
+          bloomFilterMiss = true;
+        } else {
+          bloomFilterHit = true;
+        }
+      }
+
+      // Only query DynamoDB if bloom filter didn't rule it out
+      if (!bloomFilterMiss) {
+        const result = await this.lookupTier1Index(
+          tenantId,
+          `stable#${fingerprint.stable_hash}`,
+        );
+        if (result) {
+          return {
+            result: {
+              device_id: result.device_id,
+              confidence: 0.95,
+              match_tier: 1,
+              is_new_device: false,
+              risk_score: result.risk_score ?? 0.3,
+              flags: result.flags ?? [],
+            },
+            bloomFilterHit,
+            bloomFilterMiss,
+          };
+        }
       }
     }
 
@@ -162,17 +229,21 @@ export class MatchingService {
       );
       if (result) {
         return {
-          device_id: result.device_id,
-          confidence: 0.85,
-          match_tier: 1,
-          is_new_device: false,
-          risk_score: result.risk_score ?? 0.3,
-          flags: result.flags ?? [],
+          result: {
+            device_id: result.device_id,
+            confidence: 0.85,
+            match_tier: 1,
+            is_new_device: false,
+            risk_score: result.risk_score ?? 0.3,
+            flags: result.flags ?? [],
+          },
+          bloomFilterHit,
+          bloomFilterMiss,
         };
       }
     }
 
-    return null;
+    return { result: null, bloomFilterHit, bloomFilterMiss };
   }
 
   /**

@@ -16,6 +16,7 @@ import {
   ProfileServiceDeps,
   ProfileUpdatePayload,
 } from "../services/profile";
+import { BloomFilter } from "../services/bloom";
 import { getProfileUpdaterEnv, ProfileUpdaterEnvConfig } from "../config/env";
 import {
   PROFILE_TTL_DAYS,
@@ -67,6 +68,16 @@ function getConfig(): ProfileServiceConfig {
   };
 }
 
+// Bloom filter (lazy initialized, reused)
+let bloomFilter: BloomFilter | null = null;
+
+function getBloomFilter(): BloomFilter {
+  if (!bloomFilter) {
+    bloomFilter = new BloomFilter(getRedis());
+  }
+  return bloomFilter;
+}
+
 // Create service with production dependencies
 function createProfileService(): ProfileService {
   const deps: ProfileServiceDeps = {
@@ -113,7 +124,7 @@ async function processRecord(
 ): Promise<void> {
   const startTime = Date.now();
   const payload: ProfileUpdatePayload = JSON.parse(record.body);
-  const { tenant_id, device_id } = payload;
+  const { tenant_id, device_id, fingerprint } = payload;
 
   logger.info("Processing profile update", { tenant_id, device_id });
 
@@ -128,6 +139,23 @@ async function processRecord(
       logger.info("Skipping update - no significant drift", { device_id });
     }
     return;
+  }
+
+  // Add stable_hash to bloom filter for future negative lookups
+  // This runs after successful profile write so bloom filter stays in sync
+  if (fingerprint.stable_hash) {
+    try {
+      const bf = getBloomFilter();
+      await bf.add(tenant_id, "stable_hash", fingerprint.stable_hash);
+      metrics.addMetric("BloomFilterAdd", MetricUnit.Count, 1);
+    } catch (error) {
+      // Log but don't fail - bloom filter is an optimization, not critical path
+      logger.warn("Failed to add to bloom filter", {
+        error,
+        tenant_id,
+        device_id,
+      });
+    }
   }
 
   // Record write metrics
