@@ -15,6 +15,11 @@ import {
   MatchResult,
   SessionCacheValue,
 } from "./types";
+import {
+  FNV1A_OFFSET_BASIS,
+  FNV1A_PRIME,
+  TIER2_BUCKET_LIMIT,
+} from "../../helpers/constants";
 
 /**
  * Configuration for the matching service
@@ -258,7 +263,7 @@ export class MatchingService {
             ":bk": { S: key },
           },
           ProjectionExpression: "device_id",
-          Limit: 1000, // Cap results per bucket for performance
+          Limit: TIER2_BUCKET_LIMIT,
         }),
       ),
     );
@@ -492,16 +497,17 @@ export class MatchingService {
 
 /**
  * Generate FNV-1a hash for idempotency key
+ * Uses standard 32-bit FNV-1a algorithm
  */
 export function generateIdempotencyKey(
   sessionId: string,
   fingerprint: Fingerprint,
 ): string {
   const input = `${sessionId}:${fingerprint.stable_hash ?? ""}:${fingerprint.canvas_hash ?? ""}`;
-  let hash = 2166136261;
+  let hash = FNV1A_OFFSET_BASIS;
   for (let i = 0; i < input.length; i++) {
     hash ^= input.charCodeAt(i);
-    hash = Math.imul(hash, 16777619);
+    hash = Math.imul(hash, FNV1A_PRIME);
   }
   return (hash >>> 0).toString(16);
 }

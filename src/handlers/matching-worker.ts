@@ -19,6 +19,12 @@ import {
   generateIdempotencyKey,
 } from "../services/matching";
 import { getMatchingWorkerEnv, MatchingWorkerEnvConfig } from "../config/env";
+import {
+  SESSION_TTL_SECONDS,
+  TIER2_TIMEOUT_MS,
+  REDIS_RETRY_BASE_MS,
+  REDIS_RETRY_MAX_MS,
+} from "../helpers/constants";
 
 // Validate environment variables at module load (cold start)
 // Throws immediately if required env vars are missing
@@ -46,7 +52,8 @@ function getRedis(): Redis {
       port: envConfig.REDIS_PORT,
       tls: {},
       maxRetriesPerRequest: 3,
-      retryStrategy: (times: number) => Math.min(times * 100, 2000),
+      retryStrategy: (times: number) =>
+        Math.min(times * REDIS_RETRY_BASE_MS, REDIS_RETRY_MAX_MS),
     });
   }
   return redis;
@@ -59,8 +66,8 @@ function getConfig(): MatchingServiceConfig {
     tier2BucketsTable: envConfig.TIER2_BUCKETS_TABLE,
     profilesTable: envConfig.PROFILES_TABLE,
     profileQueueUrl: envConfig.PROFILE_QUEUE_URL,
-    sessionTtlSeconds: 900, // 15 minutes
-    tier2TimeoutMs: 100,
+    sessionTtlSeconds: SESSION_TTL_SECONDS,
+    tier2TimeoutMs: TIER2_TIMEOUT_MS,
   };
 }
 

@@ -17,6 +17,12 @@ import {
   ProfileUpdatePayload,
 } from "../services/profile";
 import { getProfileUpdaterEnv, ProfileUpdaterEnvConfig } from "../config/env";
+import {
+  PROFILE_TTL_DAYS,
+  MUTATION_GATE_TTL_SECONDS,
+  REDIS_RETRY_BASE_MS,
+  REDIS_RETRY_MAX_MS,
+} from "../helpers/constants";
 
 // Validate environment variables at module load (cold start)
 // Throws immediately if required env vars are missing
@@ -43,7 +49,8 @@ function getRedis(): Redis {
       port: envConfig.REDIS_PORT,
       tls: {},
       maxRetriesPerRequest: 3,
-      retryStrategy: (times: number) => Math.min(times * 100, 2000),
+      retryStrategy: (times: number) =>
+        Math.min(times * REDIS_RETRY_BASE_MS, REDIS_RETRY_MAX_MS),
     });
   }
   return redis;
@@ -55,8 +62,8 @@ function getConfig(): ProfileServiceConfig {
     profilesTable: envConfig.PROFILES_TABLE,
     tier1IndexTable: envConfig.TIER1_INDEX_TABLE,
     tier2BucketsTable: envConfig.TIER2_BUCKETS_TABLE,
-    profileTtlDays: 60,
-    mutationGateTtlSeconds: 3600, // 1 hour
+    profileTtlDays: PROFILE_TTL_DAYS,
+    mutationGateTtlSeconds: MUTATION_GATE_TTL_SECONDS,
   };
 }
 
