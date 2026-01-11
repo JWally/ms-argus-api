@@ -74,7 +74,7 @@ export class IngestionServiceConstruct extends Construct {
     );
 
     // Container definition with built image
-    const container = taskDefinition.addContainer('ingestion', {
+    taskDefinition.addContainer('ingestion', {
       image: ingestionImage,
       containerName: 'ingestion',
       logging: ecs.LogDrivers.awsLogs({

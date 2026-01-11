@@ -2,10 +2,17 @@
 node_modules/
 
 # Build output
-*.js
-*.d.ts
-*.js.map
+dist/
 cdk.out/
+*.js.map
+
+# Compiled TypeScript (in source dirs, not dist)
+src/**/*.js
+src/**/*.d.ts
+lib/**/*.js
+lib/**/*.d.ts
+bin/**/*.js
+bin/**/*.d.ts
 
 # IDE
 .idea/
@@ -26,6 +33,9 @@ coverage/
 # Logs
 *.log
 npm-debug.log*
+
+# Local utility scripts
+wait-cleanup.js
 
 # Environment
 .env

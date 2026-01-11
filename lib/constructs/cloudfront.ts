@@ -24,7 +24,7 @@ export class CloudFrontWafConstruct extends Construct {
   constructor(scope: Construct, id: string, props: CloudFrontWafConstructProps) {
     super(scope, id);
 
-    const { environment, stackName, loadBalancer, domainName, hostedZone, certificate } = props;
+    const { stackName, loadBalancer, domainName, hostedZone, certificate } = props;
 
     // WAF for CloudFront (must be in us-east-1, CLOUDFRONT scope)
     this.webAcl = new wafv2.CfnWebACL(this, 'WebACL', {
