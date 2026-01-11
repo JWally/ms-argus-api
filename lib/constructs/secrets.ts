@@ -24,9 +24,15 @@ export class SecretConstruct extends Construct {
 
     const { stackName, environment, projectName, stage } = props;
 
-    // Create the secret
+    // Create the secret with initial HMAC_KEY
     this.secret = new secretsmanager.Secret(this, `SECURITY_KEY_${id}`, {
       secretName: `${stage}/${projectName}`,
+      generateSecretString: {
+        secretStringTemplate: JSON.stringify({}),
+        generateStringKey: 'HMAC_KEY',
+        excludePunctuation: true,
+        passwordLength: 64,
+      },
     });
 
     // Common Lambda configuration for rotation

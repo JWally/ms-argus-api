@@ -1,20 +1,20 @@
 // lib/stacks/app-stack.ts
 import * as cdk from 'aws-cdk-lib';
-import * as events from 'aws-cdk-lib/aws-events';
-import * as targets from 'aws-cdk-lib/aws-events-targets';
+import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as sns from 'aws-cdk-lib/aws-sns';
-import * as iam from 'aws-cdk-lib/aws-iam';
 import * as glue from 'aws-cdk-lib/aws-glue';
+import * as route53 from 'aws-cdk-lib/aws-route53';
+import * as acm from 'aws-cdk-lib/aws-certificatemanager';
 import { Construct } from 'constructs';
 
-import { LambdaConstruct } from '../constructs/lambda';
-import { HttpApiConstruct } from '../constructs/api';
-import { DomainHttpConstruct } from '../constructs/domain';
 import { SecretConstruct } from '../constructs/secrets';
-import { FirehoseProcessor } from '../constructs/firehose-processor';
+import { QueuesConstruct } from '../constructs/queues';
+import { RedisConstruct } from '../constructs/redis';
+import { DynamoDbConstruct } from '../constructs/dynamodb';
+import { IngestionServiceConstruct } from '../constructs/ingestion-service';
+import { WorkersConstruct } from '../constructs/workers';
 import { CloudFrontWafConstruct } from '../constructs/cloudfront';
-
-import { WARMUP_EVENT } from '../../src/helpers/constants';
+import { FirehoseProcessor } from '../constructs/firehose-processor';
 import { makeJsonTable, makeParquetProjectionTable } from '../helpers/make-glue-table';
 import { ARGUS_COLUMNS } from '../../src/helpers/constants';
 
@@ -27,13 +27,70 @@ interface ArgusApiStackProps extends cdk.StackProps {
   account: string;
 }
 
+/**
+ * Argus API Stack - V4 Architecture
+ *
+ * Ultra-thin Go ingestion handler -> SQS -> Node.js Lambda workers -> Redis/DynamoDB
+ *
+ * Components:
+ * - VPC with private subnets
+ * - ALB + ECS Fargate (Go ingestion handler)
+ * - SQS queues (matching, profile)
+ * - Node.js Lambda workers (matching, profile updater)
+ * - Redis ElastiCache (session cache)
+ * - DynamoDB (profiles, tier1 index, tier2 buckets)
+ * - CloudFront + WAF (edge protection)
+ * - Firehose -> S3 (analytics)
+ * - Route53 + ACM (custom domain)
+ */
 export class ArgusApiStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props: ArgusApiStackProps) {
     super(scope, id, props);
     const { environment, stackName, rootDomain, stage, region, account } = props;
 
-    // Secrets construct
-    new SecretConstruct(this, 'Secrets', {
+    // =========================================================================
+    // NETWORKING
+    // =========================================================================
+
+    const vpc = new ec2.Vpc(this, 'Vpc', {
+      vpcName: `${stackName}-vpc`,
+      maxAzs: 2,
+      natGateways: stage === 'prod' ? 2 : 1, // Cost optimization: 1 NAT in dev
+      subnetConfiguration: [
+        {
+          name: 'Public',
+          subnetType: ec2.SubnetType.PUBLIC,
+          cidrMask: 24,
+        },
+        {
+          name: 'Private',
+          subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS,
+          cidrMask: 24,
+        },
+      ],
+    });
+
+    // =========================================================================
+    // DNS & CERTIFICATES
+    // =========================================================================
+
+    // Look up existing hosted zone
+    const hostedZone = route53.HostedZone.fromLookup(this, 'HostedZone', {
+      domainName: rootDomain,
+    });
+
+    // Certificate for CloudFront (must be in us-east-1)
+    const certificate = new acm.Certificate(this, 'Certificate', {
+      domainName: `api.${rootDomain}`,
+      validation: acm.CertificateValidation.fromDns(hostedZone),
+    });
+
+    // =========================================================================
+    // SHARED RESOURCES
+    // =========================================================================
+
+    // Secrets construct (encryption keys)
+    const secrets = new SecretConstruct(this, 'Secrets', {
       environment,
       stackName,
       stage,
@@ -46,64 +103,89 @@ export class ArgusApiStack extends cdk.Stack {
       topicName: `${stackName}-AlarmsTopic-${region}`,
     });
 
-    // Lambda construct
-    const lambdaConstruct = new LambdaConstruct(this, 'Lambda', {
-      environment,
+    // =========================================================================
+    // DATA LAYER
+    // =========================================================================
+
+    // Redis for session cache
+    // Uses tiny instances for non-prod (faster spin up/down)
+    const redis = new RedisConstruct(this, 'Redis', {
+      stackName,
+      vpc,
+      alarmsTopic,
+      stage,
+    });
+
+    // DynamoDB tables
+    const dynamodb = new DynamoDbConstruct(this, 'DynamoDB', {
+      stackName,
+      alarmsTopic,
+    });
+
+    // SQS queues
+    const queues = new QueuesConstruct(this, 'Queues', {
+      stackName,
+      alarmsTopic,
+    });
+
+    // =========================================================================
+    // COMPUTE LAYER
+    // =========================================================================
+
+    // Go ingestion service (ALB + ECS Fargate)
+    const ingestionService = new IngestionServiceConstruct(this, 'IngestionService', {
+      stackName,
+      vpc,
+      matchingQueue: queues.matchingQueue,
+      alarmsTopic,
+      stage,
+      secret: secrets.secret,
+    });
+
+    // Allow ingestion service to access Redis
+    redis.allowFrom(ingestionService.securityGroup, 'Allow ingestion service');
+
+    // Worker Lambdas
+    const workers = new WorkersConstruct(this, 'Workers', {
       stackName,
       stage,
       projectName: id,
       alarmsTopic,
+      matchingQueue: queues.matchingQueue,
+      profileQueue: queues.profileQueue,
+      profilesTable: dynamodb.profilesTable,
+      tier1IndexTable: dynamodb.tier1IndexTable,
+      tier2BucketsTable: dynamodb.tier2BucketsTable,
+      redisEndpoint: redis.endpoint,
+      redisPort: redis.port,
+      redisSecurityGroup: redis.securityGroup,
+      vpc,
     });
 
-    // HTTP API Gateway
-    const httpGateway = new HttpApiConstruct(
-      this,
-      'HttpApi',
-      lambdaConstruct,
-      stackName,
-      alarmsTopic,
-    );
+    // =========================================================================
+    // EDGE LAYER
+    // =========================================================================
 
     // CloudFront + WAF
-    const wafAndCloudfront = new CloudFrontWafConstruct(this, 'Waf', {
+    const cdn = new CloudFrontWafConstruct(this, 'CDN', {
       environment,
-      httpApi: httpGateway.api,
-      stage: httpGateway.stage,
+      stackName,
+      loadBalancer: ingestionService.loadBalancer,
+      domainName: rootDomain,
+      hostedZone,
+      certificate,
     });
 
-    // Custom domain (comment out if not using custom domain)
-    // new DomainHttpConstruct(this, 'Domain', {
-    //   stackName,
-    //   rootDomain,
-    //   httpApi: httpGateway.api,
-    //   region,
-    //   stage,
-    //   httpApiStage: httpGateway.stage,
-    // });
+    // =========================================================================
+    // ANALYTICS LAYER
+    // =========================================================================
 
-    // Warmup rule - keep Lambda warm
-    const warmupRule = new events.Rule(this, 'WarmupRule', {
-      schedule: events.Schedule.rate(cdk.Duration.minutes(1)),
-    });
-    warmupRule.addTarget(
-      new targets.LambdaFunction(lambdaConstruct.collectFunction, {
-        event: events.RuleTargetInput.fromObject(WARMUP_EVENT),
-      }),
-    );
-
-    // Fingerprint data topic
-    const fingerprintTopic = new sns.Topic(this, `${stackName}-fingerprint-topic`, {
+    // Fingerprint data topic for analytics
+    const fingerprintTopic = new sns.Topic(this, 'FingerprintTopic', {
       displayName: `${stackName}-fingerprint-topic`,
     });
-    lambdaConstruct.collectFunction.addEnvironment('FINGERPRINT_TOPIC_ARN', fingerprintTopic.topicArn);
-    lambdaConstruct.collectFunction.addToRolePolicy(
-      new iam.PolicyStatement({
-        actions: ['sns:Publish'],
-        resources: [fingerprintTopic.topicArn],
-      }),
-    );
 
-    // Glue database for fingerprint schema
+    // Glue database for analytics
     const glueDbName = `${stage}_${stackName}_events_db`.toLowerCase().replace(/[^a-z0-9_]/g, '_');
 
     const glueDb = new glue.CfnDatabase(this, 'EventsGlueDb', {
@@ -114,7 +196,7 @@ export class ArgusApiStack extends cdk.Stack {
       },
     });
 
-    // Glue JSON table for Firehose schema reference
+    // Glue JSON table
     const fingerprintTableName = 'fingerprint_events_json';
     const fingerprintGlueTable = makeJsonTable(
       this,
@@ -126,8 +208,8 @@ export class ArgusApiStack extends cdk.Stack {
       glueDb,
     );
 
-    // Firehose processor for fingerprint data
-    const fingerprintFirehose = new FirehoseProcessor(this, 'firehose-processor-fingerprint', {
+    // Firehose processor for analytics
+    const fingerprintFirehose = new FirehoseProcessor(this, 'FirehoseProcessor', {
       stackName,
       modelName: 'firehose-processor-fingerprint',
       stage,
@@ -151,25 +233,68 @@ export class ArgusApiStack extends cdk.Stack {
       'parquet/',
     );
 
-    // Outputs
+    // =========================================================================
+    // OUTPUTS
+    // =========================================================================
+
+    new cdk.CfnOutput(this, 'VpcId', {
+      value: vpc.vpcId,
+      description: 'VPC ID',
+    });
+
     new cdk.CfnOutput(this, 'AlarmsTopicArn', {
       value: alarmsTopic.topicArn,
       description: 'ARN of the SNS topic for CloudWatch Alarms',
     });
 
     new cdk.CfnOutput(this, 'ApiEndpoint', {
-      value: httpGateway.api.apiEndpoint,
-      description: 'HTTP API endpoint URL',
+      value: `https://api.${rootDomain}`,
+      description: 'API endpoint (CloudFront + custom domain)',
     });
 
     new cdk.CfnOutput(this, 'CloudFrontDomain', {
-      value: wafAndCloudfront.distribution.distributionDomainName,
+      value: cdn.distribution.distributionDomainName,
       description: 'CloudFront distribution domain',
+    });
+
+    new cdk.CfnOutput(this, 'ALBEndpoint', {
+      value: ingestionService.loadBalancer.loadBalancerDnsName,
+      description: 'ALB DNS name (internal)',
+    });
+
+    new cdk.CfnOutput(this, 'MatchingQueueUrl', {
+      value: queues.matchingQueue.queueUrl,
+      description: 'SQS URL for matching queue',
+    });
+
+    new cdk.CfnOutput(this, 'ProfileQueueUrl', {
+      value: queues.profileQueue.queueUrl,
+      description: 'SQS URL for profile queue',
+    });
+
+    new cdk.CfnOutput(this, 'RedisEndpoint', {
+      value: redis.endpoint,
+      description: 'Redis primary endpoint',
+    });
+
+    new cdk.CfnOutput(this, 'ProfilesTableName', {
+      value: dynamodb.profilesTable.tableName,
+      description: 'DynamoDB profiles table name',
     });
 
     new cdk.CfnOutput(this, 'FingerprintBucket', {
       value: fingerprintFirehose.bucket.bucketName,
-      description: 'S3 bucket for fingerprint data',
+      description: 'S3 bucket for fingerprint analytics data',
+    });
+
+    new cdk.CfnOutput(this, 'MatchingWorkerArn', {
+      value: workers.matchingWorker.functionArn,
+      description: 'Matching worker Lambda ARN',
+    });
+
+    new cdk.CfnOutput(this, 'ProfileUpdaterArn', {
+      value: workers.profileUpdater.functionArn,
+      description: 'Profile updater Lambda ARN',
     });
   }
 }

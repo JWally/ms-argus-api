@@ -1,7 +1,17 @@
 // lib/constructs/index.ts
-export * from './api';
+
+// Edge & security
 export * from './cloudfront';
-export * from './domain';
+
+// Data pipeline (analytics)
 export * from './firehose-processor';
-export * from './lambda';
+
+// Secrets management
 export * from './secrets';
+
+// V4 architecture constructs
+export * from './queues';
+export * from './redis';
+export * from './dynamodb';
+export * from './ingestion-service';
+export * from './workers';

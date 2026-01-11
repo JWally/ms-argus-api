@@ -18,7 +18,11 @@
     "experimentalDecorators": true,
     "strictPropertyInitialization": false,
     "typeRoots": ["./node_modules/@types"],
-    "esModuleInterop": true
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "outDir": "dist",
+    "rootDir": "."
   },
-  "exclude": ["node_modules", "cdk.out"]
+  "include": ["bin/**/*", "lib/**/*", "src/**/*"],
+  "exclude": ["node_modules", "cdk.out", "coverage", "cmd", "dist"]
 }

@@ -1,0 +1,281 @@
+# Vector Database Design for Argus Fingerprinting
+# Last Updated: 2026-01-10
+
+This document outlines the vector database strategy for device fingerprint matching,
+building on the tiered architecture in /argus-design-database.txt.
+
+Target: 30bn requests/year (~950 QPS average, peaks 5k-10k QPS)
+
+================================================================================
+## PAYLOAD STRUCTURE REFERENCE
+================================================================================
+
+The fingerprint payload from ms-argus-web + ms-argus-sigint contains:
+
+fingerprint/
+  hashes/
+    loose          # SHA-256 of full fingerprint data
+    stable         # SHA-256 of production-hardened subset
+    fuzzy          # 64-bit fuzzy hash for drift matching
+    deviceOfTimezone
+  botSignals/
+    botHash        # 8-bit pattern of bot indicators
+    badBot         # Specific bot type if detected
+    isHeadless, hasLies, lieCount, engineMismatch
+    stealthSignals, likelyResidentialProxy, isPrivate
+  inconsistencies/
+    inconsistencies[]  # Array of {category, description, expected, actual, severity}
+    counts             # {critical, high, medium, low}
+    riskScore          # 0-100
+  loose/
+    workerScope    # navigator, timezone, language, gpu from worker
+    navigator      # platform, deviceMemory, hardwareConcurrency, userAgentData
+    windowFeatures # Enumerated global properties (~2000)
+    headless       # webdriver, phantom, nightmare, selenium, cdc
+    screen         # width, height, colorDepth, touchSupport, orientation
+    cssMedia       # reducedMotion, colorScheme, contrast, pointerType, colorGamut
+    canvas2d       # hash, textMetrics, emojiRendering
+    canvasWebgl    # vendor, renderer, unmasked*, maxTextureSize, extensions, pixelHash
+    timezone       # offset, location, dst
+    fonts          # installed[], platformDetection, emojiSet
+    offlineAudioContext  # fingerprint (float), channelCount, sampleRate
+    maths          # acos, acosh, asin, asinh, atan, atanh (6 floats)
+    consoleErrors  # errorToString, errorPattern
+    intl           # dateFormat, numberFormat, currencyFormat
+    webrtc         # audioCodecs[], videoCodecs[], rtpExtensions, iceCandidateTypes
+    wasm           # simdSupport, memoryCeiling, sharedArrayBuffer, threads
+    resistance     # brave, tor, firefoxResist, privacyBrowser
+    proxy          # localhostConnectable, responseTime
+    incognito      # isPrivate, detectionMethod
+
+evercookie/
+  id             # UUID v4, survives cookie clears
+  created        # ISO timestamp
+  lastSeen       # ISO timestamp
+  recoveredFrom  # Which storage mechanism worked
+
+sigint/
+  tlsFingerprint/
+    ja4, ja3       # TLS fingerprints
+    ip, country, asn, isp
+  tcpProbe/
+    rtt_fingerprint, http2_fingerprint
+    proxy_score, vpn_score  # 0-1 floats
+    datacenter, mtu, ttl
+  stun/
+    reflexiveIP, relayIP, natType, symmetric
+  timing/
+    tlsFingerprintMs, tcpProbeMs, stunMs, totalMs
+
+
+================================================================================
+## TIER 1: DIRECT LOOKUP KEYS (O(1) hash lookups)
+================================================================================
+
+These are primary keys - single field lookups that should resolve in <5ms.
+
+| Field                          | Cardinality | Storage          | Notes                    |
+|--------------------------------|-------------|------------------|--------------------------|
+| evercookie.id                  | 1:1         | DynamoDB PK      | Primary, survives clears |
+| fingerprint.hashes.stable      | ~1:1000     | DynamoDB GSI     | Production hash          |
+| fingerprint.hashes.fuzzy       | ~1:10000    | DynamoDB GSI     | Allows drift matching    |
+| sigint.tlsFingerprint.ja4      | ~1:50000    | DynamoDB GSI     | Very strong signal       |
+| sigint.tlsFingerprint.ja3      | ~1:100000   | DynamoDB GSI     | Legacy TLS fingerprint   |
+
+Implementation:
+- DynamoDB with on-demand capacity for Tier 1 lookups
+- Optional: Redis/DragonflyDB for ultra-hot evercookie.id cache
+- Bloom filters at edge for miss detection before DB hit
+
+
+================================================================================
+## TIER 2: COMPOUND FILTERS (Strong Combos)
+================================================================================
+
+These have too many collisions alone, but combined they're powerful.
+Use for candidate generation when Tier 1 misses.
+
+| Combo                                    | Collision Rate | Why It Works                    |
+|------------------------------------------|----------------|----------------------------------|
+| ip + ja4                                 | ~1:500k        | Same network + same TLS stack   |
+| ip + http2_fingerprint                   | ~1:200k        | Network + HTTP/2 frame ordering |
+| gpu_renderer + screen_dims + timezone    | ~1:50k         | Hardware + geo lock             |
+| asn + ja4 + hardwareConcurrency          | ~1:100k        | ISP + TLS + CPU cores           |
+| audio_fingerprint + canvas2d.hash        | ~1:20k         | Two independent render signals  |
+| fonts.installed_hash + platform + deviceMemory | ~1:30k   | Software + hardware             |
+
+Implementation:
+- DynamoDB with composite sort keys
+- Bucket pattern: (tenant_id, bucket_type, bucket_key) -> [device_ids]
+- Ring buffer semantics (cap at 100-500 entries per bucket)
+- TTL for staleness (90 days)
+- Query 2-5 buckets, union results, yield 10s-100s of candidates
+
+IMPORTANT: ip alone is garbage (NAT, VPN, mobile carriers). Always compound it.
+
+
+================================================================================
+## TIER 3: VECTOR CANDIDATES (Embedding Space)
+================================================================================
+
+For hard cases where Tier 1/2 fail. This is where Q*/Qdrant/Milvus shines.
+
+### High-Value Signals for Vectorization
+
+| Signal                      | Dims       | Embedding Strategy               |
+|-----------------------------|------------|----------------------------------|
+| canvasWebgl.parameters      | ~50        | Normalize ranges, concat         |
+| fonts.installed             | ~200 (set) | MinHash or SetTransformer        |
+| windowFeatures              | ~2000      | TF-IDF + SVD to 128d             |
+| webrtc.audioCodecs+video    | ~30        | One-hot concat                   |
+| maths.*                     | 6          | Direct float vector              |
+| cssMedia.*                  | ~10        | One-hot categorical              |
+| offlineAudioContext.fp      | 1          | Scalar bucket or embed w/ others |
+| inconsistencies[]           | Variable   | Category embeddings + severity   |
+
+### Suggested Composite Vectors
+
+hardware_vec = [deviceMemory, hardwareConcurrency, screen.*, colorDepth, gpu_params] -> 64d
+render_vec = [canvas2d, canvasWebgl, audio_fingerprint, maths] -> 128d
+behavior_vec = [timezone, languages, intl.*, cssMedia.*] -> 64d
+network_vec = [ja4_embedding, http2_fingerprint, asn_embedding, vpn_score, proxy_score] -> 64d
+
+TOTAL: ~320d vector per request
+
+### Storage Estimate
+
+At 30bn requests/yr:
+- Assume 10% are new profiles needing vectors = 3bn vectors
+- 320d * float16 = 640 bytes per vector
+- 3bn * 640 bytes = ~1.9 TB/yr raw vectors
+- With HNSW index overhead (~1.5x) = ~3 TB/yr
+
+### Vector DB Options
+
+| Option        | Pros                              | Cons                           |
+|---------------|-----------------------------------|--------------------------------|
+| Qdrant        | Rust, fast, good filtering        | Self-hosted complexity         |
+| Milvus        | Mature, good at scale             | Heavy, Java ecosystem          |
+| Pinecone      | Managed, easy                     | $$$, vendor lock               |
+| pgvector      | PostgreSQL native                 | Not designed for this scale    |
+| Weaviate      | GraphQL, hybrid search            | Overkill for pure vectors      |
+
+Recommendation: Start with Qdrant (self-hosted on EC2/EKS) or Pinecone (managed).
+Defer decision until Tier 1/2 hit rates are measured.
+
+
+================================================================================
+## RISK SCORING SIGNALS (Use for Weighting, Not Matching)
+================================================================================
+
+These shouldn't be in the vector space, but used to WEIGHT matches:
+
+- botSignals.riskScore          # 0-100
+- inconsistencies.counts.*      # Integer counts by severity
+- sigint.tcpProbe.proxy_score   # 0-1 float
+- sigint.tcpProbe.vpn_score     # 0-1 float
+- botSignals.isHeadless         # Boolean
+- botSignals.hasLies            # Boolean
+- resistance.{brave,tor,ff}     # Privacy browser flags
+
+Apply as post-filter scoring, not pre-filter.
+
+
+================================================================================
+## QUERY FLOW ARCHITECTURE
+================================================================================
+
+Request arrives at ms-argus-api:
+
+1. TIER 0: Session continuity check
+   - evercookie.id in Redis/DDB? -> DONE (expect 70% of traffic)
+
+2. TIER 1: Strong identifier lookup
+   - fingerprint.hashes.stable match? -> DONE (expect 15%)
+   - ja4 + ip composite match? -> DONE
+
+3. TIER 2: Bucket-based candidate generation
+   - Query 2-5 compound buckets
+   - Union results (10s-100s candidates)
+   - Score candidates by signal overlap
+   - Best match above threshold? -> DONE (expect 10%)
+
+4. TIER 3: Vector similarity search (fallback)
+   - Encode request as 320d vector
+   - ANN search with pre-filter (tenant, recency)
+   - Top-K candidates, re-rank with full profile comparison
+   - Create new profile if no match (expect 5%)
+
+
+================================================================================
+## ENCRYPTION/SIGNING CONSIDERATIONS
+================================================================================
+
+Options for sigint data in transit (browser -> API):
+
+1. ECDH + AES-GCM
+   - Full encryption, prevents tampering AND snooping
+   - Overhead: ~200 bytes per request + CPU cost
+   - Pro: Maximum security
+   - Con: Overkill for anti-fraud? Data isn't secret, just needs integrity
+
+2. ECDSA Signature Only
+   - Sign but don't encrypt, prevents tampering
+   - Overhead: ~100 bytes per request
+   - Pro: Simpler, verifiable at edge
+   - Con: Data visible in transit (but it's going to our API anyway)
+
+3. HMAC with Shared Secret
+   - Simple integrity check
+   - Overhead: 32-64 bytes
+   - Pro: Fast, simple
+   - Con: Secret distribution problem
+
+Recommendation for anti-fraud:
+- ECDSA signature for sigint (integrity, not secrecy)
+- Consider ECDH for high-value fields if adversaries might inject fake signals
+- TLS handles in-transit encryption anyway
+
+
+================================================================================
+## INFRASTRUCTURE NOTES
+================================================================================
+
+Phase 1 (Now - in ms-argus-api):
+- Profile Builder Lambda (consume Firehose, write DynamoDB)
+- DynamoDB tables for profiles, Tier 1 indexes, Tier 2 buckets
+- Basic device_id generation
+
+Phase 2 (Soon - in ms-argus-api):
+- gRPC Query API for Decision Services
+- Risk scoring heuristics
+- Redis cache layer
+
+Phase 3 (Later - separate stack):
+- Vector database cluster (Qdrant/Pinecone)
+- Vector encoding pipeline
+- ANN search integration
+
+The vector DB should get its own CDK stack when stood up - different scaling
+characteristics, different cost model, potentially different region placement.
+
+
+================================================================================
+## OPEN QUESTIONS
+================================================================================
+
+- [ ] What's the fuzzy hash collision rate in production?
+- [ ] How do browser updates affect stable hash? (Monthly fingerprint drift?)
+- [ ] MinHash vs SimHash for font set encoding?
+- [ ] Qdrant vs Pinecone cost at 3TB scale?
+- [ ] Should vectors be tenant-isolated or global with tenant filter?
+
+================================================================================
+## REFERENCES
+================================================================================
+
+- Existing design: /argus-design-database.txt
+- Conversation logs: /argus-thoughts/
+- Qdrant docs: https://qdrant.tech/documentation/
+- HNSW paper: https://arxiv.org/abs/1603.09320
+- MinHash for sets: https://en.wikipedia.org/wiki/MinHash
