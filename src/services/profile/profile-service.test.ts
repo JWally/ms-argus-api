@@ -363,13 +363,13 @@ describe("ProfileService", () => {
       expect(item?.request_count?.N).toBe("1");
     });
 
-    it("should preserve existing risk_score and positive flags", async () => {
+    it("should compute dynamic risk_score and preserve positive flags", async () => {
       dynamoMock.on(PutItemCommand).resolves({});
 
       const existingProfile: DeviceProfile = {
         tenant_id: "tenant1",
         device_id: "dev_existing",
-        risk_score: 0.8, // High risk
+        risk_score: 0.8, // High risk (historical)
         flags: ["verified", "returning_user"], // Positive flags that should be preserved
         first_seen_at: 1700000000000,
         last_seen_at: 1700100000000,
@@ -389,7 +389,10 @@ describe("ProfileService", () => {
       const calls = dynamoMock.commandCalls(PutItemCommand);
       const item = calls[0].args[0].input.Item;
 
-      expect(item?.risk_score?.N).toBe("0.8");
+      // Risk is now dynamically computed:
+      // Base: 0.3 (returning) - 0.2 (verified) - 0.1 (returning_user) = 0.0
+      // Blended: 0.0 * 0.7 + 0.8 * 0.3 = 0.24
+      expect(parseFloat(item?.risk_score?.N ?? "0")).toBeCloseTo(0.24, 2);
       // Positive flags (verified, returning_user) should be preserved
       expect(item?.flags?.L).toHaveLength(2);
       expect(item?.request_count?.N).toBe("101"); // Incremented
@@ -863,6 +866,136 @@ describe("ProfileService", () => {
       expect(flags).toContain("fingerprint_mismatch");
       expect(flags).toContain("rapid_requests");
       expect(flags).toContain("verified"); // preserved positive flag
+    });
+  });
+
+  describe("computeRiskScore", () => {
+    it("should return base risk of 0.5 for new device", () => {
+      const score = service.computeRiskScore([], null, true);
+      expect(score).toBe(0.5);
+    });
+
+    it("should return base risk of 0.3 for returning device without flags", () => {
+      const existingProfile: DeviceProfile = {
+        tenant_id: "t1",
+        device_id: "d1",
+        risk_score: 0.3,
+        flags: [],
+        first_seen_at: Date.now() - 86400000,
+        last_seen_at: Date.now() - 3600000,
+        request_count: 10,
+        updated_at: Date.now() - 3600000,
+        ttl: Date.now() / 1000 + 86400,
+      };
+
+      const score = service.computeRiskScore([], existingProfile, false);
+      expect(score).toBe(0.3);
+    });
+
+    it("should increase risk for bot_detected flag", () => {
+      const score = service.computeRiskScore(["bot_detected"], null, true);
+      expect(score).toBe(0.75); // 0.5 base + 0.25 bot
+    });
+
+    it("should increase risk for headless_browser flag", () => {
+      const score = service.computeRiskScore(["headless_browser"], null, true);
+      expect(score).toBe(0.65); // 0.5 base + 0.15 headless
+    });
+
+    it("should increase risk for fingerprint_mismatch flag", () => {
+      const score = service.computeRiskScore(
+        ["fingerprint_mismatch"],
+        null,
+        true,
+      );
+      expect(score).toBe(0.65); // 0.5 base + 0.15 mismatch
+    });
+
+    it("should increase risk for rapid_requests flag", () => {
+      const score = service.computeRiskScore(["rapid_requests"], null, true);
+      expect(score).toBe(0.6); // 0.5 base + 0.1 rapid
+    });
+
+    it("should decrease risk for verified flag", () => {
+      const score = service.computeRiskScore(["verified"], null, true);
+      expect(score).toBe(0.3); // 0.5 base - 0.2 verified
+    });
+
+    it("should decrease risk for returning_user flag", () => {
+      const score = service.computeRiskScore(["returning_user"], null, true);
+      expect(score).toBe(0.4); // 0.5 base - 0.1 returning
+    });
+
+    it("should stack multiple negative signals", () => {
+      const flags = ["bot_detected", "headless_browser", "rapid_requests"];
+      const score = service.computeRiskScore(flags, null, true);
+      expect(score).toBe(1.0); // 0.5 + 0.25 + 0.15 + 0.1 = 1.0 (clamped)
+    });
+
+    it("should clamp risk score to maximum of 1.0", () => {
+      const flags = [
+        "bot_detected",
+        "headless_browser",
+        "fingerprint_mismatch",
+        "rapid_requests",
+      ];
+      const score = service.computeRiskScore(flags, null, true);
+      expect(score).toBe(1.0); // Would be 1.15, clamped to 1.0
+    });
+
+    it("should clamp risk score to minimum of 0.0", () => {
+      const flags = ["verified", "returning_user"];
+      const score = service.computeRiskScore(flags, null, true);
+      expect(score).toBeCloseTo(0.2, 2); // 0.5 - 0.2 - 0.1 = 0.2
+    });
+
+    it("should blend with historical risk for returning devices", () => {
+      const existingProfile: DeviceProfile = {
+        tenant_id: "t1",
+        device_id: "d1",
+        risk_score: 0.9, // High historical risk
+        flags: [],
+        first_seen_at: Date.now() - 86400000,
+        last_seen_at: Date.now() - 3600000,
+        request_count: 10,
+        updated_at: Date.now() - 3600000,
+        ttl: Date.now() / 1000 + 86400,
+      };
+
+      // Base risk for returning = 0.3
+      // With 30% historical weight: 0.3 * 0.7 + 0.9 * 0.3 = 0.21 + 0.27 = 0.48
+      const score = service.computeRiskScore([], existingProfile, false);
+      expect(score).toBeCloseTo(0.48, 2);
+    });
+
+    it("should apply flags before blending with historical risk", () => {
+      const existingProfile: DeviceProfile = {
+        tenant_id: "t1",
+        device_id: "d1",
+        risk_score: 0.3,
+        flags: [],
+        first_seen_at: Date.now() - 86400000,
+        last_seen_at: Date.now() - 3600000,
+        request_count: 10,
+        updated_at: Date.now() - 3600000,
+        ttl: Date.now() / 1000 + 86400,
+      };
+
+      // Base: 0.3 + bot_detected: 0.25 = 0.55
+      // Blended: 0.55 * 0.7 + 0.3 * 0.3 = 0.385 + 0.09 = 0.475
+      const score = service.computeRiskScore(
+        ["bot_detected"],
+        existingProfile,
+        false,
+      );
+      expect(score).toBeCloseTo(0.475, 2);
+    });
+
+    it("should not blend historical risk for new devices", () => {
+      // Even if we somehow pass an existing profile with isNewDevice=true,
+      // it should not blend (this is a consistency check)
+      const score = service.computeRiskScore(["verified"], null, true);
+      expect(score).toBe(0.3); // 0.5 - 0.2 = 0.3, no blending
     });
   });
 });

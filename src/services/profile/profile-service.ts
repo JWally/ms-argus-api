@@ -22,6 +22,29 @@ const FLAG_THRESHOLDS = {
 } as const;
 
 /**
+ * Risk score weights for different flags
+ * Positive values increase risk, negative values decrease risk
+ */
+const RISK_WEIGHTS = {
+  /** Base risk for new devices (neutral) */
+  BASE_NEW_DEVICE: 0.5,
+  /** Base risk for returning devices without flags */
+  BASE_RETURNING: 0.3,
+  /** Bot detection is a strong negative signal */
+  BOT_DETECTED: 0.25,
+  /** Headless browser is a strong negative signal */
+  HEADLESS_BROWSER: 0.15,
+  /** Fingerprint mismatch suggests device spoofing */
+  FINGERPRINT_MISMATCH: 0.15,
+  /** Rapid requests suggests automated behavior */
+  RAPID_REQUESTS: 0.1,
+  /** Verified devices get trust bonus */
+  VERIFIED: -0.2,
+  /** Returning users get slight trust bonus */
+  RETURNING_USER: -0.1,
+} as const;
+
+/**
  * Configuration for the profile service
  */
 export interface ProfileServiceConfig {
@@ -212,6 +235,60 @@ export class ProfileService {
   }
 
   /**
+   * Compute risk score based on flags and profile history
+   * Returns a value between 0 (trusted) and 1 (high risk)
+   */
+  computeRiskScore(
+    flags: string[],
+    existingProfile: DeviceProfile | null,
+    isNewDevice: boolean,
+  ): number {
+    // Treat as new device if explicitly marked or no existing profile
+    const effectivelyNewDevice = isNewDevice || existingProfile === null;
+
+    // Start with base risk
+    let riskScore = effectivelyNewDevice
+      ? RISK_WEIGHTS.BASE_NEW_DEVICE
+      : RISK_WEIGHTS.BASE_RETURNING;
+
+    // Apply flag-based adjustments
+    for (const flag of flags) {
+      switch (flag) {
+        case DeviceFlags.BOT_DETECTED:
+          riskScore += RISK_WEIGHTS.BOT_DETECTED;
+          break;
+        case DeviceFlags.HEADLESS_BROWSER:
+          riskScore += RISK_WEIGHTS.HEADLESS_BROWSER;
+          break;
+        case DeviceFlags.FINGERPRINT_MISMATCH:
+          riskScore += RISK_WEIGHTS.FINGERPRINT_MISMATCH;
+          break;
+        case DeviceFlags.RAPID_REQUESTS:
+          riskScore += RISK_WEIGHTS.RAPID_REQUESTS;
+          break;
+        case DeviceFlags.VERIFIED:
+          riskScore += RISK_WEIGHTS.VERIFIED;
+          break;
+        case DeviceFlags.RETURNING_USER:
+          riskScore += RISK_WEIGHTS.RETURNING_USER;
+          break;
+      }
+    }
+
+    // For returning devices, blend with historical risk (weighted average)
+    // This prevents risk from changing too dramatically on a single request
+    if (existingProfile && !effectivelyNewDevice) {
+      const historicalWeight = 0.3;
+      riskScore =
+        riskScore * (1 - historicalWeight) +
+        existingProfile.risk_score * historicalWeight;
+    }
+
+    // Clamp to valid range [0, 1]
+    return Math.max(0, Math.min(1, riskScore));
+  }
+
+  /**
    * Update device profile in DynamoDB
    */
   async updateProfile(
@@ -256,9 +333,12 @@ export class ProfileService {
       flags,
     };
 
-    // Preserve existing risk score or set neutral for new profiles
-    // (AR-17 will implement dynamic risk score calculation)
-    profileData.risk_score = existingProfile?.risk_score ?? 0.5;
+    // Compute risk score based on flags and profile history
+    profileData.risk_score = this.computeRiskScore(
+      flags,
+      existingProfile,
+      isNewDevice,
+    );
 
     await this.deps.dynamodb.send(
       new PutItemCommand({
