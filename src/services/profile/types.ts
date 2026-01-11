@@ -1,43 +1,10 @@
 // src/services/profile/types.ts
 
-/**
- * Fingerprint data from the client
- */
-export interface Fingerprint {
-  stable_hash?: string;
-  fuzzy_hash?: string;
-  canvas_hash?: string;
-  webgl_hash?: string;
-  audio_hash?: string;
-  ip_address?: string;
-  ja4?: string;
-  gpu_renderer?: string;
-  screen_dims?: string;
-  timezone?: string;
-  evercookie_id?: string;
-  // Bot detection signals
-  user_agent?: string;
-  hardware_concurrency?: number;
-  device_memory?: number;
-}
+// Re-export shared types for convenience
+export { Fingerprint, DeviceFlags, DeviceFlag } from "../../types";
 
-/**
- * Device flags for risk assessment
- */
-export const DeviceFlags = {
-  // Neutral signals
-  NEW_DEVICE: "new_device",
-  // Positive signals
-  VERIFIED: "verified",
-  RETURNING_USER: "returning_user",
-  // Negative signals
-  BOT_DETECTED: "bot_detected",
-  HEADLESS_BROWSER: "headless_browser",
-  FINGERPRINT_MISMATCH: "fingerprint_mismatch",
-  RAPID_REQUESTS: "rapid_requests",
-} as const;
-
-export type DeviceFlag = (typeof DeviceFlags)[keyof typeof DeviceFlags];
+// Import for local use
+import type { Fingerprint } from "../../types";
 
 /**
  * Profile update payload from matching worker (via SQS)
