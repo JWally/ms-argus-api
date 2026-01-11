@@ -2,12 +2,13 @@
 import * as path from "path";
 import { Construct } from "constructs";
 import * as lambda from "aws-cdk-lib/aws-lambda-nodejs";
-import { Runtime, Tracing, Architecture } from "aws-cdk-lib/aws-lambda";
+import { Runtime, Tracing, Architecture, Alias } from "aws-cdk-lib/aws-lambda";
 import * as lambdaEventSources from "aws-cdk-lib/aws-lambda-event-sources";
 import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
 import { OutputFormat } from "aws-cdk-lib/aws-lambda-nodejs";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as cloudwatch from "aws-cdk-lib/aws-cloudwatch";
+import * as codedeploy from "aws-cdk-lib/aws-codedeploy";
 import * as sns from "aws-cdk-lib/aws-sns";
 import * as sqs from "aws-cdk-lib/aws-sqs";
 import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
@@ -39,6 +40,8 @@ interface WorkersConstructProps {
 export class WorkersConstruct extends Construct {
   public readonly matchingWorker: lambda.NodejsFunction;
   public readonly profileUpdater: lambda.NodejsFunction;
+  public readonly matchingWorkerAlias: Alias;
+  public readonly profileUpdaterAlias: Alias;
   public readonly workerSecurityGroup: ec2.SecurityGroup;
 
   constructor(scope: Construct, id: string, props: WorkersConstructProps) {
@@ -208,15 +211,68 @@ export class WorkersConstruct extends Construct {
     profileQueue.grantConsumeMessages(this.profileUpdater);
 
     // Alarms
-    this.createWorkerAlarms(this.matchingWorker, "MatchingWorker", alarmsTopic);
-    this.createWorkerAlarms(this.profileUpdater, "ProfileUpdater", alarmsTopic);
+    const matchingWorkerAlarms = this.createWorkerAlarms(
+      this.matchingWorker,
+      "MatchingWorker",
+      alarmsTopic,
+    );
+    const profileUpdaterAlarms = this.createWorkerAlarms(
+      this.profileUpdater,
+      "ProfileUpdater",
+      alarmsTopic,
+    );
+
+    // =====================================
+    // CANARY DEPLOYMENTS (AR-24)
+    // =====================================
+    // Create aliases for blue/green deployments
+    this.matchingWorkerAlias = new Alias(this, "MatchingWorkerLive", {
+      aliasName: "live",
+      version: this.matchingWorker.currentVersion,
+    });
+
+    this.profileUpdaterAlias = new Alias(this, "ProfileUpdaterLive", {
+      aliasName: "live",
+      version: this.profileUpdater.currentVersion,
+    });
+
+    // CodeDeploy deployment groups for canary releases
+    new codedeploy.LambdaDeploymentGroup(this, "MatchingWorkerDeployment", {
+      alias: this.matchingWorkerAlias,
+      deploymentConfig:
+        codedeploy.LambdaDeploymentConfig.CANARY_10PERCENT_5MINUTES,
+      alarms: [
+        matchingWorkerAlarms.errorAlarm,
+        matchingWorkerAlarms.durationAlarm,
+      ],
+      autoRollback: {
+        failedDeployment: true,
+        stoppedDeployment: true,
+        deploymentInAlarm: true,
+      },
+    });
+
+    new codedeploy.LambdaDeploymentGroup(this, "ProfileUpdaterDeployment", {
+      alias: this.profileUpdaterAlias,
+      deploymentConfig:
+        codedeploy.LambdaDeploymentConfig.CANARY_10PERCENT_5MINUTES,
+      alarms: [
+        profileUpdaterAlarms.errorAlarm,
+        profileUpdaterAlarms.durationAlarm,
+      ],
+      autoRollback: {
+        failedDeployment: true,
+        stoppedDeployment: true,
+        deploymentInAlarm: true,
+      },
+    });
   }
 
   private createWorkerAlarms(
     fn: lambda.NodejsFunction,
     prefix: string,
     alarmsTopic: sns.ITopic,
-  ) {
+  ): { errorAlarm: cloudwatch.Alarm; durationAlarm: cloudwatch.Alarm } {
     // Error count alarm
     const errorAlarm = new cloudwatch.Alarm(this, `${prefix}Errors`, {
       metric: fn.metricErrors({
@@ -268,5 +324,8 @@ export class WorkersConstruct extends Construct {
       },
     );
     concurrencyAlarm.addAlarmAction(new actions.SnsAction(alarmsTopic));
+
+    // Return alarms needed for deployment groups
+    return { errorAlarm, durationAlarm };
   }
 }
