@@ -1,10 +1,10 @@
 // lib/constructs/dynamodb.ts
-import { Construct } from 'constructs';
-import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
-import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
-import * as sns from 'aws-cdk-lib/aws-sns';
-import * as actions from 'aws-cdk-lib/aws-cloudwatch-actions';
-import { Duration, RemovalPolicy } from 'aws-cdk-lib';
+import { Construct } from "constructs";
+import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
+import * as cloudwatch from "aws-cdk-lib/aws-cloudwatch";
+import * as sns from "aws-cdk-lib/aws-sns";
+import * as actions from "aws-cdk-lib/aws-cloudwatch-actions";
+import { Duration, RemovalPolicy } from "aws-cdk-lib";
 
 interface DynamoDbConstructProps {
   stackName: string;
@@ -29,52 +29,59 @@ export class DynamoDbConstruct extends Construct {
 
     // Profiles table - main device profile storage
     // PK: tenant_id, SK: device_id
-    this.profilesTable = new dynamodb.Table(this, 'ProfilesTable', {
+    this.profilesTable = new dynamodb.Table(this, "ProfilesTable", {
       tableName: `${stackName}-profiles`,
-      partitionKey: { name: 'tenant_id', type: dynamodb.AttributeType.STRING },
-      sortKey: { name: 'device_id', type: dynamodb.AttributeType.STRING },
+      partitionKey: { name: "tenant_id", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "device_id", type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       pointInTimeRecovery: true,
-      timeToLiveAttribute: 'ttl',
+      timeToLiveAttribute: "ttl",
       removalPolicy: RemovalPolicy.RETAIN,
     });
 
     // GSI for looking up by device_id across tenants (admin queries)
     this.profilesTable.addGlobalSecondaryIndex({
-      indexName: 'device-index',
-      partitionKey: { name: 'device_id', type: dynamodb.AttributeType.STRING },
+      indexName: "device-index",
+      partitionKey: { name: "device_id", type: dynamodb.AttributeType.STRING },
       projectionType: dynamodb.ProjectionType.KEYS_ONLY,
     });
 
     // Tier 1 Index table - O(1) hash lookups
     // PK: tenant_id, SK: hash_type#hash_value (e.g., "stable_hash#abc123")
-    this.tier1IndexTable = new dynamodb.Table(this, 'Tier1IndexTable', {
+    this.tier1IndexTable = new dynamodb.Table(this, "Tier1IndexTable", {
       tableName: `${stackName}-tier1-index`,
-      partitionKey: { name: 'tenant_id', type: dynamodb.AttributeType.STRING },
-      sortKey: { name: 'hash_key', type: dynamodb.AttributeType.STRING },
+      partitionKey: { name: "tenant_id", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "hash_key", type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-      timeToLiveAttribute: 'ttl',
+      timeToLiveAttribute: "ttl",
       removalPolicy: RemovalPolicy.RETAIN,
     });
 
     // Tier 2 Buckets table - compound filter matching
+    // Uses adjacency list pattern to avoid 400KB item size limit
     // PK: bucket_key (e.g., "tenant#ip_ja4#192.168.1.1#ja4_hash")
-    // Contains list of device_ids that match this compound key
-    this.tier2BucketsTable = new dynamodb.Table(this, 'Tier2BucketsTable', {
-      tableName: `${stackName}-tier2-buckets`,
-      partitionKey: { name: 'bucket_key', type: dynamodb.AttributeType.STRING },
+    // SK: device_id - allows unlimited devices per bucket via Query
+    // Note: table name has -v2 suffix due to schema change (added sort key)
+    this.tier2BucketsTable = new dynamodb.Table(this, "Tier2BucketsTableV2", {
+      tableName: `${stackName}-tier2-buckets-v2`,
+      partitionKey: { name: "bucket_key", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "device_id", type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-      timeToLiveAttribute: 'ttl',
+      timeToLiveAttribute: "ttl",
       removalPolicy: RemovalPolicy.RETAIN,
     });
 
     // Alarms
-    this.createTableAlarms(this.profilesTable, 'Profiles', alarmsTopic);
-    this.createTableAlarms(this.tier1IndexTable, 'Tier1Index', alarmsTopic);
-    this.createTableAlarms(this.tier2BucketsTable, 'Tier2Buckets', alarmsTopic);
+    this.createTableAlarms(this.profilesTable, "Profiles", alarmsTopic);
+    this.createTableAlarms(this.tier1IndexTable, "Tier1Index", alarmsTopic);
+    this.createTableAlarms(this.tier2BucketsTable, "Tier2Buckets", alarmsTopic);
   }
 
-  private createTableAlarms(table: dynamodb.Table, prefix: string, alarmsTopic: sns.ITopic) {
+  private createTableAlarms(
+    table: dynamodb.Table,
+    prefix: string,
+    alarmsTopic: sns.ITopic,
+  ) {
     // Throttled requests alarm
     const throttleAlarm = new cloudwatch.Alarm(this, `${prefix}ThrottleAlarm`, {
       metric: table.metricThrottledRequestsForOperations({
@@ -84,7 +91,7 @@ export class DynamoDbConstruct extends Construct {
           dynamodb.Operation.QUERY,
         ],
         period: Duration.minutes(5),
-        statistic: 'Sum',
+        statistic: "Sum",
       }),
       threshold: 10,
       evaluationPeriods: 2,
@@ -101,7 +108,7 @@ export class DynamoDbConstruct extends Construct {
           dynamodb.Operation.QUERY,
         ],
         period: Duration.minutes(5),
-        statistic: 'Sum',
+        statistic: "Sum",
       }),
       threshold: 5,
       evaluationPeriods: 2,

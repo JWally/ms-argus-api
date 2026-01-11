@@ -1,14 +1,19 @@
 // src/services/matching/matching-service.ts
-import { DynamoDBClient, GetItemCommand, GetItemCommandOutput } from '@aws-sdk/client-dynamodb';
-import { SQSClient, SendMessageCommand } from '@aws-sdk/client-sqs';
-import { unmarshall } from '@aws-sdk/util-dynamodb';
-import type { Redis } from 'ioredis';
+import {
+  DynamoDBClient,
+  GetItemCommand,
+  QueryCommand,
+  QueryCommandOutput,
+} from "@aws-sdk/client-dynamodb";
+import { SQSClient, SendMessageCommand } from "@aws-sdk/client-sqs";
+import { unmarshall } from "@aws-sdk/util-dynamodb";
+import type { Redis } from "ioredis";
 import {
   Fingerprint,
   FingerprintPayload,
   MatchResult,
   SessionCacheValue,
-} from './types';
+} from "./types";
 
 /**
  * Configuration for the matching service
@@ -55,33 +60,44 @@ export class MatchingService {
 
   /**
    * Run tiered matching strategy
+   * Returns match result along with metadata about the matching process
    */
-  async runTieredMatching(tenantId: string, fingerprint: Fingerprint): Promise<MatchResult> {
+  async runTieredMatching(
+    tenantId: string,
+    fingerprint: Fingerprint,
+  ): Promise<{ result: MatchResult; tier2TimedOut: boolean }> {
     // Tier 0.5: Evercookie/Cookie lookup
     if (fingerprint.evercookie_id) {
-      const result = await this.tier05CookieLookup(tenantId, fingerprint.evercookie_id);
-      if (result) return result;
+      const result = await this.tier05CookieLookup(
+        tenantId,
+        fingerprint.evercookie_id,
+      );
+      if (result) return { result, tier2TimedOut: false };
     }
 
     // Tier 1: Strong hash match
     const tier1Result = await this.tier1HashMatch(tenantId, fingerprint);
-    if (tier1Result) return tier1Result;
+    if (tier1Result) return { result: tier1Result, tier2TimedOut: false };
 
     // Tier 2: Compound filter match (with timeout)
-    const tier2Result = await this.tier2CompoundMatchWithTimeout(tenantId, fingerprint);
-    if (tier2Result) return tier2Result;
+    const { result: tier2Result, timedOut } =
+      await this.tier2CompoundMatchWithTimeout(tenantId, fingerprint);
+    if (tier2Result) return { result: tier2Result, tier2TimedOut: timedOut };
 
     // Tier 3: Vector similarity (TODO: implement when Qdrant is deployed)
 
     // New device - no match found
-    return this.createNewDevice();
+    return { result: this.createNewDevice(), tier2TimedOut: timedOut };
   }
 
   /**
    * Tier 0.5: Lookup by evercookie ID
    * Highest confidence - evercookie is hard to clear
    */
-  async tier05CookieLookup(tenantId: string, evercookieId: string): Promise<MatchResult | null> {
+  async tier05CookieLookup(
+    tenantId: string,
+    evercookieId: string,
+  ): Promise<MatchResult | null> {
     const result = await this.deps.dynamodb.send(
       new GetItemCommand({
         TableName: this.deps.config.tier1IndexTable,
@@ -110,10 +126,16 @@ export class MatchingService {
    * Tier 1: Match by stable or fuzzy hash
    * High confidence - these hashes are computed from multiple signals
    */
-  async tier1HashMatch(tenantId: string, fingerprint: Fingerprint): Promise<MatchResult | null> {
+  async tier1HashMatch(
+    tenantId: string,
+    fingerprint: Fingerprint,
+  ): Promise<MatchResult | null> {
     // Try stable hash first (higher confidence)
     if (fingerprint.stable_hash) {
-      const result = await this.lookupTier1Index(tenantId, `stable#${fingerprint.stable_hash}`);
+      const result = await this.lookupTier1Index(
+        tenantId,
+        `stable#${fingerprint.stable_hash}`,
+      );
       if (result) {
         return {
           device_id: result.device_id,
@@ -128,7 +150,10 @@ export class MatchingService {
 
     // Try fuzzy hash (slightly lower confidence)
     if (fingerprint.fuzzy_hash) {
-      const result = await this.lookupTier1Index(tenantId, `fuzzy#${fingerprint.fuzzy_hash}`);
+      const result = await this.lookupTier1Index(
+        tenantId,
+        `fuzzy#${fingerprint.fuzzy_hash}`,
+      );
       if (result) {
         return {
           device_id: result.device_id,
@@ -150,7 +175,11 @@ export class MatchingService {
   private async lookupTier1Index(
     tenantId: string,
     hashKey: string,
-  ): Promise<{ device_id: string; risk_score?: number; flags?: string[] } | null> {
+  ): Promise<{
+    device_id: string;
+    risk_score?: number;
+    flags?: string[];
+  } | null> {
     const result = await this.deps.dynamodb.send(
       new GetItemCommand({
         TableName: this.deps.config.tier1IndexTable,
@@ -174,35 +203,61 @@ export class MatchingService {
 
   /**
    * Tier 2: Compound filter match with timeout protection
+   * Returns result with timedOut flag to track "fail open" scenarios
    */
   async tier2CompoundMatchWithTimeout(
     tenantId: string,
     fingerprint: Fingerprint,
-  ): Promise<MatchResult | null> {
+  ): Promise<{ result: MatchResult | null; timedOut: boolean }> {
     const timeoutMs = this.deps.config.tier2TimeoutMs;
 
-    const result = await Promise.race([
-      this.tier2CompoundMatch(tenantId, fingerprint),
-      new Promise<null>((resolve) => setTimeout(() => resolve(null), timeoutMs)),
+    // Use a sentinel to distinguish timeout from null result
+    const TIMEOUT_SENTINEL = Symbol("timeout");
+
+    const raceResult = await Promise.race([
+      this.tier2CompoundMatch(tenantId, fingerprint).then((r) => ({
+        value: r,
+        timedOut: false,
+      })),
+      new Promise<{ value: typeof TIMEOUT_SENTINEL; timedOut: true }>(
+        (resolve) =>
+          setTimeout(
+            () => resolve({ value: TIMEOUT_SENTINEL, timedOut: true }),
+            timeoutMs,
+          ),
+      ),
     ]);
 
-    return result;
+    if (raceResult.timedOut) {
+      return { result: null, timedOut: true };
+    }
+
+    return { result: raceResult.value as MatchResult | null, timedOut: false };
   }
 
   /**
    * Tier 2: Match by compound signal buckets
    * Lower confidence - relies on multiple weak signals
+   * Uses Query with adjacency list pattern (bucket_key, device_id)
    */
-  async tier2CompoundMatch(tenantId: string, fingerprint: Fingerprint): Promise<MatchResult | null> {
+  async tier2CompoundMatch(
+    tenantId: string,
+    fingerprint: Fingerprint,
+  ): Promise<MatchResult | null> {
     const bucketKeys = this.buildBucketKeys(tenantId, fingerprint);
     if (bucketKeys.length === 0) return null;
 
-    // Query all buckets in parallel
+    // Query all buckets in parallel using adjacency list pattern
     const queries = bucketKeys.map((key) =>
       this.deps.dynamodb.send(
-        new GetItemCommand({
+        new QueryCommand({
           TableName: this.deps.config.tier2BucketsTable,
-          Key: { bucket_key: { S: key } },
+          KeyConditionExpression: "bucket_key = :bk",
+          ExpressionAttributeValues: {
+            ":bk": { S: key },
+          },
+          ProjectionExpression: "device_id",
+          Limit: 1000, // Cap results per bucket for performance
         }),
       ),
     );
@@ -245,11 +300,17 @@ export class MatchingService {
 
     // IP + JA4 (network identity)
     if (fingerprint.ip_address && fingerprint.ja4) {
-      keys.push(`${tenantId}#ip_ja4#${fingerprint.ip_address}#${fingerprint.ja4}`);
+      keys.push(
+        `${tenantId}#ip_ja4#${fingerprint.ip_address}#${fingerprint.ja4}`,
+      );
     }
 
     // GPU + Screen + Timezone (hardware/locale identity)
-    if (fingerprint.gpu_renderer && fingerprint.screen_dims && fingerprint.timezone) {
+    if (
+      fingerprint.gpu_renderer &&
+      fingerprint.screen_dims &&
+      fingerprint.timezone
+    ) {
       keys.push(
         `${tenantId}#gpu_screen_tz#${fingerprint.gpu_renderer}#${fingerprint.screen_dims}#${fingerprint.timezone}`,
       );
@@ -257,7 +318,9 @@ export class MatchingService {
 
     // Audio + Canvas (rendering identity)
     if (fingerprint.audio_hash && fingerprint.canvas_hash) {
-      keys.push(`${tenantId}#audio_canvas#${fingerprint.audio_hash}#${fingerprint.canvas_hash}`);
+      keys.push(
+        `${tenantId}#audio_canvas#${fingerprint.audio_hash}#${fingerprint.canvas_hash}`,
+      );
     }
 
     return keys;
@@ -265,16 +328,21 @@ export class MatchingService {
 
   /**
    * Score device candidates by counting bucket matches
+   * Works with Query results from adjacency list pattern
    */
-  private scoreDeviceCandidates(results: GetItemCommandOutput[]): Map<string, number> {
+  private scoreDeviceCandidates(
+    results: QueryCommandOutput[],
+  ): Map<string, number> {
     const candidates = new Map<string, number>();
 
     for (const result of results) {
-      if (result.Item) {
-        const item = unmarshall(result.Item);
-        const deviceIds: string[] = item.device_ids ?? [];
-        for (const deviceId of deviceIds) {
-          candidates.set(deviceId, (candidates.get(deviceId) ?? 0) + 1);
+      if (result.Items && result.Items.length > 0) {
+        for (const item of result.Items) {
+          const unmarshalled = unmarshall(item);
+          const deviceId = unmarshalled.device_id;
+          if (deviceId) {
+            candidates.set(deviceId, (candidates.get(deviceId) ?? 0) + 1);
+          }
         }
       }
     }
@@ -296,7 +364,7 @@ export class MatchingService {
           tenant_id: { S: tenantId },
           device_id: { S: deviceId },
         },
-        ProjectionExpression: 'risk_score, flags',
+        ProjectionExpression: "risk_score, flags",
       }),
     );
 
@@ -336,7 +404,7 @@ export class MatchingService {
     const key = `session:${sessionId}`;
 
     const value: SessionCacheValue = {
-      status: 'complete',
+      status: "complete",
       device_id: result.device_id,
       risk_score: result.risk_score,
       confidence: result.confidence,
@@ -351,34 +419,48 @@ export class MatchingService {
     const existing = await this.deps.redis.get(key);
     if (existing) {
       const existingValue: SessionCacheValue = JSON.parse(existing);
-      if (existingValue.confidence >= result.confidence && existingValue.status === 'complete') {
+      if (
+        existingValue.confidence >= result.confidence &&
+        existingValue.status === "complete"
+      ) {
         // Existing match is better, skip write
         return;
       }
     }
 
-    await this.deps.redis.setex(key, this.deps.config.sessionTtlSeconds, JSON.stringify(value));
+    await this.deps.redis.setex(
+      key,
+      this.deps.config.sessionTtlSeconds,
+      JSON.stringify(value),
+    );
   }
 
   /**
    * Write degraded status to Redis when matching fails
    */
-  async writeDegradedResult(sessionId: string, idempotencyKey: string): Promise<void> {
+  async writeDegradedResult(
+    sessionId: string,
+    idempotencyKey: string,
+  ): Promise<void> {
     const key = `session:${sessionId}`;
 
     const value: SessionCacheValue = {
-      status: 'degraded',
-      device_id: '',
+      status: "degraded",
+      device_id: "",
       risk_score: 0.5,
       confidence: 0,
       match_tier: -1,
       match_version: Date.now(),
       idempotency_key: idempotencyKey,
-      flags: ['matching_failed'],
+      flags: ["matching_failed"],
       updated_at: Date.now(),
     };
 
-    await this.deps.redis.setex(key, this.deps.config.sessionTtlSeconds, JSON.stringify(value));
+    await this.deps.redis.setex(
+      key,
+      this.deps.config.sessionTtlSeconds,
+      JSON.stringify(value),
+    );
   }
 
   /**
@@ -408,8 +490,11 @@ export class MatchingService {
 /**
  * Generate FNV-1a hash for idempotency key
  */
-export function generateIdempotencyKey(sessionId: string, fingerprint: Fingerprint): string {
-  const input = `${sessionId}:${fingerprint.stable_hash ?? ''}:${fingerprint.canvas_hash ?? ''}`;
+export function generateIdempotencyKey(
+  sessionId: string,
+  fingerprint: Fingerprint,
+): string {
+  const input = `${sessionId}:${fingerprint.stable_hash ?? ""}:${fingerprint.canvas_hash ?? ""}`;
   let hash = 2166136261;
   for (let i = 0; i < input.length; i++) {
     hash ^= input.charCodeAt(i);
@@ -422,9 +507,9 @@ export function generateIdempotencyKey(sessionId: string, fingerprint: Fingerpri
  * Generate a UUID v4
  */
 export function generateUUID(): string {
-  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
     const r = (Math.random() * 16) | 0;
-    const v = c === 'x' ? r : (r & 0x3) | 0x8;
+    const v = c === "x" ? r : (r & 0x3) | 0x8;
     return v.toString(16);
   });
 }

@@ -96,7 +96,7 @@ linters:
     - dupl
     - errcheck
     - exhaustive
-    - copyloopvar
+    - exportloopref
     - gochecknoinits
     - goconst
     - gocritic

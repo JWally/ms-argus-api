@@ -108,6 +108,15 @@ Node.js Lambda that maintains device profiles and search indexes:
 | **DynamoDB Tier2Buckets** | Compound filter matching      | 60 days                           |
 | **S3**                    | Analytics (Parquet)           | Configurable                      |
 
+#### Tier2Buckets Schema
+
+Uses an **adjacency list pattern** to avoid DynamoDB's 400KB item size limit:
+
+- **PK**: `bucket_key` (e.g., `tenant#ip_ja4#192.168.1.1#ja4_hash`)
+- **SK**: `device_id`
+
+Each device in a bucket is stored as a separate item, allowing unlimited devices per bucket via `Query` operations. This replaces the previous String Set approach which could hit the 400KB limit with high-cardinality buckets.
+
 ## API
 
 ### `POST /v1/collect`

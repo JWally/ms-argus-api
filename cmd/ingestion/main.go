@@ -25,14 +25,17 @@ var (
 )
 
 // FingerprintPayload is the incoming request structure
+// Uses json.RawMessage for fingerprint to avoid decode/re-encode overhead
+//
+//nolint:govet // field order matches JSON schema for readability
 type FingerprintPayload struct {
-	SessionID   string                 `json:"session_id"`
-	TenantID    string                 `json:"tenant_id"`
-	Fingerprint map[string]interface{} `json:"fingerprint"`
-	TCPBlob     string                 `json:"tcp_blob,omitempty"`
-	TLSBlob     string                 `json:"tls_blob,omitempty"`
-	Headers     map[string]string      `json:"headers,omitempty"`
-	Timestamp   int64                  `json:"timestamp"`
+	SessionID   string            `json:"session_id"`
+	TenantID    string            `json:"tenant_id"`
+	Fingerprint json.RawMessage   `json:"fingerprint,omitempty"`
+	TCPBlob     string            `json:"tcp_blob,omitempty"`
+	TLSBlob     string            `json:"tls_blob,omitempty"`
+	Headers     map[string]string `json:"headers,omitempty"`
+	Timestamp   int64             `json:"timestamp"`
 }
 
 func main() {
@@ -95,9 +98,10 @@ func main() {
 	logger.Info("Server stopped")
 }
 
-func healthHandler(w http.ResponseWriter, r *http.Request) {
+func healthHandler(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
+	//nolint:errcheck,gosec // health check response write errors are non-critical
 	w.Write([]byte(`{"status":"healthy"}`))
 }
 

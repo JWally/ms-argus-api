@@ -3,11 +3,10 @@ import {
   DynamoDBClient,
   GetItemCommand,
   PutItemCommand,
-  UpdateItemCommand,
-} from '@aws-sdk/client-dynamodb';
-import { marshall, unmarshall } from '@aws-sdk/util-dynamodb';
-import type { Redis } from 'ioredis';
-import { Fingerprint, ProfileUpdatePayload, DeviceProfile } from './types';
+} from "@aws-sdk/client-dynamodb";
+import { marshall, unmarshall } from "@aws-sdk/util-dynamodb";
+import type { Redis } from "ioredis";
+import { Fingerprint, ProfileUpdatePayload, DeviceProfile } from "./types";
 
 /**
  * Configuration for the profile service
@@ -51,13 +50,20 @@ export class ProfileService {
    */
   async setMutationGate(deviceId: string): Promise<void> {
     const key = `recently_updated:${deviceId}`;
-    await this.deps.redis.setex(key, this.deps.config.mutationGateTtlSeconds, '1');
+    await this.deps.redis.setex(
+      key,
+      this.deps.config.mutationGateTtlSeconds,
+      "1",
+    );
   }
 
   /**
    * Load existing device profile from DynamoDB
    */
-  async loadExistingProfile(tenantId: string, deviceId: string): Promise<DeviceProfile | null> {
+  async loadExistingProfile(
+    tenantId: string,
+    deviceId: string,
+  ): Promise<DeviceProfile | null> {
     const result = await this.deps.dynamodb.send(
       new GetItemCommand({
         TableName: this.deps.config.profilesTable,
@@ -113,7 +119,9 @@ export class ProfileService {
 
     // Only update last_seen if hour changed (reduce write amplification)
     const currentHour = Math.floor(now / 3600000);
-    const existingHour = existingProfile ? Math.floor(existingProfile.last_seen_at / 3600000) : 0;
+    const existingHour = existingProfile
+      ? Math.floor(existingProfile.last_seen_at / 3600000)
+      : 0;
     const shouldUpdateLastSeen = currentHour !== existingHour;
 
     const profileData: Record<string, unknown> = {
@@ -121,7 +129,9 @@ export class ProfileService {
       device_id: deviceId,
       ...fingerprint,
       first_seen_at: existingProfile?.first_seen_at ?? now,
-      last_seen_at: shouldUpdateLastSeen ? now : (existingProfile?.last_seen_at ?? now),
+      last_seen_at: shouldUpdateLastSeen
+        ? now
+        : (existingProfile?.last_seen_at ?? now),
       request_count: (existingProfile?.request_count ?? 0) + 1,
       updated_at: now,
       ttl,
@@ -157,7 +167,12 @@ export class ProfileService {
     const writes: Promise<unknown>[] = [];
 
     // Build index entries
-    const indexEntries = this.buildTier1IndexEntries(tenantId, deviceId, fingerprint, ttl);
+    const indexEntries = this.buildTier1IndexEntries(
+      tenantId,
+      deviceId,
+      fingerprint,
+      ttl,
+    );
 
     for (const entry of indexEntries) {
       writes.push(
@@ -182,9 +197,18 @@ export class ProfileService {
     deviceId: string,
     fingerprint: Fingerprint,
     ttl: number,
-  ): Array<{ tenant_id: string; hash_key: string; device_id: string; ttl: number }> {
-    const entries: Array<{ tenant_id: string; hash_key: string; device_id: string; ttl: number }> =
-      [];
+  ): Array<{
+    tenant_id: string;
+    hash_key: string;
+    device_id: string;
+    ttl: number;
+  }> {
+    const entries: Array<{
+      tenant_id: string;
+      hash_key: string;
+      device_id: string;
+      ttl: number;
+    }> = [];
 
     if (fingerprint.evercookie_id) {
       entries.push({
@@ -255,11 +279,17 @@ export class ProfileService {
 
     // IP + JA4 bucket
     if (fingerprint.ip_address && fingerprint.ja4) {
-      keys.push(`${tenantId}#ip_ja4#${fingerprint.ip_address}#${fingerprint.ja4}`);
+      keys.push(
+        `${tenantId}#ip_ja4#${fingerprint.ip_address}#${fingerprint.ja4}`,
+      );
     }
 
     // GPU + Screen + Timezone bucket
-    if (fingerprint.gpu_renderer && fingerprint.screen_dims && fingerprint.timezone) {
+    if (
+      fingerprint.gpu_renderer &&
+      fingerprint.screen_dims &&
+      fingerprint.timezone
+    ) {
       keys.push(
         `${tenantId}#gpu_screen_tz#${fingerprint.gpu_renderer}#${fingerprint.screen_dims}#${fingerprint.timezone}`,
       );
@@ -267,14 +297,18 @@ export class ProfileService {
 
     // Audio + Canvas bucket
     if (fingerprint.audio_hash && fingerprint.canvas_hash) {
-      keys.push(`${tenantId}#audio_canvas#${fingerprint.audio_hash}#${fingerprint.canvas_hash}`);
+      keys.push(
+        `${tenantId}#audio_canvas#${fingerprint.audio_hash}#${fingerprint.canvas_hash}`,
+      );
     }
 
     return keys;
   }
 
   /**
-   * Add device to a Tier 2 bucket using atomic ADD operation
+   * Add device to a Tier 2 bucket using adjacency list pattern
+   * Each device is a separate item with (bucket_key, device_id) composite key
+   * This avoids the 400KB item size limit of String Sets
    */
   private async addDeviceToBucket(
     bucketKey: string,
@@ -282,14 +316,12 @@ export class ProfileService {
     ttl: number,
   ): Promise<void> {
     await this.deps.dynamodb.send(
-      new UpdateItemCommand({
+      new PutItemCommand({
         TableName: this.deps.config.tier2BucketsTable,
-        Key: { bucket_key: { S: bucketKey } },
-        UpdateExpression: 'ADD device_ids :device_id SET #ttl = :ttl',
-        ExpressionAttributeNames: { '#ttl': 'ttl' },
-        ExpressionAttributeValues: {
-          ':device_id': { SS: [deviceId] },
-          ':ttl': { N: String(ttl) },
+        Item: {
+          bucket_key: { S: bucketKey },
+          device_id: { S: deviceId },
+          ttl: { N: String(ttl) },
         },
       }),
     );
@@ -301,7 +333,7 @@ export class ProfileService {
    */
   async processProfileUpdate(payload: ProfileUpdatePayload): Promise<{
     skipped: boolean;
-    reason?: 'mutation_gate' | 'no_drift';
+    reason?: "mutation_gate" | "no_drift";
     tier1Writes?: number;
     tier2Writes?: number;
   }> {
@@ -310,23 +342,43 @@ export class ProfileService {
     // Check mutation gate
     const shouldUpdate = await this.checkMutationGate(device_id);
     if (!shouldUpdate) {
-      return { skipped: true, reason: 'mutation_gate' };
+      return { skipped: true, reason: "mutation_gate" };
     }
 
     // Load existing profile
-    const existingProfile = await this.loadExistingProfile(tenant_id, device_id);
+    const existingProfile = await this.loadExistingProfile(
+      tenant_id,
+      device_id,
+    );
 
     // Check for drift
-    if (existingProfile && !this.hasSignificantDrift(existingProfile, fingerprint)) {
+    if (
+      existingProfile &&
+      !this.hasSignificantDrift(existingProfile, fingerprint)
+    ) {
       // No significant drift - just update mutation gate and skip
       await this.setMutationGate(device_id);
-      return { skipped: true, reason: 'no_drift' };
+      return { skipped: true, reason: "no_drift" };
     }
 
     // Perform updates
-    await this.updateProfile(tenant_id, device_id, fingerprint, timestamp, existingProfile);
-    const tier1Writes = await this.updateTier1Indexes(tenant_id, device_id, fingerprint);
-    const tier2Writes = await this.updateTier2Buckets(tenant_id, device_id, fingerprint);
+    await this.updateProfile(
+      tenant_id,
+      device_id,
+      fingerprint,
+      timestamp,
+      existingProfile,
+    );
+    const tier1Writes = await this.updateTier1Indexes(
+      tenant_id,
+      device_id,
+      fingerprint,
+    );
+    const tier2Writes = await this.updateTier2Buckets(
+      tenant_id,
+      device_id,
+      fingerprint,
+    );
 
     // Set mutation gate
     await this.setMutationGate(device_id);

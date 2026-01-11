@@ -6,6 +6,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -13,14 +15,22 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 )
 
+func TestMain(m *testing.M) {
+	// Initialize logger for tests with a discard handler to suppress output
+	logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+	m.Run()
+}
+
 // MockSQSClient implements a mock SQS client for testing
+//
+//nolint:govet // field order for test readability
 type MockSQSClient struct {
 	SendMessageFunc func(ctx context.Context, params *sqs.SendMessageInput, optFns ...func(*sqs.Options)) (*sqs.SendMessageOutput, error)
 	messages        []string
 	sendError       error
 }
 
-func (m *MockSQSClient) SendMessage(ctx context.Context, params *sqs.SendMessageInput, optFns ...func(*sqs.Options)) (*sqs.SendMessageOutput, error) {
+func (m *MockSQSClient) SendMessage(_ context.Context, params *sqs.SendMessageInput, _ ...func(*sqs.Options)) (*sqs.SendMessageOutput, error) {
 	if m.sendError != nil {
 		return nil, m.sendError
 	}
@@ -36,7 +46,7 @@ type SQSSender interface {
 }
 
 func TestHealthHandler(t *testing.T) {
-	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	req := httptest.NewRequest(http.MethodGet, "/health", http.NoBody)
 	w := httptest.NewRecorder()
 
 	healthHandler(w, req)
@@ -63,7 +73,7 @@ func TestCollectHandler_MethodNotAllowed(t *testing.T) {
 
 	for _, method := range methods {
 		t.Run(method, func(t *testing.T) {
-			req := httptest.NewRequest(method, "/v1/collect", nil)
+			req := httptest.NewRequest(method, "/v1/collect", http.NoBody)
 			w := httptest.NewRecorder()
 
 			collectHandler(w, req)
@@ -88,11 +98,12 @@ func TestCollectHandler_InvalidJSON(t *testing.T) {
 }
 
 func TestCollectHandler_MissingSessionID(t *testing.T) {
+	fpData, _ := json.Marshal(map[string]interface{}{
+		"screen_width": 1920,
+	})
 	payload := FingerprintPayload{
-		TenantID: "test-tenant",
-		Fingerprint: map[string]interface{}{
-			"screen_width": 1920,
-		},
+		TenantID:    "test-tenant",
+		Fingerprint: fpData,
 	}
 	body, _ := json.Marshal(payload)
 
@@ -108,17 +119,18 @@ func TestCollectHandler_MissingSessionID(t *testing.T) {
 }
 
 func TestFingerprintPayload_Serialization(t *testing.T) {
+	fpData, _ := json.Marshal(map[string]interface{}{
+		"screen_width":  1920,
+		"screen_height": 1080,
+		"user_agent":    "Mozilla/5.0",
+	})
 	payload := FingerprintPayload{
-		SessionID: "test-session-123",
-		TenantID:  "tenant-abc",
-		Fingerprint: map[string]interface{}{
-			"screen_width":  1920,
-			"screen_height": 1080,
-			"user_agent":    "Mozilla/5.0",
-		},
-		TCPBlob:   "tcp-data",
-		TLSBlob:   "tls-data",
-		Timestamp: 1704067200000,
+		SessionID:   "test-session-123",
+		TenantID:    "tenant-abc",
+		Fingerprint: fpData,
+		TCPBlob:     "tcp-data",
+		TLSBlob:     "tls-data",
+		Timestamp:   1704067200000,
 		Headers: map[string]string{
 			"User-Agent": "test-agent",
 		},
@@ -180,7 +192,7 @@ func TestFingerprintPayload_OptionalFields(t *testing.T) {
 }
 
 func TestHealthHandler_ContentType(t *testing.T) {
-	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	req := httptest.NewRequest(http.MethodGet, "/health", http.NoBody)
 	w := httptest.NewRecorder()
 
 	healthHandler(w, req)
@@ -192,19 +204,20 @@ func TestHealthHandler_ContentType(t *testing.T) {
 }
 
 func TestFingerprintPayload_NestedFingerprint(t *testing.T) {
-	payload := FingerprintPayload{
-		SessionID: "nested-test",
-		Fingerprint: map[string]interface{}{
-			"canvas": map[string]interface{}{
-				"hash":   "abc123",
-				"width":  300,
-				"height": 150,
-			},
-			"webgl": map[string]interface{}{
-				"vendor":   "Intel",
-				"renderer": "UHD Graphics",
-			},
+	fpData, _ := json.Marshal(map[string]interface{}{
+		"canvas": map[string]interface{}{
+			"hash":   "abc123",
+			"width":  300,
+			"height": 150,
 		},
+		"webgl": map[string]interface{}{
+			"vendor":   "Intel",
+			"renderer": "UHD Graphics",
+		},
+	})
+	payload := FingerprintPayload{
+		SessionID:   "nested-test",
+		Fingerprint: fpData,
 	}
 
 	data, err := json.Marshal(payload)
@@ -217,7 +230,13 @@ func TestFingerprintPayload_NestedFingerprint(t *testing.T) {
 		t.Fatalf("failed to unmarshal nested payload: %v", err)
 	}
 
-	canvas, ok := decoded.Fingerprint["canvas"].(map[string]interface{})
+	// Decode the fingerprint to verify nested structure
+	var decodedFp map[string]interface{}
+	if err := json.Unmarshal(decoded.Fingerprint, &decodedFp); err != nil {
+		t.Fatalf("failed to unmarshal fingerprint: %v", err)
+	}
+
+	canvas, ok := decodedFp["canvas"].(map[string]interface{})
 	if !ok {
 		t.Fatal("expected canvas to be a map")
 	}
@@ -228,7 +247,7 @@ func TestFingerprintPayload_NestedFingerprint(t *testing.T) {
 
 // Benchmark tests
 func BenchmarkHealthHandler(b *testing.B) {
-	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	req := httptest.NewRequest(http.MethodGet, "/health", http.NoBody)
 
 	for i := 0; i < b.N; i++ {
 		w := httptest.NewRecorder()
@@ -237,17 +256,18 @@ func BenchmarkHealthHandler(b *testing.B) {
 }
 
 func BenchmarkPayloadSerialization(b *testing.B) {
+	fpData, _ := json.Marshal(map[string]interface{}{
+		"screen_width":    1920,
+		"screen_height":   1080,
+		"pixel_ratio":     2.0,
+		"color_depth":     24,
+		"timezone_offset": -480,
+	})
 	payload := FingerprintPayload{
-		SessionID: "bench-session",
-		TenantID:  "bench-tenant",
-		Fingerprint: map[string]interface{}{
-			"screen_width":    1920,
-			"screen_height":   1080,
-			"pixel_ratio":     2.0,
-			"color_depth":     24,
-			"timezone_offset": -480,
-		},
-		Timestamp: 1704067200000,
+		SessionID:   "bench-session",
+		TenantID:    "bench-tenant",
+		Fingerprint: fpData,
+		Timestamp:   1704067200000,
 	}
 
 	b.ResetTimer()
