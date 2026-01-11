@@ -42,7 +42,7 @@ describe("rotate-aws-secrets handler", () => {
       expect(calls[0].args[0].input.SecretId).toBe(validSecretArn);
     });
 
-    it("should generate new ENCRYPTION_KEY and HMAC_KEY", async () => {
+    it("should generate new ENCRYPTION_KEY and HMAC_KEY with version", async () => {
       secretsManagerMock.on(PutSecretValueCommand).resolves({});
 
       await handler();
@@ -51,6 +51,7 @@ describe("rotate-aws-secrets handler", () => {
       const secretString = calls[0].args[0].input.SecretString;
       const secrets = JSON.parse(secretString!);
 
+      expect(secrets).toHaveProperty("version", "1");
       expect(secrets).toHaveProperty("ENCRYPTION_KEY");
       expect(secrets).toHaveProperty("HMAC_KEY");
       expect(secrets).toHaveProperty("ROTATED_AT");
