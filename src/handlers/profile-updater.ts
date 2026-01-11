@@ -49,9 +49,19 @@ function getRedis(): Redis {
       host: envConfig.REDIS_ENDPOINT,
       port: envConfig.REDIS_PORT,
       tls: {},
-      maxRetriesPerRequest: 3,
-      retryStrategy: (times: number) =>
-        Math.min(times * REDIS_RETRY_BASE_MS, REDIS_RETRY_MAX_MS),
+      // Lambda-optimized connection settings (AR-20)
+      enableReadyCheck: false, // Skip PING on connect (saves ~10ms)
+      maxRetriesPerRequest: 2, // Limited retries - Lambda has limited time
+      connectTimeout: 5000, // 5s connect timeout
+      commandTimeout: 3000, // 3s command timeout
+      keepAlive: 30000, // Keep connections alive for Lambda reuse
+      retryStrategy: (times: number) => {
+        if (times > 3) return null; // Stop retrying after 3 attempts
+        return Math.min(
+          Math.pow(2, times) * REDIS_RETRY_BASE_MS,
+          REDIS_RETRY_MAX_MS,
+        );
+      },
     });
   }
   return redis;
