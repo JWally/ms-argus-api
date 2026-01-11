@@ -144,7 +144,7 @@ describe("MatchingService", () => {
   });
 
   describe("tier1HashMatch", () => {
-    it("should return null result when no hash matches", async () => {
+    it("should return null when no hash matches", async () => {
       dynamoMock.on(GetItemCommand).resolves({ Item: undefined });
 
       const fingerprint: Fingerprint = {
@@ -152,7 +152,7 @@ describe("MatchingService", () => {
         fuzzy_hash: "fuzzy456",
       };
 
-      const { result } = await service.tier1HashMatch("tenant1", fingerprint);
+      const result = await service.tier1HashMatch("tenant1", fingerprint);
       expect(result).toBeNull();
     });
 
@@ -167,7 +167,7 @@ describe("MatchingService", () => {
       });
 
       const fingerprint: Fingerprint = { stable_hash: "stable123" };
-      const { result } = await service.tier1HashMatch("tenant1", fingerprint);
+      const result = await service.tier1HashMatch("tenant1", fingerprint);
 
       expect(result).not.toBeNull();
       expect(result?.device_id).toBe("dev_stable");
@@ -205,7 +205,7 @@ describe("MatchingService", () => {
         fuzzy_hash: "fuzzy456",
       };
 
-      const { result } = await service.tier1HashMatch("tenant1", fingerprint);
+      const result = await service.tier1HashMatch("tenant1", fingerprint);
 
       expect(result).not.toBeNull();
       expect(result?.device_id).toBe("dev_fuzzy");
@@ -226,7 +226,7 @@ describe("MatchingService", () => {
         fuzzy_hash: "fuzzy456",
       };
 
-      const { result } = await service.tier1HashMatch("tenant1", fingerprint);
+      const result = await service.tier1HashMatch("tenant1", fingerprint);
       expect(result?.confidence).toBe(0.95); // stable_hash confidence
     });
   });
