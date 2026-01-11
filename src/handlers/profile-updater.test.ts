@@ -19,6 +19,7 @@ import {
   GetItemCommand,
   PutItemCommand,
   UpdateItemCommand,
+  BatchWriteItemCommand,
 } from "@aws-sdk/client-dynamodb";
 import { marshall } from "@aws-sdk/util-dynamodb";
 import { SQSEvent, SQSRecord, Context } from "aws-lambda";
@@ -61,6 +62,8 @@ describe("profile-updater handler", () => {
 
   beforeEach(() => {
     dynamoMock.reset();
+    // Default mock for BatchWriteItem (Tier1 indexes) - can be overridden in individual tests
+    dynamoMock.on(BatchWriteItemCommand).resolves({});
     redisMock = new RedisMock();
     vi.clearAllMocks();
   });

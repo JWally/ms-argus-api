@@ -5,6 +5,7 @@ import {
   DynamoDBClient,
   GetItemCommand,
   PutItemCommand,
+  BatchWriteItemCommand,
 } from "@aws-sdk/client-dynamodb";
 import { marshall } from "@aws-sdk/util-dynamodb";
 import RedisMock from "ioredis-mock";
@@ -429,8 +430,8 @@ describe("ProfileService", () => {
   });
 
   describe("updateTier1Indexes", () => {
-    it("should write all index entries", async () => {
-      dynamoMock.on(PutItemCommand).resolves({});
+    it("should batch write all index entries", async () => {
+      dynamoMock.on(BatchWriteItemCommand).resolves({});
 
       const fingerprint: Fingerprint = {
         evercookie_id: "cookie",
@@ -446,18 +447,61 @@ describe("ProfileService", () => {
 
       expect(count).toBe(3);
 
-      const calls = dynamoMock.commandCalls(PutItemCommand);
-      expect(calls).toHaveLength(3);
+      const calls = dynamoMock.commandCalls(BatchWriteItemCommand);
+      expect(calls).toHaveLength(1);
 
-      // Verify correct table
-      for (const call of calls) {
-        expect(call.args[0].input.TableName).toBe(testConfig.tier1IndexTable);
-      }
+      // Verify batch contains 3 items for correct table
+      const requestItems = calls[0].args[0].input.RequestItems;
+      expect(requestItems).toBeDefined();
+      expect(requestItems?.[testConfig.tier1IndexTable]).toHaveLength(3);
     });
 
     it("should return 0 when no indexes to write", async () => {
       const count = await service.updateTier1Indexes("tenant1", "dev_123", {});
       expect(count).toBe(0);
+
+      // Verify no BatchWriteItemCommand was called
+      const calls = dynamoMock.commandCalls(BatchWriteItemCommand);
+      expect(calls).toHaveLength(0);
+    });
+
+    it("should retry on unprocessed items", async () => {
+      // First call returns unprocessed items
+      dynamoMock
+        .on(BatchWriteItemCommand)
+        .resolvesOnce({
+          UnprocessedItems: {
+            [testConfig.tier1IndexTable]: [
+              {
+                PutRequest: {
+                  Item: marshall({
+                    tenant_id: "tenant1",
+                    hash_key: "stable#stable",
+                    device_id: "dev_123",
+                    ttl: 1705000000,
+                  }),
+                },
+              },
+            ],
+          },
+        })
+        .resolves({}); // Second call succeeds
+
+      const fingerprint: Fingerprint = {
+        stable_hash: "stable",
+      };
+
+      const count = await service.updateTier1Indexes(
+        "tenant1",
+        "dev_123",
+        fingerprint,
+      );
+
+      expect(count).toBe(1);
+
+      // Should have made 2 calls (initial + retry)
+      const calls = dynamoMock.commandCalls(BatchWriteItemCommand);
+      expect(calls).toHaveLength(2);
     });
   });
 
@@ -584,6 +628,7 @@ describe("ProfileService", () => {
     it("should perform full update for new device", async () => {
       dynamoMock.on(GetItemCommand).resolves({ Item: undefined }); // No existing profile
       dynamoMock.on(PutItemCommand).resolves({});
+      dynamoMock.on(BatchWriteItemCommand).resolves({}); // For Tier1 indexes
 
       const payload: ProfileUpdatePayload = {
         tenant_id: "tenant1",
@@ -628,6 +673,7 @@ describe("ProfileService", () => {
         Item: marshall(existingProfile),
       });
       dynamoMock.on(PutItemCommand).resolves({});
+      dynamoMock.on(BatchWriteItemCommand).resolves({}); // For Tier1 indexes
 
       const payload: ProfileUpdatePayload = {
         tenant_id: "tenant1",
