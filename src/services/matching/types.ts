@@ -30,6 +30,10 @@ export interface Fingerprint {
   screen_dims?: string;
   timezone?: string;
   evercookie_id?: string;
+  // Bot detection signals
+  user_agent?: string;
+  hardware_concurrency?: number;
+  device_memory?: number;
 }
 
 /**

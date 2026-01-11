@@ -6,7 +6,20 @@ import {
 } from "@aws-sdk/client-dynamodb";
 import { marshall, unmarshall } from "@aws-sdk/util-dynamodb";
 import type { Redis } from "ioredis";
-import { Fingerprint, ProfileUpdatePayload, DeviceProfile } from "./types";
+import {
+  Fingerprint,
+  ProfileUpdatePayload,
+  DeviceProfile,
+  DeviceFlags,
+} from "./types";
+
+/**
+ * Thresholds for flag computation
+ */
+const FLAG_THRESHOLDS = {
+  /** Requests per hour that triggers RAPID_REQUESTS flag */
+  RAPID_REQUESTS_PER_HOUR: 50,
+} as const;
 
 /**
  * Configuration for the profile service
@@ -104,6 +117,101 @@ export class ProfileService {
   }
 
   /**
+   * Detect bot-like signals in fingerprint
+   * Returns array of detected bot flags
+   */
+  detectBotSignals(fingerprint: Fingerprint): string[] {
+    const flags: string[] = [];
+
+    // SwiftShader is a software renderer commonly used by headless browsers
+    if (fingerprint.gpu_renderer?.toLowerCase().includes("swiftshader")) {
+      flags.push(DeviceFlags.HEADLESS_BROWSER);
+      flags.push(DeviceFlags.BOT_DETECTED);
+    }
+
+    // Very small viewport (800x600) is typical of automated browsers
+    if (fingerprint.screen_dims === "800x600") {
+      flags.push(DeviceFlags.BOT_DETECTED);
+    }
+
+    // Check user agent for bot patterns
+    if (fingerprint.user_agent) {
+      const ua = fingerprint.user_agent.toLowerCase();
+      if (
+        ua.includes("bot") ||
+        ua.includes("crawler") ||
+        ua.includes("spider") ||
+        ua.includes("headless")
+      ) {
+        flags.push(DeviceFlags.BOT_DETECTED);
+      }
+    }
+
+    // Single CPU core and very low memory are atypical for real devices
+    if (
+      fingerprint.hardware_concurrency === 1 &&
+      fingerprint.device_memory !== undefined &&
+      fingerprint.device_memory < 1
+    ) {
+      flags.push(DeviceFlags.BOT_DETECTED);
+    }
+
+    // Remove duplicates
+    return [...new Set(flags)];
+  }
+
+  /**
+   * Compute all flags for a profile based on fingerprint and profile state
+   */
+  computeFlags(
+    fingerprint: Fingerprint,
+    existingProfile: DeviceProfile | null,
+    isNewDevice: boolean,
+    hasDrift: boolean,
+  ): string[] {
+    const flags: string[] = [];
+
+    // NEW_DEVICE flag for first-time devices
+    if (isNewDevice) {
+      flags.push(DeviceFlags.NEW_DEVICE);
+    }
+
+    // Bot detection flags
+    const botFlags = this.detectBotSignals(fingerprint);
+    flags.push(...botFlags);
+
+    // FINGERPRINT_MISMATCH flag when significant drift is detected
+    if (existingProfile && hasDrift) {
+      flags.push(DeviceFlags.FINGERPRINT_MISMATCH);
+    }
+
+    // RAPID_REQUESTS flag - check if request rate is suspicious
+    if (existingProfile) {
+      const hoursSinceFirstSeen =
+        (Date.now() - existingProfile.first_seen_at) / (1000 * 60 * 60);
+      const requestsPerHour =
+        hoursSinceFirstSeen > 0
+          ? (existingProfile.request_count + 1) / hoursSinceFirstSeen
+          : existingProfile.request_count + 1;
+
+      if (requestsPerHour > FLAG_THRESHOLDS.RAPID_REQUESTS_PER_HOUR) {
+        flags.push(DeviceFlags.RAPID_REQUESTS);
+      }
+    }
+
+    // Preserve existing positive flags (VERIFIED, RETURNING_USER)
+    if (existingProfile?.flags) {
+      const positiveFlags = existingProfile.flags.filter(
+        (f) => f === DeviceFlags.VERIFIED || f === DeviceFlags.RETURNING_USER,
+      );
+      flags.push(...positiveFlags);
+    }
+
+    // Remove duplicates and return
+    return [...new Set(flags)];
+  }
+
+  /**
    * Update device profile in DynamoDB
    */
   async updateProfile(
@@ -112,6 +220,8 @@ export class ProfileService {
     fingerprint: Fingerprint,
     timestamp: number,
     existingProfile: DeviceProfile | null,
+    isNewDevice: boolean = false,
+    hasDrift: boolean = false,
   ): Promise<void> {
     const ttlSeconds = this.deps.config.profileTtlDays * 24 * 60 * 60;
     const ttl = Math.floor(Date.now() / 1000) + ttlSeconds;
@@ -124,6 +234,14 @@ export class ProfileService {
       : 0;
     const shouldUpdateLastSeen = currentHour !== existingHour;
 
+    // Compute flags based on fingerprint and profile state
+    const flags = this.computeFlags(
+      fingerprint,
+      existingProfile,
+      isNewDevice,
+      hasDrift,
+    );
+
     const profileData: Record<string, unknown> = {
       tenant_id: tenantId,
       device_id: deviceId,
@@ -135,16 +253,12 @@ export class ProfileService {
       request_count: (existingProfile?.request_count ?? 0) + 1,
       updated_at: now,
       ttl,
+      flags,
     };
 
-    // Preserve existing risk score and flags
-    if (existingProfile) {
-      profileData.risk_score = existingProfile.risk_score;
-      profileData.flags = existingProfile.flags;
-    } else {
-      profileData.risk_score = 0.5; // Neutral for new profiles
-      profileData.flags = [];
-    }
+    // Preserve existing risk score or set neutral for new profiles
+    // (AR-17 will implement dynamic risk score calculation)
+    profileData.risk_score = existingProfile?.risk_score ?? 0.5;
 
     await this.deps.dynamodb.send(
       new PutItemCommand({
@@ -337,7 +451,13 @@ export class ProfileService {
     tier1Writes?: number;
     tier2Writes?: number;
   }> {
-    const { tenant_id, device_id, fingerprint, timestamp } = payload;
+    const {
+      tenant_id,
+      device_id,
+      fingerprint,
+      timestamp,
+      is_new_device = false,
+    } = payload;
 
     // Check mutation gate
     const shouldUpdate = await this.checkMutationGate(device_id);
@@ -352,22 +472,25 @@ export class ProfileService {
     );
 
     // Check for drift
-    if (
-      existingProfile &&
-      !this.hasSignificantDrift(existingProfile, fingerprint)
-    ) {
+    const hasDrift =
+      existingProfile !== null &&
+      this.hasSignificantDrift(existingProfile, fingerprint);
+
+    if (existingProfile && !hasDrift) {
       // No significant drift - just update mutation gate and skip
       await this.setMutationGate(device_id);
       return { skipped: true, reason: "no_drift" };
     }
 
-    // Perform updates
+    // Perform updates (with flag computation)
     await this.updateProfile(
       tenant_id,
       device_id,
       fingerprint,
       timestamp,
       existingProfile,
+      is_new_device,
+      hasDrift,
     );
     const tier1Writes = await this.updateTier1Indexes(
       tenant_id,

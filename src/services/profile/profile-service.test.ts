@@ -363,14 +363,14 @@ describe("ProfileService", () => {
       expect(item?.request_count?.N).toBe("1");
     });
 
-    it("should preserve existing risk_score and flags", async () => {
+    it("should preserve existing risk_score and positive flags", async () => {
       dynamoMock.on(PutItemCommand).resolves({});
 
       const existingProfile: DeviceProfile = {
         tenant_id: "tenant1",
         device_id: "dev_existing",
         risk_score: 0.8, // High risk
-        flags: ["bot_detected", "suspicious"],
+        flags: ["verified", "returning_user"], // Positive flags that should be preserved
         first_seen_at: 1700000000000,
         last_seen_at: 1700100000000,
         request_count: 100,
@@ -390,6 +390,7 @@ describe("ProfileService", () => {
       const item = calls[0].args[0].input.Item;
 
       expect(item?.risk_score?.N).toBe("0.8");
+      // Positive flags (verified, returning_user) should be preserved
       expect(item?.flags?.L).toHaveLength(2);
       expect(item?.request_count?.N).toBe("101"); // Incremented
     });
@@ -640,6 +641,228 @@ describe("ProfileService", () => {
 
       expect(result.skipped).toBe(false);
       expect(result.tier1Writes).toBe(1); // stable_hash
+    });
+  });
+
+  describe("detectBotSignals", () => {
+    it("should detect SwiftShader GPU renderer as headless browser", () => {
+      const fingerprint: Fingerprint = {
+        gpu_renderer: "SwiftShader",
+      };
+
+      const flags = service.detectBotSignals(fingerprint);
+
+      expect(flags).toContain("headless_browser");
+      expect(flags).toContain("bot_detected");
+    });
+
+    it("should detect small viewport as bot", () => {
+      const fingerprint: Fingerprint = {
+        screen_dims: "800x600",
+      };
+
+      const flags = service.detectBotSignals(fingerprint);
+
+      expect(flags).toContain("bot_detected");
+    });
+
+    it("should detect bot user agent", () => {
+      const fingerprint: Fingerprint = {
+        user_agent: "Mozilla/5.0 (compatible; Googlebot/2.1)",
+      };
+
+      const flags = service.detectBotSignals(fingerprint);
+
+      expect(flags).toContain("bot_detected");
+    });
+
+    it("should detect crawler user agent", () => {
+      const fingerprint: Fingerprint = {
+        user_agent: "Mozilla/5.0 (compatible; Baiduspider/2.0)",
+      };
+
+      const flags = service.detectBotSignals(fingerprint);
+
+      // "spider" pattern in user_agent
+      expect(flags).toContain("bot_detected");
+    });
+
+    it("should detect single core with low memory as bot", () => {
+      const fingerprint: Fingerprint = {
+        hardware_concurrency: 1,
+        device_memory: 0.5,
+      };
+
+      const flags = service.detectBotSignals(fingerprint);
+
+      expect(flags).toContain("bot_detected");
+    });
+
+    it("should not flag legitimate fingerprint", () => {
+      const fingerprint: Fingerprint = {
+        gpu_renderer: "ANGLE (Intel, Intel UHD Graphics 620)",
+        screen_dims: "1920x1080",
+        user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0",
+        hardware_concurrency: 8,
+        device_memory: 8,
+      };
+
+      const flags = service.detectBotSignals(fingerprint);
+
+      expect(flags).toHaveLength(0);
+    });
+
+    it("should remove duplicate flags", () => {
+      const fingerprint: Fingerprint = {
+        gpu_renderer: "SwiftShader", // triggers bot_detected
+        screen_dims: "800x600", // also triggers bot_detected
+      };
+
+      const flags = service.detectBotSignals(fingerprint);
+
+      // Should only have one bot_detected
+      const botDetectedCount = flags.filter((f) => f === "bot_detected").length;
+      expect(botDetectedCount).toBe(1);
+    });
+  });
+
+  describe("computeFlags", () => {
+    it("should set NEW_DEVICE flag for new devices", () => {
+      const fingerprint: Fingerprint = {};
+
+      const flags = service.computeFlags(fingerprint, null, true, false);
+
+      expect(flags).toContain("new_device");
+    });
+
+    it("should set FINGERPRINT_MISMATCH flag when drift detected", () => {
+      const fingerprint: Fingerprint = {};
+      const existingProfile: DeviceProfile = {
+        tenant_id: "t1",
+        device_id: "d1",
+        risk_score: 0.5,
+        flags: [],
+        first_seen_at: Date.now() - 86400000, // 1 day ago
+        last_seen_at: Date.now() - 3600000,
+        request_count: 10,
+        updated_at: Date.now() - 3600000,
+        ttl: Date.now() / 1000 + 86400,
+      };
+
+      const flags = service.computeFlags(
+        fingerprint,
+        existingProfile,
+        false,
+        true,
+      );
+
+      expect(flags).toContain("fingerprint_mismatch");
+    });
+
+    it("should set RAPID_REQUESTS flag for high request rate", () => {
+      const fingerprint: Fingerprint = {};
+      const oneHourAgo = Date.now() - 3600000;
+      const existingProfile: DeviceProfile = {
+        tenant_id: "t1",
+        device_id: "d1",
+        risk_score: 0.5,
+        flags: [],
+        first_seen_at: oneHourAgo, // 1 hour ago
+        last_seen_at: Date.now() - 60000,
+        request_count: 100, // 100 requests in 1 hour = 100/hour (> 50 threshold)
+        updated_at: Date.now() - 60000,
+        ttl: Date.now() / 1000 + 86400,
+      };
+
+      const flags = service.computeFlags(
+        fingerprint,
+        existingProfile,
+        false,
+        false,
+      );
+
+      expect(flags).toContain("rapid_requests");
+    });
+
+    it("should preserve positive flags from existing profile", () => {
+      const fingerprint: Fingerprint = {};
+      const existingProfile: DeviceProfile = {
+        tenant_id: "t1",
+        device_id: "d1",
+        risk_score: 0.3,
+        flags: ["verified", "returning_user"],
+        first_seen_at: Date.now() - 86400000 * 30, // 30 days ago
+        last_seen_at: Date.now() - 3600000,
+        request_count: 500,
+        updated_at: Date.now() - 3600000,
+        ttl: Date.now() / 1000 + 86400,
+      };
+
+      const flags = service.computeFlags(
+        fingerprint,
+        existingProfile,
+        false,
+        false,
+      );
+
+      expect(flags).toContain("verified");
+      expect(flags).toContain("returning_user");
+    });
+
+    it("should not preserve negative flags from existing profile", () => {
+      const fingerprint: Fingerprint = {};
+      const existingProfile: DeviceProfile = {
+        tenant_id: "t1",
+        device_id: "d1",
+        risk_score: 0.8,
+        flags: ["bot_detected", "suspicious_behavior"],
+        first_seen_at: Date.now() - 86400000 * 30,
+        last_seen_at: Date.now() - 3600000,
+        request_count: 50,
+        updated_at: Date.now() - 3600000,
+        ttl: Date.now() / 1000 + 86400,
+      };
+
+      const flags = service.computeFlags(
+        fingerprint,
+        existingProfile,
+        false,
+        false,
+      );
+
+      // These negative flags should not be preserved (only re-detected if fingerprint triggers)
+      expect(flags).not.toContain("suspicious_behavior");
+    });
+
+    it("should combine multiple flags", () => {
+      const fingerprint: Fingerprint = {
+        gpu_renderer: "SwiftShader",
+      };
+      const oneHourAgo = Date.now() - 3600000;
+      const existingProfile: DeviceProfile = {
+        tenant_id: "t1",
+        device_id: "d1",
+        risk_score: 0.5,
+        flags: ["verified"],
+        first_seen_at: oneHourAgo,
+        last_seen_at: Date.now() - 60000,
+        request_count: 100,
+        updated_at: Date.now() - 60000,
+        ttl: Date.now() / 1000 + 86400,
+      };
+
+      const flags = service.computeFlags(
+        fingerprint,
+        existingProfile,
+        false,
+        true, // drift
+      );
+
+      expect(flags).toContain("headless_browser");
+      expect(flags).toContain("bot_detected");
+      expect(flags).toContain("fingerprint_mismatch");
+      expect(flags).toContain("rapid_requests");
+      expect(flags).toContain("verified"); // preserved positive flag
     });
   });
 });

@@ -155,8 +155,13 @@ async function processRecord(
   // Write result to Redis
   await service.writeMatchResult(session_id, matchResult, idempotencyKey);
 
-  // Queue profile update
-  await service.queueProfileUpdate(tenant_id, matchResult.device_id, payload);
+  // Queue profile update (pass is_new_device for flag computation)
+  await service.queueProfileUpdate(
+    tenant_id,
+    matchResult.device_id,
+    payload,
+    matchResult.is_new_device,
+  );
 
   const duration = Date.now() - startTime;
   metrics.addMetric("MatchingDuration", MetricUnit.Milliseconds, duration);

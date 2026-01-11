@@ -471,6 +471,7 @@ export class MatchingService {
     tenantId: string,
     deviceId: string,
     payload: FingerprintPayload,
+    isNewDevice: boolean = false,
   ): Promise<void> {
     await this.deps.sqs.send(
       new SendMessageCommand({
@@ -482,6 +483,7 @@ export class MatchingService {
           tcp_blob: payload.tcp_blob,
           tls_blob: payload.tls_blob,
           timestamp: payload.timestamp,
+          is_new_device: isNewDevice,
         }),
       }),
     );
