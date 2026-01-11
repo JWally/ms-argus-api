@@ -32,12 +32,30 @@ export const ALLOWED_HEADERS = [
   "X-Requested-With",
 ];
 
-const HARDENED_ORIGIN = "*";
+/**
+ * Parse ALLOWED_ORIGINS from environment variable.
+ * Format: comma-separated list of origins (e.g., "https://app.argus.pw,https://dashboard.argus.pw")
+ * Falls back to safe defaults for dev environment.
+ */
+const parseAllowedOrigins = (): string[] => {
+  const envOrigins = process.env.ALLOWED_ORIGINS;
+  if (envOrigins) {
+    return envOrigins.split(",").map((origin) => origin.trim());
+  }
+  // Default origins for development - these should be overridden in production
+  return [
+    "https://api-dev-jw.argus.pw",
+    "https://argus.pw",
+    "https://www.argus.pw",
+  ];
+};
+
+export const ALLOWED_ORIGINS = parseAllowedOrigins();
 
 export const MIDDY_CORS_CONFIG: Options = {
-  origin: HARDENED_ORIGIN,
+  origins: ALLOWED_ORIGINS,
   credentials: true,
-  methods: ["POST", "OPTIONS"].join(","),
+  methods: "POST,OPTIONS",
   headers: ALLOWED_HEADERS.join(","),
 };
 
