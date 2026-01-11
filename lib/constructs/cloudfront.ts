@@ -1,18 +1,19 @@
 // lib/constructs/cloudfront.ts
-import * as cloudfront from 'aws-cdk-lib/aws-cloudfront';
-import * as origins from 'aws-cdk-lib/aws-cloudfront-origins';
-import * as wafv2 from 'aws-cdk-lib/aws-wafv2';
-import * as acm from 'aws-cdk-lib/aws-certificatemanager';
-import * as route53 from 'aws-cdk-lib/aws-route53';
-import * as route53targets from 'aws-cdk-lib/aws-route53-targets';
-import * as elbv2 from 'aws-cdk-lib/aws-elasticloadbalancingv2';
-import { Construct } from 'constructs';
+import * as cloudfront from "aws-cdk-lib/aws-cloudfront";
+import * as origins from "aws-cdk-lib/aws-cloudfront-origins";
+import * as wafv2 from "aws-cdk-lib/aws-wafv2";
+import * as acm from "aws-cdk-lib/aws-certificatemanager";
+import * as route53 from "aws-cdk-lib/aws-route53";
+import * as route53targets from "aws-cdk-lib/aws-route53-targets";
+import * as elbv2 from "aws-cdk-lib/aws-elasticloadbalancingv2";
+import { Construct } from "constructs";
 
 interface CloudFrontWafConstructProps {
   environment: string;
   stackName: string;
   loadBalancer: elbv2.IApplicationLoadBalancer;
-  domainName?: string;
+  rootDomain?: string;
+  apiSubdomain?: string;
   hostedZone?: route53.IHostedZone;
   certificate?: acm.ICertificate;
 }
@@ -21,14 +22,27 @@ export class CloudFrontWafConstruct extends Construct {
   public readonly distribution: cloudfront.Distribution;
   public readonly webAcl: wafv2.CfnWebACL;
 
-  constructor(scope: Construct, id: string, props: CloudFrontWafConstructProps) {
+  constructor(
+    scope: Construct,
+    id: string,
+    props: CloudFrontWafConstructProps,
+  ) {
     super(scope, id);
 
-    const { stackName, loadBalancer, domainName, hostedZone, certificate } = props;
+    const {
+      stackName,
+      loadBalancer,
+      rootDomain,
+      apiSubdomain,
+      hostedZone,
+      certificate,
+    } = props;
+    const fullDomainName =
+      rootDomain && apiSubdomain ? `${apiSubdomain}.${rootDomain}` : undefined;
 
     // WAF for CloudFront (must be in us-east-1, CLOUDFRONT scope)
-    this.webAcl = new wafv2.CfnWebACL(this, 'WebACL', {
-      scope: 'CLOUDFRONT',
+    this.webAcl = new wafv2.CfnWebACL(this, "WebACL", {
+      scope: "CLOUDFRONT",
       defaultAction: { allow: {} },
       visibilityConfig: {
         cloudWatchMetricsEnabled: true,
@@ -37,16 +51,16 @@ export class CloudFrontWafConstruct extends Construct {
       },
       customResponseBodies: {
         RateLimitExceeded: {
-          contentType: 'APPLICATION_JSON',
+          contentType: "APPLICATION_JSON",
           content: '{"message":"Too many requests","code":"rate_limited"}',
         },
       },
       rules: [
         // Geo-blocking BEFORE other rules (saves WAF request costs)
         {
-          name: 'GeoBlockCNRU',
+          name: "GeoBlockCNRU",
           priority: 0,
-          statement: { geoMatchStatement: { countryCodes: ['CN', 'RU'] } },
+          statement: { geoMatchStatement: { countryCodes: ["CN", "RU"] } },
           action: { block: {} },
           visibilityConfig: {
             sampledRequestsEnabled: true,
@@ -56,12 +70,12 @@ export class CloudFrontWafConstruct extends Construct {
         },
         // AWS Managed Common Rules
         {
-          name: 'AWSManagedCommonRules',
+          name: "AWSManagedCommonRules",
           priority: 1,
           statement: {
             managedRuleGroupStatement: {
-              name: 'AWSManagedRulesCommonRuleSet',
-              vendorName: 'AWS',
+              name: "AWSManagedRulesCommonRuleSet",
+              vendorName: "AWS",
               excludedRules: [],
             },
           },
@@ -74,20 +88,20 @@ export class CloudFrontWafConstruct extends Construct {
         },
         // Rate limiting per IP
         {
-          name: 'RateLimitIP',
+          name: "RateLimitIP",
           priority: 2,
           statement: {
             rateBasedStatement: {
               limit: 600, // requests per 5 minutes per IP
-              aggregateKeyType: 'IP',
+              aggregateKeyType: "IP",
             },
           },
           action: {
             block: {
               customResponse: {
                 responseCode: 429,
-                customResponseBodyKey: 'RateLimitExceeded',
-                responseHeaders: [{ name: 'Retry-After', value: '60' }],
+                customResponseBodyKey: "RateLimitExceeded",
+                responseHeaders: [{ name: "Retry-After", value: "60" }],
               },
             },
           },
@@ -99,13 +113,13 @@ export class CloudFrontWafConstruct extends Construct {
         },
         // Body size limit (100KB)
         {
-          name: 'LimitBodySize100KB',
+          name: "LimitBodySize100KB",
           priority: 3,
           statement: {
             sizeConstraintStatement: {
-              fieldToMatch: { body: { oversizeHandling: 'CONTINUE' } },
-              textTransformations: [{ priority: 0, type: 'NONE' }],
-              comparisonOperator: 'GT',
+              fieldToMatch: { body: { oversizeHandling: "CONTINUE" } },
+              textTransformations: [{ priority: 0, type: "NONE" }],
+              comparisonOperator: "GT",
               size: 102_400,
             },
           },
@@ -136,20 +150,24 @@ export class CloudFrontWafConstruct extends Construct {
     };
 
     // Add custom domain if provided
-    if (domainName && certificate) {
+    if (fullDomainName && certificate) {
       Object.assign(distributionProps, {
-        domainNames: [`api.${domainName}`],
+        domainNames: [fullDomainName],
         certificate,
       });
     }
 
-    this.distribution = new cloudfront.Distribution(this, 'Distribution', distributionProps);
+    this.distribution = new cloudfront.Distribution(
+      this,
+      "Distribution",
+      distributionProps,
+    );
 
     // Create Route53 record if hosted zone is provided
-    if (hostedZone && domainName) {
-      new route53.ARecord(this, 'ApiDnsRecord', {
+    if (hostedZone && fullDomainName) {
+      new route53.ARecord(this, "ApiDnsRecord", {
         zone: hostedZone,
-        recordName: `api.${domainName}`,
+        recordName: fullDomainName,
         target: route53.RecordTarget.fromAlias(
           new route53targets.CloudFrontTarget(this.distribution),
         ),
