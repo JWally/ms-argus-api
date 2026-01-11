@@ -154,17 +154,19 @@ describe("profile-updater handler", () => {
     it("should update existing profile", async () => {
       const payload = createProfileUpdatePayload();
 
-      // Mock existing profile
+      // Mock existing profile with correct DeviceProfile shape
       dynamoMock.on(GetItemCommand).resolves({
         Item: marshall({
           tenant_id: "tenant-abc",
           device_id: "device-123",
-          fingerprints: {
-            stable_hash: "old-hash",
-          },
-          created_at: Date.now() - 86400000, // 1 day ago
-          updated_at: Date.now() - 3600000, // 1 hour ago
-          profile_version: 1,
+          stable_hash: "old-hash",
+          first_seen_at: Date.now() - 86400000, // 1 day ago
+          last_seen_at: Date.now() - 3600000, // 1 hour ago
+          updated_at: Date.now() - 3600000,
+          request_count: 10,
+          risk_score: 0.3,
+          flags: [],
+          ttl: Math.floor(Date.now() / 1000) + 86400,
         }),
       });
       dynamoMock.on(PutItemCommand).resolves({});
@@ -228,23 +230,21 @@ describe("profile-updater handler", () => {
     it("should skip update when fingerprint has no significant drift", async () => {
       const payload = createProfileUpdatePayload();
 
-      // Mock existing profile with same fingerprint
+      // Mock existing profile with same fingerprint (correct DeviceProfile shape)
       dynamoMock.on(GetItemCommand).resolves({
         Item: marshall({
           tenant_id: "tenant-abc",
           device_id: "device-123",
-          fingerprints: {
-            stable_hash: "hash-abc123",
-            fuzzy_hash: "fuzzy-def456",
-            canvas_hash: "canvas-ghi789",
-          },
-          centroid: {
-            stable_hash: "hash-abc123",
-            fuzzy_hash: "fuzzy-def456",
-          },
-          created_at: Date.now() - 86400000,
-          updated_at: Date.now() - 60000, // Recently updated
-          profile_version: 5,
+          stable_hash: "hash-abc123",
+          fuzzy_hash: "fuzzy-def456",
+          canvas_hash: "canvas-ghi789",
+          first_seen_at: Date.now() - 86400000,
+          last_seen_at: Date.now() - 60000,
+          updated_at: Date.now() - 60000,
+          request_count: 50,
+          risk_score: 0.3,
+          flags: [],
+          ttl: Math.floor(Date.now() / 1000) + 86400,
         }),
       });
 
@@ -263,17 +263,19 @@ describe("profile-updater handler", () => {
         },
       });
 
-      // Mock existing profile with different fingerprint
+      // Mock existing profile with different fingerprint (correct DeviceProfile shape)
       dynamoMock.on(GetItemCommand).resolves({
         Item: marshall({
           tenant_id: "tenant-abc",
           device_id: "device-123",
-          fingerprints: {
-            stable_hash: "old-hash",
-          },
-          created_at: Date.now() - 86400000,
-          updated_at: Date.now() - 7200000, // 2 hours ago
-          profile_version: 1,
+          stable_hash: "old-hash",
+          first_seen_at: Date.now() - 86400000,
+          last_seen_at: Date.now() - 7200000,
+          updated_at: Date.now() - 7200000,
+          request_count: 10,
+          risk_score: 0.3,
+          flags: [],
+          ttl: Math.floor(Date.now() / 1000) + 86400,
         }),
       });
       dynamoMock.on(PutItemCommand).resolves({});
