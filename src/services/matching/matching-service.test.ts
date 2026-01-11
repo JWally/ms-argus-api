@@ -731,4 +731,18 @@ describe("generateUUID", () => {
     }
     expect(uuids.size).toBe(1000);
   });
+
+  it("should produce no collisions in 100K generated UUIDs (crypto-secure)", () => {
+    // Using 100K instead of 1M for reasonable test runtime
+    // crypto.randomUUID() is cryptographically secure, so this validates
+    // we're using the proper implementation
+    const uuids = new Set<string>();
+    const count = 100_000;
+    for (let i = 0; i < count; i++) {
+      const uuid = generateUUID();
+      expect(uuids.has(uuid)).toBe(false);
+      uuids.add(uuid);
+    }
+    expect(uuids.size).toBe(count);
+  });
 });

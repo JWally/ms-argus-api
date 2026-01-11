@@ -1,2 +1,2 @@
 // lib/helpers/index.ts
-export * from './make-glue-table';
+export * from "./make-glue-table";

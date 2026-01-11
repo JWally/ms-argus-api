@@ -1,19 +1,19 @@
 // lib/constructs/workers.ts
-import * as path from 'path';
-import { Construct } from 'constructs';
-import * as lambda from 'aws-cdk-lib/aws-lambda-nodejs';
-import { Runtime, Tracing, Architecture } from 'aws-cdk-lib/aws-lambda';
-import * as lambdaEventSources from 'aws-cdk-lib/aws-lambda-event-sources';
-import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
-import { OutputFormat } from 'aws-cdk-lib/aws-lambda-nodejs';
-import * as iam from 'aws-cdk-lib/aws-iam';
-import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
-import * as sns from 'aws-cdk-lib/aws-sns';
-import * as sqs from 'aws-cdk-lib/aws-sqs';
-import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
-import * as ec2 from 'aws-cdk-lib/aws-ec2';
-import { Duration } from 'aws-cdk-lib';
-import * as actions from 'aws-cdk-lib/aws-cloudwatch-actions';
+import * as path from "path";
+import { Construct } from "constructs";
+import * as lambda from "aws-cdk-lib/aws-lambda-nodejs";
+import { Runtime, Tracing, Architecture } from "aws-cdk-lib/aws-lambda";
+import * as lambdaEventSources from "aws-cdk-lib/aws-lambda-event-sources";
+import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
+import { OutputFormat } from "aws-cdk-lib/aws-lambda-nodejs";
+import * as iam from "aws-cdk-lib/aws-iam";
+import * as cloudwatch from "aws-cdk-lib/aws-cloudwatch";
+import * as sns from "aws-cdk-lib/aws-sns";
+import * as sqs from "aws-cdk-lib/aws-sqs";
+import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
+import * as ec2 from "aws-cdk-lib/aws-ec2";
+import { Duration } from "aws-cdk-lib";
+import * as actions from "aws-cdk-lib/aws-cloudwatch-actions";
 
 interface WorkersConstructProps {
   stackName: string;
@@ -61,17 +61,21 @@ export class WorkersConstruct extends Construct {
     } = props;
 
     // Security group for Lambda functions (to access Redis in VPC)
-    this.workerSecurityGroup = new ec2.SecurityGroup(this, 'WorkerSecurityGroup', {
-      vpc,
-      description: 'Security group for Argus worker Lambdas',
-      allowAllOutbound: true,
-    });
+    this.workerSecurityGroup = new ec2.SecurityGroup(
+      this,
+      "WorkerSecurityGroup",
+      {
+        vpc,
+        description: "Security group for Argus worker Lambdas",
+        allowAllOutbound: true,
+      },
+    );
 
     // Allow workers to access Redis
     redisSecurityGroup.addIngressRule(
       this.workerSecurityGroup,
       ec2.Port.tcp(redisPort),
-      'Allow Lambda workers to access Redis',
+      "Allow Lambda workers to access Redis",
     );
 
     // Secrets Manager reference
@@ -88,13 +92,13 @@ export class WorkersConstruct extends Construct {
       bundling: {
         minify: true,
         sourceMap: true,
-        target: 'node20',
+        target: "node20",
         keepNames: true,
         format: OutputFormat.CJS,
-        mainFields: ['module', 'main'],
-        environment: { NODE_ENV: 'production' },
+        mainFields: ["module", "main"],
+        environment: { NODE_ENV: "production" },
         // Include ioredis for Redis connectivity
-        nodeModules: ['ioredis'],
+        nodeModules: ["ioredis"],
         // Bundle all dependencies - don't rely on Lambda runtime SDK
         // This ensures version consistency
       },
@@ -108,26 +112,30 @@ export class WorkersConstruct extends Construct {
     // IAM Logging Policy
     const loggingPolicy = new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
-      actions: ['logs:CreateLogGroup', 'logs:CreateLogStream', 'logs:PutLogEvents'],
-      resources: ['*'],
+      actions: [
+        "logs:CreateLogGroup",
+        "logs:CreateLogStream",
+        "logs:PutLogEvents",
+      ],
+      resources: ["*"],
     });
 
     // =====================================
     // MATCHING WORKER LAMBDA
     // =====================================
-    this.matchingWorker = new lambda.NodejsFunction(this, 'MatchingWorker', {
+    this.matchingWorker = new lambda.NodejsFunction(this, "MatchingWorker", {
       ...commonConfig,
-      entry: path.join(__dirname, '../../src/handlers/matching-worker.ts'),
+      entry: path.join(__dirname, "../../src/handlers/matching-worker.ts"),
       functionName: `${stackName}-matching-worker`,
       memorySize: 512,
       timeout: Duration.seconds(45),
       reservedConcurrentExecutions: 100, // Limit concurrency to protect downstream
       environment: {
-        AWS_NODEJS_CONNECTION_REUSE_ENABLED: '1',
+        AWS_NODEJS_CONNECTION_REUSE_ENABLED: "1",
         ENVIRONMENT: stage,
         POWERTOOLS_SERVICE_NAME: `${stackName}-matching`,
         POWERTOOLS_METRICS_NAMESPACE: stackName,
-        LOG_LEVEL: 'INFO',
+        LOG_LEVEL: "INFO",
         SECRET_KEY_ARN: secret.secretArn,
         REDIS_ENDPOINT: redisEndpoint,
         REDIS_PORT: String(redisPort),
@@ -159,19 +167,19 @@ export class WorkersConstruct extends Construct {
     // =====================================
     // PROFILE UPDATER LAMBDA
     // =====================================
-    this.profileUpdater = new lambda.NodejsFunction(this, 'ProfileUpdater', {
+    this.profileUpdater = new lambda.NodejsFunction(this, "ProfileUpdater", {
       ...commonConfig,
-      entry: path.join(__dirname, '../../src/handlers/profile-updater.ts'),
+      entry: path.join(__dirname, "../../src/handlers/profile-updater.ts"),
       functionName: `${stackName}-profile-updater`,
       memorySize: 256,
       timeout: Duration.seconds(30),
       reservedConcurrentExecutions: 50, // Lower concurrency for writes
       environment: {
-        AWS_NODEJS_CONNECTION_REUSE_ENABLED: '1',
+        AWS_NODEJS_CONNECTION_REUSE_ENABLED: "1",
         ENVIRONMENT: stage,
         POWERTOOLS_SERVICE_NAME: `${stackName}-profile-updater`,
         POWERTOOLS_METRICS_NAMESPACE: stackName,
-        LOG_LEVEL: 'INFO',
+        LOG_LEVEL: "INFO",
         SECRET_KEY_ARN: secret.secretArn,
         REDIS_ENDPOINT: redisEndpoint,
         REDIS_PORT: String(redisPort),
@@ -200,16 +208,20 @@ export class WorkersConstruct extends Construct {
     profileQueue.grantConsumeMessages(this.profileUpdater);
 
     // Alarms
-    this.createWorkerAlarms(this.matchingWorker, 'MatchingWorker', alarmsTopic);
-    this.createWorkerAlarms(this.profileUpdater, 'ProfileUpdater', alarmsTopic);
+    this.createWorkerAlarms(this.matchingWorker, "MatchingWorker", alarmsTopic);
+    this.createWorkerAlarms(this.profileUpdater, "ProfileUpdater", alarmsTopic);
   }
 
-  private createWorkerAlarms(fn: lambda.NodejsFunction, prefix: string, alarmsTopic: sns.ITopic) {
+  private createWorkerAlarms(
+    fn: lambda.NodejsFunction,
+    prefix: string,
+    alarmsTopic: sns.ITopic,
+  ) {
     // Error count alarm
     const errorAlarm = new cloudwatch.Alarm(this, `${prefix}Errors`, {
       metric: fn.metricErrors({
         period: Duration.minutes(5),
-        statistic: 'Sum',
+        statistic: "Sum",
       }),
       threshold: 10,
       evaluationPeriods: 2,
@@ -221,7 +233,7 @@ export class WorkersConstruct extends Construct {
     const throttleAlarm = new cloudwatch.Alarm(this, `${prefix}Throttles`, {
       metric: fn.metricThrottles({
         period: Duration.minutes(5),
-        statistic: 'Sum',
+        statistic: "Sum",
       }),
       threshold: 5,
       evaluationPeriods: 1,
@@ -233,7 +245,7 @@ export class WorkersConstruct extends Construct {
     const durationAlarm = new cloudwatch.Alarm(this, `${prefix}HighDuration`, {
       metric: fn.metricDuration({
         period: Duration.minutes(5),
-        statistic: 'p95',
+        statistic: "p95",
       }),
       threshold: 30000, // 30 seconds
       evaluationPeriods: 3,
@@ -242,15 +254,19 @@ export class WorkersConstruct extends Construct {
     durationAlarm.addAlarmAction(new actions.SnsAction(alarmsTopic));
 
     // Concurrent executions alarm
-    const concurrencyAlarm = new cloudwatch.Alarm(this, `${prefix}HighConcurrency`, {
-      metric: fn.metric('ConcurrentExecutions', {
-        period: Duration.minutes(1),
-        statistic: 'Maximum',
-      }),
-      threshold: 80, // 80% of reserved concurrency
-      evaluationPeriods: 3,
-      alarmDescription: `Lambda ${fn.functionName} approaching concurrency limit`,
-    });
+    const concurrencyAlarm = new cloudwatch.Alarm(
+      this,
+      `${prefix}HighConcurrency`,
+      {
+        metric: fn.metric("ConcurrentExecutions", {
+          period: Duration.minutes(1),
+          statistic: "Maximum",
+        }),
+        threshold: 80, // 80% of reserved concurrency
+        evaluationPeriods: 3,
+        alarmDescription: `Lambda ${fn.functionName} approaching concurrency limit`,
+      },
+    );
     concurrencyAlarm.addAlarmAction(new actions.SnsAction(alarmsTopic));
   }
 }
