@@ -397,6 +397,47 @@ describe("MatchingService", () => {
       expect(result).toBeNull();
       expect(timedOut).toBe(false);
     });
+
+    it("should handle AbortError gracefully in tier2CompoundMatch", async () => {
+      // Create an already-aborted signal
+      const abortController = new AbortController();
+      abortController.abort();
+
+      // Mock DynamoDB to throw AbortError when abort signal is provided
+      dynamoMock.on(QueryCommand).callsFake(() => {
+        const error = new Error("The operation was aborted");
+        error.name = "AbortError";
+        throw error;
+      });
+
+      const fingerprint: Fingerprint = {
+        ip_address: "1.2.3.4",
+        ja4: "ja4hash",
+      };
+
+      // tier2CompoundMatch should catch AbortError and return null
+      const result = await service.tier2CompoundMatch("tenant1", fingerprint, {
+        abortSignal: abortController.signal,
+      });
+      expect(result).toBeNull();
+    });
+
+    it("should propagate non-abort errors in tier2CompoundMatch", async () => {
+      // Mock DynamoDB to throw a different error
+      const dbError = new Error("DynamoDB error");
+      dbError.name = "ServiceUnavailable";
+      dynamoMock.on(QueryCommand).rejects(dbError);
+
+      const fingerprint: Fingerprint = {
+        ip_address: "1.2.3.4",
+        ja4: "ja4hash",
+      };
+
+      // Non-abort errors should be propagated
+      await expect(
+        service.tier2CompoundMatch("tenant1", fingerprint),
+      ).rejects.toThrow("DynamoDB error");
+    });
   });
 
   describe("loadProfile", () => {
