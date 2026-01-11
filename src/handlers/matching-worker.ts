@@ -18,6 +18,7 @@ import {
   FingerprintPayload,
   generateIdempotencyKey,
 } from "../services/matching";
+import { BloomFilter } from "../services/bloom";
 import { getMatchingWorkerEnv, MatchingWorkerEnvConfig } from "../config/env";
 import {
   SESSION_TTL_SECONDS,
@@ -71,6 +72,16 @@ function getConfig(): MatchingServiceConfig {
   };
 }
 
+// Bloom filter (lazy initialized, reused)
+let bloomFilter: BloomFilter | null = null;
+
+function getBloomFilter(): BloomFilter {
+  if (!bloomFilter) {
+    bloomFilter = new BloomFilter(getRedis());
+  }
+  return bloomFilter;
+}
+
 // Create service with production dependencies
 function createMatchingService(): MatchingService {
   const deps: MatchingServiceDeps = {
@@ -78,6 +89,7 @@ function createMatchingService(): MatchingService {
     sqs,
     redis: getRedis(),
     config: getConfig(),
+    bloomFilter: getBloomFilter(),
   };
   return new MatchingService(deps);
 }
@@ -146,6 +158,14 @@ async function processRecord(
     matchResult = matchResponse.result;
     tier2TimedOut = matchResponse.tier2TimedOut;
     recordTierMetric(matchResult.match_tier, matchResult.is_new_device);
+
+    // Track bloom filter metrics
+    if (matchResponse.bloomFilterHit) {
+      metrics.addMetric("BloomFilterHit", MetricUnit.Count, 1);
+    }
+    if (matchResponse.bloomFilterMiss) {
+      metrics.addMetric("BloomFilterMiss", MetricUnit.Count, 1);
+    }
 
     // Track Tier2 timeouts for monitoring "fail open" scenarios
     if (tier2TimedOut) {
