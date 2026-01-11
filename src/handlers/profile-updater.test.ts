@@ -1,5 +1,18 @@
 // src/handlers/profile-updater.test.ts
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+
+// Set environment variables BEFORE any module imports using vi.hoisted
+// This ensures env validation passes during module load
+vi.hoisted(() => {
+  process.env.POWERTOOLS_SERVICE_NAME = "argus-profile-updater-test";
+  process.env.POWERTOOLS_METRICS_NAMESPACE = "argus-test";
+  process.env.REDIS_ENDPOINT = "localhost";
+  process.env.REDIS_PORT = "6379";
+  process.env.PROFILES_TABLE = "test-profiles";
+  process.env.TIER1_INDEX_TABLE = "test-tier1-index";
+  process.env.TIER2_BUCKETS_TABLE = "test-tier2-buckets";
+});
+
 import { mockClient } from "aws-sdk-client-mock";
 import {
   DynamoDBClient,
@@ -26,15 +39,6 @@ vi.mock("ioredis", () => {
     }),
   };
 });
-
-// Mock environment variables
-vi.stubEnv("POWERTOOLS_SERVICE_NAME", "argus-profile-updater-test");
-vi.stubEnv("POWERTOOLS_METRICS_NAMESPACE", "argus-test");
-vi.stubEnv("REDIS_ENDPOINT", "localhost");
-vi.stubEnv("REDIS_PORT", "6379");
-vi.stubEnv("PROFILES_TABLE", "test-profiles");
-vi.stubEnv("TIER1_INDEX_TABLE", "test-tier1-index");
-vi.stubEnv("TIER2_BUCKETS_TABLE", "test-tier2-buckets");
 
 // Import handler after mocking
 import { handler } from "./profile-updater";

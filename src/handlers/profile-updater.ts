@@ -16,12 +16,17 @@ import {
   ProfileServiceDeps,
   ProfileUpdatePayload,
 } from "../services/profile";
+import { getProfileUpdaterEnv, ProfileUpdaterEnvConfig } from "../config/env";
 
-// Powertools
-const logger = new Logger({ serviceName: process.env.POWERTOOLS_SERVICE_NAME });
-// const tracer = new Tracer({ serviceName: process.env.POWERTOOLS_SERVICE_NAME }); // Disabled
+// Validate environment variables at module load (cold start)
+// Throws immediately if required env vars are missing
+const envConfig: ProfileUpdaterEnvConfig = getProfileUpdaterEnv();
+
+// Powertools (using validated config)
+const logger = new Logger({ serviceName: envConfig.POWERTOOLS_SERVICE_NAME });
+// const tracer = new Tracer({ serviceName: envConfig.POWERTOOLS_SERVICE_NAME }); // Disabled
 const metrics = new Metrics({
-  namespace: process.env.POWERTOOLS_METRICS_NAMESPACE,
+  namespace: envConfig.POWERTOOLS_METRICS_NAMESPACE,
 });
 
 // AWS SDK client (reused across invocations)
@@ -34,8 +39,8 @@ let redis: Redis | null = null;
 function getRedis(): Redis {
   if (!redis) {
     redis = new Redis({
-      host: process.env.REDIS_ENDPOINT!,
-      port: parseInt(process.env.REDIS_PORT || "6379"),
+      host: envConfig.REDIS_ENDPOINT,
+      port: envConfig.REDIS_PORT,
       tls: {},
       maxRetriesPerRequest: 3,
       retryStrategy: (times: number) => Math.min(times * 100, 2000),
@@ -44,12 +49,12 @@ function getRedis(): Redis {
   return redis;
 }
 
-// Service configuration from environment
+// Service configuration from validated environment
 function getConfig(): ProfileServiceConfig {
   return {
-    profilesTable: process.env.PROFILES_TABLE!,
-    tier1IndexTable: process.env.TIER1_INDEX_TABLE!,
-    tier2BucketsTable: process.env.TIER2_BUCKETS_TABLE!,
+    profilesTable: envConfig.PROFILES_TABLE,
+    tier1IndexTable: envConfig.TIER1_INDEX_TABLE,
+    tier2BucketsTable: envConfig.TIER2_BUCKETS_TABLE,
     profileTtlDays: 60,
     mutationGateTtlSeconds: 3600, // 1 hour
   };
