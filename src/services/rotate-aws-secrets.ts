@@ -3,8 +3,10 @@ import {
   SecretsManagerClient,
   PutSecretValueCommand,
 } from "@aws-sdk/client-secrets-manager";
+import { Logger } from "@aws-lambda-powertools/logger";
 import { randomBytes } from "crypto";
 
+const logger = new Logger({ serviceName: "argus-secrets-rotator" });
 const client = new SecretsManagerClient({});
 
 /**
@@ -34,12 +36,12 @@ export const handler = async (): Promise<void> => {
       }),
     );
 
-    console.log("Secret rotated successfully", {
+    logger.info("Secret rotated successfully", {
       secretArn,
       rotatedAt: newSecrets.ROTATED_AT,
     });
   } catch (error) {
-    console.error("Failed to rotate secret:", error);
+    logger.error("Failed to rotate secret", { error });
     throw error;
   }
 };
