@@ -210,27 +210,31 @@ export class MatchingService {
   /**
    * Tier 2: Compound filter match with timeout protection
    * Returns result with timedOut flag to track "fail open" scenarios
+   * Uses AbortController to cancel in-flight DynamoDB requests on timeout
    */
   async tier2CompoundMatchWithTimeout(
     tenantId: string,
     fingerprint: Fingerprint,
   ): Promise<{ result: MatchResult | null; timedOut: boolean }> {
     const timeoutMs = this.deps.config.tier2TimeoutMs;
+    const abortController = new AbortController();
 
     // Use a sentinel to distinguish timeout from null result
     const TIMEOUT_SENTINEL = Symbol("timeout");
 
     const raceResult = await Promise.race([
-      this.tier2CompoundMatch(tenantId, fingerprint).then((r) => ({
+      this.tier2CompoundMatch(tenantId, fingerprint, {
+        abortSignal: abortController.signal,
+      }).then((r) => ({
         value: r,
         timedOut: false,
       })),
       new Promise<{ value: typeof TIMEOUT_SENTINEL; timedOut: true }>(
         (resolve) =>
-          setTimeout(
-            () => resolve({ value: TIMEOUT_SENTINEL, timedOut: true }),
-            timeoutMs,
-          ),
+          setTimeout(() => {
+            abortController.abort();
+            resolve({ value: TIMEOUT_SENTINEL, timedOut: true });
+          }, timeoutMs),
       ),
     ]);
 
@@ -249,11 +253,13 @@ export class MatchingService {
   async tier2CompoundMatch(
     tenantId: string,
     fingerprint: Fingerprint,
+    options?: { abortSignal?: AbortSignal },
   ): Promise<MatchResult | null> {
     const bucketKeys = this.buildBucketKeys(tenantId, fingerprint);
     if (bucketKeys.length === 0) return null;
 
     // Query all buckets in parallel using adjacency list pattern
+    // Pass abortSignal to allow cancellation on timeout
     const queries = bucketKeys.map((key) =>
       this.deps.dynamodb.send(
         new QueryCommand({
@@ -265,10 +271,20 @@ export class MatchingService {
           ProjectionExpression: "device_id",
           Limit: TIER2_BUCKET_LIMIT,
         }),
+        { abortSignal: options?.abortSignal },
       ),
     );
 
-    const results = await Promise.all(queries);
+    let results;
+    try {
+      results = await Promise.all(queries);
+    } catch (error) {
+      // If the request was aborted, return null gracefully
+      if (error instanceof Error && error.name === "AbortError") {
+        return null;
+      }
+      throw error;
+    }
     const candidates = this.scoreDeviceCandidates(results);
 
     // Find best match (highest bucket overlap)
