@@ -3,7 +3,10 @@ import { getAwsSecrets } from "../services/get-aws-secrets";
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from "aws-lambda";
 import { MiddlewareObj } from "@middy/core";
 import { LRUCache } from "lru-cache";
+import { Logger } from "@aws-lambda-powertools/logger";
 import createError from "http-errors";
+
+const logger = new Logger({ serviceName: "argus-warmup" });
 
 interface MiddyEvent {
   source: string;
@@ -21,9 +24,9 @@ export const isWarmingUp = (event: MiddyEvent) => {
 export const onWarmup = async () => {
   try {
     await getAwsSecrets();
-    console.log("Warmup completed successfully");
+    logger.info("Warmup completed successfully");
   } catch (error) {
-    console.error("Warmup failed:", { error });
+    logger.error("Warmup failed", { error });
   }
 };
 

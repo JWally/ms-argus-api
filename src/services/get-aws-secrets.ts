@@ -3,12 +3,15 @@ import {
   SecretsManagerClient,
   GetSecretValueCommand,
 } from "@aws-sdk/client-secrets-manager";
+import { Logger } from "@aws-lambda-powertools/logger";
 import {
   AWS_SECRETS_REQUIRED_KEYS,
   KEY_CACHE_DURATION,
   SECRET_KEY_ARN,
   ERROR_STRINGS,
 } from "../helpers/constants";
+
+const logger = new Logger({ serviceName: "argus-secrets" });
 
 let client: SecretsManagerClient | null = null;
 let cachedSecrets: Record<string, string> | null = null;
@@ -52,7 +55,7 @@ export const getAwsSecrets = async (): Promise<Record<string, string>> => {
     cacheTimestamp = Date.now();
     return cachedSecrets;
   } catch (error) {
-    console.error("Error retrieving secret:", error);
+    logger.error("Error retrieving secret", { error });
     throw new Error(ERROR_STRINGS.SECRETS_MANAGER_FAILED);
   }
 };
