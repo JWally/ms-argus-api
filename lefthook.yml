@@ -1,0 +1,24 @@
+# lefthook.yml
+# Git hooks configuration for ms-argus-api
+
+pre-commit:
+  parallel: true
+  commands:
+    typecheck:
+      glob: "*.{ts,tsx}"
+      run: npm run build
+      stage_fixed: true
+    lint:
+      glob: "*.{ts,tsx}"
+      run: npx eslint {staged_files} --max-warnings 50
+    format:
+      glob: "*.{ts,tsx,json,md,yml,yaml}"
+      run: npx prettier --check {staged_files}
+
+pre-push:
+  parallel: true
+  commands:
+    test:
+      run: npm test
+    typecheck:
+      run: npm run build

@@ -6,6 +6,7 @@
     "ms-argus-api": "bin/ms-argus-api.js"
   },
   "scripts": {
+    "prepare": "lefthook install",
     "build": "tsc",
     "watch": "tsc -w",
     "test": "vitest run --silent",
@@ -57,6 +58,7 @@
     "eslint-plugin-prettier": "^5.2.2",
     "eslint-plugin-promise": "^6.6.0",
     "ioredis-mock": "^8.13.1",
+    "lefthook": "^2.0.13",
     "prettier": "^3.4.2",
     "ts-node": "^10.9.2",
     "typescript": "~5.6.3",
