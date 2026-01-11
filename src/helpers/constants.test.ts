@@ -3,6 +3,7 @@ import { describe, it, expect } from "vitest";
 import {
   DEFAULT_HEADERS,
   ALLOWED_HEADERS,
+  ALLOWED_ORIGINS,
   MIDDY_CORS_CONFIG,
   WARMUP_EVENT,
   AWS_SECRETS_REQUIRED_KEYS,
@@ -61,9 +62,40 @@ describe("ALLOWED_HEADERS", () => {
   });
 });
 
+describe("ALLOWED_ORIGINS", () => {
+  it("should be an array of origin strings", () => {
+    expect(Array.isArray(ALLOWED_ORIGINS)).toBe(true);
+    expect(ALLOWED_ORIGINS.length).toBeGreaterThan(0);
+  });
+
+  it("should contain only HTTPS origins", () => {
+    ALLOWED_ORIGINS.forEach((origin) => {
+      expect(origin).toMatch(/^https:\/\//);
+    });
+  });
+
+  it("should not contain wildcard origin", () => {
+    expect(ALLOWED_ORIGINS).not.toContain("*");
+  });
+});
+
 describe("MIDDY_CORS_CONFIG", () => {
   it("should allow credentials", () => {
     expect(MIDDY_CORS_CONFIG.credentials).toBe(true);
+  });
+
+  it("should use origins array (not wildcard origin)", () => {
+    // Security: Using origins array instead of origin: "*"
+    // The CORS spec forbids origin: "*" with credentials: true
+    expect(MIDDY_CORS_CONFIG.origins).toBeDefined();
+    expect(Array.isArray(MIDDY_CORS_CONFIG.origins)).toBe(true);
+    expect(MIDDY_CORS_CONFIG.origin).toBeUndefined();
+  });
+
+  it("should not use wildcard origin with credentials", () => {
+    // Security check: This combination is forbidden by CORS spec
+    const hasWildcard = MIDDY_CORS_CONFIG.origins?.includes("*");
+    expect(hasWildcard).toBeFalsy();
   });
 
   it("should only allow POST and OPTIONS methods", () => {
