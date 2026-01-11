@@ -1,5 +1,8 @@
 // src/services/matching/types.ts
 
+// Re-export shared types for convenience
+export { Fingerprint } from "../../types";
+
 /**
  * Session cache value stored in Redis
  */
@@ -16,33 +19,12 @@ export interface SessionCacheValue {
 }
 
 /**
- * Fingerprint data from the client
- */
-export interface Fingerprint {
-  stable_hash?: string;
-  fuzzy_hash?: string;
-  canvas_hash?: string;
-  webgl_hash?: string;
-  audio_hash?: string;
-  ip_address?: string;
-  ja4?: string;
-  gpu_renderer?: string;
-  screen_dims?: string;
-  timezone?: string;
-  evercookie_id?: string;
-  // Bot detection signals
-  user_agent?: string;
-  hardware_concurrency?: number;
-  device_memory?: number;
-}
-
-/**
  * Fingerprint payload from SQS (sent by Go ingestion handler)
  */
 export interface FingerprintPayload {
   session_id: string;
   tenant_id: string;
-  fingerprint: Fingerprint;
+  fingerprint: import("../../types").Fingerprint;
   tcp_blob?: string;
   tls_blob?: string;
   headers: Record<string, string>;
@@ -59,19 +41,6 @@ export interface MatchResult {
   is_new_device: boolean;
   risk_score: number;
   flags: string[];
-}
-
-/**
- * Device profile from DynamoDB
- */
-export interface DeviceProfile {
-  tenant_id: string;
-  device_id: string;
-  risk_score: number;
-  flags: string[];
-  first_seen_at?: number;
-  last_seen_at?: number;
-  request_count?: number;
 }
 
 /**
