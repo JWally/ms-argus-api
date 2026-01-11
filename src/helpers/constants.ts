@@ -4,8 +4,55 @@ import * as glue from "aws-cdk-lib/aws-glue";
 
 export const SECURITY_KEY_NAME = "argus-keys";
 
-// Cache duration: 15 minutes
+// ==================== CACHE & TTL CONSTANTS ====================
+
+/** Cache duration for AWS Secrets: 15 minutes (900,000ms) */
 export const KEY_CACHE_DURATION: number = 1000 * 60 * 15;
+
+// ==================== FNV-1A HASH CONSTANTS ====================
+// Used for fast idempotency key generation and request deduplication
+// See: https://en.wikipedia.org/wiki/Fowler%E2%80%93Noll%E2%80%93Vo_hash_function
+
+/** FNV-1a 32-bit offset basis (standard value) */
+export const FNV1A_OFFSET_BASIS = 2166136261;
+
+/** FNV-1a 32-bit prime (standard value) */
+export const FNV1A_PRIME = 16777619;
+
+// ==================== MATCHING SERVICE CONSTANTS ====================
+
+/** Session cache TTL in Redis: 15 minutes (900 seconds) */
+export const SESSION_TTL_SECONDS = 900;
+
+/** Tier2 matching timeout: 100ms - fail open if query takes too long */
+export const TIER2_TIMEOUT_MS = 100;
+
+/** Max devices per Tier2 bucket query - prevents runaway queries */
+export const TIER2_BUCKET_LIMIT = 1000;
+
+// ==================== PROFILE SERVICE CONSTANTS ====================
+
+/** Profile TTL in DynamoDB: 60 days */
+export const PROFILE_TTL_DAYS = 60;
+
+/** Mutation gate TTL: 1 hour (3600 seconds) - prevents rapid repeated writes */
+export const MUTATION_GATE_TTL_SECONDS = 3600;
+
+// ==================== DEDUPLICATION CACHE CONSTANTS ====================
+
+/** Max entries in request deduplication LRU cache */
+export const DEDUPE_CACHE_MAX_ENTRIES = 30_000;
+
+/** Deduplication cache TTL: 30 seconds */
+export const DEDUPE_CACHE_TTL_MS = 30_000;
+
+// ==================== REDIS RETRY CONSTANTS ====================
+
+/** Base delay multiplier for Redis exponential backoff (ms) */
+export const REDIS_RETRY_BASE_MS = 100;
+
+/** Max retry delay for Redis connections (ms) */
+export const REDIS_RETRY_MAX_MS = 2000;
 
 export const DEFAULT_HEADERS = {
   "Content-Security-Policy": "default-src 'self'",
