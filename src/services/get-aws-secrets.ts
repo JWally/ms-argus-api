@@ -1,11 +1,14 @@
 // src/services/get-aws-secrets.ts
-import { SecretsManagerClient, GetSecretValueCommand } from '@aws-sdk/client-secrets-manager';
+import {
+  SecretsManagerClient,
+  GetSecretValueCommand,
+} from "@aws-sdk/client-secrets-manager";
 import {
   AWS_SECRETS_REQUIRED_KEYS,
   KEY_CACHE_DURATION,
   SECRET_KEY_ARN,
   ERROR_STRINGS,
-} from '../helpers/constants';
+} from "../helpers/constants";
 
 let client: SecretsManagerClient | null = null;
 let cachedSecrets: Record<string, string> | null = null;
@@ -24,7 +27,8 @@ export const getAwsSecrets = async (): Promise<Record<string, string>> => {
     client = new SecretsManagerClient({});
   }
 
-  const isCacheValid = cachedSecrets && Date.now() - cacheTimestamp < KEY_CACHE_DURATION;
+  const isCacheValid =
+    cachedSecrets && Date.now() - cacheTimestamp < KEY_CACHE_DURATION;
 
   if (isCacheValid) {
     return cachedSecrets!;
@@ -37,7 +41,7 @@ export const getAwsSecrets = async (): Promise<Record<string, string>> => {
 
     const missingKeys = AWS_SECRETS_REQUIRED_KEYS.filter((key) => !secret[key]);
     if (missingKeys.length > 0) {
-      throw new Error(`Missing required keys: ${missingKeys.join(', ')}`);
+      throw new Error(`Missing required keys: ${missingKeys.join(", ")}`);
     }
 
     cachedSecrets = {
@@ -48,7 +52,7 @@ export const getAwsSecrets = async (): Promise<Record<string, string>> => {
     cacheTimestamp = Date.now();
     return cachedSecrets;
   } catch (error) {
-    console.error('Error retrieving secret:', error);
+    console.error("Error retrieving secret:", error);
     throw new Error(ERROR_STRINGS.SECRETS_MANAGER_FAILED);
   }
 };

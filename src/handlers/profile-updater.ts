@@ -1,21 +1,28 @@
 // src/handlers/profile-updater.ts
-import { SQSHandler, SQSBatchResponse, SQSBatchItemFailure, SQSRecord } from 'aws-lambda';
-import { Logger } from '@aws-lambda-powertools/logger';
+import {
+  SQSHandler,
+  SQSBatchResponse,
+  SQSBatchItemFailure,
+  SQSRecord,
+} from "aws-lambda";
+import { Logger } from "@aws-lambda-powertools/logger";
 // import { Tracer } from '@aws-lambda-powertools/tracer'; // Disabled due to @smithy bundling issues
-import { Metrics, MetricUnit } from '@aws-lambda-powertools/metrics';
-import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import Redis from 'ioredis';
+import { Metrics, MetricUnit } from "@aws-lambda-powertools/metrics";
+import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
+import Redis from "ioredis";
 import {
   ProfileService,
   ProfileServiceConfig,
   ProfileServiceDeps,
   ProfileUpdatePayload,
-} from '../services/profile';
+} from "../services/profile";
 
 // Powertools
 const logger = new Logger({ serviceName: process.env.POWERTOOLS_SERVICE_NAME });
 // const tracer = new Tracer({ serviceName: process.env.POWERTOOLS_SERVICE_NAME }); // Disabled
-const metrics = new Metrics({ namespace: process.env.POWERTOOLS_METRICS_NAMESPACE });
+const metrics = new Metrics({
+  namespace: process.env.POWERTOOLS_METRICS_NAMESPACE,
+});
 
 // AWS SDK client (reused across invocations)
 // Note: Tracer capture disabled temporarily due to bundling issues with @smithy
@@ -28,7 +35,7 @@ function getRedis(): Redis {
   if (!redis) {
     redis = new Redis({
       host: process.env.REDIS_ENDPOINT!,
-      port: parseInt(process.env.REDIS_PORT || '6379'),
+      port: parseInt(process.env.REDIS_PORT || "6379"),
       tls: {},
       maxRetriesPerRequest: 3,
       retryStrategy: (times: number) => Math.min(times * 100, 2000),
@@ -70,10 +77,13 @@ export const handler: SQSHandler = async (event): Promise<SQSBatchResponse> => {
   for (const record of event.Records) {
     try {
       await processRecord(record, service);
-      metrics.addMetric('ProfileUpdateSuccess', MetricUnit.Count, 1);
+      metrics.addMetric("ProfileUpdateSuccess", MetricUnit.Count, 1);
     } catch (error) {
-      logger.error('Failed to process record', { error, messageId: record.messageId });
-      metrics.addMetric('ProfileUpdateError', MetricUnit.Count, 1);
+      logger.error("Failed to process record", {
+        error,
+        messageId: record.messageId,
+      });
+      metrics.addMetric("ProfileUpdateError", MetricUnit.Count, 1);
       batchItemFailures.push({ itemIdentifier: record.messageId });
     }
   }
@@ -85,34 +95,45 @@ export const handler: SQSHandler = async (event): Promise<SQSBatchResponse> => {
 /**
  * Process a single SQS record
  */
-async function processRecord(record: SQSRecord, service: ProfileService): Promise<void> {
+async function processRecord(
+  record: SQSRecord,
+  service: ProfileService,
+): Promise<void> {
   const startTime = Date.now();
   const payload: ProfileUpdatePayload = JSON.parse(record.body);
   const { tenant_id, device_id } = payload;
 
-  logger.info('Processing profile update', { tenant_id, device_id });
+  logger.info("Processing profile update", { tenant_id, device_id });
 
   const result = await service.processProfileUpdate(payload);
 
   if (result.skipped) {
-    if (result.reason === 'mutation_gate') {
-      metrics.addMetric('MutationGateSkip', MetricUnit.Count, 1);
-      logger.info('Skipping update - recently updated', { device_id });
-    } else if (result.reason === 'no_drift') {
-      metrics.addMetric('NoDriftSkip', MetricUnit.Count, 1);
-      logger.info('Skipping update - no significant drift', { device_id });
+    if (result.reason === "mutation_gate") {
+      metrics.addMetric("MutationGateSkip", MetricUnit.Count, 1);
+      logger.info("Skipping update - recently updated", { device_id });
+    } else if (result.reason === "no_drift") {
+      metrics.addMetric("NoDriftSkip", MetricUnit.Count, 1);
+      logger.info("Skipping update - no significant drift", { device_id });
     }
     return;
   }
 
   // Record write metrics
-  metrics.addMetric('ProfileWrite', MetricUnit.Count, 1);
-  metrics.addMetric('Tier1IndexWrites', MetricUnit.Count, result.tier1Writes ?? 0);
-  metrics.addMetric('Tier2BucketWrites', MetricUnit.Count, result.tier2Writes ?? 0);
+  metrics.addMetric("ProfileWrite", MetricUnit.Count, 1);
+  metrics.addMetric(
+    "Tier1IndexWrites",
+    MetricUnit.Count,
+    result.tier1Writes ?? 0,
+  );
+  metrics.addMetric(
+    "Tier2BucketWrites",
+    MetricUnit.Count,
+    result.tier2Writes ?? 0,
+  );
 
   const duration = Date.now() - startTime;
-  metrics.addMetric('ProfileUpdateDuration', MetricUnit.Milliseconds, duration);
-  logger.info('Profile update complete', {
+  metrics.addMetric("ProfileUpdateDuration", MetricUnit.Milliseconds, duration);
+  logger.info("Profile update complete", {
     tenant_id,
     device_id,
     duration,

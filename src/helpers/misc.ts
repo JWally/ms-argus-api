@@ -18,7 +18,7 @@ export type NestedObject = Record<string, NestedValue>;
 
 export const flattenObject = (
   obj: NestedObject,
-  prefix: string = '',
+  prefix: string = "",
   result: Record<string, unknown> = {},
 ): Record<string, unknown> => {
   for (const key in obj) {
@@ -28,7 +28,7 @@ export const flattenObject = (
 
       if (Array.isArray(value)) {
         result[newKey] = JSON.stringify(value);
-      } else if (typeof value === 'object' && value !== null) {
+      } else if (typeof value === "object" && value !== null) {
         flattenObject(value as NestedObject, newKey, result);
       } else {
         result[newKey] = value;
@@ -65,13 +65,44 @@ interface DateTimeInfo {
 export const getCurrentDateInfo = (): DateTimeInfo => {
   const now = new Date();
 
-  const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-  const daysShort = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-  const months = [
-    'January', 'February', 'March', 'April', 'May', 'June',
-    'July', 'August', 'September', 'October', 'November', 'December',
+  const days = [
+    "Sunday",
+    "Monday",
+    "Tuesday",
+    "Wednesday",
+    "Thursday",
+    "Friday",
+    "Saturday",
   ];
-  const monthsShort = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const daysShort = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  const months = [
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
+  ];
+  const monthsShort = [
+    "Jan",
+    "Feb",
+    "Mar",
+    "Apr",
+    "May",
+    "Jun",
+    "Jul",
+    "Aug",
+    "Sep",
+    "Oct",
+    "Nov",
+    "Dec",
+  ];
 
   const startOfYear = new Date(now.getFullYear(), 0, 0);
   const diff = now.getTime() - startOfYear.getTime();
@@ -82,21 +113,33 @@ export const getCurrentDateInfo = (): DateTimeInfo => {
   date.setHours(0, 0, 0, 0);
   date.setDate(date.getDate() + 3 - ((date.getDay() + 6) % 7));
   const week1 = new Date(date.getFullYear(), 0, 4);
-  const weekOfYear = 1 + Math.round(((date.getTime() - week1.getTime()) / 86400000 - 3 + ((week1.getDay() + 6) % 7)) / 7);
+  const weekOfYear =
+    1 +
+    Math.round(
+      ((date.getTime() - week1.getTime()) / 86400000 -
+        3 +
+        ((week1.getDay() + 6) % 7)) /
+        7,
+    );
 
   const isLeapYear = new Date(now.getFullYear(), 1, 29).getMonth() === 1;
 
   const timezoneOffset = now.getTimezoneOffset();
   const offsetHours = Math.abs(Math.floor(timezoneOffset / 60));
   const offsetMinutes = Math.abs(timezoneOffset % 60);
-  const timezoneString = `UTC${timezoneOffset <= 0 ? '+' : '-'}${offsetHours.toString().padStart(2, '0')}${offsetMinutes.toString().padStart(2, '0')}`;
+  const timezoneString = `UTC${timezoneOffset <= 0 ? "+" : "-"}${offsetHours.toString().padStart(2, "0")}${offsetMinutes.toString().padStart(2, "0")}`;
 
   const jan = new Date(now.getFullYear(), 0, 1);
   const jul = new Date(now.getFullYear(), 6, 1);
-  const isDST = now.getTimezoneOffset() < Math.max(jan.getTimezoneOffset(), jul.getTimezoneOffset());
+  const isDST =
+    now.getTimezoneOffset() <
+    Math.max(jan.getTimezoneOffset(), jul.getTimezoneOffset());
 
   const timeString = now.toTimeString();
-  const timezoneName = timeString.substring(timeString.indexOf('(') + 1, timeString.indexOf(')'));
+  const timezoneName = timeString.substring(
+    timeString.indexOf("(") + 1,
+    timeString.indexOf(")"),
+  );
 
   const quarter = Math.floor((now.getMonth() + 3) / 3);
 

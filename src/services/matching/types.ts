@@ -4,7 +4,7 @@
  * Session cache value stored in Redis
  */
 export interface SessionCacheValue {
-  status: 'pending' | 'complete' | 'degraded';
+  status: "pending" | "complete" | "degraded";
   device_id: string;
   risk_score: number;
   confidence: number;
