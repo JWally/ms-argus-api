@@ -18,6 +18,11 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 )
 
+const (
+	maxBodySize  = 64 * 1024 // 64KB max payload size (AR-31)
+	maxJSONDepth = 10        // Maximum nesting depth for JSON (AR-31)
+)
+
 var (
 	sqsClient *sqs.Client
 	queueURL  string
@@ -139,9 +144,18 @@ func collectHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Limit body size to prevent large payload attacks (AR-31)
+	r.Body = http.MaxBytesReader(w, r.Body, maxBodySize)
+
 	// Parse request body
 	var payload FingerprintPayload
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		// Check if it's a body size exceeded error
+		if err.Error() == "http: request body too large" {
+			logger.Warn("Payload too large", "max_size", maxBodySize)
+			http.Error(w, "Request Entity Too Large", http.StatusRequestEntityTooLarge)
+			return
+		}
 		logger.Warn("Invalid JSON payload", "error", err)
 		http.Error(w, "Invalid JSON", http.StatusBadRequest)
 		return
@@ -152,6 +166,15 @@ func collectHandler(w http.ResponseWriter, r *http.Request) {
 		logger.Warn("Missing session_id")
 		http.Error(w, "session_id is required", http.StatusBadRequest)
 		return
+	}
+
+	// Validate fingerprint JSON depth to prevent deeply nested attacks (AR-31)
+	if len(payload.Fingerprint) > 0 {
+		if depth := getJSONDepth(payload.Fingerprint); depth > maxJSONDepth {
+			logger.Warn("Fingerprint JSON too deeply nested", "depth", depth, "max", maxJSONDepth)
+			http.Error(w, "Fingerprint JSON too deeply nested", http.StatusBadRequest)
+			return
+		}
 	}
 
 	// Extract tenant from header or payload
@@ -210,4 +233,50 @@ func collectHandler(w http.ResponseWriter, r *http.Request) {
 
 func stringPtr(s string) *string {
 	return &s
+}
+
+// getJSONDepth calculates the maximum nesting depth of JSON data (AR-31)
+// Returns 0 for invalid JSON or empty input
+func getJSONDepth(data []byte) int {
+	if len(data) == 0 {
+		return 0
+	}
+
+	maxDepth := 0
+	currentDepth := 0
+	inString := false
+	escape := false
+
+	for _, b := range data {
+		if escape {
+			escape = false
+			continue
+		}
+
+		if b == '\\' && inString {
+			escape = true
+			continue
+		}
+
+		if b == '"' {
+			inString = !inString
+			continue
+		}
+
+		if inString {
+			continue
+		}
+
+		switch b {
+		case '{', '[':
+			currentDepth++
+			if currentDepth > maxDepth {
+				maxDepth = currentDepth
+			}
+		case '}', ']':
+			currentDepth--
+		}
+	}
+
+	return maxDepth
 }
