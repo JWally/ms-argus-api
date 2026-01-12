@@ -7,6 +7,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"os"
@@ -18,15 +19,20 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 )
 
+// Error returned when API key is invalid (AR-36)
+var errInvalidAPIKey = errors.New("invalid API key")
+
 const (
 	maxBodySize  = 64 * 1024 // 64KB max payload size (AR-31)
 	maxJSONDepth = 10        // Maximum nesting depth for JSON (AR-31)
 )
 
 var (
-	sqsClient *sqs.Client
-	queueURL  string
-	logger    *slog.Logger
+	sqsClient     *sqs.Client
+	queueURL      string
+	logger        *slog.Logger
+	apiKeyTenants map[string]string // API key -> tenant ID mapping (AR-36)
+	requireAPIKey bool               // Whether API key authentication is required
 )
 
 // FingerprintPayload is the incoming request structure
@@ -55,6 +61,22 @@ func main() {
 	if queueURL == "" {
 		logger.Error("SQS_QUEUE_URL environment variable is required")
 		os.Exit(1)
+	}
+
+	// Initialize API key -> tenant mapping (AR-36)
+	// Format: JSON object like {"key1": "tenant-a", "key2": "tenant-b"}
+	// If not set, all requests use default tenant (backward compatible)
+	apiKeysJSON := os.Getenv("API_KEYS")
+	if apiKeysJSON != "" {
+		apiKeyTenants = make(map[string]string)
+		if err := json.Unmarshal([]byte(apiKeysJSON), &apiKeyTenants); err != nil {
+			logger.Error("Failed to parse API_KEYS JSON", "error", err)
+			os.Exit(1)
+		}
+		requireAPIKey = true
+		logger.Info("API key authentication enabled", "tenant_count", len(apiKeyTenants))
+	} else {
+		logger.Info("API key authentication disabled (single-tenant mode)")
 	}
 
 	// Initialize AWS SDK
@@ -114,7 +136,7 @@ func corsMiddleware(next http.Handler) http.Handler {
 		if origin != "" {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-Tenant-ID")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-Tenant-ID, X-API-Key")
 			w.Header().Set("Access-Control-Max-Age", "86400") // 24 hours
 		}
 
@@ -126,6 +148,37 @@ func corsMiddleware(next http.Handler) http.Handler {
 
 		next.ServeHTTP(w, r)
 	})
+}
+
+// extractTenant validates the API key and returns the associated tenant ID (AR-36)
+// If API keys are not configured (single-tenant mode), uses X-Tenant-ID header or "default"
+// Returns error if API key is required but invalid
+func extractTenant(r *http.Request) (string, error) {
+	apiKey := r.Header.Get("X-API-Key")
+
+	// If API key authentication is enabled
+	if requireAPIKey {
+		if apiKey == "" {
+			// No API key provided - check if we allow unauthenticated requests
+			// For backward compatibility, allow requests without API key to use default tenant
+			return "default", nil
+		}
+
+		// Validate API key and get tenant
+		tenant, exists := apiKeyTenants[apiKey]
+		if !exists {
+			return "", errInvalidAPIKey
+		}
+		return tenant, nil
+	}
+
+	// Single-tenant mode (no API keys configured)
+	// Use X-Tenant-ID header if provided, otherwise default
+	tenantID := r.Header.Get("X-Tenant-ID")
+	if tenantID == "" {
+		tenantID = "default"
+	}
+	return tenantID, nil
 }
 
 func healthHandler(w http.ResponseWriter, _ *http.Request) {
@@ -177,13 +230,14 @@ func collectHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Extract tenant from header or payload
-	if payload.TenantID == "" {
-		payload.TenantID = r.Header.Get("X-Tenant-ID")
+	// Extract and validate tenant (AR-36)
+	tenantID, authErr := extractTenant(r)
+	if authErr != nil {
+		logger.Warn("Authentication failed", "error", authErr)
+		http.Error(w, authErr.Error(), http.StatusUnauthorized)
+		return
 	}
-	if payload.TenantID == "" {
-		payload.TenantID = "default" // Fallback for single-tenant
-	}
+	payload.TenantID = tenantID
 
 	// Add timestamp if not provided
 	if payload.Timestamp == 0 {
