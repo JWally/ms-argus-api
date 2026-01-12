@@ -84,7 +84,7 @@ func checkCORSHeaders(t *testing.T, rr *httptest.ResponseRecorder, expectedOrigi
 	}
 
 	headers := rr.Header().Get("Access-Control-Allow-Headers")
-	if headers != "Content-Type, X-Tenant-ID" {
-		t.Errorf("Expected Access-Control-Allow-Headers 'Content-Type, X-Tenant-ID', got '%s'", headers)
+	if headers != "Content-Type, X-Tenant-ID, X-API-Key" {
+		t.Errorf("Expected Access-Control-Allow-Headers 'Content-Type, X-Tenant-ID, X-API-Key', got '%s'", headers)
 	}
 }
