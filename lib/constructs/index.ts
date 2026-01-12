@@ -3,9 +3,6 @@
 // Edge & security
 export * from "./cloudfront";
 
-// Data pipeline (analytics)
-export * from "./firehose-processor";
-
 // Secrets management
 export * from "./secrets";
 

@@ -8,7 +8,6 @@ import {
   WARMUP_EVENT,
   AWS_SECRETS_REQUIRED_KEYS,
   ERROR_STRINGS,
-  ARGUS_COLUMNS,
 } from "./constants";
 
 describe("DEFAULT_HEADERS", () => {
@@ -148,89 +147,5 @@ describe("ERROR_STRINGS", () => {
   it("should have descriptive error messages", () => {
     expect(ERROR_STRINGS.SECRETS_MANAGER_FAILED).toContain("Secrets Manager");
     expect(ERROR_STRINGS.CANNOT_PARSE_JSON).toContain("JSON");
-  });
-});
-
-describe("ARGUS_COLUMNS", () => {
-  it("should be an array of column definitions", () => {
-    expect(Array.isArray(ARGUS_COLUMNS)).toBe(true);
-    expect(ARGUS_COLUMNS.length).toBeGreaterThan(0);
-  });
-
-  it("should have session_id as first column", () => {
-    expect(ARGUS_COLUMNS[0].name).toBe("session_id");
-    expect(ARGUS_COLUMNS[0].type).toBe("string");
-  });
-
-  it("should have ipAddress column", () => {
-    const ipColumn = ARGUS_COLUMNS.find((col) => col.name === "ipAddress");
-    expect(ipColumn).toBeDefined();
-    expect(ipColumn?.type).toBe("string");
-  });
-
-  it("should have TCP fingerprint columns", () => {
-    const tcpColumns = ARGUS_COLUMNS.filter((col) =>
-      col.name?.startsWith("tcp."),
-    );
-    expect(tcpColumns.length).toBeGreaterThan(0);
-  });
-
-  it("should have TLS fingerprint columns", () => {
-    const tlsColumns = ARGUS_COLUMNS.filter((col) =>
-      col.name?.startsWith("tls."),
-    );
-    expect(tlsColumns.length).toBeGreaterThan(0);
-    expect(tlsColumns.find((c) => c.name === "tls.ja3")).toBeDefined();
-    expect(tlsColumns.find((c) => c.name === "tls.ja4")).toBeDefined();
-  });
-
-  it("should have JS fingerprint columns", () => {
-    const jsColumns = ARGUS_COLUMNS.filter((col) =>
-      col.name?.startsWith("js."),
-    );
-    expect(jsColumns.length).toBeGreaterThan(0);
-  });
-
-  it("should have bot detection columns", () => {
-    const botColumns = ARGUS_COLUMNS.filter((col) =>
-      col.name?.startsWith("bot."),
-    );
-    expect(botColumns.length).toBeGreaterThan(0);
-    expect(botColumns.find((c) => c.name === "bot.is_headless")).toBeDefined();
-  });
-
-  it("should have analysis result columns", () => {
-    const analysisColumns = ARGUS_COLUMNS.filter((col) =>
-      col.name?.startsWith("analysis."),
-    );
-    expect(analysisColumns.length).toBeGreaterThan(0);
-    expect(
-      analysisColumns.find((c) => c.name === "analysis.device_id"),
-    ).toBeDefined();
-    expect(
-      analysisColumns.find((c) => c.name === "analysis.risk_score"),
-    ).toBeDefined();
-  });
-
-  it("should have DATE_INFO partition columns", () => {
-    const dateColumns = ARGUS_COLUMNS.filter((col) =>
-      col.name?.startsWith("DATE_INFO."),
-    );
-    expect(dateColumns.length).toBeGreaterThan(0);
-    expect(dateColumns.find((c) => c.name === "DATE_INFO.year")).toBeDefined();
-    expect(dateColumns.find((c) => c.name === "DATE_INFO.month")).toBeDefined();
-  });
-
-  it("should have valid Glue types", () => {
-    const validTypes = ["string", "int", "bigint", "double", "boolean"];
-    ARGUS_COLUMNS.forEach((col) => {
-      expect(validTypes).toContain(col.type);
-    });
-  });
-
-  it("should have unique column names", () => {
-    const names = ARGUS_COLUMNS.map((col) => col.name);
-    const uniqueNames = new Set(names);
-    expect(uniqueNames.size).toBe(names.length);
   });
 });
