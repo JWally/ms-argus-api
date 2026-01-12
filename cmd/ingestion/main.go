@@ -66,9 +66,12 @@ func main() {
 	mux.HandleFunc("/health", healthHandler)
 	mux.HandleFunc("/v1/collect", collectHandler)
 
+	// Wrap with CORS middleware (AR-29)
+	handler := corsMiddleware(mux)
+
 	server := &http.Server{
 		Addr:         ":8080",
-		Handler:      mux,
+		Handler:      handler,
 		ReadTimeout:  5 * time.Second,
 		WriteTimeout: 10 * time.Second,
 		IdleTimeout:  60 * time.Second,
@@ -96,6 +99,28 @@ func main() {
 		logger.Error("Server shutdown error", "error", err)
 	}
 	logger.Info("Server stopped")
+}
+
+// corsMiddleware adds CORS headers for cross-origin merchant requests (AR-29)
+// Reflects the request Origin, allowing any merchant domain to call the API
+func corsMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		origin := r.Header.Get("Origin")
+		if origin != "" {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-Tenant-ID")
+			w.Header().Set("Access-Control-Max-Age", "86400") // 24 hours
+		}
+
+		// Handle preflight OPTIONS request
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
 }
 
 func healthHandler(w http.ResponseWriter, _ *http.Request) {
