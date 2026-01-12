@@ -8,7 +8,6 @@ import {
 import { Logger } from "@aws-lambda-powertools/logger";
 import { Metrics, MetricUnit } from "@aws-lambda-powertools/metrics";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import Redis from "ioredis";
 import {
   ProfileService,
   ProfileServiceConfig,
@@ -21,9 +20,8 @@ import {
   PROFILE_TTL_DAYS,
   TIER2_BUCKET_TTL_DAYS,
   MUTATION_GATE_TTL_SECONDS,
-  REDIS_RETRY_BASE_MS,
-  REDIS_RETRY_MAX_MS,
 } from "../helpers/constants";
+import { getRedisClient } from "../services/redis-client";
 
 // Validate environment variables at module load (cold start)
 // Throws immediately if required env vars are missing
@@ -38,31 +36,12 @@ const metrics = new Metrics({
 // AWS SDK client (reused across invocations)
 const dynamodb = new DynamoDBClient({});
 
-// Redis client (lazy initialized, reused)
-let redis: Redis | null = null;
-
-function getRedis(): Redis {
-  if (!redis) {
-    redis = new Redis({
-      host: envConfig.REDIS_ENDPOINT,
-      port: envConfig.REDIS_PORT,
-      tls: {},
-      // Lambda-optimized connection settings (AR-20)
-      enableReadyCheck: false, // Skip PING on connect (saves ~10ms)
-      maxRetriesPerRequest: 2, // Limited retries - Lambda has limited time
-      connectTimeout: 5000, // 5s connect timeout
-      commandTimeout: 3000, // 3s command timeout
-      keepAlive: 30000, // Keep connections alive for Lambda reuse
-      retryStrategy: (times: number) => {
-        if (times > 3) return null; // Stop retrying after 3 attempts
-        return Math.min(
-          Math.pow(2, times) * REDIS_RETRY_BASE_MS,
-          REDIS_RETRY_MAX_MS,
-        );
-      },
-    });
-  }
-  return redis;
+// AR-48: Use shared Redis client module
+function getRedis() {
+  return getRedisClient({
+    endpoint: envConfig.REDIS_ENDPOINT,
+    port: envConfig.REDIS_PORT,
+  });
 }
 
 // Service configuration from validated environment
