@@ -13,6 +13,7 @@ import { DynamoDbConstruct } from "../constructs/dynamodb";
 import { IngestionServiceConstruct } from "../constructs/ingestion-service";
 import { WorkersConstruct } from "../constructs/workers";
 import { CloudFrontWafConstruct } from "../constructs/cloudfront";
+import { getStageConfig } from "../config";
 
 interface ArgusApiStackProps extends cdk.StackProps {
   environment: string;
@@ -188,7 +189,8 @@ export class ArgusApiStack extends cdk.Stack {
     // EDGE LAYER
     // =========================================================================
 
-    // CloudFront + WAF
+    // CloudFront + WAF (AR-51: WAF disabled in non-prod to reduce costs)
+    const config = getStageConfig(stage);
     const cdn = new CloudFrontWafConstruct(this, "CDN", {
       environment,
       stackName,
@@ -197,6 +199,7 @@ export class ArgusApiStack extends cdk.Stack {
       apiSubdomain,
       hostedZone,
       certificate,
+      stageConfig: config,
     });
 
     // =========================================================================

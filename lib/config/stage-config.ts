@@ -85,6 +85,7 @@ export interface StageConfig {
 
   // WAF configuration
   waf: {
+    enabled: boolean; // AR-51: WAF disabled in non-prod to reduce costs
     rateLimitPerFiveMinutes: number;
     bodySizeLimitBytes: number;
   };
@@ -165,6 +166,7 @@ const devConfig: StageConfig = {
   },
 
   waf: {
+    enabled: false, // AR-51: WAF disabled in dev to reduce costs (~$30/month savings)
     rateLimitPerFiveMinutes: 2000, // Higher limit in dev for testing
     bodySizeLimitBytes: 102400, // 100KB
   },
@@ -245,6 +247,7 @@ const prodConfig: StageConfig = {
   },
 
   waf: {
+    enabled: true, // WAF enabled in production for security
     rateLimitPerFiveMinutes: 600,
     bodySizeLimitBytes: 102400, // 100KB
   },
