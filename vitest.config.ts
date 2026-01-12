@@ -22,10 +22,13 @@ export default defineConfig({
         "dist",
       ],
       thresholds: {
-        statements: 25,
-        branches: 40,
-        functions: 25,
-        lines: 25,
+        // AR-41: Increased thresholds to prevent coverage regression
+        // Current: statements 57%, branches 94%, functions 97%, lines 57%
+        // Set ~10% below current to catch regressions while allowing flexibility
+        statements: 50,
+        branches: 85,
+        functions: 90,
+        lines: 50,
       },
     },
   },
