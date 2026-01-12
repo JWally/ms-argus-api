@@ -15,11 +15,8 @@ import {
   MatchResult,
   SessionCacheValue,
 } from "./types";
-import {
-  FNV1A_OFFSET_BASIS,
-  FNV1A_PRIME,
-  TIER2_BUCKET_LIMIT,
-} from "../../helpers/constants";
+import { TIER2_BUCKET_LIMIT } from "../../helpers/constants";
+import { fnv1a } from "../../helpers/hash";
 // Note: BloomFilter code retained in src/services/bloom/ for potential future
 // use on Tier 2, but not instantiated per AR-21. The current implementation
 // adds complexity to save one DynamoDB GetItem, and the race condition between
@@ -537,20 +534,15 @@ export class MatchingService {
 }
 
 /**
- * Generate FNV-1a hash for idempotency key
- * Uses standard 32-bit FNV-1a algorithm
+ * Generate idempotency key from session and fingerprint data
+ * Uses FNV-1a hash (AR-32: consolidated from helpers/hash.ts)
  */
 export function generateIdempotencyKey(
   sessionId: string,
   fingerprint: Fingerprint,
 ): string {
   const input = `${sessionId}:${fingerprint.stable_hash ?? ""}:${fingerprint.canvas_hash ?? ""}`;
-  let hash = FNV1A_OFFSET_BASIS;
-  for (let i = 0; i < input.length; i++) {
-    hash ^= input.charCodeAt(i);
-    hash = Math.imul(hash, FNV1A_PRIME);
-  }
-  return (hash >>> 0).toString(16);
+  return fnv1a(input);
 }
 
 /**
