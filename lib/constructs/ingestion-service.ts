@@ -57,10 +57,10 @@ export class IngestionServiceConstruct extends Construct {
       removalPolicy: RemovalPolicy.DESTROY,
     });
 
-    // Task definition
+    // Task definition (AR-37: Right-sized for lightweight Go HTTP server)
     const taskDefinition = new ecs.FargateTaskDefinition(this, "TaskDef", {
-      memoryLimitMiB: 1024,
-      cpu: 512, // 0.5 vCPU
+      memoryLimitMiB: 512,
+      cpu: 256, // 0.25 vCPU
       runtimePlatform: {
         cpuArchitecture: ecs.CpuArchitecture.ARM64,
         operatingSystemFamily: ecs.OperatingSystemFamily.LINUX,
