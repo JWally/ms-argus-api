@@ -29,12 +29,28 @@ export class RedisConstruct extends Construct {
 
     const { stackName, vpc, alarmsTopic, stage } = props;
 
-    // Use tiny instances for non-prod (faster spin up/down, cheaper)
+    // AR-46: Use t4g.small for dev (1GB) - t4g.micro (512MB) is too small
     // Production gets medium instances with HA (AR-38: right-sized from large)
     const isProd = stage === "prod";
-    const nodeType = isProd ? "cache.r6g.medium" : "cache.t4g.micro";
+    const nodeType = isProd ? "cache.r6g.medium" : "cache.t4g.small";
     const numNodes = isProd ? 2 : 1; // No HA for dev/staging
     const multiAz = isProd;
+
+    // AR-46: Custom parameter group with volatile-lru eviction policy
+    // Default policy may be noeviction which causes OOM errors instead of evicting
+    const parameterGroup = new elasticache.CfnParameterGroup(
+      this,
+      "RedisParameterGroup",
+      {
+        cacheParameterGroupFamily: "redis7",
+        description: `Argus Redis parameters (${stage})`,
+        properties: {
+          // Evict least-recently-used keys that have TTL when memory is full
+          // All our keys have TTL, so this ensures graceful degradation under load
+          "maxmemory-policy": "volatile-lru",
+        },
+      },
+    );
 
     // Security group for Redis
     this.securityGroup = new ec2.SecurityGroup(this, "RedisSecurityGroup", {
@@ -55,7 +71,7 @@ export class RedisConstruct extends Construct {
     );
 
     // Redis replication group
-    // Dev/staging: single tiny node (fast spin up/down)
+    // Dev/staging: single node with 1GB (fast spin up/down, adequate for testing)
     // Prod: 2 nodes with HA
     this.cluster = new elasticache.CfnReplicationGroup(this, "RedisCluster", {
       replicationGroupDescription: `Argus session cache (${stage})`,
@@ -68,6 +84,8 @@ export class RedisConstruct extends Construct {
       multiAzEnabled: multiAz,
       cacheSubnetGroupName: subnetGroup.cacheSubnetGroupName,
       securityGroupIds: [this.securityGroup.securityGroupId],
+      // AR-46: Use custom parameter group with volatile-lru eviction
+      cacheParameterGroupName: parameterGroup.ref,
       atRestEncryptionEnabled: true,
       transitEncryptionEnabled: true,
       port: this.port,
@@ -78,6 +96,7 @@ export class RedisConstruct extends Construct {
     });
 
     this.cluster.node.addDependency(subnetGroup);
+    this.cluster.node.addDependency(parameterGroup);
     this.cluster.applyRemovalPolicy(RemovalPolicy.RETAIN);
 
     // Primary endpoint
@@ -105,7 +124,29 @@ export class RedisConstruct extends Construct {
     });
     cpuAlarm.addAlarmAction(new actions.SnsAction(alarmsTopic));
 
-    // Memory utilization alarm
+    // AR-46: Early warning memory alarm at 70%
+    const memoryWarningAlarm = new cloudwatch.Alarm(
+      this,
+      "RedisMemoryWarningAlarm",
+      {
+        metric: new cloudwatch.Metric({
+          namespace: "AWS/ElastiCache",
+          metricName: "DatabaseMemoryUsagePercentage",
+          dimensionsMap: {
+            ReplicationGroupId: `${stackName}-redis`,
+          },
+          period: Duration.minutes(5),
+          statistic: "Average",
+        }),
+        threshold: 70,
+        evaluationPeriods: 2,
+        alarmDescription:
+          "Redis memory > 70% for 10 minutes - consider scaling or investigating",
+      },
+    );
+    memoryWarningAlarm.addAlarmAction(new actions.SnsAction(alarmsTopic));
+
+    // Critical memory alarm at 80%
     const memoryAlarm = new cloudwatch.Alarm(this, "RedisMemoryAlarm", {
       metric: new cloudwatch.Metric({
         namespace: "AWS/ElastiCache",
@@ -118,7 +159,7 @@ export class RedisConstruct extends Construct {
       }),
       threshold: 80,
       evaluationPeriods: 3,
-      alarmDescription: "Redis memory > 80% for 15 minutes",
+      alarmDescription: "Redis memory > 80% for 15 minutes - critical",
     });
     memoryAlarm.addAlarmAction(new actions.SnsAction(alarmsTopic));
 
