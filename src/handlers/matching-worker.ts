@@ -6,7 +6,6 @@ import {
   SQSRecord,
 } from "aws-lambda";
 import { Logger } from "@aws-lambda-powertools/logger";
-// import { Tracer } from '@aws-lambda-powertools/tracer'; // Disabled due to @smithy bundling issues
 import { Metrics, MetricUnit } from "@aws-lambda-powertools/metrics";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { SQSClient } from "@aws-sdk/client-sqs";
@@ -33,13 +32,11 @@ const envConfig: MatchingWorkerEnvConfig = getMatchingWorkerEnv();
 
 // Powertools (using validated config)
 const logger = new Logger({ serviceName: envConfig.POWERTOOLS_SERVICE_NAME });
-// const tracer = new Tracer({ serviceName: envConfig.POWERTOOLS_SERVICE_NAME }); // Disabled
 const metrics = new Metrics({
   namespace: envConfig.POWERTOOLS_METRICS_NAMESPACE,
 });
 
 // AWS SDK clients (reused across invocations)
-// Note: Tracer capture disabled temporarily due to bundling issues with @smithy
 const dynamodb = new DynamoDBClient({});
 const sqs = new SQSClient({});
 
