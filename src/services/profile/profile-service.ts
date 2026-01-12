@@ -496,6 +496,7 @@ export class ProfileService {
   /**
    * Update Tier 2 buckets (compound filter matching)
    * Uses shorter TTL (7 days) to prevent bucket accumulation (AR-39)
+   * Uses BatchWriteItem with retry logic for reliability (AR-40)
    */
   async updateTier2Buckets(
     tenantId: string,
@@ -506,14 +507,73 @@ export class ProfileService {
     const ttl = Math.floor(Date.now() / 1000) + ttlSeconds;
 
     const bucketKeys = this.buildTier2BucketKeys(tenantId, fingerprint);
-    const updates: Promise<unknown>[] = [];
-
-    for (const bucketKey of bucketKeys) {
-      updates.push(this.addDeviceToBucket(bucketKey, deviceId, ttl));
+    if (bucketKeys.length === 0) {
+      return 0;
     }
 
-    await Promise.all(updates);
-    return updates.length;
+    // Build bucket entries for batch write
+    const bucketEntries = bucketKeys.map((bucketKey) => ({
+      bucket_key: bucketKey,
+      device_id: deviceId,
+      ttl,
+    }));
+
+    // Use BatchWriteItem with retry logic (consistent with Tier 1)
+    await this.batchWriteTier2Buckets(bucketEntries);
+    return bucketEntries.length;
+  }
+
+  /**
+   * Batch write Tier 2 bucket entries with retry logic for unprocessed items (AR-40)
+   * Mirrors batchWriteTier1Indexes for consistency
+   */
+  private async batchWriteTier2Buckets(
+    entries: Array<{
+      bucket_key: string;
+      device_id: string;
+      ttl: number;
+    }>,
+    maxRetries: number = 3,
+  ): Promise<void> {
+    const tableName = this.deps.config.tier2BucketsTable;
+    let unprocessedItems: WriteRequest[] = entries.map((entry) => ({
+      PutRequest: {
+        Item: {
+          bucket_key: { S: entry.bucket_key },
+          device_id: { S: entry.device_id },
+          ttl: { N: String(entry.ttl) },
+        },
+      },
+    }));
+
+    let attempt = 0;
+
+    while (unprocessedItems.length > 0 && attempt < maxRetries) {
+      const result = await this.deps.dynamodb.send(
+        new BatchWriteItemCommand({
+          RequestItems: {
+            [tableName]: unprocessedItems,
+          },
+        }),
+      );
+
+      // Check for unprocessed items (can happen during throttling)
+      const remaining = result.UnprocessedItems?.[tableName];
+      if (remaining && remaining.length > 0) {
+        unprocessedItems = remaining;
+        attempt++;
+        // Exponential backoff: 100ms, 200ms, 400ms
+        await this.sleep(Math.pow(2, attempt) * 100);
+      } else {
+        unprocessedItems = [];
+      }
+    }
+
+    if (unprocessedItems.length > 0) {
+      throw new Error(
+        `Failed to write ${unprocessedItems.length} Tier2 bucket items after ${maxRetries} retries`,
+      );
+    }
   }
 
   /**
@@ -548,28 +608,6 @@ export class ProfileService {
     }
 
     return keys;
-  }
-
-  /**
-   * Add device to a Tier 2 bucket using adjacency list pattern
-   * Each device is a separate item with (bucket_key, device_id) composite key
-   * This avoids the 400KB item size limit of String Sets
-   */
-  private async addDeviceToBucket(
-    bucketKey: string,
-    deviceId: string,
-    ttl: number,
-  ): Promise<void> {
-    await this.deps.dynamodb.send(
-      new PutItemCommand({
-        TableName: this.deps.config.tier2BucketsTable,
-        Item: {
-          bucket_key: { S: bucketKey },
-          device_id: { S: deviceId },
-          ttl: { N: String(ttl) },
-        },
-      }),
-    );
   }
 
   /**
