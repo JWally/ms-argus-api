@@ -5,11 +5,11 @@ import { MiddlewareObj } from "@middy/core";
 import { LRUCache } from "lru-cache";
 import { Logger } from "@aws-lambda-powertools/logger";
 import createError from "http-errors";
-import {
-  FNV1A_OFFSET_BASIS,
-  DEDUPE_CACHE_MAX_ENTRIES,
-  DEDUPE_CACHE_TTL_MS,
-} from "./constants";
+import { DEDUPE_CACHE_MAX_ENTRIES, DEDUPE_CACHE_TTL_MS } from "./constants";
+import { fnv1a } from "./hash";
+
+// Re-export fnv1a for backward compatibility (AR-32)
+export { fnv1a };
 
 const logger = new Logger({ serviceName: "argus-warmup" });
 
@@ -43,20 +43,6 @@ const cache = new LRUCache<string, number>({
 
 export const _clearDeduplicateCache = (): void => {
   cache.clear();
-};
-
-/**
- * FNV-1a hash function for fast string hashing
- * Uses standard 32-bit FNV-1a algorithm constants
- */
-export const fnv1a = (str: string): string => {
-  let hash = FNV1A_OFFSET_BASIS;
-  for (let i = 0; i < str.length; i++) {
-    hash ^= str.charCodeAt(i);
-    hash +=
-      (hash << 1) + (hash << 4) + (hash << 7) + (hash << 8) + (hash << 24);
-  }
-  return (hash >>> 0).toString(16);
 };
 
 /**
