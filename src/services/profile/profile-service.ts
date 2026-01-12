@@ -74,25 +74,22 @@ export class ProfileService {
   constructor(private deps: ProfileServiceDeps) {}
 
   /**
-   * Check if device was recently updated (mutation gate)
-   * Returns true if we should update, false if we should skip
+   * Atomically try to acquire the mutation gate for a device
+   * Uses Redis SET NX EX to avoid TOCTOU race condition (AR-27)
+   * Returns true if gate was acquired (we should update), false if already held
    */
-  async checkMutationGate(deviceId: string): Promise<boolean> {
+  async tryAcquireMutationGate(deviceId: string): Promise<boolean> {
     const key = `recently_updated:${deviceId}`;
-    const exists = await this.deps.redis.exists(key);
-    return exists === 0; // Update if key doesn't exist
-  }
-
-  /**
-   * Set mutation gate to prevent rapid repeated updates
-   */
-  async setMutationGate(deviceId: string): Promise<void> {
-    const key = `recently_updated:${deviceId}`;
-    await this.deps.redis.setex(
+    // SET key value NX EX ttl - atomic operation
+    // Returns "OK" if set successfully, null if key already exists
+    const result = await this.deps.redis.set(
       key,
-      this.deps.config.mutationGateTtlSeconds,
       "1",
+      "EX",
+      this.deps.config.mutationGateTtlSeconds,
+      "NX",
     );
+    return result === "OK";
   }
 
   /**
@@ -591,9 +588,10 @@ export class ProfileService {
       is_new_device = false,
     } = payload;
 
-    // Check mutation gate
-    const shouldUpdate = await this.checkMutationGate(device_id);
-    if (!shouldUpdate) {
+    // Atomically acquire mutation gate (AR-27: fixes TOCTOU race condition)
+    // Gate is acquired upfront - if we crash after this, gate expires after TTL
+    const acquired = await this.tryAcquireMutationGate(device_id);
+    if (!acquired) {
       return { skipped: true, reason: "mutation_gate" };
     }
 
@@ -609,8 +607,7 @@ export class ProfileService {
       this.hasSignificantDrift(existingProfile, fingerprint);
 
     if (existingProfile && !hasDrift) {
-      // No significant drift - just update mutation gate and skip
-      await this.setMutationGate(device_id);
+      // No significant drift - gate already acquired, just skip writes
       return { skipped: true, reason: "no_drift" };
     }
 
@@ -634,9 +631,6 @@ export class ProfileService {
       device_id,
       fingerprint,
     );
-
-    // Set mutation gate
-    await this.setMutationGate(device_id);
 
     return {
       skipped: false,

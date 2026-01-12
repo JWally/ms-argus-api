@@ -56,30 +56,37 @@ describe("ProfileService", () => {
     await redis.quit();
   });
 
-  describe("checkMutationGate", () => {
-    it("should return true when device not recently updated", async () => {
-      const result = await service.checkMutationGate("dev_new");
+  describe("tryAcquireMutationGate", () => {
+    it("should acquire gate when key does not exist", async () => {
+      const result = await service.tryAcquireMutationGate("dev_gate_test");
       expect(result).toBe(true);
-    });
 
-    it("should return false when device was recently updated", async () => {
-      await redis.setex("recently_updated:dev_recent", 3600, "1");
-
-      const result = await service.checkMutationGate("dev_recent");
-      expect(result).toBe(false);
-    });
-  });
-
-  describe("setMutationGate", () => {
-    it("should set key with TTL", async () => {
-      await service.setMutationGate("dev_123");
-
-      const value = await redis.get("recently_updated:dev_123");
+      // Verify key was set with TTL
+      const value = await redis.get("recently_updated:dev_gate_test");
       expect(value).toBe("1");
-
-      const ttl = await redis.ttl("recently_updated:dev_123");
+      const ttl = await redis.ttl("recently_updated:dev_gate_test");
       expect(ttl).toBeGreaterThan(0);
       expect(ttl).toBeLessThanOrEqual(3600);
+    });
+
+    it("should fail to acquire gate when key already exists", async () => {
+      await redis.setex("recently_updated:dev_gate_held", 3600, "1");
+
+      const result = await service.tryAcquireMutationGate("dev_gate_held");
+      expect(result).toBe(false);
+    });
+
+    it("should be atomic - only one concurrent call succeeds", async () => {
+      // Simulate 100 concurrent calls for same device (AR-27 acceptance criteria)
+      const results = await Promise.all(
+        Array.from({ length: 100 }, () =>
+          service.tryAcquireMutationGate("dev_race_condition"),
+        ),
+      );
+
+      // Exactly one should succeed
+      const successCount = results.filter((r) => r === true).length;
+      expect(successCount).toBe(1);
     });
   });
 
