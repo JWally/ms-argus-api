@@ -19,6 +19,7 @@ import {
 import { getProfileUpdaterEnv, ProfileUpdaterEnvConfig } from "../config/env";
 import {
   PROFILE_TTL_DAYS,
+  TIER2_BUCKET_TTL_DAYS,
   MUTATION_GATE_TTL_SECONDS,
   REDIS_RETRY_BASE_MS,
   REDIS_RETRY_MAX_MS,
@@ -71,6 +72,7 @@ function getConfig(): ProfileServiceConfig {
     tier1IndexTable: envConfig.TIER1_INDEX_TABLE,
     tier2BucketsTable: envConfig.TIER2_BUCKETS_TABLE,
     profileTtlDays: PROFILE_TTL_DAYS,
+    tier2BucketTtlDays: TIER2_BUCKET_TTL_DAYS,
     mutationGateTtlSeconds: MUTATION_GATE_TTL_SECONDS,
   };
 }

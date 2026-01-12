@@ -54,6 +54,7 @@ export interface ProfileServiceConfig {
   tier1IndexTable: string;
   tier2BucketsTable: string;
   profileTtlDays: number;
+  tier2BucketTtlDays: number;
   mutationGateTtlSeconds: number;
 }
 
@@ -494,13 +495,14 @@ export class ProfileService {
 
   /**
    * Update Tier 2 buckets (compound filter matching)
+   * Uses shorter TTL (7 days) to prevent bucket accumulation (AR-39)
    */
   async updateTier2Buckets(
     tenantId: string,
     deviceId: string,
     fingerprint: Fingerprint,
   ): Promise<number> {
-    const ttlSeconds = this.deps.config.profileTtlDays * 24 * 60 * 60;
+    const ttlSeconds = this.deps.config.tier2BucketTtlDays * 24 * 60 * 60;
     const ttl = Math.floor(Date.now() / 1000) + ttlSeconds;
 
     const bucketKeys = this.buildTier2BucketKeys(tenantId, fingerprint);

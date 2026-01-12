@@ -34,6 +34,9 @@ export const TIER2_BUCKET_LIMIT = 1000;
 /** Profile TTL in DynamoDB: 60 days */
 export const PROFILE_TTL_DAYS = 60;
 
+/** Tier 2 bucket TTL in DynamoDB: 7 days (AR-39: prevent accumulation) */
+export const TIER2_BUCKET_TTL_DAYS = 7;
+
 /** Mutation gate TTL: 1 hour (3600 seconds) - prevents rapid repeated writes */
 export const MUTATION_GATE_TTL_SECONDS = 3600;
 
