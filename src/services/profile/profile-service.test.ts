@@ -514,8 +514,8 @@ describe("ProfileService", () => {
   });
 
   describe("updateTier2Buckets", () => {
-    it("should use PutItem for adjacency list pattern", async () => {
-      dynamoMock.on(PutItemCommand).resolves({});
+    it("should use BatchWriteItem for reliability (AR-40)", async () => {
+      dynamoMock.on(BatchWriteItemCommand).resolves({});
 
       const fingerprint: Fingerprint = {
         ip_address: "10.0.0.1",
@@ -530,22 +530,26 @@ describe("ProfileService", () => {
 
       expect(count).toBe(1);
 
-      // Filter PutItemCommand calls for tier2 buckets table only
+      // Filter BatchWriteItemCommand calls for tier2 buckets table only
       const calls = dynamoMock
-        .commandCalls(PutItemCommand)
+        .commandCalls(BatchWriteItemCommand)
         .filter(
           (call) =>
-            call.args[0].input.TableName === testConfig.tier2BucketsTable,
+            call.args[0].input.RequestItems?.[testConfig.tier2BucketsTable],
         );
       expect(calls).toHaveLength(1);
 
-      const call = calls[0];
-      expect(call.args[0].input.Item?.bucket_key?.S).toContain("ip_ja4");
-      expect(call.args[0].input.Item?.device_id?.S).toBe("dev_123");
+      const requestItems =
+        calls[0].args[0].input.RequestItems?.[testConfig.tier2BucketsTable];
+      expect(requestItems).toHaveLength(1);
+      expect(requestItems?.[0].PutRequest?.Item?.bucket_key?.S).toContain(
+        "ip_ja4",
+      );
+      expect(requestItems?.[0].PutRequest?.Item?.device_id?.S).toBe("dev_123");
     });
 
-    it("should insert multiple bucket entries in parallel", async () => {
-      dynamoMock.on(PutItemCommand).resolves({});
+    it("should batch multiple bucket entries together", async () => {
+      dynamoMock.on(BatchWriteItemCommand).resolves({});
 
       const fingerprint: Fingerprint = {
         ip_address: "10.0.0.1",
@@ -562,18 +566,22 @@ describe("ProfileService", () => {
 
       expect(count).toBe(2); // ip_ja4 and audio_canvas
 
-      // Filter PutItemCommand calls for tier2 buckets table only
+      // Should make single BatchWriteItem call with all entries
       const calls = dynamoMock
-        .commandCalls(PutItemCommand)
+        .commandCalls(BatchWriteItemCommand)
         .filter(
           (call) =>
-            call.args[0].input.TableName === testConfig.tier2BucketsTable,
+            call.args[0].input.RequestItems?.[testConfig.tier2BucketsTable],
         );
-      expect(calls).toHaveLength(2);
+      expect(calls).toHaveLength(1);
+
+      const requestItems =
+        calls[0].args[0].input.RequestItems?.[testConfig.tier2BucketsTable];
+      expect(requestItems).toHaveLength(2);
     });
 
     it("should set tier2 bucket TTL to 7 days (AR-39)", async () => {
-      dynamoMock.on(PutItemCommand).resolves({});
+      dynamoMock.on(BatchWriteItemCommand).resolves({});
 
       const fingerprint: Fingerprint = {
         ip_address: "10.0.0.1",
@@ -583,21 +591,78 @@ describe("ProfileService", () => {
       await service.updateTier2Buckets("tenant1", "dev_123", fingerprint);
 
       const calls = dynamoMock
-        .commandCalls(PutItemCommand)
+        .commandCalls(BatchWriteItemCommand)
         .filter(
           (call) =>
-            call.args[0].input.TableName === testConfig.tier2BucketsTable,
+            call.args[0].input.RequestItems?.[testConfig.tier2BucketsTable],
         );
       expect(calls).toHaveLength(1);
 
       // Verify TTL is approximately 7 days from now
-      const ttlValue = Number(calls[0].args[0].input.Item?.ttl?.N);
+      const requestItems =
+        calls[0].args[0].input.RequestItems?.[testConfig.tier2BucketsTable];
+      const ttlValue = Number(requestItems?.[0].PutRequest?.Item?.ttl?.N);
       const expectedTtl =
         Math.floor(Date.now() / 1000) +
         testConfig.tier2BucketTtlDays * 24 * 60 * 60;
       // Allow 5 second tolerance for test execution time
       expect(ttlValue).toBeGreaterThanOrEqual(expectedTtl - 5);
       expect(ttlValue).toBeLessThanOrEqual(expectedTtl + 5);
+    });
+
+    it("should retry on unprocessed items (AR-40)", async () => {
+      // First call returns unprocessed items, second succeeds
+      dynamoMock
+        .on(BatchWriteItemCommand)
+        .resolvesOnce({
+          UnprocessedItems: {
+            [testConfig.tier2BucketsTable]: [
+              {
+                PutRequest: {
+                  Item: {
+                    bucket_key: { S: "tenant1#ip_ja4#10.0.0.1#ja4" },
+                    device_id: { S: "dev_123" },
+                    ttl: { N: "123456789" },
+                  },
+                },
+              },
+            ],
+          },
+        })
+        .resolves({});
+
+      const fingerprint: Fingerprint = {
+        ip_address: "10.0.0.1",
+        ja4: "ja4",
+      };
+
+      await service.updateTier2Buckets("tenant1", "dev_123", fingerprint);
+
+      // Should have made 2 calls (initial + retry)
+      const calls = dynamoMock
+        .commandCalls(BatchWriteItemCommand)
+        .filter(
+          (call) =>
+            call.args[0].input.RequestItems?.[testConfig.tier2BucketsTable],
+        );
+      expect(calls).toHaveLength(2);
+    });
+
+    it("should return 0 when no bucket keys to write", async () => {
+      const fingerprint: Fingerprint = {
+        // No fields that generate bucket keys
+        stable_hash: "abc",
+      };
+
+      const count = await service.updateTier2Buckets(
+        "tenant1",
+        "dev_123",
+        fingerprint,
+      );
+
+      expect(count).toBe(0);
+      // No BatchWriteItem calls should be made
+      expect(dynamoMock.commandCalls(BatchWriteItemCommand)).toHaveLength(0);
     });
   });
 
