@@ -126,13 +126,17 @@ export class WorkersConstruct extends Construct {
     // =====================================
     // MATCHING WORKER LAMBDA
     // =====================================
+    const isProd = stage === "prod";
+    const matchingWorkerConcurrency = isProd ? 500 : 50;
+    const profileUpdaterConcurrency = isProd ? 200 : 50;
+
     this.matchingWorker = new lambda.NodejsFunction(this, "MatchingWorker", {
       ...commonConfig,
       entry: path.join(__dirname, "../../src/handlers/matching-worker.ts"),
       functionName: `${stackName}-matching-worker`,
       memorySize: 512,
       timeout: Duration.seconds(45),
-      reservedConcurrentExecutions: 100, // Limit concurrency to protect downstream
+      reservedConcurrentExecutions: matchingWorkerConcurrency,
       environment: {
         AWS_NODEJS_CONNECTION_REUSE_ENABLED: "1",
         ENVIRONMENT: stage,
@@ -176,7 +180,7 @@ export class WorkersConstruct extends Construct {
       functionName: `${stackName}-profile-updater`,
       memorySize: 256,
       timeout: Duration.seconds(30),
-      reservedConcurrentExecutions: 50, // Lower concurrency for writes
+      reservedConcurrentExecutions: profileUpdaterConcurrency,
       environment: {
         AWS_NODEJS_CONNECTION_REUSE_ENABLED: "1",
         ENVIRONMENT: stage,
@@ -215,11 +219,13 @@ export class WorkersConstruct extends Construct {
       this.matchingWorker,
       "MatchingWorker",
       alarmsTopic,
+      matchingWorkerConcurrency,
     );
     const profileUpdaterAlarms = this.createWorkerAlarms(
       this.profileUpdater,
       "ProfileUpdater",
       alarmsTopic,
+      profileUpdaterConcurrency,
     );
 
     // =====================================
@@ -272,6 +278,7 @@ export class WorkersConstruct extends Construct {
     fn: lambda.NodejsFunction,
     prefix: string,
     alarmsTopic: sns.ITopic,
+    reservedConcurrency: number,
   ): { errorAlarm: cloudwatch.Alarm; durationAlarm: cloudwatch.Alarm } {
     // Error count alarm
     const errorAlarm = new cloudwatch.Alarm(this, `${prefix}Errors`, {
@@ -309,7 +316,8 @@ export class WorkersConstruct extends Construct {
     });
     durationAlarm.addAlarmAction(new actions.SnsAction(alarmsTopic));
 
-    // Concurrent executions alarm
+    // Concurrent executions alarm (AR-26: triggers at 80% of reserved capacity)
+    const concurrencyThreshold = Math.floor(reservedConcurrency * 0.8);
     const concurrencyAlarm = new cloudwatch.Alarm(
       this,
       `${prefix}HighConcurrency`,
@@ -318,9 +326,9 @@ export class WorkersConstruct extends Construct {
           period: Duration.minutes(1),
           statistic: "Maximum",
         }),
-        threshold: 80, // 80% of reserved concurrency
+        threshold: concurrencyThreshold,
         evaluationPeriods: 3,
-        alarmDescription: `Lambda ${fn.functionName} approaching concurrency limit`,
+        alarmDescription: `Lambda ${fn.functionName} at ${concurrencyThreshold}/${reservedConcurrency} concurrent executions (80% threshold)`,
       },
     );
     concurrencyAlarm.addAlarmAction(new actions.SnsAction(alarmsTopic));
