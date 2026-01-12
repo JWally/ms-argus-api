@@ -17,7 +17,7 @@ func TestCorsMiddleware(t *testing.T) {
 	handler := corsMiddleware(innerHandler)
 
 	t.Run("OPTIONS preflight returns 204 with CORS headers", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodOptions, "/v1/collect", nil)
+		req := httptest.NewRequest(http.MethodOptions, "/v1/collect", http.NoBody)
 		req.Header.Set("Origin", "https://merchant-site.com")
 
 		rr := httptest.NewRecorder()
@@ -31,7 +31,7 @@ func TestCorsMiddleware(t *testing.T) {
 	})
 
 	t.Run("POST response includes CORS headers", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodPost, "/v1/collect", nil)
+		req := httptest.NewRequest(http.MethodPost, "/v1/collect", http.NoBody)
 		req.Header.Set("Origin", "https://shop.example.com")
 
 		rr := httptest.NewRecorder()
@@ -45,7 +45,7 @@ func TestCorsMiddleware(t *testing.T) {
 	})
 
 	t.Run("Request without Origin has no CORS headers", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodPost, "/v1/collect", nil)
+		req := httptest.NewRequest(http.MethodPost, "/v1/collect", http.NoBody)
 		// No Origin header set
 
 		rr := httptest.NewRecorder()
@@ -57,7 +57,7 @@ func TestCorsMiddleware(t *testing.T) {
 	})
 
 	t.Run("Access-Control-Max-Age is set to 86400", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodOptions, "/v1/collect", nil)
+		req := httptest.NewRequest(http.MethodOptions, "/v1/collect", http.NoBody)
 		req.Header.Set("Origin", "https://test.com")
 
 		rr := httptest.NewRecorder()
