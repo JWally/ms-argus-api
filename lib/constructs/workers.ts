@@ -1,4 +1,5 @@
 // lib/constructs/workers.ts
+// AR-44: Uses centralized stage config for environment-specific values
 import * as path from "path";
 import { Construct } from "constructs";
 import * as lambda from "aws-cdk-lib/aws-lambda-nodejs";
@@ -15,6 +16,7 @@ import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
 import { Duration } from "aws-cdk-lib";
 import * as actions from "aws-cdk-lib/aws-cloudwatch-actions";
+import { getStageConfig } from "../config";
 
 interface WorkersConstructProps {
   stackName: string;
@@ -126,17 +128,16 @@ export class WorkersConstruct extends Construct {
     // =====================================
     // MATCHING WORKER LAMBDA
     // =====================================
-    const isProd = stage === "prod";
-    const matchingWorkerConcurrency = isProd ? 500 : 50;
-    const profileUpdaterConcurrency = isProd ? 200 : 50;
+    // AR-44: Use centralized stage config for all tunable values
+    const config = getStageConfig(stage);
 
     this.matchingWorker = new lambda.NodejsFunction(this, "MatchingWorker", {
       ...commonConfig,
       entry: path.join(__dirname, "../../src/handlers/matching-worker.ts"),
       functionName: `${stackName}-matching-worker`,
-      memorySize: 512,
-      timeout: Duration.seconds(45),
-      reservedConcurrentExecutions: matchingWorkerConcurrency,
+      memorySize: config.lambda.matching.memorySize,
+      timeout: config.lambda.matching.timeout,
+      reservedConcurrentExecutions: config.lambda.matching.reservedConcurrency,
       environment: {
         AWS_NODEJS_CONNECTION_REUSE_ENABLED: "1",
         ENVIRONMENT: stage,
@@ -154,12 +155,11 @@ export class WorkersConstruct extends Construct {
     });
 
     // SQS event source for matching worker
-    // AR-42: Reduced batching window from 5s to 1s to meet 3s SLA
-    // Note: CDK requires whole seconds, 1s is the minimum
+    // AR-42/AR-44: Batching window from stage config
     this.matchingWorker.addEventSource(
       new lambdaEventSources.SqsEventSource(matchingQueue, {
         batchSize: 10,
-        maxBatchingWindow: Duration.seconds(1),
+        maxBatchingWindow: config.sqs.batchingWindow.matching,
         reportBatchItemFailures: true,
       }),
     );
@@ -180,9 +180,9 @@ export class WorkersConstruct extends Construct {
       ...commonConfig,
       entry: path.join(__dirname, "../../src/handlers/profile-updater.ts"),
       functionName: `${stackName}-profile-updater`,
-      memorySize: 256,
-      timeout: Duration.seconds(30),
-      reservedConcurrentExecutions: profileUpdaterConcurrency,
+      memorySize: config.lambda.profile.memorySize,
+      timeout: config.lambda.profile.timeout,
+      reservedConcurrentExecutions: config.lambda.profile.reservedConcurrency,
       environment: {
         AWS_NODEJS_CONNECTION_REUSE_ENABLED: "1",
         ENVIRONMENT: stage,
@@ -200,12 +200,11 @@ export class WorkersConstruct extends Construct {
     });
 
     // SQS event source for profile updater
-    // AR-42: Reduced batching window from 10s to 1s to meet 3s SLA
-    // Note: CDK requires whole seconds, 1s is the minimum
+    // AR-42/AR-44: Batching window from stage config
     this.profileUpdater.addEventSource(
       new lambdaEventSources.SqsEventSource(profileQueue, {
         batchSize: 10,
-        maxBatchingWindow: Duration.seconds(1),
+        maxBatchingWindow: config.sqs.batchingWindow.profile,
         reportBatchItemFailures: true,
       }),
     );
@@ -218,18 +217,20 @@ export class WorkersConstruct extends Construct {
     tier2BucketsTable.grantReadWriteData(this.profileUpdater);
     profileQueue.grantConsumeMessages(this.profileUpdater);
 
-    // Alarms
+    // Alarms - AR-44: Use stage config for thresholds
     const matchingWorkerAlarms = this.createWorkerAlarms(
       this.matchingWorker,
       "MatchingWorker",
       alarmsTopic,
-      matchingWorkerConcurrency,
+      config.lambda.matching.reservedConcurrency,
+      config.alarms.lambda,
     );
     const profileUpdaterAlarms = this.createWorkerAlarms(
       this.profileUpdater,
       "ProfileUpdater",
       alarmsTopic,
-      profileUpdaterConcurrency,
+      config.lambda.profile.reservedConcurrency,
+      config.alarms.lambda,
     );
 
     // =====================================
@@ -283,45 +284,53 @@ export class WorkersConstruct extends Construct {
     prefix: string,
     alarmsTopic: sns.ITopic,
     reservedConcurrency: number,
+    alarmConfig: {
+      errorThreshold: number;
+      throttleThreshold: number;
+      durationThresholdMs: number;
+      concurrencyPercent: number;
+    },
   ): { errorAlarm: cloudwatch.Alarm; durationAlarm: cloudwatch.Alarm } {
-    // Error count alarm
+    // Error count alarm - AR-44: threshold from config
     const errorAlarm = new cloudwatch.Alarm(this, `${prefix}Errors`, {
       metric: fn.metricErrors({
         period: Duration.minutes(5),
         statistic: "Sum",
       }),
-      threshold: 10,
+      threshold: alarmConfig.errorThreshold,
       evaluationPeriods: 2,
-      alarmDescription: `Lambda ${fn.functionName} has > 10 errors in 5 minutes`,
+      alarmDescription: `Lambda ${fn.functionName} has > ${alarmConfig.errorThreshold} errors in 5 minutes`,
     });
     errorAlarm.addAlarmAction(new actions.SnsAction(alarmsTopic));
 
-    // Throttle alarm
+    // Throttle alarm - AR-44: threshold from config
     const throttleAlarm = new cloudwatch.Alarm(this, `${prefix}Throttles`, {
       metric: fn.metricThrottles({
         period: Duration.minutes(5),
         statistic: "Sum",
       }),
-      threshold: 5,
+      threshold: alarmConfig.throttleThreshold,
       evaluationPeriods: 1,
       alarmDescription: `Lambda ${fn.functionName} is throttled`,
     });
     throttleAlarm.addAlarmAction(new actions.SnsAction(alarmsTopic));
 
-    // High duration alarm (p95)
+    // High duration alarm (p95) - AR-44: threshold from config
     const durationAlarm = new cloudwatch.Alarm(this, `${prefix}HighDuration`, {
       metric: fn.metricDuration({
         period: Duration.minutes(5),
         statistic: "p95",
       }),
-      threshold: 30000, // 30 seconds
+      threshold: alarmConfig.durationThresholdMs,
       evaluationPeriods: 3,
-      alarmDescription: `Lambda ${fn.functionName} p95 duration > 30s`,
+      alarmDescription: `Lambda ${fn.functionName} p95 duration > ${alarmConfig.durationThresholdMs}ms`,
     });
     durationAlarm.addAlarmAction(new actions.SnsAction(alarmsTopic));
 
-    // Concurrent executions alarm (AR-26: triggers at 80% of reserved capacity)
-    const concurrencyThreshold = Math.floor(reservedConcurrency * 0.8);
+    // Concurrent executions alarm - AR-44: percentage from config
+    const concurrencyThreshold = Math.floor(
+      reservedConcurrency * (alarmConfig.concurrencyPercent / 100),
+    );
     const concurrencyAlarm = new cloudwatch.Alarm(
       this,
       `${prefix}HighConcurrency`,
@@ -332,7 +341,7 @@ export class WorkersConstruct extends Construct {
         }),
         threshold: concurrencyThreshold,
         evaluationPeriods: 3,
-        alarmDescription: `Lambda ${fn.functionName} at ${concurrencyThreshold}/${reservedConcurrency} concurrent executions (80% threshold)`,
+        alarmDescription: `Lambda ${fn.functionName} at ${concurrencyThreshold}/${reservedConcurrency} concurrent executions (${alarmConfig.concurrencyPercent}% threshold)`,
       },
     );
     concurrencyAlarm.addAlarmAction(new actions.SnsAction(alarmsTopic));

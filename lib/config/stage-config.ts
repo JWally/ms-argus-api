@@ -121,7 +121,7 @@ const devConfig: StageConfig = {
 
   ecs: {
     cpu: 256,
-    memoryMiB: 256,
+    memoryMiB: 512, // Fargate minimum for 256 CPU
     desiredCount: 1,
     minCapacity: 1,
     maxCapacity: 2,

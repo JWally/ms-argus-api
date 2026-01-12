@@ -1,4 +1,5 @@
 // lib/constructs/ingestion-service.ts
+// AR-44: Uses centralized stage config for environment-specific values
 import * as path from "path";
 import { Construct } from "constructs";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
@@ -11,6 +12,7 @@ import * as sns from "aws-cdk-lib/aws-sns";
 import * as actions from "aws-cdk-lib/aws-cloudwatch-actions";
 import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
 import { Duration, RemovalPolicy } from "aws-cdk-lib";
+import { getStageConfig } from "../config";
 
 interface IngestionServiceProps {
   stackName: string;
@@ -37,6 +39,9 @@ export class IngestionServiceConstruct extends Construct {
 
     const { stackName, vpc, matchingQueue, alarmsTopic, stage, secret } = props;
 
+    // AR-44: Use centralized stage config for all tunable values
+    const config = getStageConfig(stage);
+
     // Security group for the service
     this.securityGroup = new ec2.SecurityGroup(this, "ServiceSecurityGroup", {
       vpc,
@@ -57,10 +62,10 @@ export class IngestionServiceConstruct extends Construct {
       removalPolicy: RemovalPolicy.DESTROY,
     });
 
-    // Task definition (AR-37: Right-sized for lightweight Go HTTP server)
+    // Task definition - AR-44: Use stage config for sizing
     const taskDefinition = new ecs.FargateTaskDefinition(this, "TaskDef", {
-      memoryLimitMiB: 512,
-      cpu: 256, // 0.25 vCPU
+      memoryLimitMiB: config.ecs.memoryMiB,
+      cpu: config.ecs.cpu,
       runtimePlatform: {
         cpuArchitecture: ecs.CpuArchitecture.ARM64,
         operatingSystemFamily: ecs.OperatingSystemFamily.LINUX,
@@ -147,11 +152,11 @@ export class IngestionServiceConstruct extends Construct {
       open: false,
     });
 
-    // Fargate service
+    // Fargate service - AR-44: Use stage config for desired count
     this.service = new ecs.FargateService(this, "Service", {
       cluster: this.cluster,
       taskDefinition,
-      desiredCount: 2,
+      desiredCount: config.ecs.desiredCount,
       minHealthyPercent: 100,
       maxHealthyPercent: 200,
       // Let CDK generate service name to avoid collisions on redeploy
@@ -185,47 +190,58 @@ export class IngestionServiceConstruct extends Construct {
       deregistrationDelay: Duration.seconds(30),
     });
 
-    // Auto-scaling (after target group is attached)
+    // Auto-scaling - AR-44: Use stage config for capacity limits
     const scaling = this.service.autoScaleTaskCount({
-      minCapacity: 2,
-      maxCapacity: 8,
+      minCapacity: config.ecs.minCapacity,
+      maxCapacity: config.ecs.maxCapacity,
     });
 
     scaling.scaleOnCpuUtilization("CpuScaling", {
-      targetUtilizationPercent: 70,
+      targetUtilizationPercent: config.ecs.cpuScalingThreshold,
       scaleInCooldown: Duration.seconds(60),
       scaleOutCooldown: Duration.seconds(30),
     });
 
     scaling.scaleOnRequestCount("RequestScaling", {
       targetGroup,
-      requestsPerTarget: 5000, // Scale out above 5k req/target
+      requestsPerTarget: config.ecs.requestsPerTarget,
       scaleInCooldown: Duration.seconds(60),
       scaleOutCooldown: Duration.seconds(30),
     });
 
-    // Alarms
-    this.createServiceAlarms(stackName, alarmsTopic, targetGroup);
+    // Alarms - AR-44: Pass config for thresholds
+    this.createServiceAlarms(
+      stackName,
+      alarmsTopic,
+      targetGroup,
+      config.alarms.ecs,
+    );
   }
 
   private createServiceAlarms(
     stackName: string,
     alarmsTopic: sns.ITopic,
     targetGroup: elbv2.ApplicationTargetGroup,
+    alarmConfig: {
+      cpuThreshold: number;
+      latencyThresholdMs: number;
+      errorThreshold: number;
+    },
   ) {
-    // High latency alarm
+    // High latency alarm - AR-44: threshold from config (convert ms to seconds)
+    const latencyThresholdSec = alarmConfig.latencyThresholdMs / 1000;
     const latencyAlarm = new cloudwatch.Alarm(this, "HighLatencyAlarm", {
       metric: targetGroup.metrics.targetResponseTime({
         period: Duration.minutes(5),
         statistic: "p99",
       }),
-      threshold: 0.01, // 10ms - should be <5ms normally
+      threshold: latencyThresholdSec,
       evaluationPeriods: 3,
-      alarmDescription: "Ingestion service p99 latency > 10ms",
+      alarmDescription: `Ingestion service p99 latency > ${alarmConfig.latencyThresholdMs}ms`,
     });
     latencyAlarm.addAlarmAction(new actions.SnsAction(alarmsTopic));
 
-    // 5xx errors alarm
+    // 5xx errors alarm - AR-44: threshold from config
     const errorAlarm = new cloudwatch.Alarm(this, "ErrorAlarm", {
       metric: targetGroup.metrics.httpCodeTarget(
         elbv2.HttpCodeTarget.TARGET_5XX_COUNT,
@@ -234,9 +250,9 @@ export class IngestionServiceConstruct extends Construct {
           statistic: "Sum",
         },
       ),
-      threshold: 10,
+      threshold: alarmConfig.errorThreshold,
       evaluationPeriods: 2,
-      alarmDescription: "Ingestion service 5xx errors > 10",
+      alarmDescription: `Ingestion service 5xx errors > ${alarmConfig.errorThreshold}`,
     });
     errorAlarm.addAlarmAction(new actions.SnsAction(alarmsTopic));
 
@@ -252,15 +268,15 @@ export class IngestionServiceConstruct extends Construct {
     });
     unhealthyAlarm.addAlarmAction(new actions.SnsAction(alarmsTopic));
 
-    // CPU utilization alarm
+    // CPU utilization alarm - AR-44: threshold from config
     const cpuAlarm = new cloudwatch.Alarm(this, "HighCPUAlarm", {
       metric: this.service.metricCpuUtilization({
         period: Duration.minutes(5),
         statistic: "Average",
       }),
-      threshold: 85,
+      threshold: alarmConfig.cpuThreshold,
       evaluationPeriods: 3,
-      alarmDescription: "Ingestion service CPU > 85%",
+      alarmDescription: `Ingestion service CPU > ${alarmConfig.cpuThreshold}%`,
     });
     cpuAlarm.addAlarmAction(new actions.SnsAction(alarmsTopic));
   }

@@ -1,4 +1,5 @@
 // lib/constructs/redis.ts
+// AR-44: Uses centralized stage config for environment-specific values
 import { Construct } from "constructs";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
 import * as elasticache from "aws-cdk-lib/aws-elasticache";
@@ -6,6 +7,7 @@ import * as cloudwatch from "aws-cdk-lib/aws-cloudwatch";
 import * as sns from "aws-cdk-lib/aws-sns";
 import * as actions from "aws-cdk-lib/aws-cloudwatch-actions";
 import { Duration, RemovalPolicy } from "aws-cdk-lib";
+import { getStageConfig } from "../config";
 
 interface RedisConstructProps {
   stackName: string;
@@ -29,12 +31,9 @@ export class RedisConstruct extends Construct {
 
     const { stackName, vpc, alarmsTopic, stage } = props;
 
-    // AR-46: Use t4g.small for dev (1GB) - t4g.micro (512MB) is too small
-    // Production gets medium instances with HA (AR-38: right-sized from large)
-    const isProd = stage === "prod";
-    const nodeType = isProd ? "cache.r6g.medium" : "cache.t4g.small";
-    const numNodes = isProd ? 2 : 1; // No HA for dev/staging
-    const multiAz = isProd;
+    // AR-44: Use centralized stage config for all tunable values
+    const config = getStageConfig(stage);
+    const { nodeType, numNodes, multiAz, snapshotRetentionDays } = config.redis;
 
     // AR-46: Custom parameter group with volatile-lru eviction policy
     // Default policy may be noeviction which causes OOM errors instead of evicting
@@ -89,8 +88,8 @@ export class RedisConstruct extends Construct {
       atRestEncryptionEnabled: true,
       transitEncryptionEnabled: true,
       port: this.port,
-      // Snapshot for recovery
-      snapshotRetentionLimit: 7,
+      // Snapshot for recovery - AR-44: retention from config
+      snapshotRetentionLimit: snapshotRetentionDays,
       snapshotWindow: "03:00-04:00",
       preferredMaintenanceWindow: "sun:04:00-sun:05:00",
     });
@@ -102,12 +101,21 @@ export class RedisConstruct extends Construct {
     // Primary endpoint
     this.endpoint = this.cluster.attrPrimaryEndPointAddress;
 
-    // Alarms
-    this.createRedisAlarms(stackName, alarmsTopic);
+    // Alarms - AR-44: Pass config for thresholds
+    this.createRedisAlarms(stackName, alarmsTopic, config.alarms.redis);
   }
 
-  private createRedisAlarms(stackName: string, alarmsTopic: sns.ITopic) {
-    // CPU utilization alarm
+  private createRedisAlarms(
+    stackName: string,
+    alarmsTopic: sns.ITopic,
+    alarmConfig: {
+      memoryWarningPercent: number;
+      memoryCriticalPercent: number;
+      cpuThreshold: number;
+      evictionsThreshold: number;
+    },
+  ) {
+    // CPU utilization alarm - AR-44: threshold from config
     const cpuAlarm = new cloudwatch.Alarm(this, "RedisCPUAlarm", {
       metric: new cloudwatch.Metric({
         namespace: "AWS/ElastiCache",
@@ -118,13 +126,13 @@ export class RedisConstruct extends Construct {
         period: Duration.minutes(5),
         statistic: "Average",
       }),
-      threshold: 80,
+      threshold: alarmConfig.cpuThreshold,
       evaluationPeriods: 3,
-      alarmDescription: "Redis CPU > 80% for 15 minutes",
+      alarmDescription: `Redis CPU > ${alarmConfig.cpuThreshold}% for 15 minutes`,
     });
     cpuAlarm.addAlarmAction(new actions.SnsAction(alarmsTopic));
 
-    // AR-46: Early warning memory alarm at 70%
+    // Early warning memory alarm - AR-44: threshold from config
     const memoryWarningAlarm = new cloudwatch.Alarm(
       this,
       "RedisMemoryWarningAlarm",
@@ -138,15 +146,14 @@ export class RedisConstruct extends Construct {
           period: Duration.minutes(5),
           statistic: "Average",
         }),
-        threshold: 70,
+        threshold: alarmConfig.memoryWarningPercent,
         evaluationPeriods: 2,
-        alarmDescription:
-          "Redis memory > 70% for 10 minutes - consider scaling or investigating",
+        alarmDescription: `Redis memory > ${alarmConfig.memoryWarningPercent}% for 10 minutes - consider scaling or investigating`,
       },
     );
     memoryWarningAlarm.addAlarmAction(new actions.SnsAction(alarmsTopic));
 
-    // Critical memory alarm at 80%
+    // Critical memory alarm - AR-44: threshold from config
     const memoryAlarm = new cloudwatch.Alarm(this, "RedisMemoryAlarm", {
       metric: new cloudwatch.Metric({
         namespace: "AWS/ElastiCache",
@@ -157,13 +164,13 @@ export class RedisConstruct extends Construct {
         period: Duration.minutes(5),
         statistic: "Average",
       }),
-      threshold: 80,
+      threshold: alarmConfig.memoryCriticalPercent,
       evaluationPeriods: 3,
-      alarmDescription: "Redis memory > 80% for 15 minutes - critical",
+      alarmDescription: `Redis memory > ${alarmConfig.memoryCriticalPercent}% for 15 minutes - critical`,
     });
     memoryAlarm.addAlarmAction(new actions.SnsAction(alarmsTopic));
 
-    // Evictions alarm (indicates memory pressure)
+    // Evictions alarm - AR-44: threshold from config
     const evictionsAlarm = new cloudwatch.Alarm(this, "RedisEvictionsAlarm", {
       metric: new cloudwatch.Metric({
         namespace: "AWS/ElastiCache",
@@ -174,9 +181,9 @@ export class RedisConstruct extends Construct {
         period: Duration.minutes(5),
         statistic: "Sum",
       }),
-      threshold: 100,
+      threshold: alarmConfig.evictionsThreshold,
       evaluationPeriods: 2,
-      alarmDescription: "Redis evicting keys - memory pressure",
+      alarmDescription: `Redis evicting > ${alarmConfig.evictionsThreshold} keys - memory pressure`,
     });
     evictionsAlarm.addAlarmAction(new actions.SnsAction(alarmsTopic));
   }

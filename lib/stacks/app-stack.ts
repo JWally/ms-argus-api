@@ -139,9 +139,10 @@ export class ArgusApiStack extends cdk.Stack {
       alarmsTopic,
     });
 
-    // SQS queues
+    // SQS queues - AR-44: Pass stage for config-based values
     const queues = new QueuesConstruct(this, "Queues", {
       stackName,
+      stage,
       alarmsTopic,
     });
 
