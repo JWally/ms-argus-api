@@ -2,7 +2,6 @@
 import * as cdk from "aws-cdk-lib";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
 import * as sns from "aws-cdk-lib/aws-sns";
-import * as glue from "aws-cdk-lib/aws-glue";
 import * as route53 from "aws-cdk-lib/aws-route53";
 import * as acm from "aws-cdk-lib/aws-certificatemanager";
 import { Construct } from "constructs";
@@ -14,12 +13,6 @@ import { DynamoDbConstruct } from "../constructs/dynamodb";
 import { IngestionServiceConstruct } from "../constructs/ingestion-service";
 import { WorkersConstruct } from "../constructs/workers";
 import { CloudFrontWafConstruct } from "../constructs/cloudfront";
-import { FirehoseProcessor } from "../constructs/firehose-processor";
-import {
-  makeJsonTable,
-  makeParquetProjectionTable,
-} from "../helpers/make-glue-table";
-import { ARGUS_COLUMNS } from "../../src/helpers/constants";
 
 interface ArgusApiStackProps extends cdk.StackProps {
   environment: string;
@@ -43,14 +36,12 @@ interface ArgusApiStackProps extends cdk.StackProps {
  * - Redis ElastiCache (session cache)
  * - DynamoDB (profiles, tier1 index, tier2 buckets)
  * - CloudFront + WAF (edge protection)
- * - Firehose -> S3 (analytics)
  * - Route53 + ACM (custom domain)
  */
 export class ArgusApiStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props: ArgusApiStackProps) {
     super(scope, id, props);
-    const { environment, stackName, rootDomain, stage, region, account } =
-      props;
+    const { environment, stackName, rootDomain, stage, region } = props;
 
     // =========================================================================
     // NETWORKING
@@ -208,70 +199,6 @@ export class ArgusApiStack extends cdk.Stack {
     });
 
     // =========================================================================
-    // ANALYTICS LAYER
-    // =========================================================================
-
-    // Fingerprint data topic for analytics
-    const fingerprintTopic = new sns.Topic(this, "FingerprintTopic", {
-      displayName: `${stackName}-fingerprint-topic`,
-    });
-
-    // Glue database for analytics
-    const glueDbName = `${stage}_${stackName}_events_db`
-      .toLowerCase()
-      .replace(/[^a-z0-9_]/g, "_");
-
-    const glueDb = new glue.CfnDatabase(this, "EventsGlueDb", {
-      catalogId: account,
-      databaseInput: {
-        name: glueDbName,
-        description:
-          "Argus fingerprint events schema for Firehose JSON->Parquet conversion",
-      },
-    });
-
-    // Glue JSON table
-    const fingerprintTableName = "fingerprint_events_json";
-    const fingerprintGlueTable = makeJsonTable(
-      this,
-      "FingerprintEventsGlueTable",
-      fingerprintTableName,
-      account,
-      glueDbName,
-      ARGUS_COLUMNS,
-      glueDb,
-    );
-
-    // Firehose processor for analytics
-    const fingerprintFirehose = new FirehoseProcessor(
-      this,
-      "FirehoseProcessor",
-      {
-        stackName,
-        modelName: "firehose-processor-fingerprint",
-        stage,
-        inputTopic: fingerprintTopic,
-        glueDbName,
-        glueTableName: fingerprintTableName,
-        glueCatalogId: account,
-      },
-    );
-    fingerprintFirehose.node.addDependency(fingerprintGlueTable);
-
-    // Parquet table for Athena queries
-    makeParquetProjectionTable(
-      this,
-      "FingerprintEventsParquetTable",
-      "fingerprint_events_parquet",
-      account,
-      glueDbName,
-      ARGUS_COLUMNS,
-      glueDb,
-      fingerprintFirehose.bucket.bucketName,
-      "parquet/",
-    );
-
-    // =========================================================================
     // OUTPUTS
     // =========================================================================
 
@@ -318,11 +245,6 @@ export class ArgusApiStack extends cdk.Stack {
     new cdk.CfnOutput(this, "ProfilesTableName", {
       value: dynamodb.profilesTable.tableName,
       description: "DynamoDB profiles table name",
-    });
-
-    new cdk.CfnOutput(this, "FingerprintBucket", {
-      value: fingerprintFirehose.bucket.bucketName,
-      description: "S3 bucket for fingerprint analytics data",
     });
 
     new cdk.CfnOutput(this, "MatchingWorkerArn", {
