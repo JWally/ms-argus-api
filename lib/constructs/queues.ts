@@ -1,13 +1,16 @@
 // lib/constructs/queues.ts
+// AR-44: Uses centralized stage config for environment-specific values
 import { Construct } from "constructs";
 import * as sqs from "aws-cdk-lib/aws-sqs";
 import * as cloudwatch from "aws-cdk-lib/aws-cloudwatch";
 import * as sns from "aws-cdk-lib/aws-sns";
 import * as actions from "aws-cdk-lib/aws-cloudwatch-actions";
 import { Duration } from "aws-cdk-lib";
+import { getStageConfig } from "../config";
 
 interface QueuesConstructProps {
   stackName: string;
+  stage: string;
   alarmsTopic: sns.ITopic;
 }
 
@@ -25,7 +28,10 @@ export class QueuesConstruct extends Construct {
   constructor(scope: Construct, id: string, props: QueuesConstructProps) {
     super(scope, id);
 
-    const { stackName, alarmsTopic } = props;
+    const { stackName, stage, alarmsTopic } = props;
+
+    // AR-44: Use centralized stage config for all tunable values
+    const config = getStageConfig(stage);
 
     // Dead Letter Queue for matching failures
     this.matchingDlq = new sqs.Queue(this, "MatchingDLQ", {
@@ -36,11 +42,11 @@ export class QueuesConstruct extends Construct {
     // Main matching queue - fingerprints to be processed
     this.matchingQueue = new sqs.Queue(this, "MatchingQueue", {
       queueName: `${stackName}-matching`,
-      visibilityTimeout: Duration.seconds(60), // Lambda timeout + buffer
-      retentionPeriod: Duration.days(4),
+      visibilityTimeout: config.sqs.visibilityTimeout,
+      retentionPeriod: config.sqs.retentionPeriod,
       deadLetterQueue: {
         queue: this.matchingDlq,
-        maxReceiveCount: 3,
+        maxReceiveCount: config.sqs.maxReceiveCount,
       },
     });
 
@@ -53,17 +59,27 @@ export class QueuesConstruct extends Construct {
     // Profile update queue - writes to DynamoDB/Qdrant
     this.profileQueue = new sqs.Queue(this, "ProfileQueue", {
       queueName: `${stackName}-profile`,
-      visibilityTimeout: Duration.seconds(60),
-      retentionPeriod: Duration.days(4),
+      visibilityTimeout: config.sqs.visibilityTimeout,
+      retentionPeriod: config.sqs.retentionPeriod,
       deadLetterQueue: {
         queue: this.profileDlq,
-        maxReceiveCount: 3,
+        maxReceiveCount: config.sqs.maxReceiveCount,
       },
     });
 
-    // Alarms
-    this.createQueueAlarms(this.matchingQueue, "Matching", alarmsTopic);
-    this.createQueueAlarms(this.profileQueue, "Profile", alarmsTopic);
+    // Alarms - AR-44: Pass config for thresholds
+    this.createQueueAlarms(
+      this.matchingQueue,
+      "Matching",
+      alarmsTopic,
+      config.alarms.queue,
+    );
+    this.createQueueAlarms(
+      this.profileQueue,
+      "Profile",
+      alarmsTopic,
+      config.alarms.queue,
+    );
     this.createDlqAlarms(this.matchingDlq, "MatchingDLQ", alarmsTopic);
     this.createDlqAlarms(this.profileDlq, "ProfileDLQ", alarmsTopic);
   }
@@ -72,28 +88,29 @@ export class QueuesConstruct extends Construct {
     queue: sqs.Queue,
     prefix: string,
     alarmsTopic: sns.ITopic,
+    alarmConfig: { backlogThreshold: number; messageAgeSeconds: number },
   ) {
-    // High backlog alarm
+    // High backlog alarm - AR-44: threshold from config
     const backlogAlarm = new cloudwatch.Alarm(this, `${prefix}QueueBacklog`, {
       metric: queue.metricApproximateNumberOfMessagesVisible({
         period: Duration.minutes(5),
         statistic: "Average",
       }),
-      threshold: 10000,
+      threshold: alarmConfig.backlogThreshold,
       evaluationPeriods: 2,
-      alarmDescription: `${prefix} queue backlog > 10k messages`,
+      alarmDescription: `${prefix} queue backlog > ${alarmConfig.backlogThreshold} messages`,
     });
     backlogAlarm.addAlarmAction(new actions.SnsAction(alarmsTopic));
 
-    // Age of oldest message alarm (indicates stuck processing)
+    // Age of oldest message alarm - AR-44: threshold from config
     const ageAlarm = new cloudwatch.Alarm(this, `${prefix}QueueAge`, {
       metric: queue.metricApproximateAgeOfOldestMessage({
         period: Duration.minutes(5),
         statistic: "Maximum",
       }),
-      threshold: 300, // 5 minutes
+      threshold: alarmConfig.messageAgeSeconds,
       evaluationPeriods: 2,
-      alarmDescription: `${prefix} queue has messages older than 5 minutes`,
+      alarmDescription: `${prefix} queue has messages older than ${alarmConfig.messageAgeSeconds}s`,
     });
     ageAlarm.addAlarmAction(new actions.SnsAction(alarmsTopic));
   }
