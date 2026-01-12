@@ -117,11 +117,18 @@ export class IngestionServiceConstruct extends Construct {
       allowAllOutbound: true, // Required for health checks to reach targets
     });
 
-    // Allow HTTP traffic from anywhere to ALB (CloudFront will front this)
+    // Allow HTTP traffic ONLY from CloudFront edge locations
+    // Using AWS-managed prefix list to prevent WAF bypass via direct ALB access
+    // Prefix list com.amazonaws.global.cloudfront.origin-facing contains all CF edge IPs
+    const cloudfrontPrefixList = ec2.Peer.prefixList(
+      ec2.PrefixList.fromLookup(this, "CloudFrontPrefixList", {
+        prefixListName: "com.amazonaws.global.cloudfront.origin-facing",
+      }).prefixListId,
+    );
     albSecurityGroup.addIngressRule(
-      ec2.Peer.anyIpv4(),
+      cloudfrontPrefixList,
       ec2.Port.tcp(80),
-      "Allow HTTP from anywhere",
+      "Allow HTTP only from CloudFront edge locations",
     );
 
     this.loadBalancer = new elbv2.ApplicationLoadBalancer(this, "ALB", {
@@ -132,9 +139,12 @@ export class IngestionServiceConstruct extends Construct {
     });
 
     // HTTP listener (HTTPS terminated at CloudFront)
+    // open: false prevents CDK from auto-adding 0.0.0.0/0 ingress rule
+    // We use CloudFront prefix list instead (see above) to prevent WAF bypass
     this.listener = this.loadBalancer.addListener("HttpListener", {
       port: 80,
       protocol: elbv2.ApplicationProtocol.HTTP,
+      open: false,
     });
 
     // Fargate service
