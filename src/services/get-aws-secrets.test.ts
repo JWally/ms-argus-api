@@ -33,7 +33,11 @@ vi.mock("../helpers/constants", async () => {
 });
 
 // Import after mocking
-import { getAwsSecrets, clearCache } from "./get-aws-secrets";
+import {
+  getAwsSecrets,
+  getVersionedSecrets,
+  clearCache,
+} from "./get-aws-secrets";
 
 describe("getAwsSecrets", () => {
   beforeEach(() => {
@@ -204,6 +208,99 @@ describe("getAwsSecrets", () => {
       await expect(getAwsSecrets()).rejects.toThrow(
         ERROR_STRINGS.SECRETS_MANAGER_FAILED,
       );
+    });
+  });
+
+  describe("versioned secrets (AR-28)", () => {
+    it("should handle versioned format with current and previous keys", async () => {
+      const versionedSecrets = {
+        version: 2,
+        current: {
+          ENCRYPTION_KEY: "current-enc-key",
+          HMAC_KEY: "current-hmac-key",
+        },
+        previous: {
+          ENCRYPTION_KEY: "previous-enc-key",
+          HMAC_KEY: "previous-hmac-key",
+        },
+      };
+
+      secretsManagerMock.on(GetSecretValueCommand).resolves({
+        SecretString: JSON.stringify(versionedSecrets),
+      });
+
+      const result = await getVersionedSecrets();
+
+      expect(result.version).toBe(2);
+      expect(result.current.ENCRYPTION_KEY).toBe("current-enc-key");
+      expect(result.current.HMAC_KEY).toBe("current-hmac-key");
+      expect(result.previous?.ENCRYPTION_KEY).toBe("previous-enc-key");
+      expect(result.previous?.HMAC_KEY).toBe("previous-hmac-key");
+    });
+
+    it("should handle versioned format without previous keys", async () => {
+      const versionedSecrets = {
+        version: 1,
+        current: {
+          ENCRYPTION_KEY: "enc-key",
+          HMAC_KEY: "hmac-key",
+        },
+      };
+
+      secretsManagerMock.on(GetSecretValueCommand).resolves({
+        SecretString: JSON.stringify(versionedSecrets),
+      });
+
+      const result = await getVersionedSecrets();
+
+      expect(result.version).toBe(1);
+      expect(result.current.ENCRYPTION_KEY).toBe("enc-key");
+      expect(result.previous).toBeUndefined();
+    });
+
+    it("should convert legacy format to versioned format", async () => {
+      const legacySecrets = {
+        ENCRYPTION_KEY: "legacy-enc-key",
+        HMAC_KEY: "legacy-hmac-key",
+      };
+
+      secretsManagerMock.on(GetSecretValueCommand).resolves({
+        SecretString: JSON.stringify(legacySecrets),
+      });
+
+      const result = await getVersionedSecrets();
+
+      expect(result.version).toBe(1);
+      expect(result.current.ENCRYPTION_KEY).toBe("legacy-enc-key");
+      expect(result.current.HMAC_KEY).toBe("legacy-hmac-key");
+      expect(result.previous).toBeUndefined();
+    });
+
+    it("getAwsSecrets should return flat format from versioned secrets", async () => {
+      const versionedSecrets = {
+        version: 3,
+        current: {
+          ENCRYPTION_KEY: "versioned-enc-key",
+          HMAC_KEY: "versioned-hmac-key",
+        },
+        previous: {
+          ENCRYPTION_KEY: "old-enc-key",
+          HMAC_KEY: "old-hmac-key",
+        },
+      };
+
+      secretsManagerMock.on(GetSecretValueCommand).resolves({
+        SecretString: JSON.stringify(versionedSecrets),
+      });
+
+      const result = await getAwsSecrets();
+
+      // Should only return current keys in flat format
+      expect(result).toEqual({
+        ENCRYPTION_KEY: "versioned-enc-key",
+        HMAC_KEY: "versioned-hmac-key",
+      });
+      expect(result).not.toHaveProperty("previous");
     });
   });
 });

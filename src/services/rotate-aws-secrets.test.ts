@@ -4,10 +4,30 @@ import { mockClient } from "aws-sdk-client-mock";
 import {
   SecretsManagerClient,
   PutSecretValueCommand,
+  GetSecretValueCommand,
 } from "@aws-sdk/client-secrets-manager";
 import { handler } from "./rotate-aws-secrets";
 
 const secretsManagerMock = mockClient(SecretsManagerClient);
+
+// Helper to create legacy secret mock
+const mockLegacySecret = {
+  ENCRYPTION_KEY: "old-enc-key-base64",
+  HMAC_KEY: "old-hmac-key-base64",
+};
+
+// Helper to create versioned secret mock
+const mockVersionedSecret = {
+  version: 2,
+  current: {
+    ENCRYPTION_KEY: "current-enc-key-base64",
+    HMAC_KEY: "current-hmac-key-base64",
+  },
+  previous: {
+    ENCRYPTION_KEY: "previous-enc-key-base64",
+    HMAC_KEY: "previous-hmac-key-base64",
+  },
+};
 
 describe("rotate-aws-secrets handler", () => {
   const originalEnv = process.env;
@@ -27,12 +47,18 @@ describe("rotate-aws-secrets handler", () => {
 
   describe("successful rotation", () => {
     it("should rotate secrets successfully", async () => {
+      secretsManagerMock.on(GetSecretValueCommand).resolves({
+        SecretString: JSON.stringify(mockLegacySecret),
+      });
       secretsManagerMock.on(PutSecretValueCommand).resolves({});
 
       await expect(handler()).resolves.not.toThrow();
     });
 
     it("should call PutSecretValueCommand with correct SecretId", async () => {
+      secretsManagerMock.on(GetSecretValueCommand).resolves({
+        SecretString: JSON.stringify(mockLegacySecret),
+      });
       secretsManagerMock.on(PutSecretValueCommand).resolves({});
 
       await handler();
@@ -42,7 +68,10 @@ describe("rotate-aws-secrets handler", () => {
       expect(calls[0].args[0].input.SecretId).toBe(validSecretArn);
     });
 
-    it("should generate new ENCRYPTION_KEY and HMAC_KEY with version", async () => {
+    it("should generate new versioned secret structure (AR-28)", async () => {
+      secretsManagerMock.on(GetSecretValueCommand).resolves({
+        SecretString: JSON.stringify(mockLegacySecret),
+      });
       secretsManagerMock.on(PutSecretValueCommand).resolves({});
 
       await handler();
@@ -51,13 +80,54 @@ describe("rotate-aws-secrets handler", () => {
       const secretString = calls[0].args[0].input.SecretString;
       const secrets = JSON.parse(secretString!);
 
-      expect(secrets).toHaveProperty("version", "1");
-      expect(secrets).toHaveProperty("ENCRYPTION_KEY");
-      expect(secrets).toHaveProperty("HMAC_KEY");
-      expect(secrets).toHaveProperty("ROTATED_AT");
+      // New versioned structure
+      expect(secrets).toHaveProperty("version", 2); // 1 (legacy) + 1
+      expect(secrets).toHaveProperty("current");
+      expect(secrets.current).toHaveProperty("ENCRYPTION_KEY");
+      expect(secrets.current).toHaveProperty("HMAC_KEY");
+      expect(secrets).toHaveProperty("previous");
+      expect(secrets).toHaveProperty("rotatedAt");
+    });
+
+    it("should preserve previous keys during rotation (AR-28)", async () => {
+      secretsManagerMock.on(GetSecretValueCommand).resolves({
+        SecretString: JSON.stringify(mockLegacySecret),
+      });
+      secretsManagerMock.on(PutSecretValueCommand).resolves({});
+
+      await handler();
+
+      const calls = secretsManagerMock.commandCalls(PutSecretValueCommand);
+      const secrets = JSON.parse(calls[0].args[0].input.SecretString!);
+
+      // Previous should contain the old keys
+      expect(secrets.previous.ENCRYPTION_KEY).toBe(
+        mockLegacySecret.ENCRYPTION_KEY,
+      );
+      expect(secrets.previous.HMAC_KEY).toBe(mockLegacySecret.HMAC_KEY);
+    });
+
+    it("should increment version when rotating versioned secret", async () => {
+      secretsManagerMock.on(GetSecretValueCommand).resolves({
+        SecretString: JSON.stringify(mockVersionedSecret),
+      });
+      secretsManagerMock.on(PutSecretValueCommand).resolves({});
+
+      await handler();
+
+      const calls = secretsManagerMock.commandCalls(PutSecretValueCommand);
+      const secrets = JSON.parse(calls[0].args[0].input.SecretString!);
+
+      expect(secrets.version).toBe(3); // 2 + 1
+      expect(secrets.previous.ENCRYPTION_KEY).toBe(
+        mockVersionedSecret.current.ENCRYPTION_KEY,
+      );
     });
 
     it("should generate base64 encoded 256-bit keys", async () => {
+      secretsManagerMock.on(GetSecretValueCommand).resolves({
+        SecretString: JSON.stringify(mockLegacySecret),
+      });
       secretsManagerMock.on(PutSecretValueCommand).resolves({});
 
       await handler();
@@ -67,17 +137,23 @@ describe("rotate-aws-secrets handler", () => {
       const secrets = JSON.parse(secretString!);
 
       // Base64 encoded 32 bytes = 44 characters (with padding)
-      expect(secrets.ENCRYPTION_KEY).toMatch(/^[A-Za-z0-9+/]+=*$/);
-      expect(secrets.HMAC_KEY).toMatch(/^[A-Za-z0-9+/]+=*$/);
+      expect(secrets.current.ENCRYPTION_KEY).toMatch(/^[A-Za-z0-9+/]+=*$/);
+      expect(secrets.current.HMAC_KEY).toMatch(/^[A-Za-z0-9+/]+=*$/);
 
       // Verify they decode to 32 bytes
-      const encKeyBuffer = Buffer.from(secrets.ENCRYPTION_KEY, "base64");
-      const hmacKeyBuffer = Buffer.from(secrets.HMAC_KEY, "base64");
+      const encKeyBuffer = Buffer.from(
+        secrets.current.ENCRYPTION_KEY,
+        "base64",
+      );
+      const hmacKeyBuffer = Buffer.from(secrets.current.HMAC_KEY, "base64");
       expect(encKeyBuffer.length).toBe(32);
       expect(hmacKeyBuffer.length).toBe(32);
     });
 
-    it("should include ISO timestamp in ROTATED_AT", async () => {
+    it("should include ISO timestamp in rotatedAt", async () => {
+      secretsManagerMock.on(GetSecretValueCommand).resolves({
+        SecretString: JSON.stringify(mockLegacySecret),
+      });
       secretsManagerMock.on(PutSecretValueCommand).resolves({});
 
       await handler();
@@ -86,12 +162,15 @@ describe("rotate-aws-secrets handler", () => {
       const secretString = calls[0].args[0].input.SecretString;
       const secrets = JSON.parse(secretString!);
 
-      // Verify ROTATED_AT is a valid ISO date string
-      const rotatedAt = new Date(secrets.ROTATED_AT);
-      expect(rotatedAt.toISOString()).toBe(secrets.ROTATED_AT);
+      // Verify rotatedAt is a valid ISO date string
+      const rotatedAt = new Date(secrets.rotatedAt);
+      expect(rotatedAt.toISOString()).toBe(secrets.rotatedAt);
     });
 
     it("should generate unique keys on each rotation", async () => {
+      secretsManagerMock.on(GetSecretValueCommand).resolves({
+        SecretString: JSON.stringify(mockLegacySecret),
+      });
       secretsManagerMock.on(PutSecretValueCommand).resolves({});
 
       // First rotation
@@ -99,8 +178,11 @@ describe("rotate-aws-secrets handler", () => {
       const calls1 = secretsManagerMock.commandCalls(PutSecretValueCommand);
       const secrets1 = JSON.parse(calls1[0].args[0].input.SecretString!);
 
-      // Reset mock for second rotation
+      // Reset mock for second rotation (return the result of first rotation)
       secretsManagerMock.reset();
+      secretsManagerMock.on(GetSecretValueCommand).resolves({
+        SecretString: JSON.stringify(secrets1),
+      });
       secretsManagerMock.on(PutSecretValueCommand).resolves({});
 
       // Second rotation
@@ -109,8 +191,10 @@ describe("rotate-aws-secrets handler", () => {
       const secrets2 = JSON.parse(calls2[0].args[0].input.SecretString!);
 
       // Keys should be different
-      expect(secrets1.ENCRYPTION_KEY).not.toBe(secrets2.ENCRYPTION_KEY);
-      expect(secrets1.HMAC_KEY).not.toBe(secrets2.HMAC_KEY);
+      expect(secrets1.current.ENCRYPTION_KEY).not.toBe(
+        secrets2.current.ENCRYPTION_KEY,
+      );
+      expect(secrets1.current.HMAC_KEY).not.toBe(secrets2.current.HMAC_KEY);
     });
   });
 
@@ -131,24 +215,21 @@ describe("rotate-aws-secrets handler", () => {
       );
     });
 
-    it("should throw error when PutSecretValueCommand fails", async () => {
+    it("should throw error when GetSecretValueCommand fails", async () => {
       const awsError = new Error("Access denied");
-      secretsManagerMock.on(PutSecretValueCommand).rejects(awsError);
+      secretsManagerMock.on(GetSecretValueCommand).rejects(awsError);
 
       await expect(handler()).rejects.toThrow("Access denied");
     });
 
-    it("should propagate AWS errors without modification", async () => {
-      const awsError = new Error("ThrottlingException");
-      (awsError as any).code = "ThrottlingException";
+    it("should throw error when PutSecretValueCommand fails", async () => {
+      secretsManagerMock.on(GetSecretValueCommand).resolves({
+        SecretString: JSON.stringify(mockLegacySecret),
+      });
+      const awsError = new Error("Access denied");
       secretsManagerMock.on(PutSecretValueCommand).rejects(awsError);
 
-      try {
-        await handler();
-        expect.fail("Should have thrown");
-      } catch (error) {
-        expect((error as Error).message).toBe("ThrottlingException");
-      }
+      await expect(handler()).rejects.toThrow("Access denied");
     });
   });
 });
