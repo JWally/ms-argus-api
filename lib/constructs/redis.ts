@@ -30,9 +30,9 @@ export class RedisConstruct extends Construct {
     const { stackName, vpc, alarmsTopic, stage } = props;
 
     // Use tiny instances for non-prod (faster spin up/down, cheaper)
-    // Production gets larger instances with HA
+    // Production gets medium instances with HA (AR-38: right-sized from large)
     const isProd = stage === "prod";
-    const nodeType = isProd ? "cache.r6g.large" : "cache.t4g.micro";
+    const nodeType = isProd ? "cache.r6g.medium" : "cache.t4g.micro";
     const numNodes = isProd ? 2 : 1; // No HA for dev/staging
     const multiAz = isProd;
 
