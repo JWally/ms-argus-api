@@ -7,6 +7,7 @@ import * as route53 from "aws-cdk-lib/aws-route53";
 import * as route53targets from "aws-cdk-lib/aws-route53-targets";
 import * as elbv2 from "aws-cdk-lib/aws-elasticloadbalancingv2";
 import { Construct } from "constructs";
+import { StageConfig } from "../config";
 
 interface CloudFrontWafConstructProps {
   environment: string;
@@ -16,11 +17,12 @@ interface CloudFrontWafConstructProps {
   apiSubdomain?: string;
   hostedZone?: route53.IHostedZone;
   certificate?: acm.ICertificate;
+  stageConfig: StageConfig; // AR-51: Stage config for WAF enabled flag
 }
 
 export class CloudFrontWafConstruct extends Construct {
   public readonly distribution: cloudfront.Distribution;
-  public readonly webAcl: wafv2.CfnWebACL;
+  public readonly webAcl?: wafv2.CfnWebACL; // AR-51: Optional - only created in prod
 
   constructor(
     scope: Construct,
@@ -36,102 +38,106 @@ export class CloudFrontWafConstruct extends Construct {
       apiSubdomain,
       hostedZone,
       certificate,
+      stageConfig,
     } = props;
     const fullDomainName =
       rootDomain && apiSubdomain ? `${apiSubdomain}.${rootDomain}` : undefined;
 
-    // WAF for CloudFront (must be in us-east-1, CLOUDFRONT scope)
-    this.webAcl = new wafv2.CfnWebACL(this, "WebACL", {
-      scope: "CLOUDFRONT",
-      defaultAction: { allow: {} },
-      visibilityConfig: {
-        cloudWatchMetricsEnabled: true,
-        metricName: `${stackName}-waf-metrics`,
-        sampledRequestsEnabled: true,
-      },
-      customResponseBodies: {
-        RateLimitExceeded: {
-          contentType: "APPLICATION_JSON",
-          content: '{"message":"Too many requests","code":"rate_limited"}',
+    // AR-51: Only create WAF in production to reduce costs (~$30/month in dev)
+    // WAF is ~$5/month base + $0.60/million requests
+    if (stageConfig.waf.enabled) {
+      this.webAcl = new wafv2.CfnWebACL(this, "WebACL", {
+        scope: "CLOUDFRONT",
+        defaultAction: { allow: {} },
+        visibilityConfig: {
+          cloudWatchMetricsEnabled: true,
+          metricName: `${stackName}-waf-metrics`,
+          sampledRequestsEnabled: true,
         },
-      },
-      rules: [
-        // Geo-blocking BEFORE other rules (saves WAF request costs)
-        {
-          name: "GeoBlockCNRU",
-          priority: 0,
-          statement: { geoMatchStatement: { countryCodes: ["CN", "RU"] } },
-          action: { block: {} },
-          visibilityConfig: {
-            sampledRequestsEnabled: true,
-            cloudWatchMetricsEnabled: true,
-            metricName: `${stackName}-GeoBlock`,
+        customResponseBodies: {
+          RateLimitExceeded: {
+            contentType: "APPLICATION_JSON",
+            content: '{"message":"Too many requests","code":"rate_limited"}',
           },
         },
-        // AWS Managed Common Rules
-        {
-          name: "AWSManagedCommonRules",
-          priority: 1,
-          statement: {
-            managedRuleGroupStatement: {
-              name: "AWSManagedRulesCommonRuleSet",
-              vendorName: "AWS",
-              excludedRules: [],
+        rules: [
+          // Geo-blocking BEFORE other rules (saves WAF request costs)
+          {
+            name: "GeoBlockCNRU",
+            priority: 0,
+            statement: { geoMatchStatement: { countryCodes: ["CN", "RU"] } },
+            action: { block: {} },
+            visibilityConfig: {
+              sampledRequestsEnabled: true,
+              cloudWatchMetricsEnabled: true,
+              metricName: `${stackName}-GeoBlock`,
             },
           },
-          overrideAction: { none: {} },
-          visibilityConfig: {
-            sampledRequestsEnabled: true,
-            cloudWatchMetricsEnabled: true,
-            metricName: `${stackName}-CommonRuleSet`,
-          },
-        },
-        // Rate limiting per IP
-        {
-          name: "RateLimitIP",
-          priority: 2,
-          statement: {
-            rateBasedStatement: {
-              limit: 600, // requests per 5 minutes per IP
-              aggregateKeyType: "IP",
-            },
-          },
-          action: {
-            block: {
-              customResponse: {
-                responseCode: 429,
-                customResponseBodyKey: "RateLimitExceeded",
-                responseHeaders: [{ name: "Retry-After", value: "60" }],
+          // AWS Managed Common Rules
+          {
+            name: "AWSManagedCommonRules",
+            priority: 1,
+            statement: {
+              managedRuleGroupStatement: {
+                name: "AWSManagedRulesCommonRuleSet",
+                vendorName: "AWS",
+                excludedRules: [],
               },
             },
-          },
-          visibilityConfig: {
-            sampledRequestsEnabled: true,
-            cloudWatchMetricsEnabled: true,
-            metricName: `${stackName}-IpRateLimit`,
-          },
-        },
-        // Body size limit (100KB)
-        {
-          name: "LimitBodySize100KB",
-          priority: 3,
-          statement: {
-            sizeConstraintStatement: {
-              fieldToMatch: { body: { oversizeHandling: "CONTINUE" } },
-              textTransformations: [{ priority: 0, type: "NONE" }],
-              comparisonOperator: "GT",
-              size: 102_400,
+            overrideAction: { none: {} },
+            visibilityConfig: {
+              sampledRequestsEnabled: true,
+              cloudWatchMetricsEnabled: true,
+              metricName: `${stackName}-CommonRuleSet`,
             },
           },
-          action: { block: {} },
-          visibilityConfig: {
-            sampledRequestsEnabled: true,
-            cloudWatchMetricsEnabled: true,
-            metricName: `${stackName}-BodySizeLimit`,
+          // Rate limiting per IP
+          {
+            name: "RateLimitIP",
+            priority: 2,
+            statement: {
+              rateBasedStatement: {
+                limit: 600, // requests per 5 minutes per IP
+                aggregateKeyType: "IP",
+              },
+            },
+            action: {
+              block: {
+                customResponse: {
+                  responseCode: 429,
+                  customResponseBodyKey: "RateLimitExceeded",
+                  responseHeaders: [{ name: "Retry-After", value: "60" }],
+                },
+              },
+            },
+            visibilityConfig: {
+              sampledRequestsEnabled: true,
+              cloudWatchMetricsEnabled: true,
+              metricName: `${stackName}-IpRateLimit`,
+            },
           },
-        },
-      ],
-    });
+          // Body size limit (100KB)
+          {
+            name: "LimitBodySize100KB",
+            priority: 3,
+            statement: {
+              sizeConstraintStatement: {
+                fieldToMatch: { body: { oversizeHandling: "CONTINUE" } },
+                textTransformations: [{ priority: 0, type: "NONE" }],
+                comparisonOperator: "GT",
+                size: 102_400,
+              },
+            },
+            action: { block: {} },
+            visibilityConfig: {
+              sampledRequestsEnabled: true,
+              cloudWatchMetricsEnabled: true,
+              metricName: `${stackName}-BodySizeLimit`,
+            },
+          },
+        ],
+      });
+    } // AR-51: End of WAF enabled block
 
     // CloudFront distribution with ALB origin
     const distributionProps: cloudfront.DistributionProps = {
@@ -145,7 +151,8 @@ export class CloudFrontWafConstruct extends Construct {
         cachePolicy: cloudfront.CachePolicy.CACHING_DISABLED,
         originRequestPolicy: cloudfront.OriginRequestPolicy.ALL_VIEWER,
       },
-      webAclId: this.webAcl.attrArn,
+      // AR-51: Only attach WAF if enabled (prod only)
+      ...(this.webAcl && { webAclId: this.webAcl.attrArn }),
       comment: `${stackName} - Argus API`,
     };
 
