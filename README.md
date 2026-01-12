@@ -181,8 +181,14 @@ cd cmd/ingestion && go mod download
 ### Run Tests
 
 ```bash
-# Node.js tests
+# Unit tests
 npm test
+
+# Unit tests with coverage
+npm run test:coverage
+
+# Integration tests (against deployed API)
+ARGUS_API_URL=https://api-dev-jw.argus.pw npx vitest run tests/integration/
 
 # Go tests
 npm run test:go
@@ -245,13 +251,23 @@ The CDK stack (`lib/stacks/app-stack.ts`) provisions:
 
 - **VPC**: 2 AZs, public/private subnets, NAT Gateway
 - **ECS Fargate**: Go ingestion service behind ALB
-- **Lambda**: Matching worker + Profile updater
+- **Lambda**: Matching worker + Profile updater (with CodeDeploy canary deployments)
 - **SQS**: Matching queue + Profile queue (with DLQs)
 - **ElastiCache**: Redis cluster for session caching
 - **DynamoDB**: Profiles, Tier1Index, Tier2Buckets tables
 - **CloudFront + WAF**: Edge protection with rate limiting
 - **S3 + Firehose + Glue**: Analytics pipeline
 - **Route53 + ACM**: Custom domain with SSL
+
+## Canary Deployments
+
+Lambda functions use CodeDeploy for safe deployments:
+
+- **Strategy**: `CANARY_10PERCENT_5MINUTES` - 10% traffic for 5 minutes before full rollout
+- **Auto-rollback**: Triggers on deployment failure or CloudWatch alarm
+- **Alarms monitored**: Error count, p95 duration
+
+This reduces blast radius by catching issues before they affect all traffic.
 
 ## Observability
 
@@ -266,6 +282,10 @@ Pre-commit and pre-push hooks via [Lefthook](https://github.com/evilmartians/lef
 
 - **Pre-commit**: TypeScript build, ESLint, Prettier
 - **Pre-push**: Full test suite
+
+## Documentation
+
+- [API Gateway Evaluation (AR-22)](docs/AR-22-api-gateway-evaluation.md) - Cost analysis comparing ECS vs API Gateway direct-to-SQS
 
 ## Related Repositories
 
