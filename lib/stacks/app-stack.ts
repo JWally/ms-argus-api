@@ -74,6 +74,24 @@ export class ArgusApiStack extends cdk.Stack {
       ],
     });
 
+    // VPC Endpoints (AR-30) - Reduce NAT Gateway traffic and costs
+    // Gateway endpoint for DynamoDB (free, routes traffic through VPC)
+    vpc.addGatewayEndpoint("DynamoDbEndpoint", {
+      service: ec2.GatewayVpcEndpointAwsService.DYNAMODB,
+    });
+
+    // Interface endpoint for SQS (reduces NAT traffic for Lambda->SQS)
+    vpc.addInterfaceEndpoint("SqsEndpoint", {
+      service: ec2.InterfaceVpcEndpointAwsService.SQS,
+      privateDnsEnabled: true,
+    });
+
+    // Interface endpoint for Secrets Manager (reduces NAT traffic for key fetching)
+    vpc.addInterfaceEndpoint("SecretsManagerEndpoint", {
+      service: ec2.InterfaceVpcEndpointAwsService.SECRETS_MANAGER,
+      privateDnsEnabled: true,
+    });
+
     // =========================================================================
     // DNS & CERTIFICATES
     // =========================================================================
