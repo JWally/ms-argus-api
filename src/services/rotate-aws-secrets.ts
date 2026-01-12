@@ -2,27 +2,38 @@
 import {
   SecretsManagerClient,
   PutSecretValueCommand,
+  GetSecretValueCommand,
 } from "@aws-sdk/client-secrets-manager";
 import { Logger } from "@aws-lambda-powertools/logger";
 import { randomBytes } from "crypto";
+import type { VersionedSecrets } from "./get-aws-secrets";
 
 const logger = new Logger({ serviceName: "argus-secrets-rotator" });
 const client = new SecretsManagerClient({});
 
 /**
- * Manual secret rotation utility.
+ * Legacy flat secrets structure
+ */
+interface LegacySecrets {
+  ENCRYPTION_KEY: string;
+  HMAC_KEY: string;
+  version?: string;
+}
+
+/**
+ * Manual secret rotation utility with key versioning (AR-28).
  *
- * IMPORTANT: This is NOT automatically invoked (AR-18).
+ * IMPORTANT: This preserves the previous key during rotation to prevent
+ * split-brain issues where some Lambda instances have cached old keys.
+ * Data encrypted with the previous key remains readable for one full
+ * cache duration (15 minutes) after rotation.
  *
- * Automatic 48-hour rotation was disabled because it destroyed old keys,
- * making historical encrypted data unrecoverable. Use this script for
- * manual rotation during quarterly security reviews or key compromise events.
- *
- * WARNING: Rotating keys will invalidate all encrypted data created with
- * the previous key. Ensure all historical data has been processed or
- * archived before rotation.
- *
- * Future: Implement envelope encryption with KMS for seamless key versioning.
+ * The rotation process:
+ * 1. Fetch current secret
+ * 2. Move current keys to "previous"
+ * 3. Generate new keys as "current"
+ * 4. Increment version number
+ * 5. Update secret with both keys
  */
 export const handler = async (): Promise<void> => {
   const secretArn = process.env.SECRET_ARN;
@@ -32,12 +43,41 @@ export const handler = async (): Promise<void> => {
   }
 
   try {
-    // Generate new keys with version tracking
-    const newSecrets = {
-      version: "1",
-      ENCRYPTION_KEY: randomBytes(32).toString("base64"), // 256-bit AES key
-      HMAC_KEY: randomBytes(32).toString("base64"), // 256-bit HMAC key
-      ROTATED_AT: new Date().toISOString(),
+    // Fetch existing secret to preserve current keys as previous
+    const getCommand = new GetSecretValueCommand({ SecretId: secretArn });
+    const existingData = await client.send(getCommand);
+    const existingSecret = JSON.parse(existingData.SecretString!) as
+      | VersionedSecrets
+      | LegacySecrets;
+
+    // Extract current keys from either versioned or legacy format
+    let currentKeys: { ENCRYPTION_KEY: string; HMAC_KEY: string };
+    let currentVersion: number;
+
+    if ("current" in existingSecret && existingSecret.current) {
+      // Versioned format
+      currentKeys = existingSecret.current;
+      currentVersion =
+        typeof existingSecret.version === "number" ? existingSecret.version : 1;
+    } else {
+      // Legacy flat format
+      const legacy = existingSecret as LegacySecrets;
+      currentKeys = {
+        ENCRYPTION_KEY: legacy.ENCRYPTION_KEY,
+        HMAC_KEY: legacy.HMAC_KEY,
+      };
+      currentVersion = 1;
+    }
+
+    // Generate new versioned secret structure
+    const newSecrets: VersionedSecrets & { rotatedAt: string } = {
+      version: currentVersion + 1,
+      current: {
+        ENCRYPTION_KEY: randomBytes(32).toString("base64"), // 256-bit AES key
+        HMAC_KEY: randomBytes(32).toString("base64"), // 256-bit HMAC key
+      },
+      previous: currentKeys, // Preserve current keys as previous
+      rotatedAt: new Date().toISOString(),
     };
 
     // Update the secret
@@ -50,7 +90,7 @@ export const handler = async (): Promise<void> => {
 
     logger.info("Secret rotated successfully", {
       secretArn,
-      rotatedAt: newSecrets.ROTATED_AT,
+      rotatedAt: newSecrets.rotatedAt,
       version: newSecrets.version,
     });
   } catch (error) {
