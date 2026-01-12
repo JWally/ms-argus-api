@@ -32,7 +32,7 @@ var (
 	queueURL      string
 	logger        *slog.Logger
 	apiKeyTenants map[string]string // API key -> tenant ID mapping (AR-36)
-	requireAPIKey bool               // Whether API key authentication is required
+	requireAPIKey bool              // Whether API key authentication is required
 )
 
 // FingerprintPayload is the incoming request structure

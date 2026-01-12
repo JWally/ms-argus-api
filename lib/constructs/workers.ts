@@ -154,10 +154,12 @@ export class WorkersConstruct extends Construct {
     });
 
     // SQS event source for matching worker
+    // AR-42: Reduced batching window from 5s to 1s to meet 3s SLA
+    // Note: CDK requires whole seconds, 1s is the minimum
     this.matchingWorker.addEventSource(
       new lambdaEventSources.SqsEventSource(matchingQueue, {
         batchSize: 10,
-        maxBatchingWindow: Duration.seconds(5),
+        maxBatchingWindow: Duration.seconds(1),
         reportBatchItemFailures: true,
       }),
     );
@@ -198,10 +200,12 @@ export class WorkersConstruct extends Construct {
     });
 
     // SQS event source for profile updater
+    // AR-42: Reduced batching window from 10s to 1s to meet 3s SLA
+    // Note: CDK requires whole seconds, 1s is the minimum
     this.profileUpdater.addEventSource(
       new lambdaEventSources.SqsEventSource(profileQueue, {
         batchSize: 10,
-        maxBatchingWindow: Duration.seconds(10), // Batch more aggressively for writes
+        maxBatchingWindow: Duration.seconds(1),
         reportBatchItemFailures: true,
       }),
     );
