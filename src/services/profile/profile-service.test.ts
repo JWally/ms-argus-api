@@ -25,6 +25,7 @@ const testConfig: ProfileServiceConfig = {
   tier1IndexTable: "test-tier1-index",
   tier2BucketsTable: "test-tier2-buckets",
   profileTtlDays: 60,
+  tier2BucketTtlDays: 7,
   mutationGateTtlSeconds: 3600,
 };
 
@@ -569,6 +570,34 @@ describe("ProfileService", () => {
             call.args[0].input.TableName === testConfig.tier2BucketsTable,
         );
       expect(calls).toHaveLength(2);
+    });
+
+    it("should set tier2 bucket TTL to 7 days (AR-39)", async () => {
+      dynamoMock.on(PutItemCommand).resolves({});
+
+      const fingerprint: Fingerprint = {
+        ip_address: "10.0.0.1",
+        ja4: "ja4hash",
+      };
+
+      await service.updateTier2Buckets("tenant1", "dev_123", fingerprint);
+
+      const calls = dynamoMock
+        .commandCalls(PutItemCommand)
+        .filter(
+          (call) =>
+            call.args[0].input.TableName === testConfig.tier2BucketsTable,
+        );
+      expect(calls).toHaveLength(1);
+
+      // Verify TTL is approximately 7 days from now
+      const ttlValue = Number(calls[0].args[0].input.Item?.ttl?.N);
+      const expectedTtl =
+        Math.floor(Date.now() / 1000) +
+        testConfig.tier2BucketTtlDays * 24 * 60 * 60;
+      // Allow 5 second tolerance for test execution time
+      expect(ttlValue).toBeGreaterThanOrEqual(expectedTtl - 5);
+      expect(ttlValue).toBeLessThanOrEqual(expectedTtl + 5);
     });
   });
 
