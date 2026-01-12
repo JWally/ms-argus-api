@@ -36,6 +36,7 @@ npm-debug.log*
 
 # Local utility scripts
 wait-cleanup.js
+*.sick
 
 # Environment
 .env
