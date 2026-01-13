@@ -1,28 +1,29 @@
 // lib/constructs/cloudfront.ts
+// AR-52: Updated to support HTTP API origin (replacing ALB)
+import * as cdk from "aws-cdk-lib";
 import * as cloudfront from "aws-cdk-lib/aws-cloudfront";
 import * as origins from "aws-cdk-lib/aws-cloudfront-origins";
 import * as wafv2 from "aws-cdk-lib/aws-wafv2";
 import * as acm from "aws-cdk-lib/aws-certificatemanager";
 import * as route53 from "aws-cdk-lib/aws-route53";
 import * as route53targets from "aws-cdk-lib/aws-route53-targets";
-import * as elbv2 from "aws-cdk-lib/aws-elasticloadbalancingv2";
 import { Construct } from "constructs";
 import { StageConfig } from "../config";
 
 interface CloudFrontWafConstructProps {
   environment: string;
   stackName: string;
-  loadBalancer: elbv2.IApplicationLoadBalancer;
+  httpApiEndpoint: string; // AR-52: HTTP API endpoint (e.g., "https://xxx.execute-api.us-east-1.amazonaws.com")
   rootDomain?: string;
   apiSubdomain?: string;
   hostedZone?: route53.IHostedZone;
   certificate?: acm.ICertificate;
-  stageConfig: StageConfig; // AR-51: Stage config for WAF enabled flag
+  stageConfig: StageConfig;
 }
 
 export class CloudFrontWafConstruct extends Construct {
   public readonly distribution: cloudfront.Distribution;
-  public readonly webAcl?: wafv2.CfnWebACL; // AR-51: Optional - only created in prod
+  public readonly webAcl?: wafv2.CfnWebACL;
 
   constructor(
     scope: Construct,
@@ -33,7 +34,7 @@ export class CloudFrontWafConstruct extends Construct {
 
     const {
       stackName,
-      loadBalancer,
+      httpApiEndpoint,
       rootDomain,
       apiSubdomain,
       hostedZone,
@@ -44,7 +45,6 @@ export class CloudFrontWafConstruct extends Construct {
       rootDomain && apiSubdomain ? `${apiSubdomain}.${rootDomain}` : undefined;
 
     // AR-51: Only create WAF in production to reduce costs (~$30/month in dev)
-    // WAF is ~$5/month base + $0.60/million requests
     if (stageConfig.waf.enabled) {
       this.webAcl = new wafv2.CfnWebACL(this, "WebACL", {
         scope: "CLOUDFRONT",
@@ -137,21 +137,26 @@ export class CloudFrontWafConstruct extends Construct {
           },
         ],
       });
-    } // AR-51: End of WAF enabled block
+    }
 
-    // CloudFront distribution with ALB origin
+    // AR-52: Extract domain from HTTP API endpoint using CloudFormation intrinsics
+    // httpApiEndpoint format: "https://xxx.execute-api.us-east-1.amazonaws.com"
+    // We can't use new URL() because httpApiEndpoint is a CDK token at synth time
+    // Use Fn.select to extract domain from "https://xxx.execute-api.region.amazonaws.com"
+    const apiDomain = cdk.Fn.select(2, cdk.Fn.split("/", httpApiEndpoint));
+
+    // CloudFront distribution with HTTP API origin
     const distributionProps: cloudfront.DistributionProps = {
       defaultBehavior: {
-        origin: new origins.HttpOrigin(loadBalancer.loadBalancerDnsName, {
-          protocolPolicy: cloudfront.OriginProtocolPolicy.HTTP_ONLY, // ALB is HTTP, CloudFront handles HTTPS
-          httpPort: 80,
+        origin: new origins.HttpOrigin(apiDomain, {
+          protocolPolicy: cloudfront.OriginProtocolPolicy.HTTPS_ONLY,
         }),
         viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
         allowedMethods: cloudfront.AllowedMethods.ALLOW_ALL,
         cachePolicy: cloudfront.CachePolicy.CACHING_DISABLED,
-        originRequestPolicy: cloudfront.OriginRequestPolicy.ALL_VIEWER,
+        originRequestPolicy:
+          cloudfront.OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER,
       },
-      // AR-51: Only attach WAF if enabled (prod only)
       ...(this.webAcl && { webAclId: this.webAcl.attrArn }),
       comment: `${stackName} - Argus API`,
     };

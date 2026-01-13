@@ -1,5 +1,5 @@
 // lib/constructs/workers.ts
-// AR-44: Uses centralized stage config for environment-specific values
+// AR-52: Simplified - removed VPC/Redis, uses DynamoDB for all caching
 import * as path from "path";
 import { Construct } from "constructs";
 import * as lambda from "aws-cdk-lib/aws-lambda-nodejs";
@@ -13,7 +13,6 @@ import * as codedeploy from "aws-cdk-lib/aws-codedeploy";
 import * as sns from "aws-cdk-lib/aws-sns";
 import * as sqs from "aws-cdk-lib/aws-sqs";
 import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
-import * as ec2 from "aws-cdk-lib/aws-ec2";
 import { Duration } from "aws-cdk-lib";
 import * as actions from "aws-cdk-lib/aws-cloudwatch-actions";
 import { getStageConfig } from "../config";
@@ -28,23 +27,27 @@ interface WorkersConstructProps {
   profilesTable: dynamodb.ITable;
   tier1IndexTable: dynamodb.ITable;
   tier2BucketsTable: dynamodb.ITable;
-  redisEndpoint: string;
-  redisPort: number;
-  redisSecurityGroup: ec2.ISecurityGroup;
-  vpc: ec2.IVpc;
+  sessionCacheTable: dynamodb.ITable; // AR-52: Replaces Redis
 }
 
 /**
  * Worker Lambdas for Argus async processing
- * - Matching Worker: SQS -> tiered matching -> Redis
- * - Profile Updater: SQS -> mutation gate -> DynamoDB/Qdrant
+ *
+ * AR-52: Simplified architecture - no VPC required
+ * - Matching Worker: SQS -> tiered matching -> DynamoDB (session cache)
+ * - Profile Updater: SQS -> mutation gate -> DynamoDB
+ *
+ * Why no VPC:
+ * - DynamoDB and SQS accessible via IAM (no network path needed)
+ * - Removes NAT Gateway costs (~$32/month per NAT)
+ * - Faster cold starts (no ENI attachment)
+ * - Simpler infrastructure
  */
 export class WorkersConstruct extends Construct {
   public readonly matchingWorker: lambda.NodejsFunction;
   public readonly profileUpdater: lambda.NodejsFunction;
   public readonly matchingWorkerAlias: Alias;
   public readonly profileUpdaterAlias: Alias;
-  public readonly workerSecurityGroup: ec2.SecurityGroup;
 
   constructor(scope: Construct, id: string, props: WorkersConstructProps) {
     super(scope, id);
@@ -59,29 +62,8 @@ export class WorkersConstruct extends Construct {
       profilesTable,
       tier1IndexTable,
       tier2BucketsTable,
-      redisEndpoint,
-      redisPort,
-      redisSecurityGroup,
-      vpc,
+      sessionCacheTable,
     } = props;
-
-    // Security group for Lambda functions (to access Redis in VPC)
-    this.workerSecurityGroup = new ec2.SecurityGroup(
-      this,
-      "WorkerSecurityGroup",
-      {
-        vpc,
-        description: "Security group for Argus worker Lambdas",
-        allowAllOutbound: true,
-      },
-    );
-
-    // Allow workers to access Redis
-    redisSecurityGroup.addIngressRule(
-      this.workerSecurityGroup,
-      ec2.Port.tcp(redisPort),
-      "Allow Lambda workers to access Redis",
-    );
 
     // Secrets Manager reference
     const secret = secretsmanager.Secret.fromSecretNameV2(
@@ -90,7 +72,7 @@ export class WorkersConstruct extends Construct {
       `${stage}/${projectName}`,
     );
 
-    // Common Lambda configuration
+    // Common Lambda configuration - AR-52: No VPC needed
     const commonConfig = {
       runtime: Runtime.NODEJS_20_X,
       architecture: Architecture.ARM_64,
@@ -102,16 +84,10 @@ export class WorkersConstruct extends Construct {
         format: OutputFormat.CJS,
         mainFields: ["module", "main"],
         environment: { NODE_ENV: "production" },
-        // Include ioredis for Redis connectivity
-        nodeModules: ["ioredis"],
-        // Bundle all dependencies - don't rely on Lambda runtime SDK
-        // This ensures version consistency
+        // AR-52: No longer need ioredis - using DynamoDB for caching
       },
-      // Tracing disabled temporarily due to @smithy bundling issues with Powertools Tracer
       tracing: Tracing.DISABLED,
-      vpc,
-      vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
-      securityGroups: [this.workerSecurityGroup],
+      // AR-52: No VPC - workers access DynamoDB/SQS via IAM
     };
 
     // IAM Logging Policy
@@ -128,7 +104,6 @@ export class WorkersConstruct extends Construct {
     // =====================================
     // MATCHING WORKER LAMBDA
     // =====================================
-    // AR-44: Use centralized stage config for all tunable values
     const config = getStageConfig(stage);
 
     this.matchingWorker = new lambda.NodejsFunction(this, "MatchingWorker", {
@@ -145,8 +120,8 @@ export class WorkersConstruct extends Construct {
         POWERTOOLS_METRICS_NAMESPACE: stackName,
         LOG_LEVEL: "INFO",
         SECRET_KEY_ARN: secret.secretArn,
-        REDIS_ENDPOINT: redisEndpoint,
-        REDIS_PORT: String(redisPort),
+        // AR-52: DynamoDB session cache replaces Redis
+        SESSION_CACHE_TABLE: sessionCacheTable.tableName,
         PROFILES_TABLE: profilesTable.tableName,
         TIER1_INDEX_TABLE: tier1IndexTable.tableName,
         TIER2_BUCKETS_TABLE: tier2BucketsTable.tableName,
@@ -155,7 +130,6 @@ export class WorkersConstruct extends Construct {
     });
 
     // SQS event source for matching worker
-    // AR-42/AR-44: Batching window from stage config
     this.matchingWorker.addEventSource(
       new lambdaEventSources.SqsEventSource(matchingQueue, {
         batchSize: 10,
@@ -170,6 +144,7 @@ export class WorkersConstruct extends Construct {
     profilesTable.grantReadData(this.matchingWorker);
     tier1IndexTable.grantReadData(this.matchingWorker);
     tier2BucketsTable.grantReadData(this.matchingWorker);
+    sessionCacheTable.grantReadWriteData(this.matchingWorker); // AR-52
     profileQueue.grantSendMessages(this.matchingWorker);
     matchingQueue.grantConsumeMessages(this.matchingWorker);
 
@@ -190,17 +165,15 @@ export class WorkersConstruct extends Construct {
         POWERTOOLS_METRICS_NAMESPACE: stackName,
         LOG_LEVEL: "INFO",
         SECRET_KEY_ARN: secret.secretArn,
-        REDIS_ENDPOINT: redisEndpoint,
-        REDIS_PORT: String(redisPort),
+        // AR-52: DynamoDB session cache replaces Redis
+        SESSION_CACHE_TABLE: sessionCacheTable.tableName,
         PROFILES_TABLE: profilesTable.tableName,
         TIER1_INDEX_TABLE: tier1IndexTable.tableName,
         TIER2_BUCKETS_TABLE: tier2BucketsTable.tableName,
-        // QDRANT_ENDPOINT: will be added when Qdrant stack is deployed
       },
     });
 
     // SQS event source for profile updater
-    // AR-42/AR-44: Batching window from stage config
     this.profileUpdater.addEventSource(
       new lambdaEventSources.SqsEventSource(profileQueue, {
         batchSize: 10,
@@ -215,9 +188,10 @@ export class WorkersConstruct extends Construct {
     profilesTable.grantReadWriteData(this.profileUpdater);
     tier1IndexTable.grantReadWriteData(this.profileUpdater);
     tier2BucketsTable.grantReadWriteData(this.profileUpdater);
+    sessionCacheTable.grantReadWriteData(this.profileUpdater); // AR-52
     profileQueue.grantConsumeMessages(this.profileUpdater);
 
-    // Alarms - AR-44: Use stage config for thresholds
+    // Alarms
     const matchingWorkerAlarms = this.createWorkerAlarms(
       this.matchingWorker,
       "MatchingWorker",
@@ -236,7 +210,6 @@ export class WorkersConstruct extends Construct {
     // =====================================
     // CANARY DEPLOYMENTS (AR-24)
     // =====================================
-    // Create aliases for blue/green deployments
     this.matchingWorkerAlias = new Alias(this, "MatchingWorkerLive", {
       aliasName: "live",
       version: this.matchingWorker.currentVersion,
@@ -291,7 +264,7 @@ export class WorkersConstruct extends Construct {
       concurrencyPercent: number;
     },
   ): { errorAlarm: cloudwatch.Alarm; durationAlarm: cloudwatch.Alarm } {
-    // Error count alarm - AR-44: threshold from config
+    // Error count alarm
     const errorAlarm = new cloudwatch.Alarm(this, `${prefix}Errors`, {
       metric: fn.metricErrors({
         period: Duration.minutes(5),
@@ -303,7 +276,7 @@ export class WorkersConstruct extends Construct {
     });
     errorAlarm.addAlarmAction(new actions.SnsAction(alarmsTopic));
 
-    // Throttle alarm - AR-44: threshold from config
+    // Throttle alarm
     const throttleAlarm = new cloudwatch.Alarm(this, `${prefix}Throttles`, {
       metric: fn.metricThrottles({
         period: Duration.minutes(5),
@@ -315,7 +288,7 @@ export class WorkersConstruct extends Construct {
     });
     throttleAlarm.addAlarmAction(new actions.SnsAction(alarmsTopic));
 
-    // High duration alarm (p95) - AR-44: threshold from config
+    // High duration alarm (p95)
     const durationAlarm = new cloudwatch.Alarm(this, `${prefix}HighDuration`, {
       metric: fn.metricDuration({
         period: Duration.minutes(5),
@@ -327,7 +300,7 @@ export class WorkersConstruct extends Construct {
     });
     durationAlarm.addAlarmAction(new actions.SnsAction(alarmsTopic));
 
-    // Concurrent executions alarm - AR-44: percentage from config
+    // Concurrent executions alarm
     const concurrencyThreshold = Math.floor(
       reservedConcurrency * (alarmConfig.concurrencyPercent / 100),
     );
@@ -346,7 +319,6 @@ export class WorkersConstruct extends Construct {
     );
     concurrencyAlarm.addAlarmAction(new actions.SnsAction(alarmsTopic));
 
-    // Return alarms needed for deployment groups
     return { errorAlarm, durationAlarm };
   }
 }

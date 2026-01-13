@@ -1,4 +1,5 @@
 // src/handlers/profile-updater.ts
+// AR-52: Replaced Redis with DynamoDB session cache
 import {
   SQSHandler,
   SQSBatchResponse,
@@ -14,14 +15,15 @@ import {
   ProfileServiceDeps,
   ProfileUpdatePayload,
 } from "../services/profile";
+import { DynamoCacheService } from "../services/cache";
 // Note: BloomFilter removed per AR-21 - adds complexity without sufficient value
 import { getProfileUpdaterEnv, ProfileUpdaterEnvConfig } from "../config/env";
 import {
   PROFILE_TTL_DAYS,
   TIER2_BUCKET_TTL_DAYS,
   MUTATION_GATE_TTL_SECONDS,
+  SESSION_TTL_SECONDS,
 } from "../helpers/constants";
-import { getRedis } from "../services/redis-client";
 
 // Validate environment variables at module load (cold start)
 // Throws immediately if required env vars are missing
@@ -48,11 +50,18 @@ function getConfig(): ProfileServiceConfig {
   };
 }
 
+// Create DynamoDB cache service (AR-52: replaces Redis)
+const cacheService = new DynamoCacheService(dynamodb, {
+  tableName: envConfig.SESSION_CACHE_TABLE,
+  sessionTtlSeconds: SESSION_TTL_SECONDS,
+  mutationGateTtlSeconds: MUTATION_GATE_TTL_SECONDS,
+});
+
 // Create service with production dependencies
 function createProfileService(): ProfileService {
   const deps: ProfileServiceDeps = {
     dynamodb,
-    redis: getRedis(),
+    cache: cacheService,
     config: getConfig(),
   };
   return new ProfileService(deps);

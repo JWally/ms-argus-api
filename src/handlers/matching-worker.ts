@@ -1,4 +1,5 @@
 // src/handlers/matching-worker.ts
+// AR-52: Replaced Redis with DynamoDB session cache
 import {
   SQSHandler,
   SQSBatchResponse,
@@ -16,10 +17,14 @@ import {
   FingerprintPayload,
   generateIdempotencyKey,
 } from "../services/matching";
+import { DynamoCacheService } from "../services/cache";
 // Note: BloomFilter removed per AR-21 - adds complexity without sufficient value
 import { getMatchingWorkerEnv, MatchingWorkerEnvConfig } from "../config/env";
-import { SESSION_TTL_SECONDS, TIER2_TIMEOUT_MS } from "../helpers/constants";
-import { getRedis } from "../services/redis-client";
+import {
+  SESSION_TTL_SECONDS,
+  TIER2_TIMEOUT_MS,
+  MUTATION_GATE_TTL_SECONDS,
+} from "../helpers/constants";
 
 // Validate environment variables at module load (cold start)
 // Throws immediately if required env vars are missing
@@ -47,12 +52,19 @@ function getConfig(): MatchingServiceConfig {
   };
 }
 
+// Create DynamoDB cache service (AR-52: replaces Redis)
+const cacheService = new DynamoCacheService(dynamodb, {
+  tableName: envConfig.SESSION_CACHE_TABLE,
+  sessionTtlSeconds: SESSION_TTL_SECONDS,
+  mutationGateTtlSeconds: MUTATION_GATE_TTL_SECONDS,
+});
+
 // Create service with production dependencies
 function createMatchingService(): MatchingService {
   const deps: MatchingServiceDeps = {
     dynamodb,
     sqs,
-    redis: getRedis(),
+    cache: cacheService,
     config: getConfig(),
   };
   return new MatchingService(deps);
@@ -60,7 +72,7 @@ function createMatchingService(): MatchingService {
 
 /**
  * Matching Worker Lambda Handler
- * Processes fingerprints from SQS and writes results to Redis
+ * Processes fingerprints from SQS and writes results to DynamoDB session cache
  */
 export const handler: SQSHandler = async (event): Promise<SQSBatchResponse> => {
   const batchItemFailures: SQSBatchItemFailure[] = [];
@@ -100,7 +112,7 @@ async function processRecord(
   // Generate idempotency key for dedup
   const idempotencyKey = generateIdempotencyKey(session_id, fingerprint);
 
-  // Check if already processed (Tier 0 - Redis cache)
+  // Check if already processed (Tier 0 - DynamoDB session cache)
   const cached = await service.checkCache(session_id);
   if (cached && cached.status === "complete") {
     logger.info("Cache hit - already processed", {
@@ -135,7 +147,7 @@ async function processRecord(
     throw error;
   }
 
-  // Write result to Redis
+  // Write result to DynamoDB session cache
   await service.writeMatchResult(session_id, matchResult, idempotencyKey);
 
   // Queue profile update (pass is_new_device for flag computation)

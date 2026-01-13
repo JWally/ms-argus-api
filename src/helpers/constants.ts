@@ -20,7 +20,7 @@ export const FNV1A_PRIME = 16777619;
 
 // ==================== MATCHING SERVICE CONSTANTS ====================
 
-/** Session cache TTL in Redis: 15 minutes (900 seconds) */
+/** Session cache TTL in DynamoDB: 15 minutes (900 seconds) - AR-52: was Redis */
 export const SESSION_TTL_SECONDS = 900;
 
 /** Tier2 matching timeout: 100ms - fail open if query takes too long */
@@ -47,14 +47,6 @@ export const DEDUPE_CACHE_MAX_ENTRIES = 30_000;
 
 /** Deduplication cache TTL: 30 seconds */
 export const DEDUPE_CACHE_TTL_MS = 30_000;
-
-// ==================== REDIS RETRY CONSTANTS ====================
-
-/** Base delay multiplier for Redis exponential backoff (ms) */
-export const REDIS_RETRY_BASE_MS = 100;
-
-/** Max retry delay for Redis connections (ms) */
-export const REDIS_RETRY_MAX_MS = 2000;
 
 export const DEFAULT_HEADERS = {
   "Content-Security-Policy": "default-src 'self'",

@@ -21,6 +21,7 @@ export class DynamoDbConstruct extends Construct {
   public readonly profilesTable: dynamodb.Table;
   public readonly tier1IndexTable: dynamodb.Table;
   public readonly tier2BucketsTable: dynamodb.Table;
+  public readonly sessionCacheTable: dynamodb.Table; // AR-52: Session cache (replaces Redis)
 
   constructor(scope: Construct, id: string, props: DynamoDbConstructProps) {
     super(scope, id);
@@ -71,10 +72,23 @@ export class DynamoDbConstruct extends Construct {
       removalPolicy: RemovalPolicy.RETAIN,
     });
 
+    // AR-52: Session cache table - replaces Redis for session caching
+    // PK: cache_key (e.g., "session:abc123" or "gate:device123")
+    // Uses DynamoDB TTL for automatic expiration (vs Redis EXPIRE)
+    // Benefits: Zero idle cost, no VPC required, simpler infrastructure
+    this.sessionCacheTable = new dynamodb.Table(this, "SessionCacheTable", {
+      tableName: `${stackName}-session-cache`,
+      partitionKey: { name: "cache_key", type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      timeToLiveAttribute: "ttl",
+      removalPolicy: RemovalPolicy.DESTROY, // Cache data is ephemeral
+    });
+
     // Alarms
     this.createTableAlarms(this.profilesTable, "Profiles", alarmsTopic);
     this.createTableAlarms(this.tier1IndexTable, "Tier1Index", alarmsTopic);
     this.createTableAlarms(this.tier2BucketsTable, "Tier2Buckets", alarmsTopic);
+    this.createTableAlarms(this.sessionCacheTable, "SessionCache", alarmsTopic);
   }
 
   private createTableAlarms(

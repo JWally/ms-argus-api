@@ -84,7 +84,9 @@ describe("Argus API Integration Tests", () => {
         method: "GET",
       });
 
-      expect(response.status).toBe(405);
+      // HTTP API Gateway returns 404 for routes that don't match (GET /v1/collect not defined)
+      // This is different from REST API which would return 405
+      expect(response.status).toBe(404);
     });
 
     it("should use default tenant when X-Tenant-ID not provided", async () => {
