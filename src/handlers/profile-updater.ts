@@ -21,7 +21,7 @@ import {
   TIER2_BUCKET_TTL_DAYS,
   MUTATION_GATE_TTL_SECONDS,
 } from "../helpers/constants";
-import { getRedisClient } from "../services/redis-client";
+import { getRedis } from "../services/redis-client";
 
 // Validate environment variables at module load (cold start)
 // Throws immediately if required env vars are missing
@@ -35,14 +35,6 @@ const metrics = new Metrics({
 
 // AWS SDK client (reused across invocations)
 const dynamodb = new DynamoDBClient({});
-
-// AR-48: Use shared Redis client module
-function getRedis() {
-  return getRedisClient({
-    endpoint: envConfig.REDIS_ENDPOINT,
-    port: envConfig.REDIS_PORT,
-  });
-}
 
 // Service configuration from validated environment
 function getConfig(): ProfileServiceConfig {

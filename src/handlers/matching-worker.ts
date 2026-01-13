@@ -19,7 +19,7 @@ import {
 // Note: BloomFilter removed per AR-21 - adds complexity without sufficient value
 import { getMatchingWorkerEnv, MatchingWorkerEnvConfig } from "../config/env";
 import { SESSION_TTL_SECONDS, TIER2_TIMEOUT_MS } from "../helpers/constants";
-import { getRedisClient } from "../services/redis-client";
+import { getRedis } from "../services/redis-client";
 
 // Validate environment variables at module load (cold start)
 // Throws immediately if required env vars are missing
@@ -34,14 +34,6 @@ const metrics = new Metrics({
 // AWS SDK clients (reused across invocations)
 const dynamodb = new DynamoDBClient({});
 const sqs = new SQSClient({});
-
-// AR-48: Use shared Redis client module
-function getRedis() {
-  return getRedisClient({
-    endpoint: envConfig.REDIS_ENDPOINT,
-    port: envConfig.REDIS_PORT,
-  });
-}
 
 // Service configuration from validated environment
 function getConfig(): MatchingServiceConfig {

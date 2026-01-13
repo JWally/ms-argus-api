@@ -65,6 +65,27 @@ export function getRedisClient(config: RedisClientConfig): Redis {
 }
 
 /**
+ * Get Redis client using environment variables
+ *
+ * Convenience function that reads REDIS_ENDPOINT and REDIS_PORT from
+ * process.env, eliminating the need for duplicate getRedis() wrappers
+ * in each Lambda handler.
+ *
+ * @returns Redis client instance
+ * @throws Error if REDIS_ENDPOINT is not set
+ */
+export function getRedis(): Redis {
+  const endpoint = process.env.REDIS_ENDPOINT;
+  const port = parseInt(process.env.REDIS_PORT || "6379", 10);
+
+  if (!endpoint) {
+    throw new Error("REDIS_ENDPOINT environment variable is required");
+  }
+
+  return getRedisClient({ endpoint, port });
+}
+
+/**
  * Close the Redis connection (for testing/cleanup)
  */
 export function closeRedisClient(): void {
