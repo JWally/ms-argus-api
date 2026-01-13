@@ -311,3 +311,12 @@ Pre-commit and pre-push hooks via [Lefthook](https://github.com/evilmartians/lef
 | **Total**     | ~$104,500 |
 
 ~$3.48/million requests
+
+### Cost Trade-off Note
+
+We're paying a premium of ~$15K/year for simplicity and reliability by using ECS Fargate + Redis instead of optimized alternatives:
+
+- **ECS Fargate vs API Gateway direct-to-SQS**: ~$10K/year premium, but gives us full control over request handling, easier debugging, and no API Gateway quirks
+- **Redis vs DynamoDB on-demand for caching**: ~$5K/year premium at scale, but provides sub-millisecond latency, atomic operations (SET NX EX), and predictable costs regardless of traffic spikes
+
+This is a deliberate choice: boring, proven infrastructure over clever cost optimization. The reduced operational complexity and faster debugging pay for themselves in engineer time.
