@@ -50,7 +50,7 @@ High-throughput device fingerprint ingestion and matching pipeline for fraud det
                                    │                   └─────────────────────────────────────┘   │
                                    │                                                             │
                                    │   ┌─────────────────────────────────────────────────────┐   │
-                                   │   │              Analytics Pipeline                     │   │
+                                   │   │         Analytics Pipeline (Planned)                │   │
                                    │   │   SNS → Firehose → S3 (Parquet) → Athena           │   │
                                    │   └─────────────────────────────────────────────────────┘   │
                                    └──────────────────────────────────────────────────────────────┘
@@ -69,6 +69,10 @@ Ultra-thin HTTP handler running on ECS Fargate behind an ALB:
   - Graceful shutdown handling
   - Structured JSON logging
   - Automatic tenant extraction from `X-Tenant-ID` header or payload
+  - API key authentication with multi-tenant support (`X-API-Key` header)
+  - CORS middleware support
+  - Request validation (64KB body limit, max 10 JSON depth levels)
+  - Request header extraction (User-Agent, Accept-Language, X-Forwarded-For)
 
 ### Matching Worker (`src/handlers/matching-worker.ts`)
 
@@ -100,13 +104,13 @@ Node.js Lambda that maintains device profiles and search indexes:
 
 ### Data Layer
 
-| Component                 | Purpose                       | TTL                               |
-| ------------------------- | ----------------------------- | --------------------------------- |
-| **Redis**                 | Session cache, mutation gates | 15 min (sessions), 1 hour (gates) |
-| **DynamoDB Profiles**     | Device profiles               | 60 days                           |
-| **DynamoDB Tier1Index**   | Hash-based lookups            | 60 days                           |
-| **DynamoDB Tier2Buckets** | Compound filter matching      | 60 days                           |
-| **S3**                    | Analytics (Parquet)           | Configurable                      |
+| Component                 | Purpose                         | TTL                               |
+| ------------------------- | ------------------------------- | --------------------------------- |
+| **Redis**                 | Session cache, mutation gates   | 15 min (sessions), 1 hour (gates) |
+| **DynamoDB Profiles**     | Device profiles                 | 60 days                           |
+| **DynamoDB Tier1Index**   | Hash-based lookups              | 60 days                           |
+| **DynamoDB Tier2Buckets** | Compound filter matching        | 7 days                            |
+| **S3**                    | Analytics (Parquet) _(planned)_ | Configurable                      |
 
 #### Tier2Buckets Schema
 
@@ -256,7 +260,8 @@ The CDK stack (`lib/stacks/app-stack.ts`) provisions:
 - **ElastiCache**: Redis cluster for session caching
 - **DynamoDB**: Profiles, Tier1Index, Tier2Buckets tables
 - **CloudFront + WAF**: Edge protection with rate limiting
-- **S3 + Firehose + Glue**: Analytics pipeline
+- **VPC Endpoints**: DynamoDB, SQS, Secrets Manager (cost optimization)
+- **S3 + Firehose + Glue**: Analytics pipeline _(planned, not yet implemented)_
 - **Route53 + ACM**: Custom domain with SSL
 
 ## Canary Deployments
