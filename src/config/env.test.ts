@@ -17,7 +17,7 @@ describe("Environment validation", () => {
 
   describe("getMatchingWorkerEnv", () => {
     const requiredVars = {
-      REDIS_ENDPOINT: "localhost",
+      SESSION_CACHE_TABLE: "session-cache-table",
       PROFILES_TABLE: "profiles-table",
       TIER1_INDEX_TABLE: "tier1-index-table",
       TIER2_BUCKETS_TABLE: "tier2-buckets-table",
@@ -29,8 +29,7 @@ describe("Environment validation", () => {
 
       const config = getMatchingWorkerEnv();
 
-      expect(config.REDIS_ENDPOINT).toBe("localhost");
-      expect(config.REDIS_PORT).toBe(6379); // default
+      expect(config.SESSION_CACHE_TABLE).toBe("session-cache-table");
       expect(config.PROFILES_TABLE).toBe("profiles-table");
       expect(config.TIER1_INDEX_TABLE).toBe("tier1-index-table");
       expect(config.TIER2_BUCKETS_TABLE).toBe("tier2-buckets-table");
@@ -39,14 +38,6 @@ describe("Environment validation", () => {
       );
       expect(config.POWERTOOLS_SERVICE_NAME).toBe("argus-matching"); // default
       expect(config.POWERTOOLS_METRICS_NAMESPACE).toBe("Argus"); // default
-    });
-
-    it("should use custom REDIS_PORT when provided", () => {
-      Object.assign(process.env, requiredVars, { REDIS_PORT: "6380" });
-
-      const config = getMatchingWorkerEnv();
-
-      expect(config.REDIS_PORT).toBe(6380);
     });
 
     it("should use custom Powertools config when provided", () => {
@@ -63,14 +54,14 @@ describe("Environment validation", () => {
 
     it("should throw error listing all missing required vars", () => {
       // Clear all required vars
-      delete process.env.REDIS_ENDPOINT;
+      delete process.env.SESSION_CACHE_TABLE;
       delete process.env.PROFILES_TABLE;
       delete process.env.TIER1_INDEX_TABLE;
       delete process.env.TIER2_BUCKETS_TABLE;
       delete process.env.PROFILE_QUEUE_URL;
 
       expect(() => getMatchingWorkerEnv()).toThrow(
-        "Missing required environment variables: REDIS_ENDPOINT, PROFILES_TABLE, TIER1_INDEX_TABLE, TIER2_BUCKETS_TABLE, PROFILE_QUEUE_URL",
+        "Missing required environment variables: SESSION_CACHE_TABLE, PROFILES_TABLE, TIER1_INDEX_TABLE, TIER2_BUCKETS_TABLE, PROFILE_QUEUE_URL",
       );
     });
 
@@ -86,7 +77,7 @@ describe("Environment validation", () => {
 
   describe("getProfileUpdaterEnv", () => {
     const requiredVars = {
-      REDIS_ENDPOINT: "localhost",
+      SESSION_CACHE_TABLE: "session-cache-table",
       PROFILES_TABLE: "profiles-table",
       TIER1_INDEX_TABLE: "tier1-index-table",
       TIER2_BUCKETS_TABLE: "tier2-buckets-table",
@@ -97,8 +88,7 @@ describe("Environment validation", () => {
 
       const config = getProfileUpdaterEnv();
 
-      expect(config.REDIS_ENDPOINT).toBe("localhost");
-      expect(config.REDIS_PORT).toBe(6379); // default
+      expect(config.SESSION_CACHE_TABLE).toBe("session-cache-table");
       expect(config.PROFILES_TABLE).toBe("profiles-table");
       expect(config.TIER1_INDEX_TABLE).toBe("tier1-index-table");
       expect(config.TIER2_BUCKETS_TABLE).toBe("tier2-buckets-table");
@@ -107,13 +97,13 @@ describe("Environment validation", () => {
     });
 
     it("should throw error listing all missing required vars", () => {
-      delete process.env.REDIS_ENDPOINT;
+      delete process.env.SESSION_CACHE_TABLE;
       delete process.env.PROFILES_TABLE;
       delete process.env.TIER1_INDEX_TABLE;
       delete process.env.TIER2_BUCKETS_TABLE;
 
       expect(() => getProfileUpdaterEnv()).toThrow(
-        "Missing required environment variables: REDIS_ENDPOINT, PROFILES_TABLE, TIER1_INDEX_TABLE, TIER2_BUCKETS_TABLE",
+        "Missing required environment variables: SESSION_CACHE_TABLE, PROFILES_TABLE, TIER1_INDEX_TABLE, TIER2_BUCKETS_TABLE",
       );
     });
 

@@ -1,13 +1,12 @@
 // src/handlers/profile-updater.test.ts
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 
 // Set environment variables BEFORE any module imports using vi.hoisted
 // This ensures env validation passes during module load
 vi.hoisted(() => {
   process.env.POWERTOOLS_SERVICE_NAME = "argus-profile-updater-test";
   process.env.POWERTOOLS_METRICS_NAMESPACE = "argus-test";
-  process.env.REDIS_ENDPOINT = "localhost";
-  process.env.REDIS_PORT = "6379";
+  process.env.SESSION_CACHE_TABLE = "test-session-cache";
   process.env.PROFILES_TABLE = "test-profiles";
   process.env.TIER1_INDEX_TABLE = "test-tier1-index";
   process.env.TIER2_BUCKETS_TABLE = "test-tier2-buckets";
@@ -18,28 +17,14 @@ import {
   DynamoDBClient,
   GetItemCommand,
   PutItemCommand,
-  UpdateItemCommand,
   BatchWriteItemCommand,
+  ConditionalCheckFailedException,
 } from "@aws-sdk/client-dynamodb";
 import { marshall } from "@aws-sdk/util-dynamodb";
 import { SQSEvent, SQSRecord, Context } from "aws-lambda";
-import RedisMock from "ioredis-mock";
 
 // Mock AWS SDK clients
 const dynamoMock = mockClient(DynamoDBClient);
-
-// Create a mock Redis instance
-let redisMock: InstanceType<typeof RedisMock>;
-
-// Mock ioredis module
-vi.mock("ioredis", () => {
-  return {
-    default: vi.fn().mockImplementation(() => {
-      redisMock = new RedisMock();
-      return redisMock;
-    }),
-  };
-});
 
 // Import handler after mocking
 import { handler } from "./profile-updater";
@@ -64,14 +49,7 @@ describe("profile-updater handler", () => {
     dynamoMock.reset();
     // Default mock for BatchWriteItem (Tier1 indexes) - can be overridden in individual tests
     dynamoMock.on(BatchWriteItemCommand).resolves({});
-    redisMock = new RedisMock();
     vi.clearAllMocks();
-  });
-
-  afterEach(async () => {
-    if (redisMock) {
-      await redisMock.flushall();
-    }
   });
 
   const createSQSRecord = (
@@ -124,10 +102,20 @@ describe("profile-updater handler", () => {
     it("should process a single profile update successfully", async () => {
       const payload = createProfileUpdatePayload();
 
+      // Mock mutation gate acquisition (success)
+      dynamoMock
+        .on(PutItemCommand, { TableName: "test-session-cache" })
+        .resolves({});
+
       // Mock no existing profile (new device)
-      dynamoMock.on(GetItemCommand).resolves({});
-      dynamoMock.on(PutItemCommand).resolves({});
-      dynamoMock.on(UpdateItemCommand).resolves({});
+      dynamoMock
+        .on(GetItemCommand, { TableName: "test-profiles" })
+        .resolves({});
+
+      // Mock profile write
+      dynamoMock
+        .on(PutItemCommand, { TableName: "test-profiles" })
+        .resolves({});
 
       const event = createSQSEvent([createSQSRecord(payload)]);
       const result = await handler(event, mockContext, () => {});
@@ -140,9 +128,8 @@ describe("profile-updater handler", () => {
       const payload1 = createProfileUpdatePayload({ device_id: "device-1" });
       const payload2 = createProfileUpdatePayload({ device_id: "device-2" });
 
-      dynamoMock.on(GetItemCommand).resolves({});
       dynamoMock.on(PutItemCommand).resolves({});
-      dynamoMock.on(UpdateItemCommand).resolves({});
+      dynamoMock.on(GetItemCommand).resolves({});
 
       const event = createSQSEvent([
         createSQSRecord(payload1, "msg-1"),
@@ -157,8 +144,13 @@ describe("profile-updater handler", () => {
     it("should update existing profile", async () => {
       const payload = createProfileUpdatePayload();
 
+      // Mock mutation gate acquisition
+      dynamoMock
+        .on(PutItemCommand, { TableName: "test-session-cache" })
+        .resolves({});
+
       // Mock existing profile with correct DeviceProfile shape
-      dynamoMock.on(GetItemCommand).resolves({
+      dynamoMock.on(GetItemCommand, { TableName: "test-profiles" }).resolves({
         Item: marshall({
           tenant_id: "tenant-abc",
           device_id: "device-123",
@@ -172,8 +164,10 @@ describe("profile-updater handler", () => {
           ttl: Math.floor(Date.now() / 1000) + 86400,
         }),
       });
-      dynamoMock.on(PutItemCommand).resolves({});
-      dynamoMock.on(UpdateItemCommand).resolves({});
+
+      dynamoMock
+        .on(PutItemCommand, { TableName: "test-profiles" })
+        .resolves({});
 
       const event = createSQSEvent([createSQSRecord(payload)]);
       const result = await handler(event, mockContext, () => {});
@@ -184,16 +178,18 @@ describe("profile-updater handler", () => {
     it("should write new device profile", async () => {
       const payload = createProfileUpdatePayload({ is_new_device: true });
 
-      dynamoMock.on(GetItemCommand).resolves({});
       dynamoMock.on(PutItemCommand).resolves({});
+      dynamoMock.on(GetItemCommand).resolves({});
 
       const event = createSQSEvent([createSQSRecord(payload)]);
       const result = await handler(event, mockContext, () => {});
 
       expect(result!.batchItemFailures).toHaveLength(0);
 
-      // Verify PutItemCommand was called
-      const putCalls = dynamoMock.commandCalls(PutItemCommand);
+      // Verify PutItemCommand was called for profiles table
+      const putCalls = dynamoMock
+        .commandCalls(PutItemCommand)
+        .filter((call) => call.args[0].input.TableName === "test-profiles");
       expect(putCalls.length).toBeGreaterThan(0);
     });
   });
@@ -202,25 +198,34 @@ describe("profile-updater handler", () => {
     it("should skip update when mutation gate is active", async () => {
       const payload = createProfileUpdatePayload();
 
-      // Set mutation gate in Redis using correct key format
-      await redisMock.setex(`recently_updated:device-123`, 3600, "1");
+      // Mock mutation gate already held (ConditionalCheckFailedException)
+      dynamoMock
+        .on(PutItemCommand, { TableName: "test-session-cache" })
+        .rejects(
+          new ConditionalCheckFailedException({
+            message: "Condition not satisfied",
+            $metadata: {},
+          }),
+        );
 
       const event = createSQSEvent([createSQSRecord(payload)]);
       const result = await handler(event, mockContext, () => {});
 
       expect(result!.batchItemFailures).toHaveLength(0);
 
-      // Should not have written to DynamoDB due to mutation gate
-      const putCalls = dynamoMock.commandCalls(PutItemCommand);
-      expect(putCalls).toHaveLength(0);
+      // Should not have written to profiles table due to mutation gate
+      const profilePutCalls = dynamoMock
+        .commandCalls(PutItemCommand)
+        .filter((call) => call.args[0].input.TableName === "test-profiles");
+      expect(profilePutCalls).toHaveLength(0);
     });
 
-    it("should process update when mutation gate expired", async () => {
+    it("should process update when mutation gate is not held", async () => {
       const payload = createProfileUpdatePayload();
 
-      // No mutation gate in Redis (expired or never set)
-      dynamoMock.on(GetItemCommand).resolves({});
+      // Mock mutation gate acquisition success
       dynamoMock.on(PutItemCommand).resolves({});
+      dynamoMock.on(GetItemCommand).resolves({});
 
       const event = createSQSEvent([createSQSRecord(payload)]);
       const result = await handler(event, mockContext, () => {});
@@ -233,14 +238,19 @@ describe("profile-updater handler", () => {
     it("should skip update when fingerprint has no significant drift", async () => {
       const payload = createProfileUpdatePayload();
 
+      // Mock mutation gate acquisition
+      dynamoMock
+        .on(PutItemCommand, { TableName: "test-session-cache" })
+        .resolves({});
+
       // Mock existing profile with same fingerprint (correct DeviceProfile shape)
-      dynamoMock.on(GetItemCommand).resolves({
+      dynamoMock.on(GetItemCommand, { TableName: "test-profiles" }).resolves({
         Item: marshall({
           tenant_id: "tenant-abc",
           device_id: "device-123",
-          stable_hash: "hash-abc123",
-          fuzzy_hash: "fuzzy-def456",
-          canvas_hash: "canvas-ghi789",
+          stable_hash: "hash-abc123", // Same as payload
+          fuzzy_hash: "fuzzy-def456", // Same as payload
+          canvas_hash: "canvas-ghi789", // Same as payload
           first_seen_at: Date.now() - 86400000,
           last_seen_at: Date.now() - 60000,
           updated_at: Date.now() - 60000,
@@ -260,14 +270,17 @@ describe("profile-updater handler", () => {
     it("should update when fingerprint has significant drift", async () => {
       const payload = createProfileUpdatePayload({
         fingerprint: {
-          stable_hash: "completely-new-hash",
-          fuzzy_hash: "completely-new-fuzzy",
-          canvas_hash: "completely-new-canvas",
+          stable_hash: "completely-new-hash", // Different
+          fuzzy_hash: "completely-new-fuzzy", // Different
+          canvas_hash: "completely-new-canvas", // Different
         },
       });
 
-      // Mock existing profile with different fingerprint (correct DeviceProfile shape)
-      dynamoMock.on(GetItemCommand).resolves({
+      // Mock mutation gate acquisition
+      dynamoMock.on(PutItemCommand).resolves({});
+
+      // Mock existing profile with different fingerprint
+      dynamoMock.on(GetItemCommand, { TableName: "test-profiles" }).resolves({
         Item: marshall({
           tenant_id: "tenant-abc",
           device_id: "device-123",
@@ -281,8 +294,6 @@ describe("profile-updater handler", () => {
           ttl: Math.floor(Date.now() / 1000) + 86400,
         }),
       });
-      dynamoMock.on(PutItemCommand).resolves({});
-      dynamoMock.on(UpdateItemCommand).resolves({});
 
       const event = createSQSEvent([createSQSRecord(payload)]);
       const result = await handler(event, mockContext, () => {});
@@ -295,18 +306,17 @@ describe("profile-updater handler", () => {
     it("should update Tier 1 indexes for stable hash", async () => {
       const payload = createProfileUpdatePayload();
 
-      dynamoMock.on(GetItemCommand).resolves({});
       dynamoMock.on(PutItemCommand).resolves({});
+      dynamoMock.on(GetItemCommand).resolves({});
 
       const event = createSQSEvent([createSQSRecord(payload)]);
       const result = await handler(event, mockContext, () => {});
 
       expect(result!.batchItemFailures).toHaveLength(0);
 
-      // Verify index writes
-      const putCalls = dynamoMock.commandCalls(PutItemCommand);
-      // Should have profile + tier1 indexes
-      expect(putCalls.length).toBeGreaterThanOrEqual(1);
+      // Verify BatchWriteItemCommand was called for tier1 indexes
+      const batchCalls = dynamoMock.commandCalls(BatchWriteItemCommand);
+      expect(batchCalls.length).toBeGreaterThanOrEqual(1);
     });
 
     it("should update Tier 2 bucket indexes", async () => {
@@ -320,9 +330,8 @@ describe("profile-updater handler", () => {
         },
       });
 
-      dynamoMock.on(GetItemCommand).resolves({});
       dynamoMock.on(PutItemCommand).resolves({});
-      dynamoMock.on(UpdateItemCommand).resolves({});
+      dynamoMock.on(GetItemCommand).resolves({});
 
       const event = createSQSEvent([createSQSRecord(payload)]);
       const result = await handler(event, mockContext, () => {});
@@ -332,10 +341,18 @@ describe("profile-updater handler", () => {
   });
 
   describe("error handling", () => {
-    it("should return failed item when DynamoDB throws", async () => {
+    it("should return failed item when DynamoDB throws non-conditional error", async () => {
       const payload = createProfileUpdatePayload();
 
-      dynamoMock.on(GetItemCommand).rejects(new Error("DynamoDB error"));
+      // Mock mutation gate acquisition success
+      dynamoMock
+        .on(PutItemCommand, { TableName: "test-session-cache" })
+        .resolves({});
+
+      // Mock DynamoDB error on profile lookup
+      dynamoMock
+        .on(GetItemCommand, { TableName: "test-profiles" })
+        .rejects(new Error("DynamoDB error"));
 
       const event = createSQSEvent([createSQSRecord(payload, "failing-msg")]);
       const result = await handler(event, mockContext, () => {});
@@ -352,16 +369,26 @@ describe("profile-updater handler", () => {
         device_id: "fail-device",
       });
 
-      // First call succeeds, second fails
-      let callCount = 0;
-      dynamoMock.on(GetItemCommand).callsFake(() => {
-        callCount++;
-        if (callCount <= 1) {
-          return {};
-        }
-        throw new Error("DynamoDB error");
-      });
-      dynamoMock.on(PutItemCommand).resolves({});
+      // Mock mutation gate acquisition success
+      dynamoMock
+        .on(PutItemCommand, { TableName: "test-session-cache" })
+        .resolves({});
+
+      // First profile lookup succeeds, second fails
+      let profileCallCount = 0;
+      dynamoMock
+        .on(GetItemCommand, { TableName: "test-profiles" })
+        .callsFake(() => {
+          profileCallCount++;
+          if (profileCallCount <= 1) {
+            return {};
+          }
+          throw new Error("DynamoDB error");
+        });
+
+      dynamoMock
+        .on(PutItemCommand, { TableName: "test-profiles" })
+        .resolves({});
 
       const event = createSQSEvent([
         createSQSRecord(successPayload, "success-msg"),
@@ -391,8 +418,19 @@ describe("profile-updater handler", () => {
     it("should handle PutItem failure gracefully", async () => {
       const payload = createProfileUpdatePayload();
 
-      dynamoMock.on(GetItemCommand).resolves({});
-      dynamoMock.on(PutItemCommand).rejects(new Error("PutItem failed"));
+      // Mock mutation gate acquisition success
+      dynamoMock
+        .on(PutItemCommand, { TableName: "test-session-cache" })
+        .resolves({});
+
+      dynamoMock
+        .on(GetItemCommand, { TableName: "test-profiles" })
+        .resolves({});
+
+      // Mock profile write failure
+      dynamoMock
+        .on(PutItemCommand, { TableName: "test-profiles" })
+        .rejects(new Error("PutItem failed"));
 
       const event = createSQSEvent([createSQSRecord(payload, "put-fail-msg")]);
       const result = await handler(event, mockContext, () => {});
@@ -406,17 +444,21 @@ describe("profile-updater handler", () => {
     it("should set TTL on profile records", async () => {
       const payload = createProfileUpdatePayload({ is_new_device: true });
 
-      dynamoMock.on(GetItemCommand).resolves({});
       dynamoMock.on(PutItemCommand).resolves({});
+      dynamoMock.on(GetItemCommand).resolves({});
 
       const event = createSQSEvent([createSQSRecord(payload)]);
       await handler(event, mockContext, () => {});
 
-      const putCalls = dynamoMock.commandCalls(PutItemCommand);
+      const putCalls = dynamoMock
+        .commandCalls(PutItemCommand)
+        .filter((call) => call.args[0].input.TableName === "test-profiles");
+
       if (putCalls.length > 0) {
         const item = putCalls[0].args[0].input.Item;
         // TTL should be set (60 days from now)
         expect(item).toBeDefined();
+        expect(item?.ttl?.N).toBeDefined();
       }
     });
   });

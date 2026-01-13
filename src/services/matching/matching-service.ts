@@ -8,13 +8,8 @@ import {
 } from "@aws-sdk/client-dynamodb";
 import { SQSClient, SendMessageCommand } from "@aws-sdk/client-sqs";
 import { unmarshall } from "@aws-sdk/util-dynamodb";
-import type { Redis } from "ioredis";
-import {
-  Fingerprint,
-  FingerprintPayload,
-  MatchResult,
-  SessionCacheValue,
-} from "./types";
+import { DynamoCacheService, SessionCacheValue } from "../cache";
+import { Fingerprint, FingerprintPayload, MatchResult } from "./types";
 import { TIER2_BUCKET_LIMIT } from "../../helpers/constants";
 import { fnv1a } from "../../helpers/hash";
 
@@ -36,14 +31,14 @@ export interface MatchingServiceConfig {
 export interface MatchingServiceDeps {
   dynamodb: DynamoDBClient;
   sqs: SQSClient;
-  redis: Redis;
+  cache: DynamoCacheService;
   config: MatchingServiceConfig;
 }
 
 /**
  * Matching service handles device fingerprint matching logic
  * Uses tiered matching strategy:
- * - Tier 0: Redis session cache hit
+ * - Tier 0: DynamoDB session cache hit
  * - Tier 0.5: Evercookie/cookie lookup
  * - Tier 1: Strong hash match (stable_hash, fuzzy_hash)
  * - Tier 2: Compound filter match (ip+ja4, gpu+screen+tz, etc)
@@ -53,12 +48,10 @@ export class MatchingService {
   constructor(private deps: MatchingServiceDeps) {}
 
   /**
-   * Check if session is already cached in Redis
+   * Check if session is already cached in DynamoDB
    */
   async checkCache(sessionId: string): Promise<SessionCacheValue | null> {
-    const key = `session:${sessionId}`;
-    const cached = await this.deps.redis.get(key);
-    return cached ? JSON.parse(cached) : null;
+    return this.deps.cache.checkSessionCache(sessionId);
   }
 
   /**
@@ -434,15 +427,14 @@ export class MatchingService {
   }
 
   /**
-   * Write match result to Redis session cache
+   * Write match result to DynamoDB session cache
+   * Uses conditional write to preserve higher-confidence matches
    */
   async writeMatchResult(
     sessionId: string,
     result: MatchResult,
     idempotencyKey: string,
   ): Promise<void> {
-    const key = `session:${sessionId}`;
-
     const value: SessionCacheValue = {
       status: "complete",
       device_id: result.device_id,
@@ -455,35 +447,16 @@ export class MatchingService {
       updated_at: Date.now(),
     };
 
-    // Check if existing result has higher confidence (versioned write)
-    const existing = await this.deps.redis.get(key);
-    if (existing) {
-      const existingValue: SessionCacheValue = JSON.parse(existing);
-      if (
-        existingValue.confidence >= result.confidence &&
-        existingValue.status === "complete"
-      ) {
-        // Existing match is better, skip write
-        return;
-      }
-    }
-
-    await this.deps.redis.setex(
-      key,
-      this.deps.config.sessionTtlSeconds,
-      JSON.stringify(value),
-    );
+    await this.deps.cache.writeSessionCache(sessionId, value);
   }
 
   /**
-   * Write degraded status to Redis when matching fails
+   * Write degraded status to DynamoDB when matching fails
    */
   async writeDegradedResult(
     sessionId: string,
     idempotencyKey: string,
   ): Promise<void> {
-    const key = `session:${sessionId}`;
-
     const value: SessionCacheValue = {
       status: "degraded",
       device_id: "",
@@ -496,11 +469,7 @@ export class MatchingService {
       updated_at: Date.now(),
     };
 
-    await this.deps.redis.setex(
-      key,
-      this.deps.config.sessionTtlSeconds,
-      JSON.stringify(value),
-    );
+    await this.deps.cache.writeSessionCache(sessionId, value);
   }
 
   /**

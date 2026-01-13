@@ -8,7 +8,8 @@
     "build",
     "cdk.out",
     "coverage",
-    "cdk.context.json"
+    "cdk.context.json",
+    "ideas"
   ],
 
   "excludeFiles": ["package-lock.json"],

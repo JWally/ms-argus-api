@@ -1,5 +1,5 @@
 // src/services/profile/profile-service.test.ts
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import { mockClient } from "aws-sdk-client-mock";
 import {
   DynamoDBClient,
@@ -8,13 +8,13 @@ import {
   BatchWriteItemCommand,
 } from "@aws-sdk/client-dynamodb";
 import { marshall } from "@aws-sdk/util-dynamodb";
-import RedisMock from "ioredis-mock";
 import {
   ProfileService,
   ProfileServiceConfig,
   ProfileServiceDeps,
 } from "./profile-service";
 import { Fingerprint, DeviceProfile, ProfileUpdatePayload } from "./types";
+import { DynamoCacheService } from "../cache";
 
 // Mock AWS SDK client
 const dynamoMock = mockClient(DynamoDBClient);
@@ -29,8 +29,30 @@ const testConfig: ProfileServiceConfig = {
   mutationGateTtlSeconds: 3600,
 };
 
+// Create a mock cache service for mutation gates
+function createMockCacheService() {
+  const gates = new Set<string>();
+
+  return {
+    checkSessionCache: vi.fn(async () => null),
+    writeSessionCache: vi.fn(async () => {}),
+    tryAcquireMutationGate: vi.fn(async (deviceId: string) => {
+      const key = `gate:${deviceId}`;
+      if (gates.has(key)) {
+        return false;
+      }
+      gates.add(key);
+      return true;
+    }),
+    // Helper for tests to set gate directly
+    _setGate: (deviceId: string) => gates.add(`gate:${deviceId}`),
+    _clearGates: () => gates.clear(),
+    _hasGate: (deviceId: string) => gates.has(`gate:${deviceId}`),
+  };
+}
+
 describe("ProfileService", () => {
-  let redis: InstanceType<typeof RedisMock>;
+  let mockCache: ReturnType<typeof createMockCacheService>;
   let dynamodb: DynamoDBClient;
   let service: ProfileService;
 
@@ -38,8 +60,8 @@ describe("ProfileService", () => {
     // Reset mocks
     dynamoMock.reset();
 
-    // Create fresh Redis mock
-    redis = new RedisMock();
+    // Create fresh cache mock
+    mockCache = createMockCacheService();
 
     // Create real client (mocked by aws-sdk-client-mock)
     dynamodb = new DynamoDBClient({});
@@ -47,31 +69,21 @@ describe("ProfileService", () => {
     // Create service with test dependencies
     const deps: ProfileServiceDeps = {
       dynamodb,
-      redis: redis as any,
+      cache: mockCache as unknown as DynamoCacheService,
       config: testConfig,
     };
     service = new ProfileService(deps);
-  });
-
-  afterEach(async () => {
-    await redis.quit();
   });
 
   describe("tryAcquireMutationGate", () => {
     it("should acquire gate when key does not exist", async () => {
       const result = await service.tryAcquireMutationGate("dev_gate_test");
       expect(result).toBe(true);
-
-      // Verify key was set with TTL
-      const value = await redis.get("recently_updated:dev_gate_test");
-      expect(value).toBe("1");
-      const ttl = await redis.ttl("recently_updated:dev_gate_test");
-      expect(ttl).toBeGreaterThan(0);
-      expect(ttl).toBeLessThanOrEqual(3600);
+      expect(mockCache._hasGate("dev_gate_test")).toBe(true);
     });
 
     it("should fail to acquire gate when key already exists", async () => {
-      await redis.setex("recently_updated:dev_gate_held", 3600, "1");
+      mockCache._setGate("dev_gate_held");
 
       const result = await service.tryAcquireMutationGate("dev_gate_held");
       expect(result).toBe(false);
@@ -669,7 +681,7 @@ describe("ProfileService", () => {
   describe("processProfileUpdate", () => {
     it("should skip when mutation gate is active", async () => {
       // Set mutation gate
-      await redis.setex("recently_updated:dev_gated", 3600, "1");
+      mockCache._setGate("dev_gated");
 
       const payload: ProfileUpdatePayload = {
         tenant_id: "tenant1",
@@ -722,8 +734,7 @@ describe("ProfileService", () => {
       expect(result.reason).toBe("no_drift");
 
       // Should have set mutation gate
-      const gateExists = await redis.exists("recently_updated:dev_stable");
-      expect(gateExists).toBe(1);
+      expect(mockCache._hasGate("dev_stable")).toBe(true);
     });
 
     it("should perform full update for new device", async () => {
@@ -750,8 +761,7 @@ describe("ProfileService", () => {
       expect(result.tier2Writes).toBe(1); // ip_ja4
 
       // Verify mutation gate was set
-      const gateExists = await redis.exists("recently_updated:dev_new");
-      expect(gateExists).toBe(1);
+      expect(mockCache._hasGate("dev_new")).toBe(true);
     });
 
     it("should perform full update when drift detected", async () => {

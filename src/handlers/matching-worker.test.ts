@@ -1,13 +1,12 @@
 // src/handlers/matching-worker.test.ts
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 
 // Set environment variables BEFORE any module imports using vi.hoisted
 // This ensures env validation passes during module load
 vi.hoisted(() => {
   process.env.POWERTOOLS_SERVICE_NAME = "argus-matching-worker-test";
   process.env.POWERTOOLS_METRICS_NAMESPACE = "argus-test";
-  process.env.REDIS_ENDPOINT = "localhost";
-  process.env.REDIS_PORT = "6379";
+  process.env.SESSION_CACHE_TABLE = "test-session-cache";
   process.env.TIER1_INDEX_TABLE = "test-tier1-index";
   process.env.TIER2_BUCKETS_TABLE = "test-tier2-buckets";
   process.env.PROFILES_TABLE = "test-profiles";
@@ -20,28 +19,15 @@ import {
   DynamoDBClient,
   GetItemCommand,
   QueryCommand,
+  PutItemCommand,
 } from "@aws-sdk/client-dynamodb";
 import { SQSClient, SendMessageCommand } from "@aws-sdk/client-sqs";
 import { marshall } from "@aws-sdk/util-dynamodb";
 import { SQSEvent, SQSRecord, Context } from "aws-lambda";
-import RedisMock from "ioredis-mock";
 
 // Mock AWS SDK clients
 const dynamoMock = mockClient(DynamoDBClient);
 const sqsMock = mockClient(SQSClient);
-
-// Create a mock Redis instance
-let redisMock: InstanceType<typeof RedisMock>;
-
-// Mock ioredis module
-vi.mock("ioredis", () => {
-  return {
-    default: vi.fn().mockImplementation(() => {
-      redisMock = new RedisMock();
-      return redisMock;
-    }),
-  };
-});
 
 // Import handler after mocking
 import { handler } from "./matching-worker";
@@ -65,14 +51,7 @@ describe("matching-worker handler", () => {
   beforeEach(() => {
     dynamoMock.reset();
     sqsMock.reset();
-    redisMock = new RedisMock();
     vi.clearAllMocks();
-  });
-
-  afterEach(async () => {
-    if (redisMock) {
-      await redisMock.flushall();
-    }
   });
 
   const createSQSRecord = (
@@ -120,14 +99,28 @@ describe("matching-worker handler", () => {
     it("should process a single record successfully with Tier 1 match", async () => {
       const payload = createFingerprintPayload();
 
+      // Mock session cache lookup (no cache hit)
+      dynamoMock
+        .on(GetItemCommand, {
+          TableName: "test-session-cache",
+        })
+        .resolves({ Item: undefined });
+
       // Mock Tier 1 index lookup - found existing device
-      dynamoMock.on(GetItemCommand).resolves({
-        Item: marshall({
-          tenant_id: "tenant-abc",
-          hash_value: "hash-abc123",
-          device_id: "existing-device-123",
-        }),
-      });
+      dynamoMock
+        .on(GetItemCommand, {
+          TableName: "test-tier1-index",
+        })
+        .resolves({
+          Item: marshall({
+            tenant_id: "tenant-abc",
+            hash_key: "stable#hash-abc123",
+            device_id: "existing-device-123",
+          }),
+        });
+
+      // Mock session cache write
+      dynamoMock.on(PutItemCommand).resolves({});
 
       // Mock SQS send for profile update
       sqsMock.on(SendMessageCommand).resolves({ MessageId: "profile-msg-1" });
@@ -147,13 +140,21 @@ describe("matching-worker handler", () => {
       const payload1 = createFingerprintPayload({ session_id: "session-1" });
       const payload2 = createFingerprintPayload({ session_id: "session-2" });
 
-      dynamoMock.on(GetItemCommand).resolves({
-        Item: marshall({
-          tenant_id: "tenant-abc",
-          hash_value: "hash-abc123",
-          device_id: "device-123",
-        }),
-      });
+      dynamoMock
+        .on(GetItemCommand, { TableName: "test-session-cache" })
+        .resolves({ Item: undefined });
+
+      dynamoMock
+        .on(GetItemCommand, { TableName: "test-tier1-index" })
+        .resolves({
+          Item: marshall({
+            tenant_id: "tenant-abc",
+            hash_key: "stable#hash-abc123",
+            device_id: "device-123",
+          }),
+        });
+
+      dynamoMock.on(PutItemCommand).resolves({});
       sqsMock.on(SendMessageCommand).resolves({ MessageId: "msg-1" });
 
       const event = createSQSEvent([
@@ -169,29 +170,32 @@ describe("matching-worker handler", () => {
     it("should skip processing for cache hit (Tier 0)", async () => {
       const payload = createFingerprintPayload();
 
-      // Pre-populate Redis cache with complete result
-      await redisMock.set(
-        `session:${payload.session_id}`,
-        JSON.stringify({
-          status: "complete",
-          device_id: "cached-device-123",
-          risk_score: 0.2,
-          confidence: 0.95,
-          match_tier: 1,
-          match_version: 1,
-          idempotency_key: "cached-key",
-          flags: [],
-          updated_at: Date.now(),
-        }),
-      );
+      // Mock session cache hit
+      dynamoMock
+        .on(GetItemCommand, { TableName: "test-session-cache" })
+        .resolves({
+          Item: marshall({
+            cache_key: `session:${payload.session_id}`,
+            value: {
+              status: "complete",
+              device_id: "cached-device-123",
+              risk_score: 0.2,
+              confidence: 0.95,
+              match_tier: 1,
+              match_version: Date.now(),
+              idempotency_key: "cached-key",
+              flags: [],
+              updated_at: Date.now(),
+            },
+            confidence: 0.95,
+            ttl: Math.floor(Date.now() / 1000) + 900, // Valid TTL
+          }),
+        });
 
       const event = createSQSEvent([createSQSRecord(payload)]);
       const result = await handler(event, mockContext, () => {});
 
       expect(result!.batchItemFailures).toHaveLength(0);
-
-      // Should not have written to DynamoDB since we had a cache hit
-      // May still do a lookup, but shouldn't have queued profile update
     });
 
     it("should create new device when no match found", async () => {
@@ -202,9 +206,17 @@ describe("matching-worker handler", () => {
         },
       });
 
+      // Mock no cache hit
+      dynamoMock
+        .on(GetItemCommand, { TableName: "test-session-cache" })
+        .resolves({ Item: undefined });
+
       // Mock no match found in any tier
-      dynamoMock.on(GetItemCommand).resolves({});
+      dynamoMock
+        .on(GetItemCommand, { TableName: "test-tier1-index" })
+        .resolves({});
       dynamoMock.on(QueryCommand).resolves({ Items: [] });
+      dynamoMock.on(PutItemCommand).resolves({});
       sqsMock.on(SendMessageCommand).resolves({ MessageId: "msg-1" });
 
       const event = createSQSEvent([createSQSRecord(payload)]);
@@ -222,7 +234,15 @@ describe("matching-worker handler", () => {
     it("should return failed item when DynamoDB throws", async () => {
       const payload = createFingerprintPayload();
 
-      dynamoMock.on(GetItemCommand).rejects(new Error("DynamoDB error"));
+      // Mock no cache hit
+      dynamoMock
+        .on(GetItemCommand, { TableName: "test-session-cache" })
+        .resolves({ Item: undefined });
+
+      // Mock DynamoDB error on tier1 lookup
+      dynamoMock
+        .on(GetItemCommand, { TableName: "test-tier1-index" })
+        .rejects(new Error("DynamoDB error"));
 
       const event = createSQSEvent([createSQSRecord(payload, "failing-msg")]);
       const result = await handler(event, mockContext, () => {});
@@ -239,22 +259,30 @@ describe("matching-worker handler", () => {
         session_id: "fail-session",
       });
 
-      // First call succeeds, second fails
-      let callCount = 0;
-      dynamoMock.on(GetItemCommand).callsFake(() => {
-        callCount++;
-        if (callCount === 1) {
-          return {
-            Item: marshall({
-              tenant_id: "tenant-abc",
-              hash_value: "hash-abc123",
-              device_id: "device-123",
-            }),
-          };
-        }
-        throw new Error("DynamoDB error");
-      });
+      // Mock no cache hits
+      dynamoMock
+        .on(GetItemCommand, { TableName: "test-session-cache" })
+        .resolves({ Item: undefined });
 
+      // First tier1 call succeeds, second fails
+      let tier1CallCount = 0;
+      dynamoMock
+        .on(GetItemCommand, { TableName: "test-tier1-index" })
+        .callsFake(() => {
+          tier1CallCount++;
+          if (tier1CallCount === 1) {
+            return {
+              Item: marshall({
+                tenant_id: "tenant-abc",
+                hash_key: "stable#hash-abc123",
+                device_id: "device-123",
+              }),
+            };
+          }
+          throw new Error("DynamoDB error");
+        });
+
+      dynamoMock.on(PutItemCommand).resolves({});
       sqsMock.on(SendMessageCommand).resolves({ MessageId: "msg-1" });
 
       const event = createSQSEvent([
@@ -285,18 +313,28 @@ describe("matching-worker handler", () => {
     it("should write degraded status on matching failure", async () => {
       const payload = createFingerprintPayload();
 
+      // Mock no cache hit
+      dynamoMock
+        .on(GetItemCommand, { TableName: "test-session-cache" })
+        .resolves({ Item: undefined });
+
       // Mock matching failure
-      dynamoMock.on(GetItemCommand).rejects(new Error("Matching failed"));
+      dynamoMock
+        .on(GetItemCommand, { TableName: "test-tier1-index" })
+        .rejects(new Error("Matching failed"));
+
+      // Mock cache write for degraded status
+      dynamoMock.on(PutItemCommand).resolves({});
 
       const event = createSQSEvent([createSQSRecord(payload)]);
       await handler(event, mockContext, () => {});
 
-      // Check that degraded status was written to Redis
-      const cached = await redisMock.get(`session:${payload.session_id}`);
-      if (cached) {
-        const parsed = JSON.parse(cached);
-        expect(parsed.status).toBe("degraded");
-      }
+      // Verify degraded status was written to DynamoDB cache
+      const putCalls = dynamoMock.commandCalls(PutItemCommand);
+      const cacheWrite = putCalls.find(
+        (call) => call.args[0].input.TableName === "test-session-cache",
+      );
+      expect(cacheWrite).toBeDefined();
     });
   });
 
@@ -308,15 +346,23 @@ describe("matching-worker handler", () => {
         },
       });
 
-      // Mock evercookie lookup success
-      dynamoMock.on(GetItemCommand).resolves({
-        Item: marshall({
-          tenant_id: "tenant-abc",
-          hash_value: "evercookie-abc123",
-          device_id: "evercookie-device-123",
-        }),
-      });
+      // Mock no cache hit
+      dynamoMock
+        .on(GetItemCommand, { TableName: "test-session-cache" })
+        .resolves({ Item: undefined });
 
+      // Mock evercookie lookup success
+      dynamoMock
+        .on(GetItemCommand, { TableName: "test-tier1-index" })
+        .resolves({
+          Item: marshall({
+            tenant_id: "tenant-abc",
+            hash_key: "evercookie#evercookie-abc123",
+            device_id: "evercookie-device-123",
+          }),
+        });
+
+      dynamoMock.on(PutItemCommand).resolves({});
       sqsMock.on(SendMessageCommand).resolves({ MessageId: "msg-1" });
 
       const event = createSQSEvent([createSQSRecord(payload)]);

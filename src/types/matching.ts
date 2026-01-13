@@ -4,7 +4,7 @@
 import type { Fingerprint } from "./fingerprint";
 
 /**
- * Session cache value stored in Redis
+ * Session cache value stored in DynamoDB
  */
 export interface SessionCacheValue {
   status: "pending" | "complete" | "degraded";

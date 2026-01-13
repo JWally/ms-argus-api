@@ -46,14 +46,6 @@ export interface StageConfig {
     requestsPerTarget: number;
   };
 
-  // Redis configuration
-  redis: {
-    nodeType: string;
-    numNodes: number;
-    multiAz: boolean;
-    snapshotRetentionDays: number;
-  };
-
   // CloudWatch alarm thresholds
   alarms: {
     lambda: {
@@ -65,12 +57,6 @@ export interface StageConfig {
     queue: {
       backlogThreshold: number;
       messageAgeSeconds: number;
-    };
-    redis: {
-      memoryWarningPercent: number;
-      memoryCriticalPercent: number;
-      cpuThreshold: number;
-      evictionsThreshold: number;
     };
     dynamodb: {
       throttleThreshold: number;
@@ -130,13 +116,6 @@ const devConfig: StageConfig = {
     requestsPerTarget: 10000,
   },
 
-  redis: {
-    nodeType: "cache.t4g.small",
-    numNodes: 1,
-    multiAz: false,
-    snapshotRetentionDays: 1,
-  },
-
   alarms: {
     lambda: {
       errorThreshold: 5,
@@ -147,12 +126,6 @@ const devConfig: StageConfig = {
     queue: {
       backlogThreshold: 1000,
       messageAgeSeconds: 60,
-    },
-    redis: {
-      memoryWarningPercent: 70,
-      memoryCriticalPercent: 80,
-      cpuThreshold: 60,
-      evictionsThreshold: 10,
     },
     dynamodb: {
       throttleThreshold: 2,
@@ -211,13 +184,6 @@ const prodConfig: StageConfig = {
     requestsPerTarget: 5000,
   },
 
-  redis: {
-    nodeType: "cache.r6g.medium",
-    numNodes: 2,
-    multiAz: true,
-    snapshotRetentionDays: 7,
-  },
-
   alarms: {
     lambda: {
       errorThreshold: 10,
@@ -228,12 +194,6 @@ const prodConfig: StageConfig = {
     queue: {
       backlogThreshold: 10000,
       messageAgeSeconds: 300,
-    },
-    redis: {
-      memoryWarningPercent: 70,
-      memoryCriticalPercent: 80,
-      cpuThreshold: 80,
-      evictionsThreshold: 100,
     },
     dynamodb: {
       throttleThreshold: 10,

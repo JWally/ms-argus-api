@@ -1,18 +1,47 @@
 # Claude Code Workflow for ms-argus-api
 
-## Quick Start
+## Core Principles
+
+When planning, reviewing, or implementing:
+
+- **Readable over clever** → Code should be obvious, not impressive
+- **Understandable by the next engineer** → Write for the maintainer, not yourself
+- **Boring technology choices** → Proven beats cutting-edge (nobody got fired choosing IBM)
+- **Explicit over implicit** → Magic is the enemy of debugging
+- **Tests prove behavior** → Tests verify the feature works, not just that code runs
+
+---
+
+## Sprint Planning
+
+Before tickets exist:
+
+1. **Define goal** → User describes what the sprint should accomplish
+2. **Create plan** → Design approach based on Core Principles
+3. **Review together** → Agree on scope, direction, trade-offs
+4. **Write tickets** → Create JIRA tickets with verifiable AC (pass/fail criteria)
+5. **Plan automation** → Define test coverage for each ticket before implementation
+6. **Begin work** → Start pulling tickets
+
+---
+
+## Per-Ticket Workflow
 
 Work through JIRA tickets autonomously. For each ticket:
 
 1. **Get ticket** → Query JIRA for To Do tickets (bugs first, then by priority P0-P3)
-2. **Branch** → `git checkout -b AR-XX`
-3. **Implement** → Make changes
-4. **Test** → `npm test` (259 tests must pass)
-5. **Deploy** → `npx cdk deploy ms-argus-api-dev-jw --require-approval never`
-6. **Integration test** → `cd ~/Dev/ms-argus-automation && npm test`
-7. **PR** → `gh pr create` then `gh pr merge --squash --delete-branch`
-8. **JIRA** → Transition to Done, add completion comment
-9. **Repeat** → Return to step 1
+2. **Branch** → `git checkout -b AR-XX` (both repos)
+3. **Automation first** → Write tests in ms-argus-automation that cover the ticket's AC
+4. **Verify tests fail** → Proves tests are actually testing something
+5. **Implement** → Make changes (includes unit tests, linting, formatting)
+6. **Unit test** → `npm test` (all must pass)
+7. **Deploy** → `npx cdk deploy ms-argus-api-dev-jw --require-approval never`
+8. **Integration test** → `cd ~/Dev/ms-argus-automation && npm test` (all must pass)
+9. **Update docs** → If user-facing behavior changed, update `docs/features/` and README
+10. **Self-review** → Review PR against Core Principles
+11. **PR + Merge** → `gh pr create` then `gh pr merge --squash --delete-branch` (both repos)
+12. **JIRA** → Transition to Done, add completion comment
+13. **Repeat** → Return to step 1
 
 ---
 
@@ -164,15 +193,37 @@ Browser → CloudFront → ALB → ECS (Go) → SQS → Lambda (Matching) → Dy
 
 ---
 
+## Documentation
+
+Keep these up to date as features change:
+
+| Location         | Purpose                                                            |
+| ---------------- | ------------------------------------------------------------------ |
+| `docs/features/` | User-facing feature docs (what it does, inputs, outputs, examples) |
+| `CHANGELOG.md`   | Sprint-level changes (features added/removed/changed)              |
+| `README.md`      | Architecture, API reference, setup instructions                    |
+| `docs/adr/`      | Architecture Decision Records (for non-trivial design choices)     |
+
+**When to update:**
+
+- New endpoint or behavior change → `docs/features/` + `README.md`
+- Any merged PR → `CHANGELOG.md`
+- Design decision with trade-offs → `docs/adr/NNNN-title.md`
+
+---
+
 ## Merge Checklist
 
 Before merging ANY PR:
 
-- [ ] Unit tests pass (`npm test` - all 259+)
+- [ ] Unit tests pass (`npm test` - all 261+)
 - [ ] Go tests pass (`go test ./...`)
 - [ ] Lint passes (warnings OK)
 - [ ] Deployed to dev (`cdk deploy ms-argus-api-dev-jw`)
 - [ ] Integration tests pass (`cd ms-argus-automation && npm test`)
+- [ ] Docs updated (if user-facing behavior changed)
+- [ ] Self-review against Core Principles
+- [ ] CHANGELOG.md updated
 
 **Never merge without deploy + integration verification.**
 

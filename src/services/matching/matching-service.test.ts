@@ -1,5 +1,5 @@
 // src/services/matching/matching-service.test.ts
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import { mockClient } from "aws-sdk-client-mock";
 import {
   DynamoDBClient,
@@ -8,7 +8,6 @@ import {
 } from "@aws-sdk/client-dynamodb";
 import { SQSClient, SendMessageCommand } from "@aws-sdk/client-sqs";
 import { marshall } from "@aws-sdk/util-dynamodb";
-import RedisMock from "ioredis-mock";
 import {
   MatchingService,
   MatchingServiceConfig,
@@ -16,7 +15,8 @@ import {
   generateIdempotencyKey,
   generateUUID,
 } from "./matching-service";
-import { Fingerprint, SessionCacheValue } from "./types";
+import { Fingerprint } from "./types";
+import { SessionCacheValue, DynamoCacheService } from "../cache";
 
 // Mock AWS SDK clients
 const dynamoMock = mockClient(DynamoDBClient);
@@ -32,8 +32,39 @@ const testConfig: MatchingServiceConfig = {
   tier2TimeoutMs: 100,
 };
 
+// Create a mock cache service
+function createMockCacheService() {
+  const cache = new Map<string, SessionCacheValue>();
+
+  return {
+    checkSessionCache: vi.fn(async (sessionId: string) => {
+      return cache.get(`session:${sessionId}`) ?? null;
+    }),
+    writeSessionCache: vi.fn(
+      async (sessionId: string, value: SessionCacheValue) => {
+        const existing = cache.get(`session:${sessionId}`);
+        // Mimic conditional write logic - only overwrite if higher confidence
+        if (
+          !existing ||
+          existing.confidence < value.confidence ||
+          existing.status === "degraded"
+        ) {
+          cache.set(`session:${sessionId}`, value);
+        }
+      },
+    ),
+    tryAcquireMutationGate: vi.fn(async () => true),
+    // Helper for tests to set cache values directly
+    _setCache: (sessionId: string, value: SessionCacheValue) => {
+      cache.set(`session:${sessionId}`, value);
+    },
+    _getCache: (sessionId: string) => cache.get(`session:${sessionId}`),
+    _clearCache: () => cache.clear(),
+  };
+}
+
 describe("MatchingService", () => {
-  let redis: InstanceType<typeof RedisMock>;
+  let mockCache: ReturnType<typeof createMockCacheService>;
   let dynamodb: DynamoDBClient;
   let sqs: SQSClient;
   let service: MatchingService;
@@ -43,8 +74,8 @@ describe("MatchingService", () => {
     dynamoMock.reset();
     sqsMock.reset();
 
-    // Create fresh Redis mock
-    redis = new RedisMock();
+    // Create fresh cache mock
+    mockCache = createMockCacheService();
 
     // Create real clients (mocked by aws-sdk-client-mock)
     dynamodb = new DynamoDBClient({});
@@ -54,14 +85,10 @@ describe("MatchingService", () => {
     const deps: MatchingServiceDeps = {
       dynamodb,
       sqs,
-      redis: redis as any, // ioredis-mock is compatible
+      cache: mockCache as unknown as DynamoCacheService,
       config: testConfig,
     };
     service = new MatchingService(deps);
-  });
-
-  afterEach(async () => {
-    await redis.quit();
   });
 
   describe("checkCache", () => {
@@ -84,7 +111,7 @@ describe("MatchingService", () => {
         updated_at: Date.now(),
       };
 
-      await redis.set(`session:${sessionId}`, JSON.stringify(cachedValue));
+      mockCache._setCache(sessionId, cachedValue);
 
       const result = await service.checkCache(sessionId);
       expect(result).not.toBeNull();
@@ -587,7 +614,7 @@ describe("MatchingService", () => {
   });
 
   describe("writeMatchResult", () => {
-    it("should write result to Redis with TTL", async () => {
+    it("should write result to cache with TTL", async () => {
       const result = {
         device_id: "dev_123",
         confidence: 0.95,
@@ -599,13 +626,12 @@ describe("MatchingService", () => {
 
       await service.writeMatchResult("session123", result, "idempkey");
 
-      const cached = await redis.get("session:session123");
+      expect(mockCache.writeSessionCache).toHaveBeenCalled();
+      const cached = mockCache._getCache("session123");
       expect(cached).not.toBeNull();
-
-      const value: SessionCacheValue = JSON.parse(cached!);
-      expect(value.status).toBe("complete");
-      expect(value.device_id).toBe("dev_123");
-      expect(value.confidence).toBe(0.95);
+      expect(cached?.status).toBe("complete");
+      expect(cached?.device_id).toBe("dev_123");
+      expect(cached?.confidence).toBe(0.95);
     });
 
     it("should not overwrite higher confidence match", async () => {
@@ -621,7 +647,7 @@ describe("MatchingService", () => {
         flags: [],
         updated_at: Date.now(),
       };
-      await redis.set("session:session123", JSON.stringify(existing));
+      mockCache._setCache("session123", existing);
 
       // Try to write lower confidence match
       const result = {
@@ -636,9 +662,8 @@ describe("MatchingService", () => {
       await service.writeMatchResult("session123", result, "newkey");
 
       // Should still have the better match
-      const cached = await redis.get("session:session123");
-      const value: SessionCacheValue = JSON.parse(cached!);
-      expect(value.device_id).toBe("dev_better");
+      const cached = mockCache._getCache("session123");
+      expect(cached?.device_id).toBe("dev_better");
     });
 
     it("should overwrite lower confidence match", async () => {
@@ -654,7 +679,7 @@ describe("MatchingService", () => {
         flags: [],
         updated_at: Date.now(),
       };
-      await redis.set("session:session123", JSON.stringify(existing));
+      mockCache._setCache("session123", existing);
 
       // Write higher confidence match
       const result = {
@@ -668,23 +693,21 @@ describe("MatchingService", () => {
 
       await service.writeMatchResult("session123", result, "newkey");
 
-      const cached = await redis.get("session:session123");
-      const value: SessionCacheValue = JSON.parse(cached!);
-      expect(value.device_id).toBe("dev_better");
+      const cached = mockCache._getCache("session123");
+      expect(cached?.device_id).toBe("dev_better");
     });
   });
 
   describe("writeDegradedResult", () => {
-    it("should write degraded status to Redis", async () => {
+    it("should write degraded status to cache", async () => {
       await service.writeDegradedResult("session123", "idempkey");
 
-      const cached = await redis.get("session:session123");
+      expect(mockCache.writeSessionCache).toHaveBeenCalled();
+      const cached = mockCache._getCache("session123");
       expect(cached).not.toBeNull();
-
-      const value: SessionCacheValue = JSON.parse(cached!);
-      expect(value.status).toBe("degraded");
-      expect(value.device_id).toBe("");
-      expect(value.flags).toContain("matching_failed");
+      expect(cached?.status).toBe("degraded");
+      expect(cached?.device_id).toBe("");
+      expect(cached?.flags).toContain("matching_failed");
     });
   });
 

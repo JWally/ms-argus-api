@@ -8,7 +8,6 @@ import { Construct } from "constructs";
 
 import { SecretConstruct } from "../constructs/secrets";
 import { QueuesConstruct } from "../constructs/queues";
-import { RedisConstruct } from "../constructs/redis";
 import { DynamoDbConstruct } from "../constructs/dynamodb";
 import { IngestionServiceConstruct } from "../constructs/ingestion-service";
 import { WorkersConstruct } from "../constructs/workers";
@@ -27,15 +26,14 @@ interface ArgusApiStackProps extends cdk.StackProps {
 /**
  * Argus API Stack - V4 Architecture
  *
- * Ultra-thin Go ingestion handler -> SQS -> Node.js Lambda workers -> Redis/DynamoDB
+ * Ultra-thin Go ingestion handler -> SQS -> Node.js Lambda workers -> DynamoDB
  *
  * Components:
- * - VPC with private subnets
+ * - VPC with private subnets (for ECS Fargate ingestion)
  * - ALB + ECS Fargate (Go ingestion handler)
  * - SQS queues (matching, profile)
  * - Node.js Lambda workers (matching, profile updater)
- * - Redis ElastiCache (session cache)
- * - DynamoDB (profiles, tier1 index, tier2 buckets)
+ * - DynamoDB (profiles, tier1 index, tier2 buckets, session cache)
  * - CloudFront + WAF (edge protection)
  * - Route53 + ACM (custom domain)
  */
@@ -125,16 +123,7 @@ export class ArgusApiStack extends cdk.Stack {
     // DATA LAYER
     // =========================================================================
 
-    // Redis for session cache
-    // Uses tiny instances for non-prod (faster spin up/down)
-    const redis = new RedisConstruct(this, "Redis", {
-      stackName,
-      vpc,
-      alarmsTopic,
-      stage,
-    });
-
-    // DynamoDB tables
+    // DynamoDB tables (including session cache - replaces Redis)
     const dynamodb = new DynamoDbConstruct(this, "DynamoDB", {
       stackName,
       alarmsTopic,
@@ -165,10 +154,7 @@ export class ArgusApiStack extends cdk.Stack {
       },
     );
 
-    // Allow ingestion service to access Redis
-    redis.allowFrom(ingestionService.securityGroup, "Allow ingestion service");
-
-    // Worker Lambdas
+    // Worker Lambdas (no VPC needed - uses DynamoDB for caching)
     const workers = new WorkersConstruct(this, "Workers", {
       stackName,
       stage,
@@ -179,10 +165,7 @@ export class ArgusApiStack extends cdk.Stack {
       profilesTable: dynamodb.profilesTable,
       tier1IndexTable: dynamodb.tier1IndexTable,
       tier2BucketsTable: dynamodb.tier2BucketsTable,
-      redisEndpoint: redis.endpoint,
-      redisPort: redis.port,
-      redisSecurityGroup: redis.securityGroup,
-      vpc,
+      sessionCacheTable: dynamodb.sessionCacheTable,
     });
 
     // =========================================================================
@@ -241,9 +224,9 @@ export class ArgusApiStack extends cdk.Stack {
       description: "SQS URL for profile queue",
     });
 
-    new cdk.CfnOutput(this, "RedisEndpoint", {
-      value: redis.endpoint,
-      description: "Redis primary endpoint",
+    new cdk.CfnOutput(this, "SessionCacheTableName", {
+      value: dynamodb.sessionCacheTable.tableName,
+      description: "DynamoDB session cache table name",
     });
 
     new cdk.CfnOutput(this, "ProfilesTableName", {

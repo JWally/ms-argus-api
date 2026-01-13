@@ -82,14 +82,8 @@ describe("stage-config", () => {
         expect(dev.ecs.minCapacity).toBe(1);
       });
 
-      it("should have single Redis node without multi-AZ", () => {
-        expect(dev.redis.numNodes).toBe(1);
-        expect(dev.redis.multiAz).toBe(false);
-      });
-
       it("should have shorter retention periods", () => {
         expect(dev.sqs.retentionPeriod.toDays()).toBe(1);
-        expect(dev.redis.snapshotRetentionDays).toBe(1);
       });
 
       it("should have tighter alarm thresholds for faster feedback", () => {
@@ -125,14 +119,8 @@ describe("stage-config", () => {
         expect(prod.ecs.minCapacity).toBeGreaterThanOrEqual(2);
       });
 
-      it("should have Redis HA with multi-AZ", () => {
-        expect(prod.redis.numNodes).toBeGreaterThanOrEqual(2);
-        expect(prod.redis.multiAz).toBe(true);
-      });
-
       it("should have longer retention periods", () => {
         expect(prod.sqs.retentionPeriod.toDays()).toBeGreaterThanOrEqual(7);
-        expect(prod.redis.snapshotRetentionDays).toBeGreaterThanOrEqual(7);
       });
 
       it("should have appropriate concurrency limits", () => {

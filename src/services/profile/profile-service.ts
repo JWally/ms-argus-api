@@ -7,7 +7,7 @@ import {
   WriteRequest,
 } from "@aws-sdk/client-dynamodb";
 import { marshall, unmarshall } from "@aws-sdk/util-dynamodb";
-import type { Redis } from "ioredis";
+import { DynamoCacheService } from "../cache";
 import {
   Fingerprint,
   ProfileUpdatePayload,
@@ -63,7 +63,7 @@ export interface ProfileServiceConfig {
  */
 export interface ProfileServiceDeps {
   dynamodb: DynamoDBClient;
-  redis: Redis;
+  cache: DynamoCacheService;
   config: ProfileServiceConfig;
 }
 
@@ -76,21 +76,11 @@ export class ProfileService {
 
   /**
    * Atomically try to acquire the mutation gate for a device
-   * Uses Redis SET NX EX to avoid TOCTOU race condition (AR-27)
+   * Uses DynamoDB conditional write to avoid TOCTOU race condition (AR-27)
    * Returns true if gate was acquired (we should update), false if already held
    */
   async tryAcquireMutationGate(deviceId: string): Promise<boolean> {
-    const key = `recently_updated:${deviceId}`;
-    // SET key value NX EX ttl - atomic operation
-    // Returns "OK" if set successfully, null if key already exists
-    const result = await this.deps.redis.set(
-      key,
-      "1",
-      "EX",
-      this.deps.config.mutationGateTtlSeconds,
-      "NX",
-    );
-    return result === "OK";
+    return this.deps.cache.tryAcquireMutationGate(deviceId);
   }
 
   /**

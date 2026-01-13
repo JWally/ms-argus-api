@@ -13,7 +13,6 @@ import * as codedeploy from "aws-cdk-lib/aws-codedeploy";
 import * as sns from "aws-cdk-lib/aws-sns";
 import * as sqs from "aws-cdk-lib/aws-sqs";
 import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
-import * as ec2 from "aws-cdk-lib/aws-ec2";
 import { Duration } from "aws-cdk-lib";
 import * as actions from "aws-cdk-lib/aws-cloudwatch-actions";
 import { getStageConfig } from "../config";
@@ -28,23 +27,19 @@ interface WorkersConstructProps {
   profilesTable: dynamodb.ITable;
   tier1IndexTable: dynamodb.ITable;
   tier2BucketsTable: dynamodb.ITable;
-  redisEndpoint: string;
-  redisPort: number;
-  redisSecurityGroup: ec2.ISecurityGroup;
-  vpc: ec2.IVpc;
+  sessionCacheTable: dynamodb.ITable;
 }
 
 /**
  * Worker Lambdas for Argus async processing
- * - Matching Worker: SQS -> tiered matching -> Redis
- * - Profile Updater: SQS -> mutation gate -> DynamoDB/Qdrant
+ * - Matching Worker: SQS -> tiered matching -> DynamoDB cache
+ * - Profile Updater: SQS -> mutation gate -> DynamoDB
  */
 export class WorkersConstruct extends Construct {
   public readonly matchingWorker: lambda.NodejsFunction;
   public readonly profileUpdater: lambda.NodejsFunction;
   public readonly matchingWorkerAlias: Alias;
   public readonly profileUpdaterAlias: Alias;
-  public readonly workerSecurityGroup: ec2.SecurityGroup;
 
   constructor(scope: Construct, id: string, props: WorkersConstructProps) {
     super(scope, id);
@@ -59,29 +54,8 @@ export class WorkersConstruct extends Construct {
       profilesTable,
       tier1IndexTable,
       tier2BucketsTable,
-      redisEndpoint,
-      redisPort,
-      redisSecurityGroup,
-      vpc,
+      sessionCacheTable,
     } = props;
-
-    // Security group for Lambda functions (to access Redis in VPC)
-    this.workerSecurityGroup = new ec2.SecurityGroup(
-      this,
-      "WorkerSecurityGroup",
-      {
-        vpc,
-        description: "Security group for Argus worker Lambdas",
-        allowAllOutbound: true,
-      },
-    );
-
-    // Allow workers to access Redis
-    redisSecurityGroup.addIngressRule(
-      this.workerSecurityGroup,
-      ec2.Port.tcp(redisPort),
-      "Allow Lambda workers to access Redis",
-    );
 
     // Secrets Manager reference
     const secret = secretsmanager.Secret.fromSecretNameV2(
@@ -91,6 +65,7 @@ export class WorkersConstruct extends Construct {
     );
 
     // Common Lambda configuration
+    // Note: No VPC needed - uses DynamoDB for caching instead of Redis
     const commonConfig = {
       runtime: Runtime.NODEJS_20_X,
       architecture: Architecture.ARM_64,
@@ -102,16 +77,11 @@ export class WorkersConstruct extends Construct {
         format: OutputFormat.CJS,
         mainFields: ["module", "main"],
         environment: { NODE_ENV: "production" },
-        // Include ioredis for Redis connectivity
-        nodeModules: ["ioredis"],
         // Bundle all dependencies - don't rely on Lambda runtime SDK
         // This ensures version consistency
       },
       // Tracing disabled temporarily due to @smithy bundling issues with Powertools Tracer
       tracing: Tracing.DISABLED,
-      vpc,
-      vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
-      securityGroups: [this.workerSecurityGroup],
     };
 
     // IAM Logging Policy
@@ -145,8 +115,7 @@ export class WorkersConstruct extends Construct {
         POWERTOOLS_METRICS_NAMESPACE: stackName,
         LOG_LEVEL: "INFO",
         SECRET_KEY_ARN: secret.secretArn,
-        REDIS_ENDPOINT: redisEndpoint,
-        REDIS_PORT: String(redisPort),
+        SESSION_CACHE_TABLE: sessionCacheTable.tableName,
         PROFILES_TABLE: profilesTable.tableName,
         TIER1_INDEX_TABLE: tier1IndexTable.tableName,
         TIER2_BUCKETS_TABLE: tier2BucketsTable.tableName,
@@ -170,6 +139,7 @@ export class WorkersConstruct extends Construct {
     profilesTable.grantReadData(this.matchingWorker);
     tier1IndexTable.grantReadData(this.matchingWorker);
     tier2BucketsTable.grantReadData(this.matchingWorker);
+    sessionCacheTable.grantReadWriteData(this.matchingWorker);
     profileQueue.grantSendMessages(this.matchingWorker);
     matchingQueue.grantConsumeMessages(this.matchingWorker);
 
@@ -190,8 +160,7 @@ export class WorkersConstruct extends Construct {
         POWERTOOLS_METRICS_NAMESPACE: stackName,
         LOG_LEVEL: "INFO",
         SECRET_KEY_ARN: secret.secretArn,
-        REDIS_ENDPOINT: redisEndpoint,
-        REDIS_PORT: String(redisPort),
+        SESSION_CACHE_TABLE: sessionCacheTable.tableName,
         PROFILES_TABLE: profilesTable.tableName,
         TIER1_INDEX_TABLE: tier1IndexTable.tableName,
         TIER2_BUCKETS_TABLE: tier2BucketsTable.tableName,
@@ -215,6 +184,7 @@ export class WorkersConstruct extends Construct {
     profilesTable.grantReadWriteData(this.profileUpdater);
     tier1IndexTable.grantReadWriteData(this.profileUpdater);
     tier2BucketsTable.grantReadWriteData(this.profileUpdater);
+    sessionCacheTable.grantReadWriteData(this.profileUpdater);
     profileQueue.grantConsumeMessages(this.profileUpdater);
 
     // Alarms - AR-44: Use stage config for thresholds

@@ -14,14 +14,14 @@ import {
   ProfileServiceDeps,
   ProfileUpdatePayload,
 } from "../services/profile";
-// Note: BloomFilter removed per AR-21 - adds complexity without sufficient value
+import { DynamoCacheService } from "../services/cache";
 import { getProfileUpdaterEnv, ProfileUpdaterEnvConfig } from "../config/env";
 import {
   PROFILE_TTL_DAYS,
   TIER2_BUCKET_TTL_DAYS,
   MUTATION_GATE_TTL_SECONDS,
+  SESSION_TTL_SECONDS,
 } from "../helpers/constants";
-import { getRedis } from "../services/redis-client";
 
 // Validate environment variables at module load (cold start)
 // Throws immediately if required env vars are missing
@@ -35,6 +35,13 @@ const metrics = new Metrics({
 
 // AWS SDK client (reused across invocations)
 const dynamodb = new DynamoDBClient({});
+
+// DynamoDB cache service (replaces Redis)
+const cacheService = new DynamoCacheService(dynamodb, {
+  tableName: envConfig.SESSION_CACHE_TABLE,
+  sessionTtlSeconds: SESSION_TTL_SECONDS,
+  mutationGateTtlSeconds: MUTATION_GATE_TTL_SECONDS,
+});
 
 // Service configuration from validated environment
 function getConfig(): ProfileServiceConfig {
@@ -52,7 +59,7 @@ function getConfig(): ProfileServiceConfig {
 function createProfileService(): ProfileService {
   const deps: ProfileServiceDeps = {
     dynamodb,
-    redis: getRedis(),
+    cache: cacheService,
     config: getConfig(),
   };
   return new ProfileService(deps);
