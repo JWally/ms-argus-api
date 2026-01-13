@@ -1,13 +1,13 @@
 // src/handlers/profile-updater.test.ts
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+// AR-52: Updated to use DynamoDB session cache instead of Redis
+import { describe, it, expect, beforeEach, vi } from "vitest";
 
 // Set environment variables BEFORE any module imports using vi.hoisted
 // This ensures env validation passes during module load
 vi.hoisted(() => {
   process.env.POWERTOOLS_SERVICE_NAME = "argus-profile-updater-test";
   process.env.POWERTOOLS_METRICS_NAMESPACE = "argus-test";
-  process.env.REDIS_ENDPOINT = "localhost";
-  process.env.REDIS_PORT = "6379";
+  process.env.SESSION_CACHE_TABLE = "test-session-cache";
   process.env.PROFILES_TABLE = "test-profiles";
   process.env.TIER1_INDEX_TABLE = "test-tier1-index";
   process.env.TIER2_BUCKETS_TABLE = "test-tier2-buckets";
@@ -23,23 +23,9 @@ import {
 } from "@aws-sdk/client-dynamodb";
 import { marshall } from "@aws-sdk/util-dynamodb";
 import { SQSEvent, SQSRecord, Context } from "aws-lambda";
-import RedisMock from "ioredis-mock";
 
 // Mock AWS SDK clients
 const dynamoMock = mockClient(DynamoDBClient);
-
-// Create a mock Redis instance
-let redisMock: InstanceType<typeof RedisMock>;
-
-// Mock ioredis module
-vi.mock("ioredis", () => {
-  return {
-    default: vi.fn().mockImplementation(() => {
-      redisMock = new RedisMock();
-      return redisMock;
-    }),
-  };
-});
 
 // Import handler after mocking
 import { handler } from "./profile-updater";
@@ -64,14 +50,7 @@ describe("profile-updater handler", () => {
     dynamoMock.reset();
     // Default mock for BatchWriteItem (Tier1 indexes) - can be overridden in individual tests
     dynamoMock.on(BatchWriteItemCommand).resolves({});
-    redisMock = new RedisMock();
     vi.clearAllMocks();
-  });
-
-  afterEach(async () => {
-    if (redisMock) {
-      await redisMock.flushall();
-    }
   });
 
   const createSQSRecord = (
@@ -199,26 +178,14 @@ describe("profile-updater handler", () => {
   });
 
   describe("mutation gating", () => {
-    it("should skip update when mutation gate is active", async () => {
+    // AR-52: Mutation gating is now handled by DynamoCacheService using DynamoDB conditional writes.
+    // Detailed mutation gate tests are in profile-service.test.ts.
+
+    it("should process update when mutation gate is not active", async () => {
       const payload = createProfileUpdatePayload();
 
-      // Set mutation gate in Redis using correct key format
-      await redisMock.setex(`recently_updated:device-123`, 3600, "1");
-
-      const event = createSQSEvent([createSQSRecord(payload)]);
-      const result = await handler(event, mockContext, () => {});
-
-      expect(result!.batchItemFailures).toHaveLength(0);
-
-      // Should not have written to DynamoDB due to mutation gate
-      const putCalls = dynamoMock.commandCalls(PutItemCommand);
-      expect(putCalls).toHaveLength(0);
-    });
-
-    it("should process update when mutation gate expired", async () => {
-      const payload = createProfileUpdatePayload();
-
-      // No mutation gate in Redis (expired or never set)
+      // Mock: GetItemCommand returns empty (no existing profile - new device)
+      // PutItemCommand succeeds (this covers both profile update and gate acquisition)
       dynamoMock.on(GetItemCommand).resolves({});
       dynamoMock.on(PutItemCommand).resolves({});
 

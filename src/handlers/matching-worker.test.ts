@@ -1,13 +1,13 @@
 // src/handlers/matching-worker.test.ts
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+// AR-52: Updated to use DynamoDB session cache instead of Redis
+import { describe, it, expect, beforeEach, vi } from "vitest";
 
 // Set environment variables BEFORE any module imports using vi.hoisted
 // This ensures env validation passes during module load
 vi.hoisted(() => {
   process.env.POWERTOOLS_SERVICE_NAME = "argus-matching-worker-test";
   process.env.POWERTOOLS_METRICS_NAMESPACE = "argus-test";
-  process.env.REDIS_ENDPOINT = "localhost";
-  process.env.REDIS_PORT = "6379";
+  process.env.SESSION_CACHE_TABLE = "test-session-cache";
   process.env.TIER1_INDEX_TABLE = "test-tier1-index";
   process.env.TIER2_BUCKETS_TABLE = "test-tier2-buckets";
   process.env.PROFILES_TABLE = "test-profiles";
@@ -24,24 +24,10 @@ import {
 import { SQSClient, SendMessageCommand } from "@aws-sdk/client-sqs";
 import { marshall } from "@aws-sdk/util-dynamodb";
 import { SQSEvent, SQSRecord, Context } from "aws-lambda";
-import RedisMock from "ioredis-mock";
 
 // Mock AWS SDK clients
 const dynamoMock = mockClient(DynamoDBClient);
 const sqsMock = mockClient(SQSClient);
-
-// Create a mock Redis instance
-let redisMock: InstanceType<typeof RedisMock>;
-
-// Mock ioredis module
-vi.mock("ioredis", () => {
-  return {
-    default: vi.fn().mockImplementation(() => {
-      redisMock = new RedisMock();
-      return redisMock;
-    }),
-  };
-});
 
 // Import handler after mocking
 import { handler } from "./matching-worker";
@@ -65,14 +51,7 @@ describe("matching-worker handler", () => {
   beforeEach(() => {
     dynamoMock.reset();
     sqsMock.reset();
-    redisMock = new RedisMock();
     vi.clearAllMocks();
-  });
-
-  afterEach(async () => {
-    if (redisMock) {
-      await redisMock.flushall();
-    }
   });
 
   const createSQSRecord = (
@@ -169,29 +148,39 @@ describe("matching-worker handler", () => {
     it("should skip processing for cache hit (Tier 0)", async () => {
       const payload = createFingerprintPayload();
 
-      // Pre-populate Redis cache with complete result
-      await redisMock.set(
-        `session:${payload.session_id}`,
-        JSON.stringify({
-          status: "complete",
-          device_id: "cached-device-123",
-          risk_score: 0.2,
-          confidence: 0.95,
-          match_tier: 1,
-          match_version: 1,
-          idempotency_key: "cached-key",
-          flags: [],
-          updated_at: Date.now(),
-        }),
-      );
+      // AR-52: Pre-populate DynamoDB session cache with complete result
+      dynamoMock.on(GetItemCommand).callsFake((input) => {
+        const key = input.Key;
+        // Return cached session for session cache lookups
+        if (key?.cache_key?.S === `session:${payload.session_id}`) {
+          return {
+            Item: marshall({
+              cache_key: `session:${payload.session_id}`,
+              value: {
+                status: "complete",
+                device_id: "cached-device-123",
+                risk_score: 0.2,
+                confidence: 0.95,
+                match_tier: 1,
+                match_version: 1,
+                idempotency_key: "cached-key",
+                flags: [],
+                updated_at: Date.now(),
+              },
+              ttl: Math.floor(Date.now() / 1000) + 900,
+            }),
+          };
+        }
+        return { Item: undefined };
+      });
 
       const event = createSQSEvent([createSQSRecord(payload)]);
       const result = await handler(event, mockContext, () => {});
 
       expect(result!.batchItemFailures).toHaveLength(0);
 
-      // Should not have written to DynamoDB since we had a cache hit
-      // May still do a lookup, but shouldn't have queued profile update
+      // Should not have queued profile update since we had a cache hit
+      expect(sqsMock.calls()).toHaveLength(0);
     });
 
     it("should create new device when no match found", async () => {
@@ -234,25 +223,35 @@ describe("matching-worker handler", () => {
     it("should return failed items only for records that fail", async () => {
       const successPayload = createFingerprintPayload({
         session_id: "success-session",
+        fingerprint: { evercookie_id: "cookie-success" },
       });
       const failPayload = createFingerprintPayload({
         session_id: "fail-session",
+        fingerprint: { evercookie_id: "cookie-fail" },
       });
 
-      // First call succeeds, second fails
-      let callCount = 0;
-      dynamoMock.on(GetItemCommand).callsFake(() => {
-        callCount++;
-        if (callCount === 1) {
+      // AR-52: The session cache check and tier1 lookups both use GetItemCommand
+      // Mock based on the hash_key to simulate success for first record, failure for second
+      dynamoMock.on(GetItemCommand).callsFake((input) => {
+        const key = input.Key;
+        // Session cache lookups (cache_key starts with "session:")
+        if (key?.cache_key?.S?.startsWith("session:")) {
+          return { Item: undefined }; // Cache miss
+        }
+        // Tier1 index lookups - success for cookie-success, fail for cookie-fail
+        if (key?.hash_key?.S?.includes("cookie-success")) {
           return {
             Item: marshall({
               tenant_id: "tenant-abc",
-              hash_value: "hash-abc123",
+              hash_key: "evercookie#cookie-success",
               device_id: "device-123",
             }),
           };
         }
-        throw new Error("DynamoDB error");
+        if (key?.hash_key?.S?.includes("cookie-fail")) {
+          throw new Error("DynamoDB error");
+        }
+        return { Item: undefined };
       });
 
       sqsMock.on(SendMessageCommand).resolves({ MessageId: "msg-1" });
@@ -289,14 +288,10 @@ describe("matching-worker handler", () => {
       dynamoMock.on(GetItemCommand).rejects(new Error("Matching failed"));
 
       const event = createSQSEvent([createSQSRecord(payload)]);
-      await handler(event, mockContext, () => {});
+      const result = await handler(event, mockContext, () => {});
 
-      // Check that degraded status was written to Redis
-      const cached = await redisMock.get(`session:${payload.session_id}`);
-      if (cached) {
-        const parsed = JSON.parse(cached);
-        expect(parsed.status).toBe("degraded");
-      }
+      // The record should be marked as failed since matching threw an error
+      expect(result!.batchItemFailures).toHaveLength(1);
     });
   });
 

@@ -1,4 +1,5 @@
 // src/config/env.ts
+// AR-52: Updated to use DynamoDB session cache instead of Redis
 /**
  * Environment variable validation and typing.
  * Validates all required environment variables at startup and
@@ -9,8 +10,7 @@
  * Base environment configuration shared by all Lambda handlers
  */
 export interface BaseEnvConfig {
-  REDIS_ENDPOINT: string;
-  REDIS_PORT: number;
+  SESSION_CACHE_TABLE: string;
   PROFILES_TABLE: string;
   TIER1_INDEX_TABLE: string;
   TIER2_BUCKETS_TABLE: string;
@@ -36,7 +36,7 @@ export type ProfileUpdaterEnvConfig = BaseEnvConfig;
  */
 export function getMatchingWorkerEnv(): MatchingWorkerEnvConfig {
   const required = [
-    "REDIS_ENDPOINT",
+    "SESSION_CACHE_TABLE",
     "PROFILES_TABLE",
     "TIER1_INDEX_TABLE",
     "TIER2_BUCKETS_TABLE",
@@ -51,8 +51,7 @@ export function getMatchingWorkerEnv(): MatchingWorkerEnvConfig {
   }
 
   return {
-    REDIS_ENDPOINT: process.env.REDIS_ENDPOINT!,
-    REDIS_PORT: parseInt(process.env.REDIS_PORT || "6379", 10),
+    SESSION_CACHE_TABLE: process.env.SESSION_CACHE_TABLE!,
     PROFILES_TABLE: process.env.PROFILES_TABLE!,
     TIER1_INDEX_TABLE: process.env.TIER1_INDEX_TABLE!,
     TIER2_BUCKETS_TABLE: process.env.TIER2_BUCKETS_TABLE!,
@@ -70,7 +69,7 @@ export function getMatchingWorkerEnv(): MatchingWorkerEnvConfig {
  */
 export function getProfileUpdaterEnv(): ProfileUpdaterEnvConfig {
   const required = [
-    "REDIS_ENDPOINT",
+    "SESSION_CACHE_TABLE",
     "PROFILES_TABLE",
     "TIER1_INDEX_TABLE",
     "TIER2_BUCKETS_TABLE",
@@ -84,8 +83,7 @@ export function getProfileUpdaterEnv(): ProfileUpdaterEnvConfig {
   }
 
   return {
-    REDIS_ENDPOINT: process.env.REDIS_ENDPOINT!,
-    REDIS_PORT: parseInt(process.env.REDIS_PORT || "6379", 10),
+    SESSION_CACHE_TABLE: process.env.SESSION_CACHE_TABLE!,
     PROFILES_TABLE: process.env.PROFILES_TABLE!,
     TIER1_INDEX_TABLE: process.env.TIER1_INDEX_TABLE!,
     TIER2_BUCKETS_TABLE: process.env.TIER2_BUCKETS_TABLE!,
