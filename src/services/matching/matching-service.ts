@@ -498,12 +498,13 @@ export class MatchingService {
 
   /**
    * Create a new device when no match is found
+   * AR-55: confidence is 0 since no match occurred (confidence = match confidence)
    */
   createNewDevice(): MatchResult {
     const deviceId = `dev_${generateUUID()}`;
     return {
       device_id: deviceId,
-      confidence: 1.0,
+      confidence: 0, // AR-55: No match confidence for new devices
       match_tier: -1,
       is_new_device: true,
       risk_score: 0.5, // Neutral for new devices

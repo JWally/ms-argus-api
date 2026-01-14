@@ -508,7 +508,7 @@ describe("MatchingService", () => {
 
       expect(result.device_id).toMatch(/^dev_[a-f0-9-]+$/);
       expect(result.is_new_device).toBe(true);
-      expect(result.confidence).toBe(1.0);
+      expect(result.confidence).toBe(0); // AR-55: No match confidence for new devices
       expect(result.match_tier).toBe(-1);
       expect(result.risk_score).toBe(0.5);
       expect(result.flags).toEqual([]);
