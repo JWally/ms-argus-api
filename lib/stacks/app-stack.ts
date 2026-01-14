@@ -1,10 +1,13 @@
 // lib/stacks/app-stack.ts
 // AR-52: Simplified architecture - removed VPC, ALB, ECS, Redis
 // AR-57: Added analytics pipeline for match observations
+// AR-71: Added SQS warmup rule to keep matching pipeline warm
 import * as cdk from "aws-cdk-lib";
 import * as sns from "aws-cdk-lib/aws-sns";
 import * as route53 from "aws-cdk-lib/aws-route53";
 import * as acm from "aws-cdk-lib/aws-certificatemanager";
+import * as events from "aws-cdk-lib/aws-events";
+import * as targets from "aws-cdk-lib/aws-events-targets";
 import { Construct } from "constructs";
 
 import { SecretConstruct } from "../constructs/secrets";
@@ -74,7 +77,7 @@ export class ArgusApiStack extends cdk.Stack {
     // SHARED RESOURCES
     // =========================================================================
 
-    const secrets = new SecretConstruct(this, "Secrets", {
+    const _secrets = new SecretConstruct(this, "Secrets", {
       environment,
       stackName,
       stage,
@@ -116,6 +119,7 @@ export class ArgusApiStack extends cdk.Stack {
 
     // HTTP API + Lambda for ingestion (replaces ALB + ECS)
     // AR-67: Added session retrieval endpoint
+    // AR-71: Reverted to async (SQS) for scalability
     const httpApi = new HttpApiConstruct(this, "HttpApi", {
       stackName,
       stage,
@@ -139,6 +143,32 @@ export class ArgusApiStack extends cdk.Stack {
       observationsDeliveryStreamName:
         analytics.deliveryStream.deliveryStreamName!, // AR-57
     });
+
+    // =========================================================================
+    // AR-71: WARMUP RULE - Keep SQS polling pipeline warm
+    // =========================================================================
+    // Sends warmup message to matching queue every minute to keep:
+    // - SQS pollers active (they process the warmup message)
+    // - Lambda execution environment warm (recent invocation)
+    // - DynamoDB connections warm
+    // This eliminates the ~10 second cold-start latency when scaling from zero
+
+    const warmupRule = new events.Rule(this, "MatchingWarmupRule", {
+      ruleName: `${stackName}-matching-warmup`,
+      description:
+        "Keep matching pipeline warm by sending periodic warmup messages",
+      schedule: events.Schedule.rate(cdk.Duration.minutes(1)),
+    });
+
+    warmupRule.addTarget(
+      new targets.SqsQueue(queues.matchingQueue, {
+        message: events.RuleTargetInput.fromObject({
+          warmup: true,
+          source: "warmup-rule",
+          timestamp: events.EventField.time,
+        }),
+      }),
+    );
 
     // =========================================================================
     // EDGE LAYER

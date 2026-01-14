@@ -146,12 +146,12 @@ describe("stage-config", () => {
     });
 
     describe("batching windows", () => {
-      it("should have fast batching in both dev and prod (AR-42)", () => {
-        // AR-42 fix: fast batching is important for SLA
-        expect(configs.dev.sqs.batchingWindow.matching.toSeconds()).toBe(1);
-        expect(configs.dev.sqs.batchingWindow.profile.toSeconds()).toBe(1);
-        expect(configs.prod.sqs.batchingWindow.matching.toSeconds()).toBe(1);
-        expect(configs.prod.sqs.batchingWindow.profile.toSeconds()).toBe(1);
+      it("should have zero batching window for minimal latency (AR-71)", () => {
+        // AR-71: Set to 0 to minimize latency - don't wait for batching
+        expect(configs.dev.sqs.batchingWindow.matching.toSeconds()).toBe(0);
+        expect(configs.dev.sqs.batchingWindow.profile.toSeconds()).toBe(0);
+        expect(configs.prod.sqs.batchingWindow.matching.toSeconds()).toBe(0);
+        expect(configs.prod.sqs.batchingWindow.profile.toSeconds()).toBe(0);
       });
     });
   });
