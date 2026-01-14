@@ -72,7 +72,10 @@ export class MatchingService {
    * AR-65: Apply confidence penalty for privacy browser detection
    * Returns a new MatchResult with reduced confidence if privacy signals detected
    */
-  applyPrivacyPenalty(result: MatchResult, fingerprint: Fingerprint): MatchResult {
+  applyPrivacyPenalty(
+    result: MatchResult,
+    fingerprint: Fingerprint,
+  ): MatchResult {
     let penalty = 0;
 
     // Privacy browser (Brave, Firefox RFP, Tor, etc.)
@@ -623,7 +626,8 @@ export class MatchingService {
         for (const item of result.Items) {
           const unmarshalled = unmarshall(item);
           const deviceId = unmarshalled.device_id;
-          if (deviceId) {
+          // AR-77: Filter out _stats entries (used for bucket cardinality tracking)
+          if (deviceId && deviceId !== "_stats") {
             const existing = candidates.get(deviceId);
             if (existing) {
               existing.score += 1;

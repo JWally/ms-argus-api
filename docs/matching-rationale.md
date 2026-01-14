@@ -34,12 +34,12 @@ This document explains the rationale behind the tiered matching strategy used in
 
 **Rationale**: Evercookies (super-cookies) are extremely difficult to clear because they're stored across multiple storage mechanisms (localStorage, IndexedDB, cookies, ETags, etc.). When present, they provide the highest confidence match.
 
-| Metric | Value | Notes |
-|--------|-------|-------|
-| Confidence | 0.99 | Near-certain identification |
-| Stability | Very High | Survives browser restarts, some survives incognito |
-| Collision Rate | ~0% | UUIDs are unique per device |
-| Privacy Impact | Low | Blocks: Brave (partial), Tor (full) |
+| Metric         | Value     | Notes                                              |
+| -------------- | --------- | -------------------------------------------------- |
+| Confidence     | 0.99      | Near-certain identification                        |
+| Stability      | Very High | Survives browser restarts, some survives incognito |
+| Collision Rate | ~0%       | UUIDs are unique per device                        |
+| Privacy Impact | Low       | Blocks: Brave (partial), Tor (full)                |
 
 **Why 0.99 confidence**: Evercookies are intentionally persistent and unique. False positives are essentially impossible since each evercookie_id is a generated UUID tied to a specific device visit.
 
@@ -50,6 +50,7 @@ This document explains the rationale behind the tiered matching strategy used in
 **Signal**: `stable_hash` (computed from hardware signals)
 
 **Inputs typically include**:
+
 - Hardware concurrency (CPU cores)
 - Device memory
 - WebGL renderer/vendor
@@ -58,14 +59,15 @@ This document explains the rationale behind the tiered matching strategy used in
 
 **Rationale**: Hardware signals are extremely stable over time. The same device will produce the same stable_hash unless hardware is upgraded or replaced.
 
-| Metric | Value | Notes |
-|--------|-------|-------|
-| Confidence | 0.95 | High certainty |
-| Stability | High | Changes only with hardware upgrades |
-| Collision Rate | 1-3% | Varies by segment (corporate laptops higher) |
-| Privacy Impact | Medium | Blocks: Brave (randomized), Firefox RFP |
+| Metric         | Value  | Notes                                        |
+| -------------- | ------ | -------------------------------------------- |
+| Confidence     | 0.95   | High certainty                               |
+| Stability      | High   | Changes only with hardware upgrades          |
+| Collision Rate | 1-3%   | Varies by segment (corporate laptops higher) |
+| Privacy Impact | Medium | Blocks: Brave (randomized), Firefox RFP      |
 
 **Why 0.95 confidence**: Hardware signals are stable but not unique. Corporate environments often have identical hardware configurations, leading to potential collisions. The 5% uncertainty accounts for:
+
 - Identical hardware in corporate/school environments
 - VM environments with cloned configurations
 - Hardware configuration changes (RAM upgrade, driver update)
@@ -76,14 +78,15 @@ This document explains the rationale behind the tiered matching strategy used in
 
 **Rationale**: Fuzzy hashing (e.g., SimHash, MinHash) allows matching devices even when some signals have drifted. Useful for matching returning users whose browser or environment has changed slightly.
 
-| Metric | Value | Notes |
-|--------|-------|-------|
-| Confidence | 0.85 | Moderate-high certainty |
-| Stability | Moderate | Tolerates 10-20% signal drift |
-| Collision Rate | 3-5% | Higher due to similarity tolerance |
-| Privacy Impact | Medium | Same as stable_hash |
+| Metric         | Value    | Notes                              |
+| -------------- | -------- | ---------------------------------- |
+| Confidence     | 0.85     | Moderate-high certainty            |
+| Stability      | Moderate | Tolerates 10-20% signal drift      |
+| Collision Rate | 3-5%     | Higher due to similarity tolerance |
+| Privacy Impact | Medium   | Same as stable_hash                |
 
 **Why 0.85 confidence**: The fuzzy matching intentionally accepts similar (not identical) fingerprints, increasing collision risk. The 15% uncertainty accounts for:
+
 - False positives from similar devices
 - Drift tolerance accepting different devices
 - Lower precision than exact matching
@@ -98,12 +101,12 @@ Tier 2 uses an adjacency-list pattern where multiple weak signals are combined i
 
 **Rationale**: JA4 is a TLS fingerprint that captures browser/OS characteristics. Combined with IP, it narrows down to a small cohort of devices sharing the same network location and browser configuration.
 
-| Metric | Value | Notes |
-|--------|-------|-------|
-| Confidence Contribution | +0.60 per match | Base contribution |
-| Stability | Low-Medium | IP changes frequently, JA4 with updates |
-| Collision Rate | 5-10% per bucket | Higher on mobile/corporate networks |
-| Privacy Impact | Low | VPN users will share IP, JA4 harder to spoof |
+| Metric                  | Value            | Notes                                        |
+| ----------------------- | ---------------- | -------------------------------------------- |
+| Confidence Contribution | +0.60 per match  | Base contribution                            |
+| Stability               | Low-Medium       | IP changes frequently, JA4 with updates      |
+| Collision Rate          | 5-10% per bucket | Higher on mobile/corporate networks          |
+| Privacy Impact          | Low              | VPN users will share IP, JA4 harder to spoof |
 
 **Why this combination**: IP alone has high collision (shared networks). JA4 alone has moderate collision (many users with same browser). Together, they provide reasonable specificity.
 
@@ -113,12 +116,12 @@ Tier 2 uses an adjacency-list pattern where multiple weak signals are combined i
 
 **Rationale**: This combination captures the device's display environment. GPU renderer is highly specific (includes driver version), screen dimensions and timezone add geographic/hardware context.
 
-| Metric | Value | Notes |
-|--------|-------|-------|
-| Confidence Contribution | +0.60 per match | Base contribution |
-| Stability | Medium | GPU driver updates change renderer |
-| Collision Rate | 2-5% | Lower due to GPU specificity |
-| Privacy Impact | High | Blocks: Firefox RFP, Brave (randomized) |
+| Metric                  | Value           | Notes                                   |
+| ----------------------- | --------------- | --------------------------------------- |
+| Confidence Contribution | +0.60 per match | Base contribution                       |
+| Stability               | Medium          | GPU driver updates change renderer      |
+| Collision Rate          | 2-5%            | Lower due to GPU specificity            |
+| Privacy Impact          | High            | Blocks: Firefox RFP, Brave (randomized) |
 
 **Why this combination**: GPU renderer alone is extremely specific but changes with driver updates. Screen dims alone has high collision. Timezone alone is too broad. Combined, they identify a specific device setup.
 
@@ -128,12 +131,12 @@ Tier 2 uses an adjacency-list pattern where multiple weak signals are combined i
 
 **Rationale**: Audio and canvas fingerprinting capture subtle rendering differences in the browser's audio/graphics stack. These are highly unique but also heavily targeted by privacy tools.
 
-| Metric | Value | Notes |
-|--------|-------|-------|
-| Confidence Contribution | +0.60 per match | Base contribution |
-| Stability | High | Rarely changes unless browser update |
-| Collision Rate | <1% | Highly unique |
-| Privacy Impact | Very High | Blocks: Brave, Firefox, Safari ITP, Tor |
+| Metric                  | Value           | Notes                                   |
+| ----------------------- | --------------- | --------------------------------------- |
+| Confidence Contribution | +0.60 per match | Base contribution                       |
+| Stability               | High            | Rarely changes unless browser update    |
+| Collision Rate          | <1%             | Highly unique                           |
+| Privacy Impact          | Very High       | Blocks: Brave, Firefox, Safari ITP, Tor |
 
 **Why this combination**: Both signals are highly unique individually. Combined, collision risk approaches zero. However, privacy browsers actively block or randomize these, making coverage limited.
 
@@ -153,15 +156,15 @@ penalty = (high_cardinality_buckets / total_buckets) * 0.30
 
 ## Privacy Browser Impact
 
-| Browser/Mode | Evercookie | Stable Hash | Fuzzy Hash | IP+JA4 | GPU+Screen+TZ | Audio+Canvas |
-|--------------|------------|-------------|------------|--------|---------------|--------------|
-| Chrome Standard | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Firefox Standard | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Safari (ITP) | ⚠️ | ✅ | ✅ | ✅ | ✅ | ❌ |
-| Brave (Standard) | ⚠️ | ⚠️ | ⚠️ | ✅ | ⚠️ | ⚠️ |
-| Firefox (RFP) | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ |
-| Brave (Strict) | ❌ | ❌ | ❌ | ⚠️ | ❌ | ❌ |
-| Tor Browser | ❌ | ❌ | ❌ | ⚠️ | ❌ | ❌ |
+| Browser/Mode     | Evercookie | Stable Hash | Fuzzy Hash | IP+JA4 | GPU+Screen+TZ | Audio+Canvas |
+| ---------------- | ---------- | ----------- | ---------- | ------ | ------------- | ------------ |
+| Chrome Standard  | ✅         | ✅          | ✅         | ✅     | ✅            | ✅           |
+| Firefox Standard | ✅         | ✅          | ✅         | ✅     | ✅            | ✅           |
+| Safari (ITP)     | ⚠️         | ✅          | ✅         | ✅     | ✅            | ❌           |
+| Brave (Standard) | ⚠️         | ⚠️          | ⚠️         | ✅     | ⚠️            | ⚠️           |
+| Firefox (RFP)    | ❌         | ❌          | ❌         | ✅     | ❌            | ❌           |
+| Brave (Strict)   | ❌         | ❌          | ❌         | ⚠️     | ❌            | ❌           |
+| Tor Browser      | ❌         | ❌          | ❌         | ⚠️     | ❌            | ❌           |
 
 Legend: ✅ Works | ⚠️ Degraded/Randomized | ❌ Blocked
 
@@ -169,44 +172,44 @@ Legend: ✅ Works | ⚠️ Degraded/Randomized | ❌ Blocked
 
 ### How often do signals change for the same device?
 
-| Signal | Typical Stability | Change Triggers |
-|--------|-------------------|-----------------|
-| `evercookie_id` | Months-Years | Manual clear, incognito, new browser profile |
-| `stable_hash` | Months-Years | Hardware upgrade, driver update, OS reinstall |
-| `fuzzy_hash` | Weeks-Months | Browser updates, minor config changes |
-| `ip_address` | Minutes-Days | Network change, DHCP renewal, VPN toggle |
-| `ja4` | Weeks-Months | Browser updates, TLS config changes |
-| `gpu_renderer` | Months-Years | Driver updates (changes version string) |
-| `screen_dims` | Days-Months | External monitor connect, DPI scaling change |
-| `timezone` | Days-Months | Travel, system config change |
-| `audio_hash` | Months-Years | Browser update, audio driver update |
-| `canvas_hash` | Months-Years | Browser update, graphics driver update |
+| Signal          | Typical Stability | Change Triggers                               |
+| --------------- | ----------------- | --------------------------------------------- |
+| `evercookie_id` | Months-Years      | Manual clear, incognito, new browser profile  |
+| `stable_hash`   | Months-Years      | Hardware upgrade, driver update, OS reinstall |
+| `fuzzy_hash`    | Weeks-Months      | Browser updates, minor config changes         |
+| `ip_address`    | Minutes-Days      | Network change, DHCP renewal, VPN toggle      |
+| `ja4`           | Weeks-Months      | Browser updates, TLS config changes           |
+| `gpu_renderer`  | Months-Years      | Driver updates (changes version string)       |
+| `screen_dims`   | Days-Months       | External monitor connect, DPI scaling change  |
+| `timezone`      | Days-Months       | Travel, system config change                  |
+| `audio_hash`    | Months-Years      | Browser update, audio driver update           |
+| `canvas_hash`   | Months-Years      | Browser update, graphics driver update        |
 
 ## Collision Rate Analysis
 
 ### How often do different devices share the same value?
 
-| Signal/Bucket | Estimated Collision Rate | Factors |
-|---------------|-------------------------|---------|
-| `evercookie_id` | ~0% | UUID per device |
-| `stable_hash` | 1-3% | Corporate/school environments |
-| `fuzzy_hash` | 3-5% | Intentional tolerance |
-| IP+JA4 bucket | 5-10% | NAT, corporate proxy |
-| GPU+Screen+TZ bucket | 2-5% | Popular configs |
-| Audio+Canvas bucket | <1% | Highly unique |
-| 2+ bucket intersection | <0.5% | Statistical improbability |
+| Signal/Bucket          | Estimated Collision Rate | Factors                       |
+| ---------------------- | ------------------------ | ----------------------------- |
+| `evercookie_id`        | ~0%                      | UUID per device               |
+| `stable_hash`          | 1-3%                     | Corporate/school environments |
+| `fuzzy_hash`           | 3-5%                     | Intentional tolerance         |
+| IP+JA4 bucket          | 5-10%                    | NAT, corporate proxy          |
+| GPU+Screen+TZ bucket   | 2-5%                     | Popular configs               |
+| Audio+Canvas bucket    | <1%                      | Highly unique                 |
+| 2+ bucket intersection | <0.5%                    | Statistical improbability     |
 
 ## Confidence Score Recommendations
 
 ### Current Configuration
 
-| Tier | Confidence | Rationale |
-|------|------------|-----------|
-| 0.5 (evercookie) | 0.99 | Near-certain, consider 1.0 |
-| 1 (stable_hash) | 0.95 | Good balance, could raise to 0.97 in low-collision environments |
-| 1 (fuzzy_hash) | 0.85 | Appropriate for similarity matching |
-| 2 (2 buckets) | 0.60-0.80 | Conservative for weak signals |
-| 2 (3 buckets) | 0.85 (capped) | Ceiling prevents over-confidence |
+| Tier             | Confidence    | Rationale                                                       |
+| ---------------- | ------------- | --------------------------------------------------------------- |
+| 0.5 (evercookie) | 0.99          | Near-certain, consider 1.0                                      |
+| 1 (stable_hash)  | 0.95          | Good balance, could raise to 0.97 in low-collision environments |
+| 1 (fuzzy_hash)   | 0.85          | Appropriate for similarity matching                             |
+| 2 (2 buckets)    | 0.60-0.80     | Conservative for weak signals                                   |
+| 2 (3 buckets)    | 0.85 (capped) | Ceiling prevents over-confidence                                |
 
 ### Tuning Recommendations
 

@@ -809,7 +809,10 @@ describe("MatchingService", () => {
         is_new_device: false,
         risk_score: 0.5,
         flags: [] as string[],
-        evidence_codes: ["IP_JA4_BUCKET", "GPU_SCREEN_TZ_BUCKET"] as EvidenceCode[],
+        evidence_codes: [
+          "IP_JA4_BUCKET",
+          "GPU_SCREEN_TZ_BUCKET",
+        ] as EvidenceCode[],
       };
 
       const fingerprint: Fingerprint = {
@@ -963,7 +966,10 @@ describe("MatchingService", () => {
         privacy_browser: "brave",
         is_private_browsing: true,
       };
-      const { result } = await service.runTieredMatching("tenant1", fingerprint);
+      const { result } = await service.runTieredMatching(
+        "tenant1",
+        fingerprint,
+      );
 
       // Base confidence is 0.99, minus 0.15 for privacy_browser, minus 0.1 for private_browsing
       expect(result.confidence).toBeCloseTo(0.74, 10);

@@ -1,5 +1,6 @@
 // src/helpers/normalize-fingerprint.test.ts
 // AR-73: Tests for fingerprint normalization
+// AR-77: Updated to use correct web library field names (canvas2d, offlineAudioContext, canvasWebgl)
 
 import { describe, it, expect } from "vitest";
 import { normalizeFingerprint } from "./normalize-fingerprint";
@@ -56,10 +57,11 @@ describe("normalizeFingerprint", () => {
       expect(result.fuzzy_hash).toBe("fuzzy_hash_value");
     });
 
-    it("should extract canvas hash from loose.canvas.$hash", () => {
+    // AR-77: Field is canvas2d (not canvas)
+    it("should extract canvas hash from loose.canvas2d.$hash", () => {
       const nested = {
         loose: {
-          canvas: {
+          canvas2d: {
             $hash: "canvas_hash_123",
             dataURI: "data:image/png;base64,...",
           },
@@ -71,10 +73,11 @@ describe("normalizeFingerprint", () => {
       expect(result.canvas_hash).toBe("canvas_hash_123");
     });
 
-    it("should extract audio hash from loose.audio.$hash", () => {
+    // AR-77: Field is offlineAudioContext (not audio)
+    it("should extract audio hash from loose.offlineAudioContext.$hash", () => {
       const nested = {
         loose: {
-          audio: {
+          offlineAudioContext: {
             $hash: "audio_hash_456",
             totalUniqueSamples: 123,
           },
@@ -86,11 +89,14 @@ describe("normalizeFingerprint", () => {
       expect(result.audio_hash).toBe("audio_hash_456");
     });
 
-    it("should extract GPU renderer from loose.webgl.gpu", () => {
+    // AR-77: Field is canvasWebgl.gpu.compressedGPU (not webgl.gpu)
+    it("should extract GPU renderer from loose.canvasWebgl.gpu.compressedGPU", () => {
       const nested = {
         loose: {
-          webgl: {
-            gpu: "ANGLE (Intel, Intel HD Graphics 630)",
+          canvasWebgl: {
+            gpu: {
+              compressedGPU: "ANGLE (Intel, Intel HD Graphics 630)",
+            },
             $hash: "webgl_hash",
           },
         },
@@ -102,10 +108,11 @@ describe("normalizeFingerprint", () => {
       expect(result.webgl_hash).toBe("webgl_hash");
     });
 
-    it("should extract GPU renderer from loose.webgl.parameters.renderer", () => {
+    // AR-77: Fallback to canvasWebgl.parameters.renderer
+    it("should extract GPU renderer from loose.canvasWebgl.parameters.renderer", () => {
       const nested = {
         loose: {
-          webgl: {
+          canvasWebgl: {
             parameters: {
               renderer: "Intel HD Graphics 4000",
             },
@@ -202,14 +209,15 @@ describe("normalizeFingerprint", () => {
     });
   });
 
+  // AR-77: Updated to use correct web library field names
   describe("handles complete web library payload", () => {
     it("should transform full nested structure to flat format", () => {
       const fullNested = {
         loose: {
-          canvas: { $hash: "canvas_abc" },
-          audio: { $hash: "audio_def" },
-          webgl: {
-            gpu: "NVIDIA GeForce GTX 1080",
+          canvas2d: { $hash: "canvas_abc" },
+          offlineAudioContext: { $hash: "audio_def" },
+          canvasWebgl: {
+            gpu: { compressedGPU: "NVIDIA GeForce GTX 1080" },
             $hash: "webgl_ghi",
           },
           screen: { width: 2560, height: 1440 },
@@ -311,11 +319,12 @@ describe("normalizeFingerprint", () => {
       expect(result.gpu_renderer).toBeUndefined();
     });
 
+    // AR-77: Updated to use correct field name canvas2d
     it("should handle partial loose data", () => {
       const partial = {
         loose: {
-          canvas: { $hash: "canvas_only" },
-          // No audio, webgl, screen, etc.
+          canvas2d: { $hash: "canvas_only" },
+          // No offlineAudioContext, canvasWebgl, screen, etc.
         },
       };
 
