@@ -5,6 +5,7 @@ import {
   GetItemCommand,
   QueryCommand,
   QueryCommandOutput,
+  BatchGetItemCommand,
 } from "@aws-sdk/client-dynamodb";
 import { SQSClient, SendMessageCommand } from "@aws-sdk/client-sqs";
 import { unmarshall } from "@aws-sdk/util-dynamodb";
@@ -16,7 +17,12 @@ import {
   MatchResult,
   SessionCacheValue,
 } from "./types";
-import { TIER2_BUCKET_LIMIT } from "../../helpers/constants";
+import {
+  TIER2_BUCKET_LIMIT,
+  TIER2_HIGH_CARDINALITY_THRESHOLD,
+  TIER2_CARDINALITY_PENALTY,
+  TIER2_STATS_SK,
+} from "../../helpers/constants";
 import { fnv1a } from "../../helpers/hash";
 
 /**
@@ -269,6 +275,7 @@ export class MatchingService {
    * Tier 2: Match by compound signal buckets
    * Lower confidence - relies on multiple weak signals
    * Uses Query with adjacency list pattern (bucket_key, device_id)
+   * AR-56: Applies cardinality penalty for high-traffic buckets
    */
   async tier2CompoundMatch(
     tenantId: string,
@@ -295,9 +302,19 @@ export class MatchingService {
       ),
     );
 
+    // AR-56: Fetch bucket cardinalities in parallel with device queries
+    const cardinalityPromise = this.fetchBucketCardinalities(
+      bucketInfos.map((info) => info.key),
+      options,
+    );
+
     let results;
+    let cardinalities: Map<string, number>;
     try {
-      results = await Promise.all(queries);
+      [results, cardinalities] = await Promise.all([
+        Promise.all(queries),
+        cardinalityPromise,
+      ]);
     } catch (error) {
       // If the request was aborted, return null gracefully
       if (error instanceof Error && error.name === "AbortError") {
@@ -328,9 +345,27 @@ export class MatchingService {
     // Require at least 2 bucket matches for confidence
     if (bestDeviceId && bestScore >= 2) {
       const profile = await this.loadProfile(tenantId, bestDeviceId);
+
+      // AR-56: Calculate base confidence
+      let confidence = Math.min(0.6 + bestScore * 0.1, 0.85);
+
+      // AR-56: Apply cardinality penalty if any matched bucket exceeds threshold
+      const highCardinalityCount = this.countHighCardinalityBuckets(
+        bestEvidence,
+        bucketInfos,
+        cardinalities,
+      );
+      if (highCardinalityCount > 0) {
+        // Penalize proportionally to how many buckets are high-cardinality
+        const penaltyFactor =
+          (highCardinalityCount / bestEvidence.length) *
+          TIER2_CARDINALITY_PENALTY;
+        confidence = Math.max(0.3, confidence - penaltyFactor);
+      }
+
       return {
         device_id: bestDeviceId,
-        confidence: Math.min(0.6 + bestScore * 0.1, 0.85),
+        confidence,
         match_tier: 2,
         is_new_device: false,
         risk_score: profile?.risk_score ?? 0.4,
@@ -340,6 +375,78 @@ export class MatchingService {
     }
 
     return null;
+  }
+
+  /**
+   * AR-56: Fetch cardinality stats for multiple buckets using BatchGetItem
+   */
+  private async fetchBucketCardinalities(
+    bucketKeys: string[],
+    options?: { abortSignal?: AbortSignal },
+  ): Promise<Map<string, number>> {
+    const cardinalities = new Map<string, number>();
+    if (bucketKeys.length === 0) return cardinalities;
+
+    try {
+      const result = await this.deps.dynamodb.send(
+        new BatchGetItemCommand({
+          RequestItems: {
+            [this.deps.config.tier2BucketsTable]: {
+              Keys: bucketKeys.map((key) => ({
+                bucket_key: { S: key },
+                device_id: { S: TIER2_STATS_SK },
+              })),
+              ProjectionExpression: "bucket_key, cardinality",
+            },
+          },
+        }),
+        { abortSignal: options?.abortSignal },
+      );
+
+      // Parse results
+      const responses =
+        result.Responses?.[this.deps.config.tier2BucketsTable] ?? [];
+      for (const item of responses) {
+        const unmarshalled = unmarshall(item);
+        if (unmarshalled.bucket_key && unmarshalled.cardinality) {
+          cardinalities.set(
+            unmarshalled.bucket_key,
+            unmarshalled.cardinality as number,
+          );
+        }
+      }
+    } catch (error) {
+      // If aborted or error, return empty map (fail open)
+      if (error instanceof Error && error.name === "AbortError") {
+        return cardinalities;
+      }
+      // Log error but don't fail matching - cardinality check is optional
+      console.warn("Failed to fetch bucket cardinalities:", error);
+    }
+
+    return cardinalities;
+  }
+
+  /**
+   * AR-56: Count how many matched buckets exceed the cardinality threshold
+   */
+  private countHighCardinalityBuckets(
+    evidenceCodes: EvidenceCode[],
+    bucketInfos: { key: string; evidenceCode: EvidenceCode }[],
+    cardinalities: Map<string, number>,
+  ): number {
+    let count = 0;
+    for (const code of evidenceCodes) {
+      // Find the bucket key for this evidence code
+      const bucketInfo = bucketInfos.find((info) => info.evidenceCode === code);
+      if (bucketInfo) {
+        const cardinality = cardinalities.get(bucketInfo.key) ?? 0;
+        if (cardinality > TIER2_HIGH_CARDINALITY_THRESHOLD) {
+          count++;
+        }
+      }
+    }
+    return count;
   }
 
   /**

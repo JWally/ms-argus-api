@@ -29,6 +29,15 @@ export const TIER2_TIMEOUT_MS = 100;
 /** Max devices per Tier2 bucket query - prevents runaway queries */
 export const TIER2_BUCKET_LIMIT = 1000;
 
+/** AR-56: Cardinality threshold for high-traffic buckets (e.g., carrier NAT) */
+export const TIER2_HIGH_CARDINALITY_THRESHOLD = 500;
+
+/** AR-56: Confidence penalty factor for high-cardinality bucket matches */
+export const TIER2_CARDINALITY_PENALTY = 0.3;
+
+/** AR-56: Sort key for bucket stats items in Tier2Buckets table */
+export const TIER2_STATS_SK = "_stats";
+
 // ==================== PROFILE SERVICE CONSTANTS ====================
 
 /** Profile TTL in DynamoDB: 60 days */

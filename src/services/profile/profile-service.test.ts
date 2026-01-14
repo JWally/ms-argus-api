@@ -7,6 +7,7 @@ import {
   GetItemCommand,
   PutItemCommand,
   BatchWriteItemCommand,
+  UpdateItemCommand,
 } from "@aws-sdk/client-dynamodb";
 import { marshall } from "@aws-sdk/util-dynamodb";
 import {
@@ -683,6 +684,33 @@ describe("ProfileService", () => {
       expect(count).toBe(0);
       // No BatchWriteItem calls should be made
       expect(dynamoMock.commandCalls(BatchWriteItemCommand)).toHaveLength(0);
+    });
+
+    // AR-56: Cardinality tracking tests
+    it("should increment bucket cardinality counters", async () => {
+      dynamoMock.on(BatchWriteItemCommand).resolves({});
+      dynamoMock.on(UpdateItemCommand).resolves({});
+
+      const fingerprint: Fingerprint = {
+        ip_address: "10.0.0.1",
+        ja4: "ja4hash",
+        audio_hash: "audio",
+        canvas_hash: "canvas",
+      };
+
+      await service.updateTier2Buckets("tenant1", "dev_123", fingerprint);
+
+      // Should make UpdateItemCommand calls for cardinality (one per bucket)
+      const updateCalls = dynamoMock.commandCalls(UpdateItemCommand);
+      expect(updateCalls).toHaveLength(2); // ip_ja4 and audio_canvas buckets
+
+      // Verify the update expression uses ADD for atomic increment
+      for (const call of updateCalls) {
+        expect(call.args[0].input.UpdateExpression).toContain("ADD cardinality");
+        expect(call.args[0].input.ExpressionAttributeValues?.[":inc"]?.N).toBe("1");
+        // Verify stats item uses "_stats" as sort key
+        expect(call.args[0].input.Key?.device_id?.S).toBe("_stats");
+      }
     });
   });
 

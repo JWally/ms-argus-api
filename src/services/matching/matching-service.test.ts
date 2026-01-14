@@ -6,6 +6,7 @@ import {
   DynamoDBClient,
   GetItemCommand,
   QueryCommand,
+  BatchGetItemCommand,
 } from "@aws-sdk/client-dynamodb";
 import { SQSClient, SendMessageCommand } from "@aws-sdk/client-sqs";
 import { marshall } from "@aws-sdk/util-dynamodb";
@@ -473,6 +474,129 @@ describe("MatchingService", () => {
       await expect(
         service.tier2CompoundMatch("tenant1", fingerprint),
       ).rejects.toThrow("DynamoDB error");
+    });
+  });
+
+  // AR-56: Cardinality tracking tests
+  describe("tier2CompoundMatch with cardinality tracking", () => {
+    it("should penalize confidence for high-cardinality buckets", async () => {
+      // Setup: device appears in 2 buckets (same device_id in all query results)
+      dynamoMock
+        .on(QueryCommand, { TableName: testConfig.tier2BucketsTable })
+        .resolves({
+          Items: [marshall({ device_id: "device-123" })],
+        });
+
+      // Mock cardinality stats - high cardinality buckets (>500)
+      dynamoMock.on(BatchGetItemCommand).resolves({
+        Responses: {
+          [testConfig.tier2BucketsTable]: [
+            marshall({ bucket_key: "tenant1#ip_ja4#1.2.3.4#ja4hash", cardinality: 1000 }),
+            marshall({ bucket_key: "tenant1#gpu_screen_tz#GPU#1920x1080#America/New_York", cardinality: 800 }),
+          ],
+        },
+      });
+
+      // Mock profile lookup
+      dynamoMock
+        .on(GetItemCommand, { TableName: testConfig.profilesTable })
+        .resolves({
+          Item: marshall({ risk_score: 0.4, flags: [] }),
+        });
+
+      const fingerprint: Fingerprint = {
+        ip_address: "1.2.3.4",
+        ja4: "ja4hash",
+        gpu_renderer: "GPU",
+        screen_dims: "1920x1080",
+        timezone: "America/New_York",
+      };
+
+      const result = await service.tier2CompoundMatch("tenant1", fingerprint);
+
+      expect(result).not.toBeNull();
+      expect(result?.match_tier).toBe(2);
+      // Base confidence for 2 bucket matches is 0.8
+      // With both buckets being high-cardinality: penalty = (2/2) * 0.3 = 0.3
+      // Final confidence = 0.8 - 0.3 = 0.5
+      expect(result?.confidence).toBeLessThan(0.8);
+      expect(result?.confidence).toBeGreaterThanOrEqual(0.3);
+    });
+
+    it("should not penalize confidence for low-cardinality buckets", async () => {
+      // Setup: device appears in 2 buckets
+      dynamoMock
+        .on(QueryCommand, { TableName: testConfig.tier2BucketsTable })
+        .resolves({
+          Items: [marshall({ device_id: "device-123" })],
+        });
+
+      // Mock cardinality stats - low cardinality buckets (<500)
+      dynamoMock.on(BatchGetItemCommand).resolves({
+        Responses: {
+          [testConfig.tier2BucketsTable]: [
+            marshall({ bucket_key: "tenant1#ip_ja4#1.2.3.4#ja4hash", cardinality: 50 }),
+            marshall({ bucket_key: "tenant1#gpu_screen_tz#GPU#1920x1080#America/New_York", cardinality: 100 }),
+          ],
+        },
+      });
+
+      // Mock profile lookup
+      dynamoMock
+        .on(GetItemCommand, { TableName: testConfig.profilesTable })
+        .resolves({
+          Item: marshall({ risk_score: 0.4, flags: [] }),
+        });
+
+      const fingerprint: Fingerprint = {
+        ip_address: "1.2.3.4",
+        ja4: "ja4hash",
+        gpu_renderer: "GPU",
+        screen_dims: "1920x1080",
+        timezone: "America/New_York",
+      };
+
+      const result = await service.tier2CompoundMatch("tenant1", fingerprint);
+
+      expect(result).not.toBeNull();
+      expect(result?.match_tier).toBe(2);
+      // Base confidence for 2 bucket matches is 0.8 (no penalty applied)
+      expect(result?.confidence).toBe(0.8);
+    });
+
+    it("should fail open when cardinality fetch fails", async () => {
+      // Setup: device appears in 2 buckets
+      dynamoMock
+        .on(QueryCommand, { TableName: testConfig.tier2BucketsTable })
+        .resolves({
+          Items: [marshall({ device_id: "device-123" })],
+        });
+
+      // Mock cardinality fetch to fail
+      dynamoMock.on(BatchGetItemCommand).rejects(new Error("DynamoDB error"));
+
+      // Mock profile lookup
+      dynamoMock
+        .on(GetItemCommand, { TableName: testConfig.profilesTable })
+        .resolves({
+          Item: marshall({ risk_score: 0.4, flags: [] }),
+        });
+
+      const fingerprint: Fingerprint = {
+        ip_address: "1.2.3.4",
+        ja4: "ja4hash",
+        gpu_renderer: "GPU",
+        screen_dims: "1920x1080",
+        timezone: "America/New_York",
+      };
+
+      // Should not throw, should return match without penalty
+      const result = await service.tier2CompoundMatch("tenant1", fingerprint);
+
+      expect(result).not.toBeNull();
+      expect(result?.match_tier).toBe(2);
+      // No penalty applied when cardinality fetch fails (fail open)
+      expect(result?.confidence).toBe(0.8);
     });
   });
 
