@@ -5,6 +5,7 @@ import {
   GetItemCommand,
   PutItemCommand,
   BatchWriteItemCommand,
+  UpdateItemCommand,
   WriteRequest,
 } from "@aws-sdk/client-dynamodb";
 import { marshall, unmarshall } from "@aws-sdk/util-dynamodb";
@@ -15,6 +16,7 @@ import {
   DeviceProfile,
   DeviceFlags,
 } from "./types";
+import { TIER2_STATS_SK } from "../../helpers/constants";
 
 /**
  * Thresholds for flag computation
@@ -488,6 +490,7 @@ export class ProfileService {
    * Update Tier 2 buckets (compound filter matching)
    * Uses shorter TTL (7 days) to prevent bucket accumulation (AR-39)
    * Uses BatchWriteItem with retry logic for reliability (AR-40)
+   * AR-56: Also increments cardinality counters for each bucket
    */
   async updateTier2Buckets(
     tenantId: string,
@@ -511,7 +514,47 @@ export class ProfileService {
 
     // Use BatchWriteItem with retry logic (consistent with Tier 1)
     await this.batchWriteTier2Buckets(bucketEntries);
+
+    // AR-56: Increment cardinality counters for each bucket
+    // Uses atomic ADD to track approximate bucket size
+    await this.incrementBucketCardinalities(bucketKeys, ttl);
+
     return bucketEntries.length;
+  }
+
+  /**
+   * AR-56: Increment cardinality counters for Tier 2 buckets
+   * Uses UpdateItem with ADD for atomic increment
+   * Stats items use "_stats" as sort key to distinguish from device entries
+   */
+  private async incrementBucketCardinalities(
+    bucketKeys: string[],
+    ttl: number,
+  ): Promise<void> {
+    const tableName = this.deps.config.tier2BucketsTable;
+
+    // Increment all counters in parallel
+    const updates = bucketKeys.map((bucketKey) =>
+      this.deps.dynamodb.send(
+        new UpdateItemCommand({
+          TableName: tableName,
+          Key: {
+            bucket_key: { S: bucketKey },
+            device_id: { S: TIER2_STATS_SK },
+          },
+          UpdateExpression: "ADD cardinality :inc SET #ttl = :ttl",
+          ExpressionAttributeNames: {
+            "#ttl": "ttl",
+          },
+          ExpressionAttributeValues: {
+            ":inc": { N: "1" },
+            ":ttl": { N: String(ttl) },
+          },
+        }),
+      ),
+    );
+
+    await Promise.all(updates);
   }
 
   /**
