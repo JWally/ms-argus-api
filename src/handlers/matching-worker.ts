@@ -11,10 +11,7 @@ import { Logger } from "@aws-lambda-powertools/logger";
 import { Metrics, MetricUnit } from "@aws-lambda-powertools/metrics";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { SQSClient } from "@aws-sdk/client-sqs";
-import {
-  FirehoseClient,
-  PutRecordCommand,
-} from "@aws-sdk/client-firehose";
+import { FirehoseClient, PutRecordCommand } from "@aws-sdk/client-firehose";
 import {
   MatchingService,
   MatchingServiceConfig,

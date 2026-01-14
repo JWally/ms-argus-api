@@ -10,6 +10,7 @@ import type { Fingerprint } from "./fingerprint";
  */
 export type EvidenceCode =
   | "EVERCOOKIE_MATCH" // T0.5: Matched on evercookie ID
+  | "PUBLIC_KEY_MATCH" // T0.5: Matched on ECDSA public key (AR-64)
   | "STABLE_HASH_MATCH" // T1: Matched on stable fingerprint hash
   | "FUZZY_HASH_MATCH" // T1: Matched on fuzzy fingerprint hash
   | "IP_JA4_BUCKET" // T2: Matched in IP+JA4 bucket

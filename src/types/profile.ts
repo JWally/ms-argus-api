@@ -31,6 +31,8 @@ export interface DeviceProfile {
   screen_dims?: string;
   timezone?: string;
   evercookie_id?: string;
+  // AR-64: Cryptographic device identity (ECDSA P-256 public key, Base64 SPKI)
+  public_key?: string;
   first_seen_at: number;
   last_seen_at: number;
   request_count: number;

@@ -77,6 +77,21 @@ export class MatchingService {
     result: MatchResult;
     tier2TimedOut: boolean;
   }> {
+    // Tier 0.5: Cryptographic identity lookup (highest confidence)
+    // AR-64: Public key match - ECDSA P-256 key stored in IndexedDB, non-extractable
+    if (fingerprint.public_key) {
+      const result = await this.tier05PublicKeyLookup(
+        tenantId,
+        fingerprint.public_key,
+      );
+      if (result) {
+        return {
+          result,
+          tier2TimedOut: false,
+        };
+      }
+    }
+
     // Tier 0.5: Evercookie/Cookie lookup
     if (fingerprint.evercookie_id) {
       const result = await this.tier05CookieLookup(
@@ -117,6 +132,40 @@ export class MatchingService {
       result: this.createNewDevice(),
       tier2TimedOut: timedOut,
     };
+  }
+
+  /**
+   * Tier 0.5: Lookup by ECDSA public key (AR-64)
+   * Near-perfect confidence - cryptographic identity stored in IndexedDB
+   * Private key is non-extractable, so public key proves device possession
+   */
+  async tier05PublicKeyLookup(
+    tenantId: string,
+    publicKey: string,
+  ): Promise<MatchResult | null> {
+    const result = await this.deps.dynamodb.send(
+      new GetItemCommand({
+        TableName: this.deps.config.tier1IndexTable,
+        Key: {
+          tenant_id: { S: tenantId },
+          hash_key: { S: `pubkey#${publicKey}` },
+        },
+      }),
+    );
+
+    if (result.Item) {
+      const item = unmarshall(result.Item);
+      return {
+        device_id: item.device_id,
+        confidence: 0.99,
+        match_tier: 0.5,
+        is_new_device: false,
+        risk_score: item.risk_score ?? 0.3,
+        flags: item.flags ?? [],
+        evidence_codes: ["PUBLIC_KEY_MATCH"] as EvidenceCode[],
+      };
+    }
+    return null;
   }
 
   /**

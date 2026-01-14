@@ -456,6 +456,16 @@ export class ProfileService {
       });
     }
 
+    // AR-64: ECDSA public key for cryptographic device identity
+    if (fingerprint.public_key) {
+      entries.push({
+        tenant_id: tenantId,
+        hash_key: `pubkey#${fingerprint.public_key}`,
+        device_id: deviceId,
+        ttl,
+      });
+    }
+
     if (fingerprint.stable_hash) {
       entries.push({
         tenant_id: tenantId,
