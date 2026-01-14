@@ -38,6 +38,12 @@ export const TIER2_CARDINALITY_PENALTY = 0.3;
 /** AR-56: Sort key for bucket stats items in Tier2Buckets table */
 export const TIER2_STATS_SK = "_stats";
 
+/** AR-65: Confidence penalty for privacy browser detection (Brave, Firefox RFP, Tor, etc.) */
+export const PRIVACY_BROWSER_PENALTY = 0.15;
+
+/** AR-65: Confidence penalty for private/incognito browsing mode */
+export const PRIVATE_BROWSING_PENALTY = 0.1;
+
 // ==================== PROFILE SERVICE CONSTANTS ====================
 
 /** Profile TTL in DynamoDB: 60 days */

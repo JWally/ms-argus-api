@@ -22,6 +22,8 @@ import {
   TIER2_HIGH_CARDINALITY_THRESHOLD,
   TIER2_CARDINALITY_PENALTY,
   TIER2_STATS_SK,
+  PRIVACY_BROWSER_PENALTY,
+  PRIVATE_BROWSING_PENALTY,
 } from "../../helpers/constants";
 import { fnv1a } from "../../helpers/hash";
 
@@ -67,6 +69,34 @@ export class MatchingService {
   }
 
   /**
+   * AR-65: Apply confidence penalty for privacy browser detection
+   * Returns a new MatchResult with reduced confidence if privacy signals detected
+   */
+  applyPrivacyPenalty(result: MatchResult, fingerprint: Fingerprint): MatchResult {
+    let penalty = 0;
+
+    // Privacy browser (Brave, Firefox RFP, Tor, etc.)
+    if (fingerprint.privacy_browser) {
+      penalty += PRIVACY_BROWSER_PENALTY;
+    }
+
+    // Private/incognito browsing mode
+    if (fingerprint.is_private_browsing) {
+      penalty += PRIVATE_BROWSING_PENALTY;
+    }
+
+    if (penalty === 0) {
+      return result;
+    }
+
+    // Apply penalty and clamp to valid range
+    return {
+      ...result,
+      confidence: Math.max(0, result.confidence - penalty),
+    };
+  }
+
+  /**
    * Run tiered matching strategy
    * Returns match result along with metadata about the matching process
    */
@@ -86,7 +116,7 @@ export class MatchingService {
       );
       if (result) {
         return {
-          result,
+          result: this.applyPrivacyPenalty(result, fingerprint),
           tier2TimedOut: false,
         };
       }
@@ -100,7 +130,7 @@ export class MatchingService {
       );
       if (result) {
         return {
-          result,
+          result: this.applyPrivacyPenalty(result, fingerprint),
           tier2TimedOut: false,
         };
       }
@@ -110,7 +140,7 @@ export class MatchingService {
     const tier1Result = await this.tier1HashMatch(tenantId, fingerprint);
     if (tier1Result) {
       return {
-        result: tier1Result,
+        result: this.applyPrivacyPenalty(tier1Result, fingerprint),
         tier2TimedOut: false,
       };
     }
@@ -120,14 +150,14 @@ export class MatchingService {
       await this.tier2CompoundMatchWithTimeout(tenantId, fingerprint);
     if (tier2Result) {
       return {
-        result: tier2Result,
+        result: this.applyPrivacyPenalty(tier2Result, fingerprint),
         tier2TimedOut: timedOut,
       };
     }
 
     // Tier 3: Vector similarity (TODO: implement when Qdrant is deployed)
 
-    // New device - no match found
+    // New device - no match found (no penalty needed, confidence is 0)
     return {
       result: this.createNewDevice(),
       tier2TimedOut: timedOut,
