@@ -1,5 +1,7 @@
 // lib/constructs/index.ts
 // AR-52: Simplified exports - removed ingestion-service and redis
+// AR-57: Added analytics construct for observations pipeline
+export * from "./analytics";
 export * from "./cloudfront";
 export * from "./secrets";
 export * from "./queues";

@@ -28,6 +28,7 @@ interface WorkersConstructProps {
   tier1IndexTable: dynamodb.ITable;
   tier2BucketsTable: dynamodb.ITable;
   sessionCacheTable: dynamodb.ITable; // AR-52: Replaces Redis
+  observationsDeliveryStreamName: string; // AR-57: Firehose for observations
 }
 
 /**
@@ -63,6 +64,7 @@ export class WorkersConstruct extends Construct {
       tier1IndexTable,
       tier2BucketsTable,
       sessionCacheTable,
+      observationsDeliveryStreamName,
     } = props;
 
     // Secrets Manager reference
@@ -126,6 +128,8 @@ export class WorkersConstruct extends Construct {
         TIER1_INDEX_TABLE: tier1IndexTable.tableName,
         TIER2_BUCKETS_TABLE: tier2BucketsTable.tableName,
         PROFILE_QUEUE_URL: profileQueue.queueUrl,
+        // AR-57: Firehose for match observations
+        OBSERVATIONS_STREAM_NAME: observationsDeliveryStreamName,
       },
     });
 
@@ -147,6 +151,17 @@ export class WorkersConstruct extends Construct {
     sessionCacheTable.grantReadWriteData(this.matchingWorker); // AR-52
     profileQueue.grantSendMessages(this.matchingWorker);
     matchingQueue.grantConsumeMessages(this.matchingWorker);
+
+    // AR-57: Firehose permission for observations
+    this.matchingWorker.addToRolePolicy(
+      new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: ["firehose:PutRecord", "firehose:PutRecordBatch"],
+        resources: [
+          `arn:aws:firehose:*:*:deliverystream/${observationsDeliveryStreamName}`,
+        ],
+      }),
+    );
 
     // =====================================
     // PROFILE UPDATER LAMBDA

@@ -1,5 +1,6 @@
 // lib/stacks/app-stack.ts
 // AR-52: Simplified architecture - removed VPC, ALB, ECS, Redis
+// AR-57: Added analytics pipeline for match observations
 import * as cdk from "aws-cdk-lib";
 import * as sns from "aws-cdk-lib/aws-sns";
 import * as route53 from "aws-cdk-lib/aws-route53";
@@ -12,6 +13,7 @@ import { DynamoDbConstruct } from "../constructs/dynamodb";
 import { HttpApiConstruct } from "../constructs/http-api";
 import { WorkersConstruct } from "../constructs/workers";
 import { CloudFrontWafConstruct } from "../constructs/cloudfront";
+import { AnalyticsConstruct } from "../constructs/analytics";
 import { getStageConfig } from "../config";
 
 interface ArgusApiStackProps extends cdk.StackProps {
@@ -100,6 +102,15 @@ export class ArgusApiStack extends cdk.Stack {
     });
 
     // =========================================================================
+    // ANALYTICS LAYER (AR-57)
+    // =========================================================================
+
+    const analytics = new AnalyticsConstruct(this, "Analytics", {
+      stackName,
+      stage,
+    });
+
+    // =========================================================================
     // COMPUTE LAYER
     // =========================================================================
 
@@ -123,6 +134,7 @@ export class ArgusApiStack extends cdk.Stack {
       tier1IndexTable: dynamodb.tier1IndexTable,
       tier2BucketsTable: dynamodb.tier2BucketsTable,
       sessionCacheTable: dynamodb.sessionCacheTable,
+      observationsDeliveryStreamName: analytics.deliveryStream.deliveryStreamName!, // AR-57
     });
 
     // =========================================================================
@@ -198,6 +210,17 @@ export class ArgusApiStack extends cdk.Stack {
     new cdk.CfnOutput(this, "ProfileUpdaterArn", {
       value: workers.profileUpdater.functionArn,
       description: "Profile updater Lambda ARN",
+    });
+
+    // AR-57: Analytics outputs
+    new cdk.CfnOutput(this, "ObservationsBucketName", {
+      value: analytics.observationsBucket.bucketName,
+      description: "S3 bucket for match observations",
+    });
+
+    new cdk.CfnOutput(this, "ObservationsDeliveryStreamName", {
+      value: analytics.deliveryStream.deliveryStreamName!,
+      description: "Firehose delivery stream for observations",
     });
   }
 }
