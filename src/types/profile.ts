@@ -33,6 +33,18 @@ export interface DeviceProfile {
   evercookie_id?: string;
   // AR-64: Cryptographic device identity (ECDSA P-256 public key, Base64 SPKI)
   public_key?: string;
+  // AR-65: Privacy browser detection
+  privacy_browser?: string;
+  is_private_browsing?: boolean;
+  // AR-65: Bot detection signals
+  bot_hash?: string;
+  lie_count?: number;
+  is_headless?: boolean;
+  // AR-65: Network signals
+  ja3?: string;
+  tcp_rtt_us?: number;
+  proxy_score?: number;
+  vpn_score?: number;
   first_seen_at: number;
   last_seen_at: number;
   request_count: number;
