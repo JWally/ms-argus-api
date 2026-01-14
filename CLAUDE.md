@@ -7,7 +7,7 @@ Work through JIRA tickets autonomously. For each ticket:
 1. **Get ticket** → Query JIRA for To Do tickets (bugs first, then by priority P0-P3)
 2. **Branch** → `git checkout -b AR-XX`
 3. **Implement** → Make changes
-4. **Test** → `npm test` (259 tests must pass)
+4. **Test** → `npm test` (264+ tests must pass)
 5. **Deploy** → `npx cdk deploy ms-argus-api-dev-jw --require-approval never`
 6. **Integration test** → `cd ~/Dev/ms-argus-automation && npm test`
 7. **PR** → `gh pr create` then `gh pr merge --squash --delete-branch`
@@ -77,10 +77,9 @@ curl -s -X POST -u "jira@wolcott.io:$JIRA_TOKEN" \
 ### Local Development
 
 ```bash
-npm run format       # Prettier + Go fmt
+npm run format       # Prettier
 npm run lint:test    # ESLint (warnings OK, errors fail)
-npm test             # Vitest unit tests
-cd cmd/ingestion && go test -v ./...  # Go tests
+npm test             # Vitest unit tests (264+)
 ```
 
 ### Deployment
@@ -139,12 +138,14 @@ gh pr merge --squash --delete-branch
 ## Architecture
 
 ```
-Browser → CloudFront → ALB → ECS (Go) → SQS → Lambda (Matching) → DynamoDB
-                                               ↓
-                                         SQS → Lambda (Profile) → DynamoDB
-                                               ↓
-                                             Redis (cache)
+Browser → CloudFront → API Gateway (HTTP API) → Lambda (Ingestion) → SQS
+                                                                      ↓
+                                                          Lambda (Matching) → DynamoDB
+                                                                      ↓
+                                                          SQS → Lambda (Profile) → DynamoDB
 ```
+
+AR-52: Replaced Go/ECS ingestion with HTTP API + Lambda. AR-52: Replaced Redis cache with DynamoDB session cache.
 
 ### Key Files
 
@@ -153,7 +154,6 @@ Browser → CloudFront → ALB → ECS (Go) → SQS → Lambda (Matching) → Dy
 | Lambda handlers    | `src/handlers/`              |
 | Services           | `src/services/`              |
 | CDK infrastructure | `lib/constructs/`            |
-| Go ingestion       | `cmd/ingestion/`             |
 | Tests              | `src/**/*.test.ts`, `tests/` |
 
 ### DynamoDB Tables
@@ -161,6 +161,7 @@ Browser → CloudFront → ALB → ECS (Go) → SQS → Lambda (Matching) → Dy
 - `Profiles` - Device fingerprint profiles
 - `Tier1Index` - Hash lookups (evercookie, stable, fuzzy, ja4)
 - `Tier2Buckets` - Compound filter matching
+- `SessionCache` - Session state and mutation gates (AR-52)
 
 ---
 
@@ -168,8 +169,7 @@ Browser → CloudFront → ALB → ECS (Go) → SQS → Lambda (Matching) → Dy
 
 Before merging ANY PR:
 
-- [ ] Unit tests pass (`npm test` - all 259+)
-- [ ] Go tests pass (`go test ./...`)
+- [ ] Unit tests pass (`npm test` - all 264+)
 - [ ] Lint passes (warnings OK)
 - [ ] Deployed to dev (`cdk deploy ms-argus-api-dev-jw`)
 - [ ] Integration tests pass (`cd ms-argus-automation && npm test`)
@@ -212,7 +212,6 @@ curl -s -X POST -u "jira@wolcott.io:$JIRA_TOKEN" \
 
 - Verify stack deployed: `aws cloudformation describe-stacks --stack-name ms-argus-api-dev-jw`
 - Some async tests may be flaky - rerun
-- Redis tests may skip locally (requires VPC access)
 
 ### Pre-commit Hooks
 
