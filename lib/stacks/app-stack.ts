@@ -115,10 +115,12 @@ export class ArgusApiStack extends cdk.Stack {
     // =========================================================================
 
     // HTTP API + Lambda for ingestion (replaces ALB + ECS)
+    // AR-67: Added session retrieval endpoint
     const httpApi = new HttpApiConstruct(this, "HttpApi", {
       stackName,
       stage,
       matchingQueue: queues.matchingQueue,
+      sessionCacheTable: dynamodb.sessionCacheTable,
       alarmsTopic,
     });
 
@@ -134,7 +136,8 @@ export class ArgusApiStack extends cdk.Stack {
       tier1IndexTable: dynamodb.tier1IndexTable,
       tier2BucketsTable: dynamodb.tier2BucketsTable,
       sessionCacheTable: dynamodb.sessionCacheTable,
-      observationsDeliveryStreamName: analytics.deliveryStream.deliveryStreamName!, // AR-57
+      observationsDeliveryStreamName:
+        analytics.deliveryStream.deliveryStreamName!, // AR-57
     });
 
     // =========================================================================
@@ -180,6 +183,12 @@ export class ArgusApiStack extends cdk.Stack {
     new cdk.CfnOutput(this, "IngestionFunctionArn", {
       value: httpApi.ingestionFunction.functionArn,
       description: "Ingestion Lambda ARN",
+    });
+
+    // AR-67: Session retrieval Lambda output
+    new cdk.CfnOutput(this, "SessionGetFunctionArn", {
+      value: httpApi.sessionGetFunction.functionArn,
+      description: "Session retrieval Lambda ARN",
     });
 
     new cdk.CfnOutput(this, "MatchingQueueUrl", {

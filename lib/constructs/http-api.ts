@@ -1,5 +1,6 @@
 // lib/constructs/http-api.ts
 // AR-52: HTTP API Gateway + Lambda for fingerprint ingestion
+// AR-67: Added session retrieval endpoint
 // Replaces ALB + ECS Fargate (Go) - ~90% cost reduction
 
 import * as path from "path";
@@ -9,6 +10,7 @@ import * as lambdaNode from "aws-cdk-lib/aws-lambda-nodejs";
 import * as apigatewayv2 from "aws-cdk-lib/aws-apigatewayv2";
 import * as integrations from "aws-cdk-lib/aws-apigatewayv2-integrations";
 import * as sqs from "aws-cdk-lib/aws-sqs";
+import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
 import * as logs from "aws-cdk-lib/aws-logs";
 import * as cloudwatch from "aws-cdk-lib/aws-cloudwatch";
 import * as sns from "aws-cdk-lib/aws-sns";
@@ -19,6 +21,7 @@ interface HttpApiConstructProps {
   stackName: string;
   stage: string;
   matchingQueue: sqs.IQueue;
+  sessionCacheTable: dynamodb.ITable;
   alarmsTopic: sns.ITopic;
 }
 
@@ -39,12 +42,14 @@ interface HttpApiConstructProps {
 export class HttpApiConstruct extends Construct {
   public readonly api: apigatewayv2.HttpApi;
   public readonly ingestionFunction: lambda.Function;
+  public readonly sessionGetFunction: lambda.Function;
   public readonly apiEndpoint: string;
 
   constructor(scope: Construct, id: string, props: HttpApiConstructProps) {
     super(scope, id);
 
-    const { stackName, stage, matchingQueue, alarmsTopic } = props;
+    const { stackName, stage, matchingQueue, sessionCacheTable, alarmsTopic } =
+      props;
 
     // CloudWatch log group for Lambda
     const logGroup = new logs.LogGroup(this, "IngestionLogGroup", {
@@ -88,6 +93,47 @@ export class HttpApiConstruct extends Construct {
     // Grant SQS permissions
     matchingQueue.grantSendMessages(this.ingestionFunction);
 
+    // AR-67: Session retrieval Lambda
+    const sessionGetLogGroup = new logs.LogGroup(this, "SessionGetLogGroup", {
+      logGroupName: `/aws/lambda/${stackName}-session-get`,
+      retention: logs.RetentionDays.ONE_MONTH,
+      removalPolicy: RemovalPolicy.DESTROY,
+    });
+
+    this.sessionGetFunction = new lambdaNode.NodejsFunction(
+      this,
+      "SessionGetFunction",
+      {
+        functionName: `${stackName}-session-get`,
+        runtime: lambda.Runtime.NODEJS_20_X,
+        architecture: lambda.Architecture.ARM_64,
+        handler: "handler",
+        entry: path.join(__dirname, "../../src/handlers/session-get.ts"),
+        memorySize: 256,
+        timeout: Duration.seconds(10),
+        logGroup: sessionGetLogGroup,
+        environment: {
+          SESSION_CACHE_TABLE: sessionCacheTable.tableName,
+          POWERTOOLS_SERVICE_NAME: "argus-session-get",
+          POWERTOOLS_METRICS_NAMESPACE: `argus-${stage}`,
+          NODE_OPTIONS: "--enable-source-maps",
+        },
+        bundling: {
+          minify: true,
+          sourceMap: true,
+          target: "node20",
+          format: lambdaNode.OutputFormat.ESM,
+          mainFields: ["module", "main"],
+          esbuildArgs: {
+            "--tree-shaking": "true",
+          },
+        },
+      },
+    );
+
+    // Grant DynamoDB read permissions
+    sessionCacheTable.grantReadData(this.sessionGetFunction);
+
     // HTTP API Gateway
     this.api = new apigatewayv2.HttpApi(this, "HttpApi", {
       apiName: `${stackName}-api`,
@@ -95,6 +141,7 @@ export class HttpApiConstruct extends Construct {
       corsPreflight: {
         allowOrigins: ["*"], // CloudFront handles real CORS
         allowMethods: [
+          apigatewayv2.CorsHttpMethod.GET,
           apigatewayv2.CorsHttpMethod.POST,
           apigatewayv2.CorsHttpMethod.OPTIONS,
         ],
@@ -120,6 +167,18 @@ export class HttpApiConstruct extends Construct {
       path: "/health",
       methods: [apigatewayv2.HttpMethod.GET],
       integration: lambdaIntegration,
+    });
+
+    // AR-67: Session retrieval route
+    const sessionGetIntegration = new integrations.HttpLambdaIntegration(
+      "SessionGetIntegration",
+      this.sessionGetFunction,
+    );
+
+    this.api.addRoutes({
+      path: "/v1/session/{session_id}",
+      methods: [apigatewayv2.HttpMethod.GET],
+      integration: sessionGetIntegration,
     });
 
     // Store endpoint URL (without trailing slash)
