@@ -263,6 +263,26 @@ describe("ProfileService", () => {
       });
     });
 
+    // AR-64: Test for ECDSA public key
+    it("should build public_key entry", () => {
+      const publicKey = "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE...base64...";
+      const fingerprint: Fingerprint = { public_key: publicKey };
+      const entries = service.buildTier1IndexEntries(
+        "tenant1",
+        "dev_123",
+        fingerprint,
+        ttl,
+      );
+
+      expect(entries).toHaveLength(1);
+      expect(entries[0]).toEqual({
+        tenant_id: "tenant1",
+        hash_key: `pubkey#${publicKey}`,
+        device_id: "dev_123",
+        ttl,
+      });
+    });
+
     it("should build stable_hash entry", () => {
       const fingerprint: Fingerprint = { stable_hash: "stable456" };
       const entries = service.buildTier1IndexEntries(
@@ -277,8 +297,10 @@ describe("ProfileService", () => {
     });
 
     it("should build all entries when all hashes present", () => {
+      const publicKey = "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE...";
       const fingerprint: Fingerprint = {
         evercookie_id: "cookie",
+        public_key: publicKey, // AR-64
         stable_hash: "stable",
         fuzzy_hash: "fuzzy",
         ja4: "ja4hash",
@@ -291,9 +313,10 @@ describe("ProfileService", () => {
         ttl,
       );
 
-      expect(entries).toHaveLength(4);
+      expect(entries).toHaveLength(5); // AR-64: Now 5 with public_key
       const hashKeys = entries.map((e) => e.hash_key);
       expect(hashKeys).toContain("evercookie#cookie");
+      expect(hashKeys).toContain(`pubkey#${publicKey}`); // AR-64
       expect(hashKeys).toContain("stable#stable");
       expect(hashKeys).toContain("fuzzy#fuzzy");
       expect(hashKeys).toContain("ja4#ja4hash");
@@ -706,8 +729,12 @@ describe("ProfileService", () => {
 
       // Verify the update expression uses ADD for atomic increment
       for (const call of updateCalls) {
-        expect(call.args[0].input.UpdateExpression).toContain("ADD cardinality");
-        expect(call.args[0].input.ExpressionAttributeValues?.[":inc"]?.N).toBe("1");
+        expect(call.args[0].input.UpdateExpression).toContain(
+          "ADD cardinality",
+        );
+        expect(call.args[0].input.ExpressionAttributeValues?.[":inc"]?.N).toBe(
+          "1",
+        );
         // Verify stats item uses "_stats" as sort key
         expect(call.args[0].input.Key?.device_id?.S).toBe("_stats");
       }

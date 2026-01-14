@@ -178,6 +178,59 @@ describe("MatchingService", () => {
     });
   });
 
+  // AR-64: Public key (ECDSA) matching tests
+  describe("tier05PublicKeyLookup", () => {
+    it("should return null when public key not found", async () => {
+      dynamoMock.on(GetItemCommand).resolves({ Item: undefined });
+
+      const result = await service.tier05PublicKeyLookup(
+        "tenant1",
+        "unknown-public-key",
+      );
+      expect(result).toBeNull();
+    });
+
+    it("should return match result when public key found", async () => {
+      const deviceId = "dev_existing";
+      const publicKey = "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE...base64...";
+      dynamoMock.on(GetItemCommand).resolves({
+        Item: marshall({
+          tenant_id: "tenant1",
+          hash_key: `pubkey#${publicKey}`,
+          device_id: deviceId,
+          risk_score: 0.2,
+          flags: ["trusted"],
+        }),
+      });
+
+      const result = await service.tier05PublicKeyLookup("tenant1", publicKey);
+
+      expect(result).not.toBeNull();
+      expect(result?.device_id).toBe(deviceId);
+      expect(result?.confidence).toBe(0.99);
+      expect(result?.match_tier).toBe(0.5);
+      expect(result?.is_new_device).toBe(false);
+      expect(result?.risk_score).toBe(0.2);
+      expect(result?.flags).toEqual(["trusted"]);
+      expect(result?.evidence_codes).toEqual(["PUBLIC_KEY_MATCH"]);
+    });
+
+    it("should use default risk_score when not in index", async () => {
+      const publicKey = "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE...";
+      dynamoMock.on(GetItemCommand).resolves({
+        Item: marshall({
+          tenant_id: "tenant1",
+          hash_key: `pubkey#${publicKey}`,
+          device_id: "dev_123",
+        }),
+      });
+
+      const result = await service.tier05PublicKeyLookup("tenant1", publicKey);
+      expect(result?.risk_score).toBe(0.3);
+      expect(result?.flags).toEqual([]);
+    });
+  });
+
   describe("tier1HashMatch", () => {
     it("should return null when no hash matches", async () => {
       dynamoMock.on(GetItemCommand).resolves({ Item: undefined });
@@ -491,8 +544,15 @@ describe("MatchingService", () => {
       dynamoMock.on(BatchGetItemCommand).resolves({
         Responses: {
           [testConfig.tier2BucketsTable]: [
-            marshall({ bucket_key: "tenant1#ip_ja4#1.2.3.4#ja4hash", cardinality: 1000 }),
-            marshall({ bucket_key: "tenant1#gpu_screen_tz#GPU#1920x1080#America/New_York", cardinality: 800 }),
+            marshall({
+              bucket_key: "tenant1#ip_ja4#1.2.3.4#ja4hash",
+              cardinality: 1000,
+            }),
+            marshall({
+              bucket_key:
+                "tenant1#gpu_screen_tz#GPU#1920x1080#America/New_York",
+              cardinality: 800,
+            }),
           ],
         },
       });
@@ -535,8 +595,15 @@ describe("MatchingService", () => {
       dynamoMock.on(BatchGetItemCommand).resolves({
         Responses: {
           [testConfig.tier2BucketsTable]: [
-            marshall({ bucket_key: "tenant1#ip_ja4#1.2.3.4#ja4hash", cardinality: 50 }),
-            marshall({ bucket_key: "tenant1#gpu_screen_tz#GPU#1920x1080#America/New_York", cardinality: 100 }),
+            marshall({
+              bucket_key: "tenant1#ip_ja4#1.2.3.4#ja4hash",
+              cardinality: 50,
+            }),
+            marshall({
+              bucket_key:
+                "tenant1#gpu_screen_tz#GPU#1920x1080#America/New_York",
+              cardinality: 100,
+            }),
           ],
         },
       });
@@ -653,6 +720,111 @@ describe("MatchingService", () => {
   });
 
   describe("runTieredMatching", () => {
+    // AR-64: Public key matching tests
+    it("should return public_key match at Tier 0.5", async () => {
+      const publicKey = "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE...base64...";
+      dynamoMock.on(GetItemCommand).resolves({
+        Item: marshall({
+          tenant_id: "tenant1",
+          hash_key: `pubkey#${publicKey}`,
+          device_id: "dev_pubkey",
+        }),
+      });
+
+      const fingerprint: Fingerprint = { public_key: publicKey };
+      const { result, tier2TimedOut } = await service.runTieredMatching(
+        "tenant1",
+        fingerprint,
+      );
+
+      expect(result.match_tier).toBe(0.5);
+      expect(result.device_id).toBe("dev_pubkey");
+      expect(result.evidence_codes).toEqual(["PUBLIC_KEY_MATCH"]);
+      expect(tier2TimedOut).toBe(false);
+    });
+
+    it("should prefer public_key over evercookie (both present)", async () => {
+      const publicKey = "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE...base64...";
+      dynamoMock
+        .on(GetItemCommand, {
+          Key: {
+            tenant_id: { S: "tenant1" },
+            hash_key: { S: `pubkey#${publicKey}` },
+          },
+        })
+        .resolves({
+          Item: marshall({
+            tenant_id: "tenant1",
+            hash_key: `pubkey#${publicKey}`,
+            device_id: "dev_pubkey",
+          }),
+        })
+        .on(GetItemCommand, {
+          Key: {
+            tenant_id: { S: "tenant1" },
+            hash_key: { S: "evercookie#cookie123" },
+          },
+        })
+        .resolves({
+          Item: marshall({
+            tenant_id: "tenant1",
+            hash_key: "evercookie#cookie123",
+            device_id: "dev_cookie",
+          }),
+        });
+
+      const fingerprint: Fingerprint = {
+        public_key: publicKey,
+        evercookie_id: "cookie123",
+      };
+      const { result } = await service.runTieredMatching(
+        "tenant1",
+        fingerprint,
+      );
+
+      // Public key should take precedence
+      expect(result.device_id).toBe("dev_pubkey");
+      expect(result.evidence_codes).toEqual(["PUBLIC_KEY_MATCH"]);
+    });
+
+    it("should fall back to evercookie when public_key not found", async () => {
+      const publicKey = "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE...unknown...";
+      dynamoMock
+        .on(GetItemCommand, {
+          Key: {
+            tenant_id: { S: "tenant1" },
+            hash_key: { S: `pubkey#${publicKey}` },
+          },
+        })
+        .resolves({ Item: undefined })
+        .on(GetItemCommand, {
+          Key: {
+            tenant_id: { S: "tenant1" },
+            hash_key: { S: "evercookie#cookie123" },
+          },
+        })
+        .resolves({
+          Item: marshall({
+            tenant_id: "tenant1",
+            hash_key: "evercookie#cookie123",
+            device_id: "dev_cookie",
+          }),
+        });
+
+      const fingerprint: Fingerprint = {
+        public_key: publicKey,
+        evercookie_id: "cookie123",
+      };
+      const { result } = await service.runTieredMatching(
+        "tenant1",
+        fingerprint,
+      );
+
+      // Should fall back to evercookie
+      expect(result.device_id).toBe("dev_cookie");
+      expect(result.evidence_codes).toEqual(["EVERCOOKIE_MATCH"]);
+    });
+
     it("should return evercookie match at Tier 0.5", async () => {
       dynamoMock.on(GetItemCommand).resolves({
         Item: marshall({
