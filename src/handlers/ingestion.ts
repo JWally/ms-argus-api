@@ -1,5 +1,6 @@
 // src/handlers/ingestion.ts
 // AR-52: Lambda ingestion handler replacing Go/ECS service
+// AR-71: Reverted to async (SQS) for scalability at 30B RPY
 // Receives fingerprints via HTTP API, validates, and queues to SQS
 
 import {

@@ -115,8 +115,9 @@ const devConfig: StageConfig = {
     retentionPeriod: Duration.days(1),
     maxReceiveCount: 1, // Fail fast in dev for debugging
     batchingWindow: {
-      matching: Duration.seconds(1),
-      profile: Duration.seconds(1),
+      // AR-71: Set to 0 to minimize latency - don't wait for batching
+      matching: Duration.seconds(0),
+      profile: Duration.seconds(0),
     },
   },
 
@@ -196,8 +197,9 @@ const prodConfig: StageConfig = {
     retentionPeriod: Duration.days(7),
     maxReceiveCount: 3,
     batchingWindow: {
-      matching: Duration.seconds(1),
-      profile: Duration.seconds(1),
+      // AR-71: Set to 0 to minimize latency - don't wait for batching
+      matching: Duration.seconds(0),
+      profile: Duration.seconds(0),
     },
   },
 

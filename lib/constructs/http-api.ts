@@ -59,6 +59,7 @@ export class HttpApiConstruct extends Construct {
     });
 
     // Lambda function for ingestion
+    // AR-71: Reverted to async (SQS) for scalability at 30B RPY
     this.ingestionFunction = new lambdaNode.NodejsFunction(
       this,
       "IngestionFunction",

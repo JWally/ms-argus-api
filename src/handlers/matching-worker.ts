@@ -1,6 +1,7 @@
 // src/handlers/matching-worker.ts
 // AR-52: Replaced Redis with DynamoDB session cache
 // AR-57: Added Firehose observations for analytics
+// AR-71: Added warmup detection for SQS pipeline warming
 import {
   SQSHandler,
   SQSBatchResponse,
@@ -101,12 +102,32 @@ export const handler: SQSHandler = async (event): Promise<SQSBatchResponse> => {
 };
 
 /**
+ * AR-71: Check if this is a warmup message from EventBridge
+ * Warmup messages keep the SQS polling pipeline active
+ */
+function isWarmupMessage(body: string): boolean {
+  try {
+    const parsed = JSON.parse(body);
+    return parsed.warmup === true || parsed.source === "warmup-rule";
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Process a single SQS record
  */
 async function processRecord(
   record: SQSRecord,
   service: MatchingService,
 ): Promise<void> {
+  // AR-71: Handle warmup messages - just log and return
+  if (isWarmupMessage(record.body)) {
+    logger.info("Warmup ping received - keeping pipeline warm");
+    metrics.addMetric("WarmupPing", MetricUnit.Count, 1);
+    return;
+  }
+
   const startTime = Date.now();
   const payload: FingerprintPayload = JSON.parse(record.body);
   const { session_id, tenant_id, fingerprint } = payload;

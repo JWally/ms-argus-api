@@ -320,4 +320,60 @@ describe("matching-worker handler", () => {
       expect(result!.batchItemFailures).toHaveLength(0);
     });
   });
+
+  // AR-71: Warmup message handling
+  describe("warmup message handling", () => {
+    it("should handle warmup message without processing", async () => {
+      const warmupMessage = {
+        warmup: true,
+        source: "warmup-rule",
+        timestamp: "2025-01-14T00:00:00Z",
+      };
+
+      const event = createSQSEvent([
+        createSQSRecord(warmupMessage, "warmup-msg"),
+      ]);
+      const result = await handler(event, mockContext, () => {});
+
+      // Should succeed without failures
+      expect(result!.batchItemFailures).toHaveLength(0);
+
+      // Should NOT call DynamoDB (no matching work)
+      expect(dynamoMock.calls()).toHaveLength(0);
+
+      // Should NOT queue profile updates
+      expect(sqsMock.calls()).toHaveLength(0);
+    });
+
+    it("should handle warmup message mixed with regular messages", async () => {
+      const warmupMessage = {
+        warmup: true,
+        source: "warmup-rule",
+      };
+      const regularPayload = createFingerprintPayload();
+
+      // Mock Tier 1 match for regular message
+      dynamoMock.on(GetItemCommand).resolves({
+        Item: marshall({
+          tenant_id: "tenant-abc",
+          hash_value: "hash-abc123",
+          device_id: "existing-device-123",
+        }),
+      });
+      sqsMock.on(SendMessageCommand).resolves({ MessageId: "msg-1" });
+
+      const event = createSQSEvent([
+        createSQSRecord(warmupMessage, "warmup-msg"),
+        createSQSRecord(regularPayload, "regular-msg"),
+      ]);
+
+      const result = await handler(event, mockContext, () => {});
+
+      // Both should succeed
+      expect(result!.batchItemFailures).toHaveLength(0);
+
+      // DynamoDB should be called only for regular message
+      expect(dynamoMock.calls().length).toBeGreaterThan(0);
+    });
+  });
 });
