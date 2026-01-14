@@ -20,9 +20,11 @@ export interface BaseEnvConfig {
 
 /**
  * Environment configuration for the Matching Worker Lambda
+ * AR-57: Added OBSERVATIONS_STREAM_NAME for analytics
  */
 export interface MatchingWorkerEnvConfig extends BaseEnvConfig {
   PROFILE_QUEUE_URL: string;
+  OBSERVATIONS_STREAM_NAME?: string; // Optional - analytics may not be deployed in all envs
 }
 
 /**
@@ -60,6 +62,8 @@ export function getMatchingWorkerEnv(): MatchingWorkerEnvConfig {
       process.env.POWERTOOLS_SERVICE_NAME || "argus-matching",
     POWERTOOLS_METRICS_NAMESPACE:
       process.env.POWERTOOLS_METRICS_NAMESPACE || "Argus",
+    // AR-57: Optional analytics stream
+    OBSERVATIONS_STREAM_NAME: process.env.OBSERVATIONS_STREAM_NAME,
   };
 }
 

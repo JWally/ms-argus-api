@@ -1,5 +1,6 @@
 // src/handlers/matching-worker.ts
 // AR-52: Replaced Redis with DynamoDB session cache
+// AR-57: Added Firehose observations for analytics
 import {
   SQSHandler,
   SQSBatchResponse,
@@ -11,11 +12,16 @@ import { Metrics, MetricUnit } from "@aws-lambda-powertools/metrics";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { SQSClient } from "@aws-sdk/client-sqs";
 import {
+  FirehoseClient,
+  PutRecordCommand,
+} from "@aws-sdk/client-firehose";
+import {
   MatchingService,
   MatchingServiceConfig,
   MatchingServiceDeps,
   FingerprintPayload,
   generateIdempotencyKey,
+  MatchResult,
 } from "../services/matching";
 import { DynamoCacheService } from "../services/cache";
 // Note: BloomFilter removed per AR-21 - adds complexity without sufficient value
@@ -39,6 +45,7 @@ const metrics = new Metrics({
 // AWS SDK clients (reused across invocations)
 const dynamodb = new DynamoDBClient({});
 const sqs = new SQSClient({});
+const firehose = new FirehoseClient({}); // AR-57: For observations
 
 // Service configuration from validated environment
 function getConfig(): MatchingServiceConfig {
@@ -160,6 +167,16 @@ async function processRecord(
 
   const duration = Date.now() - startTime;
   metrics.addMetric("MatchingDuration", MetricUnit.Milliseconds, duration);
+
+  // AR-57: Emit observation to Firehose (non-blocking)
+  await emitObservation({
+    sessionId: session_id,
+    tenantId: tenant_id,
+    matchResult,
+    tier2TimedOut,
+    durationMs: duration,
+  });
+
   logger.info("Matching complete", {
     session_id,
     device_id: matchResult.device_id,
@@ -182,5 +199,51 @@ function recordTierMetric(tier: number, isNewDevice: boolean): void {
     metrics.addMetric("Tier2Hit", MetricUnit.Count, 1);
   } else if (tier === 3) {
     metrics.addMetric("Tier3Hit", MetricUnit.Count, 1);
+  }
+}
+
+/**
+ * AR-57: Emit match observation to Firehose for analytics
+ * Non-blocking - failures are logged but don't affect matching flow
+ */
+async function emitObservation(params: {
+  sessionId: string;
+  tenantId: string;
+  matchResult: MatchResult;
+  tier2TimedOut: boolean;
+  durationMs: number;
+}): Promise<void> {
+  // Skip if analytics stream not configured
+  if (!envConfig.OBSERVATIONS_STREAM_NAME) {
+    return;
+  }
+
+  const observation = {
+    session_id: params.sessionId,
+    tenant_id: params.tenantId,
+    device_id: params.matchResult.device_id,
+    match_tier: params.matchResult.match_tier,
+    is_new_device: params.matchResult.is_new_device,
+    tier2_timed_out: params.tier2TimedOut,
+    duration_ms: params.durationMs,
+    timestamp: new Date().toISOString(),
+  };
+
+  try {
+    await firehose.send(
+      new PutRecordCommand({
+        DeliveryStreamName: envConfig.OBSERVATIONS_STREAM_NAME,
+        Record: {
+          Data: Buffer.from(JSON.stringify(observation) + "\n"),
+        },
+      }),
+    );
+  } catch (error) {
+    // Log but don't throw - analytics should not block matching
+    logger.warn("Failed to emit observation to Firehose", {
+      error,
+      sessionId: params.sessionId,
+    });
+    metrics.addMetric("ObservationEmitError", MetricUnit.Count, 1);
   }
 }
