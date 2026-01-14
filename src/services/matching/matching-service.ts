@@ -578,6 +578,39 @@ export class MatchingService {
       });
     }
 
+    // AR-80: Structural tier2 buckets (stable browser engine anchors)
+    // These signals are based on browser internals that cannot be randomized
+    // without breaking website functionality. Useful when canvas/audio are
+    // blocked (e.g., Brave private browsing).
+
+    // Maths + WindowFeatures (FPU + browser engine signals)
+    if (fingerprint.maths_hash && fingerprint.window_features_hash) {
+      buckets.push({
+        key: `${tenantId}#maths_window#${fingerprint.maths_hash}#${fingerprint.window_features_hash}`,
+        evidenceCode: "MATHS_WINDOW_BUCKET",
+      });
+    }
+
+    // HtmlElement + CSS (DOM/CSS capabilities)
+    if (fingerprint.html_element_hash && fingerprint.css_hash) {
+      buckets.push({
+        key: `${tenantId}#html_css#${fingerprint.html_element_hash}#${fingerprint.css_hash}`,
+        evidenceCode: "HTML_CSS_BUCKET",
+      });
+    }
+
+    // WebGL + Extensions + SVG (rendering capabilities)
+    if (
+      fingerprint.webgl_hash &&
+      fingerprint.webgl_extensions_count !== undefined &&
+      fingerprint.svg_hash
+    ) {
+      buckets.push({
+        key: `${tenantId}#webgl_struct#${fingerprint.webgl_hash}#${fingerprint.webgl_extensions_count}#${fingerprint.svg_hash}`,
+        evidenceCode: "WEBGL_STRUCT_BUCKET",
+      });
+    }
+
     return buckets;
   }
 

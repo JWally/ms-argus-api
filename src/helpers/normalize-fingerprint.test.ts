@@ -305,6 +305,197 @@ describe("normalizeFingerprint", () => {
     });
   });
 
+  // AR-80: Structural fingerprint signals
+  describe("extracts structural signals (AR-80)", () => {
+    it("should extract maths_hash from loose.maths.$hash", () => {
+      const nested = {
+        loose: {
+          maths: {
+            $hash: "maths_hash_123",
+            data: { "Math.acos(0.123)": 1.4470808451078687 },
+          },
+        },
+      };
+
+      const result = normalizeFingerprint(nested);
+
+      expect(result.maths_hash).toBe("maths_hash_123");
+    });
+
+    it("should extract window_features_hash from loose.windowFeatures.$hash", () => {
+      const nested = {
+        loose: {
+          windowFeatures: {
+            $hash: "window_features_hash_456",
+            keys: ["devicePixelRatio", "innerWidth"],
+          },
+        },
+      };
+
+      const result = normalizeFingerprint(nested);
+
+      expect(result.window_features_hash).toBe("window_features_hash_456");
+    });
+
+    it("should extract html_element_hash from loose.htmlElementVersion.$hash", () => {
+      const nested = {
+        loose: {
+          htmlElementVersion: {
+            $hash: "html_element_hash_789",
+            version: "HTML5",
+          },
+        },
+      };
+
+      const result = normalizeFingerprint(nested);
+
+      expect(result.html_element_hash).toBe("html_element_hash_789");
+    });
+
+    it("should extract css_hash from loose.css.$hash", () => {
+      const nested = {
+        loose: {
+          css: {
+            $hash: "css_hash_abc",
+            keys: ["grid", "flexbox"],
+          },
+        },
+      };
+
+      const result = normalizeFingerprint(nested);
+
+      expect(result.css_hash).toBe("css_hash_abc");
+    });
+
+    it("should extract features_hash from loose.features.$hash", () => {
+      const nested = {
+        loose: {
+          features: {
+            $hash: "features_hash_def",
+            detected: { webgl2: true },
+          },
+        },
+      };
+
+      const result = normalizeFingerprint(nested);
+
+      expect(result.features_hash).toBe("features_hash_def");
+    });
+
+    it("should extract svg_hash from loose.svg.$hash", () => {
+      const nested = {
+        loose: {
+          svg: {
+            $hash: "svg_hash_ghi",
+            supported: ["path", "rect"],
+          },
+        },
+      };
+
+      const result = normalizeFingerprint(nested);
+
+      expect(result.svg_hash).toBe("svg_hash_ghi");
+    });
+
+    it("should extract client_rects_hash from loose.clientRects.$hash", () => {
+      const nested = {
+        loose: {
+          clientRects: {
+            $hash: "client_rects_hash_jkl",
+            data: { width: 100.5, height: 20.25 },
+          },
+        },
+      };
+
+      const result = normalizeFingerprint(nested);
+
+      expect(result.client_rects_hash).toBe("client_rects_hash_jkl");
+    });
+
+    it("should extract intl_hash from loose.intl.$hash", () => {
+      const nested = {
+        loose: {
+          intl: {
+            $hash: "intl_hash_mno",
+            locale: "en-US",
+          },
+        },
+      };
+
+      const result = normalizeFingerprint(nested);
+
+      expect(result.intl_hash).toBe("intl_hash_mno");
+    });
+
+    it("should extract console_errors_hash from loose.consoleErrors.$hash", () => {
+      const nested = {
+        loose: {
+          consoleErrors: {
+            $hash: "console_errors_hash_pqr",
+            errors: [],
+          },
+        },
+      };
+
+      const result = normalizeFingerprint(nested);
+
+      expect(result.console_errors_hash).toBe("console_errors_hash_pqr");
+    });
+
+    it("should extract webgl_extensions_count from loose.canvasWebgl.extensions.length", () => {
+      const nested = {
+        loose: {
+          canvasWebgl: {
+            $hash: "webgl_hash",
+            extensions: [
+              "WEBGL_debug_renderer_info",
+              "EXT_texture_filter_anisotropic",
+              "OES_texture_float",
+            ],
+          },
+        },
+      };
+
+      const result = normalizeFingerprint(nested);
+
+      expect(result.webgl_extensions_count).toBe(3);
+    });
+
+    it("should extract all structural signals from complete payload", () => {
+      const nested = {
+        loose: {
+          maths: { $hash: "maths_abc" },
+          windowFeatures: { $hash: "window_def" },
+          htmlElementVersion: { $hash: "html_ghi" },
+          css: { $hash: "css_jkl" },
+          features: { $hash: "features_mno" },
+          svg: { $hash: "svg_pqr" },
+          clientRects: { $hash: "rects_stu" },
+          intl: { $hash: "intl_vwx" },
+          consoleErrors: { $hash: "errors_yza" },
+          canvasWebgl: {
+            $hash: "webgl_bcd",
+            extensions: ["ext1", "ext2", "ext3", "ext4", "ext5"],
+          },
+        },
+      };
+
+      const result = normalizeFingerprint(nested);
+
+      expect(result.maths_hash).toBe("maths_abc");
+      expect(result.window_features_hash).toBe("window_def");
+      expect(result.html_element_hash).toBe("html_ghi");
+      expect(result.css_hash).toBe("css_jkl");
+      expect(result.features_hash).toBe("features_mno");
+      expect(result.svg_hash).toBe("svg_pqr");
+      expect(result.client_rects_hash).toBe("rects_stu");
+      expect(result.intl_hash).toBe("intl_vwx");
+      expect(result.console_errors_hash).toBe("errors_yza");
+      expect(result.webgl_hash).toBe("webgl_bcd");
+      expect(result.webgl_extensions_count).toBe(5);
+    });
+  });
+
   describe("edge cases", () => {
     it("should handle missing nested objects gracefully", () => {
       const partial = {

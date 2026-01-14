@@ -30,6 +30,7 @@ interface WebFingerprintResult {
         [key: string]: unknown;
       };
       parameters?: { renderer?: string; [key: string]: unknown };
+      extensions?: unknown[];
       $hash?: string;
       [key: string]: unknown;
     };
@@ -47,6 +48,16 @@ interface WebFingerprintResult {
       platform?: string;
       [key: string]: unknown;
     };
+    // AR-80: Structural fingerprint signals (stable browser engine anchors)
+    maths?: { $hash?: string; [key: string]: unknown };
+    windowFeatures?: { $hash?: string; [key: string]: unknown };
+    htmlElementVersion?: { $hash?: string; [key: string]: unknown };
+    css?: { $hash?: string; [key: string]: unknown };
+    features?: { $hash?: string; [key: string]: unknown };
+    svg?: { $hash?: string; [key: string]: unknown };
+    clientRects?: { $hash?: string; [key: string]: unknown };
+    intl?: { $hash?: string; [key: string]: unknown };
+    consoleErrors?: { $hash?: string; [key: string]: unknown };
     [key: string]: unknown;
   };
   stable?: Record<string, unknown>;
@@ -165,6 +176,44 @@ export function normalizeFingerprint(
       if (typeof nav.deviceMemory === "number") {
         normalized.device_memory = nav.deviceMemory;
       }
+    }
+
+    // AR-80: Structural fingerprint signals (stable browser engine anchors)
+    // These signals are based on browser internals that cannot be randomized
+    // without breaking website functionality. Useful for tier2 matching
+    // when canvas/audio are blocked (e.g., Brave).
+
+    if (webFp.loose.maths?.$hash) {
+      normalized.maths_hash = webFp.loose.maths.$hash;
+    }
+    if (webFp.loose.windowFeatures?.$hash) {
+      normalized.window_features_hash = webFp.loose.windowFeatures.$hash;
+    }
+    if (webFp.loose.htmlElementVersion?.$hash) {
+      normalized.html_element_hash = webFp.loose.htmlElementVersion.$hash;
+    }
+    if (webFp.loose.css?.$hash) {
+      normalized.css_hash = webFp.loose.css.$hash;
+    }
+    if (webFp.loose.features?.$hash) {
+      normalized.features_hash = webFp.loose.features.$hash;
+    }
+    if (webFp.loose.svg?.$hash) {
+      normalized.svg_hash = webFp.loose.svg.$hash;
+    }
+    if (webFp.loose.clientRects?.$hash) {
+      normalized.client_rects_hash = webFp.loose.clientRects.$hash;
+    }
+    if (webFp.loose.intl?.$hash) {
+      normalized.intl_hash = webFp.loose.intl.$hash;
+    }
+    if (webFp.loose.consoleErrors?.$hash) {
+      normalized.console_errors_hash = webFp.loose.consoleErrors.$hash;
+    }
+    // WebGL extensions count (capability signal)
+    if (webFp.loose.canvasWebgl?.extensions) {
+      normalized.webgl_extensions_count =
+        webFp.loose.canvasWebgl.extensions.length;
     }
   }
 

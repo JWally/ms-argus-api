@@ -46,4 +46,30 @@ export interface Fingerprint {
   proxy_score?: number;
   // Probability of VPN usage (0-1)
   vpn_score?: number;
+
+  // AR-80: Structural fingerprint signals
+  // These are stable "structural anchors" based on browser engine internals
+  // that cannot be randomized without breaking website functionality.
+  // Useful for tier2 matching when canvas/audio are blocked (e.g., Brave).
+
+  // Math library fingerprint (FPU-level signal, very stable)
+  maths_hash?: string;
+  // Window API features (engine-level, stable across resets)
+  window_features_hash?: string;
+  // HTML element version/capabilities (engine-level)
+  html_element_hash?: string;
+  // CSS feature detection (browser-specific, stable)
+  css_hash?: string;
+  // Browser feature flags/capabilities
+  features_hash?: string;
+  // SVG rendering capabilities
+  svg_hash?: string;
+  // DOM clientRects rendering fingerprint
+  client_rects_hash?: string;
+  // Intl/locale settings hash
+  intl_hash?: string;
+  // Console error behavior hash
+  console_errors_hash?: string;
+  // WebGL extension count (capability signal)
+  webgl_extensions_count?: number;
 }
