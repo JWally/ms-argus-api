@@ -1,10 +1,24 @@
 // src/types/matching.ts
 // AR-50: Consolidated matching domain types
+// AR-54: Added evidence codes for match explainability
 
 import type { Fingerprint } from "./fingerprint";
 
 /**
- * Session cache value stored in Redis
+ * Evidence codes explaining which signals contributed to a match decision.
+ * Used for observability, debugging, and support escalations.
+ */
+export type EvidenceCode =
+  | "EVERCOOKIE_MATCH" // T0.5: Matched on evercookie ID
+  | "STABLE_HASH_MATCH" // T1: Matched on stable fingerprint hash
+  | "FUZZY_HASH_MATCH" // T1: Matched on fuzzy fingerprint hash
+  | "IP_JA4_BUCKET" // T2: Matched in IP+JA4 bucket
+  | "GPU_SCREEN_TZ_BUCKET" // T2: Matched in GPU+Screen+Timezone bucket
+  | "AUDIO_CANVAS_BUCKET" // T2: Matched in Audio+Canvas bucket
+  | "NEW_DEVICE"; // No match found, new device created
+
+/**
+ * Session cache value stored in DynamoDB (AR-52: was Redis)
  */
 export interface SessionCacheValue {
   status: "pending" | "complete" | "degraded";
@@ -15,6 +29,7 @@ export interface SessionCacheValue {
   match_version: number;
   idempotency_key: string;
   flags: string[];
+  evidence_codes: EvidenceCode[]; // AR-54: Which signals contributed to match
   updated_at: number;
 }
 
@@ -41,6 +56,7 @@ export interface MatchResult {
   is_new_device: boolean;
   risk_score: number;
   flags: string[];
+  evidence_codes: EvidenceCode[]; // AR-54: Which signals contributed to match
 }
 
 /**

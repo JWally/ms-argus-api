@@ -10,6 +10,7 @@ import { SQSClient, SendMessageCommand } from "@aws-sdk/client-sqs";
 import { unmarshall } from "@aws-sdk/util-dynamodb";
 import { DynamoCacheService } from "../cache";
 import {
+  EvidenceCode,
   Fingerprint,
   FingerprintPayload,
   MatchResult,
@@ -139,6 +140,7 @@ export class MatchingService {
         is_new_device: false,
         risk_score: item.risk_score ?? 0.3,
         flags: item.flags ?? [],
+        evidence_codes: ["EVERCOOKIE_MATCH"] as EvidenceCode[],
       };
     }
     return null;
@@ -166,6 +168,7 @@ export class MatchingService {
           is_new_device: false,
           risk_score: result.risk_score ?? 0.3,
           flags: result.flags ?? [],
+          evidence_codes: ["STABLE_HASH_MATCH"] as EvidenceCode[],
         };
       }
     }
@@ -184,6 +187,7 @@ export class MatchingService {
           is_new_device: false,
           risk_score: result.risk_score ?? 0.3,
           flags: result.flags ?? [],
+          evidence_codes: ["FUZZY_HASH_MATCH"] as EvidenceCode[],
         };
       }
     }
@@ -271,18 +275,18 @@ export class MatchingService {
     fingerprint: Fingerprint,
     options?: { abortSignal?: AbortSignal },
   ): Promise<MatchResult | null> {
-    const bucketKeys = this.buildBucketKeys(tenantId, fingerprint);
-    if (bucketKeys.length === 0) return null;
+    const bucketInfos = this.buildBucketKeysWithTypes(tenantId, fingerprint);
+    if (bucketInfos.length === 0) return null;
 
     // Query all buckets in parallel using adjacency list pattern
     // Pass abortSignal to allow cancellation on timeout
-    const queries = bucketKeys.map((key) =>
+    const queries = bucketInfos.map((info) =>
       this.deps.dynamodb.send(
         new QueryCommand({
           TableName: this.deps.config.tier2BucketsTable,
           KeyConditionExpression: "bucket_key = :bk",
           ExpressionAttributeValues: {
-            ":bk": { S: key },
+            ":bk": { S: info.key },
           },
           ProjectionExpression: "device_id",
           Limit: TIER2_BUCKET_LIMIT,
@@ -301,16 +305,23 @@ export class MatchingService {
       }
       throw error;
     }
-    const candidates = this.scoreDeviceCandidates(results);
+
+    // Track which buckets each device matched in
+    const candidates = this.scoreDeviceCandidatesWithEvidence(
+      results,
+      bucketInfos,
+    );
 
     // Find best match (highest bucket overlap)
     let bestDeviceId: string | null = null;
     let bestScore = 0;
+    let bestEvidence: EvidenceCode[] = [];
 
-    for (const [deviceId, score] of candidates) {
-      if (score > bestScore) {
-        bestScore = score;
+    for (const [deviceId, data] of candidates) {
+      if (data.score > bestScore) {
+        bestScore = data.score;
         bestDeviceId = deviceId;
+        bestEvidence = data.evidenceCodes;
       }
     }
 
@@ -324,6 +335,7 @@ export class MatchingService {
         is_new_device: false,
         risk_score: profile?.risk_score ?? 0.4,
         flags: profile?.flags ?? [],
+        evidence_codes: bestEvidence,
       };
     }
 
@@ -334,13 +346,27 @@ export class MatchingService {
    * Build compound bucket keys for Tier 2 matching
    */
   buildBucketKeys(tenantId: string, fingerprint: Fingerprint): string[] {
-    const keys: string[] = [];
+    return this.buildBucketKeysWithTypes(tenantId, fingerprint).map(
+      (info) => info.key,
+    );
+  }
+
+  /**
+   * Build compound bucket keys with their evidence code types
+   * AR-54: Used for evidence tracking in match results
+   */
+  private buildBucketKeysWithTypes(
+    tenantId: string,
+    fingerprint: Fingerprint,
+  ): { key: string; evidenceCode: EvidenceCode }[] {
+    const buckets: { key: string; evidenceCode: EvidenceCode }[] = [];
 
     // IP + JA4 (network identity)
     if (fingerprint.ip_address && fingerprint.ja4) {
-      keys.push(
-        `${tenantId}#ip_ja4#${fingerprint.ip_address}#${fingerprint.ja4}`,
-      );
+      buckets.push({
+        key: `${tenantId}#ip_ja4#${fingerprint.ip_address}#${fingerprint.ja4}`,
+        evidenceCode: "IP_JA4_BUCKET",
+      });
     }
 
     // GPU + Screen + Timezone (hardware/locale identity)
@@ -349,19 +375,21 @@ export class MatchingService {
       fingerprint.screen_dims &&
       fingerprint.timezone
     ) {
-      keys.push(
-        `${tenantId}#gpu_screen_tz#${fingerprint.gpu_renderer}#${fingerprint.screen_dims}#${fingerprint.timezone}`,
-      );
+      buckets.push({
+        key: `${tenantId}#gpu_screen_tz#${fingerprint.gpu_renderer}#${fingerprint.screen_dims}#${fingerprint.timezone}`,
+        evidenceCode: "GPU_SCREEN_TZ_BUCKET",
+      });
     }
 
     // Audio + Canvas (rendering identity)
     if (fingerprint.audio_hash && fingerprint.canvas_hash) {
-      keys.push(
-        `${tenantId}#audio_canvas#${fingerprint.audio_hash}#${fingerprint.canvas_hash}`,
-      );
+      buckets.push({
+        key: `${tenantId}#audio_canvas#${fingerprint.audio_hash}#${fingerprint.canvas_hash}`,
+        evidenceCode: "AUDIO_CANVAS_BUCKET",
+      });
     }
 
-    return keys;
+    return buckets;
   }
 
   /**
@@ -386,6 +414,58 @@ export class MatchingService {
     }
 
     return candidates;
+  }
+
+  /**
+   * Score device candidates and track which buckets matched
+   * AR-54: Used to populate evidence_codes in match results
+   */
+  private scoreDeviceCandidatesWithEvidence(
+    results: QueryCommandOutput[],
+    bucketInfos: { key: string; evidenceCode: EvidenceCode }[],
+  ): Map<string, { score: number; evidenceCodes: EvidenceCode[] }> {
+    const candidates = new Map<
+      string,
+      { score: number; evidenceCodes: Set<EvidenceCode> }
+    >();
+
+    for (let i = 0; i < results.length; i++) {
+      const result = results[i];
+      const evidenceCode = bucketInfos[i].evidenceCode;
+
+      if (result.Items && result.Items.length > 0) {
+        for (const item of result.Items) {
+          const unmarshalled = unmarshall(item);
+          const deviceId = unmarshalled.device_id;
+          if (deviceId) {
+            const existing = candidates.get(deviceId);
+            if (existing) {
+              existing.score += 1;
+              existing.evidenceCodes.add(evidenceCode);
+            } else {
+              candidates.set(deviceId, {
+                score: 1,
+                evidenceCodes: new Set([evidenceCode]),
+              });
+            }
+          }
+        }
+      }
+    }
+
+    // Convert Sets to arrays for the return value
+    const result = new Map<
+      string,
+      { score: number; evidenceCodes: EvidenceCode[] }
+    >();
+    for (const [deviceId, data] of candidates) {
+      result.set(deviceId, {
+        score: data.score,
+        evidenceCodes: Array.from(data.evidenceCodes),
+      });
+    }
+
+    return result;
   }
 
   /**
@@ -428,6 +508,7 @@ export class MatchingService {
       is_new_device: true,
       risk_score: 0.5, // Neutral for new devices
       flags: [],
+      evidence_codes: ["NEW_DEVICE"],
     };
   }
 
@@ -448,6 +529,7 @@ export class MatchingService {
       match_version: Date.now(),
       idempotency_key: idempotencyKey,
       flags: result.flags,
+      evidence_codes: result.evidence_codes, // AR-54
       updated_at: Date.now(),
     };
 
@@ -471,6 +553,7 @@ export class MatchingService {
       match_version: Date.now(),
       idempotency_key: idempotencyKey,
       flags: ["matching_failed"],
+      evidence_codes: [], // AR-54: No evidence when matching fails
       updated_at: Date.now(),
     };
 
