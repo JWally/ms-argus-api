@@ -16,6 +16,10 @@ export type EvidenceCode =
   | "IP_JA4_BUCKET" // T2: Matched in IP+JA4 bucket
   | "GPU_SCREEN_TZ_BUCKET" // T2: Matched in GPU+Screen+Timezone bucket
   | "AUDIO_CANVAS_BUCKET" // T2: Matched in Audio+Canvas bucket
+  // AR-80: Structural tier2 buckets (stable browser engine anchors)
+  | "MATHS_WINDOW_BUCKET" // T2: Matched in Maths+WindowFeatures bucket
+  | "HTML_CSS_BUCKET" // T2: Matched in HtmlElement+CSS bucket
+  | "WEBGL_STRUCT_BUCKET" // T2: Matched in WebGL+Extensions+SVG bucket
   | "NEW_DEVICE"; // No match found, new device created
 
 /**

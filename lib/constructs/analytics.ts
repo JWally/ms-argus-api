@@ -205,8 +205,10 @@ export class AnalyticsConstruct extends Construct {
         extendedS3DestinationConfiguration: {
           bucketArn: this.observationsBucket.bucketArn,
           roleArn: firehoseRole.roleArn,
-          prefix: "observations/year=!{timestamp:yyyy}/month=!{timestamp:MM}/day=!{timestamp:dd}/",
-          errorOutputPrefix: "errors/!{firehose:error-output-type}/year=!{timestamp:yyyy}/month=!{timestamp:MM}/day=!{timestamp:dd}/",
+          prefix:
+            "observations/year=!{timestamp:yyyy}/month=!{timestamp:MM}/day=!{timestamp:dd}/",
+          errorOutputPrefix:
+            "errors/!{firehose:error-output-type}/year=!{timestamp:yyyy}/month=!{timestamp:MM}/day=!{timestamp:dd}/",
           bufferingHints: {
             intervalInSeconds: 300, // 5 minutes - balance between latency and cost
             sizeInMBs: 64, // Batch up to 64MB before writing

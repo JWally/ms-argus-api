@@ -72,7 +72,10 @@ export class MatchingService {
    * AR-65: Apply confidence penalty for privacy browser detection
    * Returns a new MatchResult with reduced confidence if privacy signals detected
    */
-  applyPrivacyPenalty(result: MatchResult, fingerprint: Fingerprint): MatchResult {
+  applyPrivacyPenalty(
+    result: MatchResult,
+    fingerprint: Fingerprint,
+  ): MatchResult {
     let penalty = 0;
 
     // Privacy browser (Brave, Firefox RFP, Tor, etc.)
@@ -575,6 +578,39 @@ export class MatchingService {
       });
     }
 
+    // AR-80: Structural tier2 buckets (stable browser engine anchors)
+    // These signals are based on browser internals that cannot be randomized
+    // without breaking website functionality. Useful when canvas/audio are
+    // blocked (e.g., Brave private browsing).
+
+    // Maths + WindowFeatures (FPU + browser engine signals)
+    if (fingerprint.maths_hash && fingerprint.window_features_hash) {
+      buckets.push({
+        key: `${tenantId}#maths_window#${fingerprint.maths_hash}#${fingerprint.window_features_hash}`,
+        evidenceCode: "MATHS_WINDOW_BUCKET",
+      });
+    }
+
+    // HtmlElement + CSS (DOM/CSS capabilities)
+    if (fingerprint.html_element_hash && fingerprint.css_hash) {
+      buckets.push({
+        key: `${tenantId}#html_css#${fingerprint.html_element_hash}#${fingerprint.css_hash}`,
+        evidenceCode: "HTML_CSS_BUCKET",
+      });
+    }
+
+    // WebGL + Extensions + SVG (rendering capabilities)
+    if (
+      fingerprint.webgl_hash &&
+      fingerprint.webgl_extensions_count !== undefined &&
+      fingerprint.svg_hash
+    ) {
+      buckets.push({
+        key: `${tenantId}#webgl_struct#${fingerprint.webgl_hash}#${fingerprint.webgl_extensions_count}#${fingerprint.svg_hash}`,
+        evidenceCode: "WEBGL_STRUCT_BUCKET",
+      });
+    }
+
     return buckets;
   }
 
@@ -623,7 +659,8 @@ export class MatchingService {
         for (const item of result.Items) {
           const unmarshalled = unmarshall(item);
           const deviceId = unmarshalled.device_id;
-          if (deviceId) {
+          // AR-77: Filter out _stats entries (used for bucket cardinality tracking)
+          if (deviceId && deviceId !== "_stats") {
             const existing = candidates.get(deviceId);
             if (existing) {
               existing.score += 1;

@@ -651,6 +651,35 @@ export class ProfileService {
       );
     }
 
+    // AR-80: Structural tier2 buckets (stable browser engine anchors)
+    // These signals are based on browser internals that cannot be randomized
+    // without breaking website functionality.
+
+    // Maths + WindowFeatures (FPU + browser engine signals)
+    if (fingerprint.maths_hash && fingerprint.window_features_hash) {
+      keys.push(
+        `${tenantId}#maths_window#${fingerprint.maths_hash}#${fingerprint.window_features_hash}`,
+      );
+    }
+
+    // HtmlElement + CSS (DOM/CSS capabilities)
+    if (fingerprint.html_element_hash && fingerprint.css_hash) {
+      keys.push(
+        `${tenantId}#html_css#${fingerprint.html_element_hash}#${fingerprint.css_hash}`,
+      );
+    }
+
+    // WebGL + Extensions + SVG (rendering capabilities)
+    if (
+      fingerprint.webgl_hash &&
+      fingerprint.webgl_extensions_count !== undefined &&
+      fingerprint.svg_hash
+    ) {
+      keys.push(
+        `${tenantId}#webgl_struct#${fingerprint.webgl_hash}#${fingerprint.webgl_extensions_count}#${fingerprint.svg_hash}`,
+      );
+    }
+
     return keys;
   }
 

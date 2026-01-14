@@ -23,8 +23,9 @@ export const FNV1A_PRIME = 16777619;
 /** Session cache TTL in DynamoDB: 15 minutes (900 seconds) - AR-52: was Redis */
 export const SESSION_TTL_SECONDS = 900;
 
-/** Tier2 matching timeout: 100ms - fail open if query takes too long */
-export const TIER2_TIMEOUT_MS = 100;
+/** Tier2 matching timeout: 500ms - fail open if query takes too long */
+// AR-80: Increased from 100ms to 500ms to accommodate 6 bucket queries
+export const TIER2_TIMEOUT_MS = 500;
 
 /** Max devices per Tier2 bucket query - prevents runaway queries */
 export const TIER2_BUCKET_LIMIT = 1000;

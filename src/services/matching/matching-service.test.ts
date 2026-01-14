@@ -377,6 +377,70 @@ describe("MatchingService", () => {
       const keys = service.buildBucketKeys("tenant1", fingerprint);
       expect(keys).toHaveLength(3);
     });
+
+    // AR-80: Structural tier2 bucket tests
+    it("should build maths_window bucket key", () => {
+      const fingerprint: Fingerprint = {
+        maths_hash: "maths123abc",
+        window_features_hash: "winfeatures456def",
+      };
+
+      const keys = service.buildBucketKeys("tenant1", fingerprint);
+      expect(keys).toContain(
+        "tenant1#maths_window#maths123abc#winfeatures456def",
+      );
+    });
+
+    it("should build html_css bucket key", () => {
+      const fingerprint: Fingerprint = {
+        html_element_hash: "html789ghi",
+        css_hash: "css012jkl",
+      };
+
+      const keys = service.buildBucketKeys("tenant1", fingerprint);
+      expect(keys).toContain("tenant1#html_css#html789ghi#css012jkl");
+    });
+
+    it("should build webgl_struct bucket key", () => {
+      const fingerprint: Fingerprint = {
+        webgl_hash: "webgl345mno",
+        webgl_extensions_count: 65,
+        svg_hash: "svg678pqr",
+      };
+
+      const keys = service.buildBucketKeys("tenant1", fingerprint);
+      expect(keys).toContain("tenant1#webgl_struct#webgl345mno#65#svg678pqr");
+    });
+
+    it("should build all 6 bucket types when all signals present", () => {
+      const fingerprint: Fingerprint = {
+        // Original 3 bucket signals
+        ip_address: "10.0.0.1",
+        ja4: "ja4hash",
+        gpu_renderer: "GPU",
+        screen_dims: "1080x720",
+        timezone: "UTC",
+        audio_hash: "audio",
+        canvas_hash: "canvas",
+        // AR-80: Structural signals
+        maths_hash: "maths123",
+        window_features_hash: "winfeatures456",
+        html_element_hash: "html789",
+        css_hash: "css012",
+        webgl_hash: "webgl345",
+        webgl_extensions_count: 65,
+        svg_hash: "svg678",
+      };
+
+      const keys = service.buildBucketKeys("tenant1", fingerprint);
+      expect(keys).toHaveLength(6);
+      expect(keys.filter((k) => k.includes("ip_ja4"))).toHaveLength(1);
+      expect(keys.filter((k) => k.includes("gpu_screen_tz"))).toHaveLength(1);
+      expect(keys.filter((k) => k.includes("audio_canvas"))).toHaveLength(1);
+      expect(keys.filter((k) => k.includes("maths_window"))).toHaveLength(1);
+      expect(keys.filter((k) => k.includes("html_css"))).toHaveLength(1);
+      expect(keys.filter((k) => k.includes("webgl_struct"))).toHaveLength(1);
+    });
   });
 
   describe("tier2CompoundMatch", () => {
@@ -809,7 +873,10 @@ describe("MatchingService", () => {
         is_new_device: false,
         risk_score: 0.5,
         flags: [] as string[],
-        evidence_codes: ["IP_JA4_BUCKET", "GPU_SCREEN_TZ_BUCKET"] as EvidenceCode[],
+        evidence_codes: [
+          "IP_JA4_BUCKET",
+          "GPU_SCREEN_TZ_BUCKET",
+        ] as EvidenceCode[],
       };
 
       const fingerprint: Fingerprint = {
@@ -963,7 +1030,10 @@ describe("MatchingService", () => {
         privacy_browser: "brave",
         is_private_browsing: true,
       };
-      const { result } = await service.runTieredMatching("tenant1", fingerprint);
+      const { result } = await service.runTieredMatching(
+        "tenant1",
+        fingerprint,
+      );
 
       // Base confidence is 0.99, minus 0.15 for privacy_browser, minus 0.1 for private_browsing
       expect(result.confidence).toBeCloseTo(0.74, 10);
