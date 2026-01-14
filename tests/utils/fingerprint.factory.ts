@@ -97,6 +97,8 @@ export const FingerprintPresets = {
     includeStableHash: true,
     includeFuzzyHash: true,
     includeIpJa4: true,
+    includeGpuScreenTz: true,
+    includeBotSignals: true,
     screenDims: "390x844",
     deviceMemory: 4,
     hardwareConcurrency: 6,
