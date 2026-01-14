@@ -16,7 +16,7 @@ import {
   generateIdempotencyKey,
   generateUUID,
 } from "./matching-service";
-import { Fingerprint, SessionCacheValue } from "./types";
+import { EvidenceCode, Fingerprint, SessionCacheValue } from "./types";
 import { DynamoCacheService } from "../cache";
 
 // Mock AWS SDK clients
@@ -113,6 +113,7 @@ describe("MatchingService", () => {
         match_version: Date.now(),
         idempotency_key: "abc123",
         flags: ["verified"],
+        evidence_codes: ["STABLE_HASH_MATCH"],
         updated_at: Date.now(),
       };
 
@@ -158,6 +159,7 @@ describe("MatchingService", () => {
       expect(result?.is_new_device).toBe(false);
       expect(result?.risk_score).toBe(0.2);
       expect(result?.flags).toEqual(["trusted"]);
+      expect(result?.evidence_codes).toEqual(["EVERCOOKIE_MATCH"]);
     });
 
     it("should use default risk_score when not in index", async () => {
@@ -205,6 +207,7 @@ describe("MatchingService", () => {
       expect(result?.device_id).toBe("dev_stable");
       expect(result?.confidence).toBe(0.95);
       expect(result?.match_tier).toBe(1);
+      expect(result?.evidence_codes).toEqual(["STABLE_HASH_MATCH"]);
     });
 
     it("should match on fuzzy_hash with 0.85 confidence when stable_hash not found", async () => {
@@ -242,6 +245,7 @@ describe("MatchingService", () => {
       expect(result).not.toBeNull();
       expect(result?.device_id).toBe("dev_fuzzy");
       expect(result?.confidence).toBe(0.85);
+      expect(result?.evidence_codes).toEqual(["FUZZY_HASH_MATCH"]);
     });
 
     it("should prefer stable_hash over fuzzy_hash when both available", async () => {
@@ -510,6 +514,11 @@ describe("MatchingService", () => {
       expect(result.flags).toEqual([]);
     });
 
+    it("should include NEW_DEVICE evidence code", () => {
+      const result = service.createNewDevice();
+      expect(result.evidence_codes).toEqual(["NEW_DEVICE"]);
+    });
+
     it("should generate unique device IDs", () => {
       const ids = new Set<string>();
       for (let i = 0; i < 100; i++) {
@@ -627,6 +636,7 @@ describe("MatchingService", () => {
         is_new_device: false,
         risk_score: 0.3,
         flags: [] as string[],
+        evidence_codes: ["STABLE_HASH_MATCH"] as EvidenceCode[],
       };
 
       await service.writeMatchResult("session123", result, "idempkey");
@@ -638,6 +648,7 @@ describe("MatchingService", () => {
           status: "complete",
           device_id: "dev_123",
           confidence: 0.95,
+          evidence_codes: ["STABLE_HASH_MATCH"],
         }),
       );
 
@@ -647,6 +658,7 @@ describe("MatchingService", () => {
       expect(value?.status).toBe("complete");
       expect(value?.device_id).toBe("dev_123");
       expect(value?.confidence).toBe(0.95);
+      expect(value?.evidence_codes).toEqual(["STABLE_HASH_MATCH"]);
     });
 
     it("should not overwrite higher confidence match", async () => {
@@ -660,6 +672,7 @@ describe("MatchingService", () => {
         match_version: Date.now(),
         idempotency_key: "old",
         flags: [],
+        evidence_codes: ["EVERCOOKIE_MATCH"],
         updated_at: Date.now(),
       };
       mockCache._setSession("session123", existing);
@@ -672,6 +685,7 @@ describe("MatchingService", () => {
         is_new_device: false,
         risk_score: 0.5,
         flags: [] as string[],
+        evidence_codes: ["FUZZY_HASH_MATCH"] as EvidenceCode[],
       };
 
       await service.writeMatchResult("session123", result, "newkey");
@@ -692,6 +706,7 @@ describe("MatchingService", () => {
         match_version: Date.now(),
         idempotency_key: "old",
         flags: [],
+        evidence_codes: ["IP_JA4_BUCKET", "GPU_SCREEN_TZ_BUCKET"],
         updated_at: Date.now(),
       };
       mockCache._setSession("session123", existing);
@@ -704,6 +719,7 @@ describe("MatchingService", () => {
         is_new_device: false,
         risk_score: 0.3,
         flags: [] as string[],
+        evidence_codes: ["STABLE_HASH_MATCH"] as EvidenceCode[],
       };
 
       await service.writeMatchResult("session123", result, "newkey");
