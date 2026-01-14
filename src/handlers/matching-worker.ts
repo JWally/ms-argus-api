@@ -2,6 +2,7 @@
 // AR-52: Replaced Redis with DynamoDB session cache
 // AR-57: Added Firehose observations for analytics
 // AR-71: Added warmup detection for SQS pipeline warming
+// AR-73: Added fingerprint normalization for web library compatibility
 import {
   SQSHandler,
   SQSBatchResponse,
@@ -29,6 +30,7 @@ import {
   TIER2_TIMEOUT_MS,
   MUTATION_GATE_TTL_SECONDS,
 } from "../helpers/constants";
+import { normalizeFingerprint } from "../helpers/normalize-fingerprint";
 
 // Validate environment variables at module load (cold start)
 // Throws immediately if required env vars are missing
@@ -130,7 +132,11 @@ async function processRecord(
 
   const startTime = Date.now();
   const payload: FingerprintPayload = JSON.parse(record.body);
-  const { session_id, tenant_id, fingerprint } = payload;
+  const { session_id, tenant_id } = payload;
+
+  // AR-73: Normalize fingerprint from web library nested format to flat API format
+  // This extracts fields like canvas_hash, gpu_renderer, screen_dims from nested objects
+  const fingerprint = normalizeFingerprint(payload.fingerprint);
 
   logger.info("Processing fingerprint", { session_id, tenant_id });
 

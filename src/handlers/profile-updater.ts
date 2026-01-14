@@ -1,5 +1,6 @@
 // src/handlers/profile-updater.ts
 // AR-52: Replaced Redis with DynamoDB session cache
+// AR-73: Added fingerprint normalization for web library compatibility
 import {
   SQSHandler,
   SQSBatchResponse,
@@ -24,6 +25,7 @@ import {
   MUTATION_GATE_TTL_SECONDS,
   SESSION_TTL_SECONDS,
 } from "../helpers/constants";
+import { normalizeFingerprint } from "../helpers/normalize-fingerprint";
 
 // Validate environment variables at module load (cold start)
 // Throws immediately if required env vars are missing
@@ -102,8 +104,14 @@ async function processRecord(
   service: ProfileService,
 ): Promise<void> {
   const startTime = Date.now();
-  const payload: ProfileUpdatePayload = JSON.parse(record.body);
-  const { tenant_id, device_id } = payload;
+  const rawPayload: ProfileUpdatePayload = JSON.parse(record.body);
+  const { tenant_id, device_id } = rawPayload;
+
+  // AR-73: Normalize fingerprint from web library nested format to flat API format
+  const payload: ProfileUpdatePayload = {
+    ...rawPayload,
+    fingerprint: normalizeFingerprint(rawPayload.fingerprint),
+  };
 
   logger.info("Processing profile update", { tenant_id, device_id });
 
