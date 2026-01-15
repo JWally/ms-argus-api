@@ -4,9 +4,20 @@ import { APIGatewayProxyEvent, APIGatewayProxyResult } from "aws-lambda";
 import { MiddlewareObj } from "@middy/core";
 import { LRUCache } from "lru-cache";
 import { Logger } from "@aws-lambda-powertools/logger";
-import createError from "http-errors";
 import { DEDUPE_CACHE_MAX_ENTRIES, DEDUPE_CACHE_TTL_MS } from "./constants";
 import { fnv1a } from "./hash";
+
+// Custom HttpError class to replace http-errors module (ESM bundling compatible)
+class HttpError extends Error {
+  statusCode: number;
+  expose: boolean;
+  constructor(statusCode: number, message: string) {
+    super(message);
+    this.name = "HttpError";
+    this.statusCode = statusCode;
+    this.expose = statusCode < 500;
+  }
+}
 
 // Re-export fnv1a for backward compatibility (AR-32)
 export { fnv1a };
@@ -64,7 +75,8 @@ export const deduplicateMiddleware = (): MiddlewareObj<
       if (cache.has(key)) {
         const catchCount: number = cache.get(key) || 0;
         cache.set(key, 1 + catchCount);
-        throw new createError.TooManyRequests(
+        throw new HttpError(
+          429,
           `Duplicate request detected: ${catchCount + 1}`,
         );
       }

@@ -586,16 +586,16 @@ export class MatchingService {
     const now = Date.now();
     const validityWindowMs = SESSION_ANCHOR_VALIDITY_SECONDS * 1000;
 
-    // Find the most recent valid entry
-    for (const item of result.Items) {
-      const unmarshalled = unmarshall(item);
-      const deviceId = unmarshalled.device_id;
-      const createdAt = unmarshalled.created_at;
+    // AR-95: Sort by created_at descending to find the most recent entry first
+    // DynamoDB Query returns items sorted by sort key (device_id), not by created_at
+    const sortedItems = result.Items.map((item) => unmarshall(item))
+      .filter((item) => item.device_id !== TIER2_STATS_SK) // Filter out stats entries
+      .sort((a, b) => (b.created_at ?? 0) - (a.created_at ?? 0)); // Most recent first
 
-      // Skip stats entries
-      if (deviceId === TIER2_STATS_SK) {
-        continue;
-      }
+    // Find the most recent valid entry
+    for (const item of sortedItems) {
+      const deviceId = item.device_id;
+      const createdAt = item.created_at;
 
       // Check if within 10-minute validity window
       if (createdAt && now - createdAt <= validityWindowMs) {
@@ -665,16 +665,16 @@ export class MatchingService {
     const now = Date.now();
     const validityWindowMs = IP_UA_ANCHOR_VALIDITY_SECONDS * 1000;
 
-    // Find the most recent valid entry
-    for (const item of result.Items) {
-      const unmarshalled = unmarshall(item);
-      const deviceId = unmarshalled.device_id;
-      const createdAt = unmarshalled.created_at;
+    // AR-95: Sort by created_at descending to find the most recent entry first
+    // DynamoDB Query returns items sorted by sort key (device_id), not by created_at
+    const sortedItems = result.Items.map((item) => unmarshall(item))
+      .filter((item) => item.device_id !== TIER2_STATS_SK) // Filter out stats entries
+      .sort((a, b) => (b.created_at ?? 0) - (a.created_at ?? 0)); // Most recent first
 
-      // Skip stats entries
-      if (deviceId === TIER2_STATS_SK) {
-        continue;
-      }
+    // Find the most recent valid entry
+    for (const item of sortedItems) {
+      const deviceId = item.device_id;
+      const createdAt = item.created_at;
 
       // Check if within 3-minute validity window
       if (createdAt && now - createdAt <= validityWindowMs) {
