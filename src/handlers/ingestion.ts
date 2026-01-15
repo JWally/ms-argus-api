@@ -1,78 +1,41 @@
 // src/handlers/ingestion.ts
 // AR-52: Lambda ingestion handler replacing Go/ECS service
 // AR-71: Reverted to async (SQS) for scalability at 30B RPY
-// AR-90: Simplified to binary gzip (application/octet-stream) - removed base64 text path
-// Receives fingerprints via HTTP API, validates, and queues to SQS
+// AR-90: Simplified to binary gzip (application/octet-stream)
+// AR-XX: Refactored to use middy middleware for cleaner code
 
-import {
-  APIGatewayProxyEventV2,
-  APIGatewayProxyResultV2,
-  Context,
-} from "aws-lambda";
+import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from "aws-lambda";
 import { Logger } from "@aws-lambda-powertools/logger";
 import { Metrics, MetricUnit } from "@aws-lambda-powertools/metrics";
+import { logMetrics } from "@aws-lambda-powertools/metrics/middleware";
+import { injectLambdaContext } from "@aws-lambda-powertools/logger/middleware";
 import { SQSClient, SendMessageCommand } from "@aws-sdk/client-sqs";
+import middy from "@middy/core";
+import httpHeaderNormalizer from "@middy/http-header-normalizer";
+import createError from "http-errors";
 import { gunzipSync } from "zlib";
 
 // ==================== CONFIGURATION ====================
 
-interface IngestionEnvConfig {
-  SQS_QUEUE_URL: string;
-  POWERTOOLS_SERVICE_NAME: string;
-  POWERTOOLS_METRICS_NAMESPACE: string;
-  API_KEYS?: string; // JSON: {"key": "tenant-id"}
-}
+const SQS_QUEUE_URL = process.env.SQS_QUEUE_URL;
+if (!SQS_QUEUE_URL) throw new Error("Missing required env var: SQS_QUEUE_URL");
 
-function getIngestionEnv(): IngestionEnvConfig {
-  const required = ["SQS_QUEUE_URL"];
-  const missing = required.filter((key) => !process.env[key]);
-  if (missing.length > 0) {
-    throw new Error(`Missing required env vars: ${missing.join(", ")}`);
-  }
+const API_KEYS: Record<string, string> = process.env.API_KEYS
+  ? JSON.parse(process.env.API_KEYS)
+  : {};
 
-  return {
-    SQS_QUEUE_URL: process.env.SQS_QUEUE_URL!,
-    POWERTOOLS_SERVICE_NAME:
-      process.env.POWERTOOLS_SERVICE_NAME ?? "argus-ingestion",
-    POWERTOOLS_METRICS_NAMESPACE:
-      process.env.POWERTOOLS_METRICS_NAMESPACE ?? "argus",
-    API_KEYS: process.env.API_KEYS,
-  };
-}
-
-// Validate env at cold start
-const envConfig = getIngestionEnv();
-
-// Parse API keys if provided
-const apiKeyTenants: Map<string, string> = new Map();
-if (envConfig.API_KEYS) {
-  try {
-    const parsed = JSON.parse(envConfig.API_KEYS);
-    for (const [key, tenant] of Object.entries(parsed)) {
-      apiKeyTenants.set(key, tenant as string);
-    }
-  } catch {
-    // Invalid JSON - ignore API key validation
-  }
-}
-
-// Powertools
-const logger = new Logger({ serviceName: envConfig.POWERTOOLS_SERVICE_NAME });
-const metrics = new Metrics({
-  namespace: envConfig.POWERTOOLS_METRICS_NAMESPACE,
+const logger = new Logger({
+  serviceName: process.env.POWERTOOLS_SERVICE_NAME ?? "argus-ingestion",
 });
-
-// AWS SDK clients (reused across invocations)
+const metrics = new Metrics({
+  namespace: process.env.POWERTOOLS_METRICS_NAMESPACE ?? "argus",
+});
 const sqs = new SQSClient({});
 
-// ==================== CONSTANTS ====================
+const MAX_BODY_BYTES = 64 * 1024; // 64KB
+const MAX_DECOMPRESSED_BYTES = 512 * 1024; // 512KB (zip bomb defense)
 
-const MAX_BODY_SIZE = 64 * 1024; // 64KB for uncompressed payloads
-const MAX_GZIP_BODY_SIZE = 64 * 1024; // 64KB for compressed payload (raw)
-const MAX_DECOMPRESSED_SIZE = 512 * 1024; // 512KB max after decompression (zip bomb defense)
-const MAX_JSON_DEPTH = 10;
-
-// CORS headers
+// CORS headers (reflect origin for backward compatibility)
 const CORS_HEADERS = {
   "Access-Control-Allow-Methods": "POST, OPTIONS",
   "Access-Control-Allow-Headers":
@@ -80,289 +43,203 @@ const CORS_HEADERS = {
   "Access-Control-Max-Age": "86400",
 };
 
-// ==================== TYPES ====================
-
-interface FingerprintPayload {
-  session_id: string;
-  tenant_id: string;
-  fingerprint?: unknown;
-  /** AR-81: Sigint data from ms-argus-web */
-  sigint?: unknown;
-  tcp_blob?: string;
-  tls_blob?: string;
-  headers: Record<string, string>;
-  timestamp: number;
-}
-
-// ==================== VALIDATION ====================
+// ==================== CUSTOM MIDDLEWARE ====================
 
 /**
- * Calculate JSON nesting depth to prevent DoS via deeply nested payloads
+ * Handles binary gzip decompression (AR-90)
+ * Validates isBase64Encoded flag and enforces byte limits
  */
-function getJsonDepth(json: string): number {
-  let depth = 0;
-  let maxDepth = 0;
-  let inString = false;
-  let escape = false;
+const binaryGzipBodyParser =
+  (): middy.MiddlewareObj<APIGatewayProxyEventV2> => ({
+    before: (request) => {
+      const { event } = request;
+      const contentType = (event.headers["content-type"] ?? "").toLowerCase();
+      const contentEncoding = (
+        event.headers["content-encoding"] ?? ""
+      ).toLowerCase();
+      const rawBody = event.body ?? "";
 
-  for (const char of json) {
-    if (escape) {
-      escape = false;
-      continue;
-    }
-    if (char === "\\") {
-      escape = true;
-      continue;
-    }
-    if (char === '"') {
-      inString = !inString;
-      continue;
-    }
-    if (inString) continue;
+      // Non-binary path: validate size in bytes (not string length)
+      if (!contentType.startsWith("application/octet-stream")) {
+        if (Buffer.byteLength(rawBody, "utf8") > MAX_BODY_BYTES) {
+          metrics.addMetric("PayloadTooLarge", MetricUnit.Count, 1);
+          throw createError(413, "Request entity too large");
+        }
+        return;
+      }
 
-    if (char === "{" || char === "[") {
-      depth++;
-      maxDepth = Math.max(maxDepth, depth);
-    } else if (char === "}" || char === "]") {
-      depth--;
-    }
-  }
+      // Binary path: require gzip encoding
+      if (!contentEncoding.includes("gzip")) {
+        metrics.addMetric("MissingGzipEncoding", MetricUnit.Count, 1);
+        throw createError(
+          400,
+          "Binary payload requires Content-Encoding: gzip",
+        );
+      }
 
-  return maxDepth;
-}
+      // Validate isBase64Encoded flag (API Gateway sets this for binary)
+      if (!event.isBase64Encoded) {
+        throw createError(
+          400,
+          "Binary payload must be base64-encoded by API Gateway",
+        );
+      }
+
+      // Decode base64 and validate actual compressed byte size
+      const gzipBuffer = Buffer.from(rawBody, "base64");
+      if (gzipBuffer.length > MAX_BODY_BYTES) {
+        metrics.addMetric("PayloadTooLarge", MetricUnit.Count, 1);
+        throw createError(413, "Compressed payload too large");
+      }
+
+      // Validate gzip magic bytes (0x1f 0x8b)
+      if (
+        gzipBuffer.length < 2 ||
+        gzipBuffer[0] !== 0x1f ||
+        gzipBuffer[1] !== 0x8b
+      ) {
+        metrics.addMetric("GzipDecompressionFailed", MetricUnit.Count, 1);
+        throw createError(400, "Invalid gzip data");
+      }
+
+      // Decompress with size limit (zip bomb defense)
+      try {
+        const decompressed = gunzipSync(gzipBuffer);
+        if (decompressed.length > MAX_DECOMPRESSED_BYTES) {
+          throw createError(400, "Decompressed payload too large");
+        }
+        event.body = decompressed.toString("utf-8");
+        metrics.addMetric("BinaryGzipPayloadReceived", MetricUnit.Count, 1);
+      } catch (err) {
+        if (err instanceof createError.HttpError) throw err;
+        metrics.addMetric("GzipDecompressionFailed", MetricUnit.Count, 1);
+        throw createError(400, "Failed to decompress gzip payload");
+      }
+    },
+  });
 
 /**
- * Extract tenant ID from request
- * - If API_KEYS configured: validate X-API-Key header
- * - Otherwise: use X-Tenant-ID header or default
+ * Custom error handler that returns JSON responses with CORS headers
  */
-function extractTenant(
+const jsonErrorHandler = (): middy.MiddlewareObj<
+  APIGatewayProxyEventV2,
+  APIGatewayProxyResultV2
+> => ({
+  onError: (request) => {
+    const { error, event } = request;
+    const origin = event.headers?.["origin"];
+
+    // Get status code from http-errors or default to 500
+    const statusCode =
+      error && typeof error === "object" && "statusCode" in error
+        ? (error as { statusCode: number }).statusCode
+        : 500;
+
+    const message =
+      error instanceof Error ? error.message : "Internal server error";
+
+    logger.warn("Request error", { error, statusCode });
+
+    // Build response with CORS headers
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+    };
+    if (origin) {
+      headers["Access-Control-Allow-Origin"] = origin;
+      Object.assign(headers, CORS_HEADERS);
+    }
+
+    request.response = {
+      statusCode,
+      headers,
+      body: JSON.stringify({ error: message }),
+    };
+  },
+});
+
+/**
+ * Adds CORS headers to successful responses
+ */
+const corsHeaders = (): middy.MiddlewareObj<
+  APIGatewayProxyEventV2,
+  APIGatewayProxyResultV2
+> => ({
+  after: (request) => {
+    const origin = request.event.headers?.["origin"];
+    if (!origin || !request.response) return;
+
+    const response = request.response as APIGatewayProxyResultV2 & {
+      headers?: Record<string, string>;
+    };
+    response.headers = response.headers ?? {};
+    response.headers["Access-Control-Allow-Origin"] = origin;
+    Object.assign(response.headers, CORS_HEADERS);
+  },
+});
+
+// ==================== CORE HANDLER ====================
+
+const baseHandler = async (
   event: APIGatewayProxyEventV2,
-): { tenant: string } | { error: string; status: number } {
-  const apiKey = event.headers["x-api-key"];
-  const tenantHeader = event.headers["x-tenant-id"];
-
-  if (apiKeyTenants.size > 0) {
-    // Multi-tenant mode with API key validation
-    if (!apiKey) {
-      return { tenant: "default" }; // Backward compatible
-    }
-    const tenant = apiKeyTenants.get(apiKey);
-    if (!tenant) {
-      return { error: "Invalid API key", status: 401 };
-    }
-    return { tenant };
-  }
-
-  // Single-tenant mode
-  return { tenant: tenantHeader ?? "default" };
-}
-
-/**
- * Extract relevant headers from request
- */
-function extractHeaders(event: APIGatewayProxyEventV2): Record<string, string> {
-  const headers: Record<string, string> = {};
-  const relevantHeaders = ["user-agent", "accept-language", "x-forwarded-for"];
-
-  for (const header of relevantHeaders) {
-    const value = event.headers[header];
-    if (value) {
-      // Normalize header name to match Go service format
-      const normalizedName = header
-        .split("-")
-        .map((s) => s.charAt(0).toUpperCase() + s.slice(1))
-        .join("-");
-      headers[normalizedName] = value;
-    }
-  }
-
-  return headers;
-}
-
-/**
- * AR-90: Decompress binary gzip payload
- * Returns decompressed string or error object
- *
- * Browser sends raw gzip bytes with Content-Type: application/octet-stream
- * API Gateway base64-encodes the binary and sets isBase64Encoded=true
- * We decode base64 once to get gzip bytes, then decompress
- */
-function decompressBinaryGzipPayload(
-  body: string,
-): { data: string } | { error: string } {
-  try {
-    // Decode base64 to get raw gzip bytes
-    const gzipBuffer = Buffer.from(body, "base64");
-
-    // Validate it looks like gzip (magic bytes: 1f 8b)
-    if (
-      gzipBuffer.length < 2 ||
-      gzipBuffer[0] !== 0x1f ||
-      gzipBuffer[1] !== 0x8b
-    ) {
-      return { error: "Invalid gzip data" };
-    }
-
-    const decompressed = gunzipSync(gzipBuffer);
-
-    // Check decompressed size (zip bomb defense)
-    if (decompressed.length > MAX_DECOMPRESSED_SIZE) {
-      return { error: "Decompressed payload too large" };
-    }
-
-    return { data: decompressed.toString("utf-8") };
-  } catch {
-    return { error: "Failed to decompress gzip payload" };
-  }
-}
-
-// ==================== RESPONSES ====================
-
-function corsResponse(
-  statusCode: number,
-  body?: string,
-  origin?: string,
-): APIGatewayProxyResultV2 {
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-  };
-
-  // Reflect origin for CORS
-  if (origin) {
-    headers["Access-Control-Allow-Origin"] = origin;
-    Object.assign(headers, CORS_HEADERS);
-  }
-
-  return {
-    statusCode,
-    headers,
-    body: body ?? "",
-  };
-}
-
-function errorResponse(
-  status: number,
-  message: string,
-  origin?: string,
-): APIGatewayProxyResultV2 {
-  return corsResponse(status, JSON.stringify({ error: message }), origin);
-}
-
-// ==================== HANDLER ====================
-
-export async function handler(
-  event: APIGatewayProxyEventV2,
-  _context: Context,
-): Promise<APIGatewayProxyResultV2> {
-  const startTime = Date.now();
-  const origin = event.headers["origin"];
+): Promise<APIGatewayProxyResultV2> => {
+  const start = Date.now();
 
   // Health check endpoint
   if (event.rawPath === "/health") {
-    return corsResponse(200, JSON.stringify({ status: "healthy" }), origin);
+    return { statusCode: 200, body: JSON.stringify({ status: "healthy" }) };
   }
 
-  // Handle CORS preflight
-  if (event.requestContext.http.method === "OPTIONS") {
-    return corsResponse(204, undefined, origin);
+  // Routing
+  const method = event.requestContext.http.method;
+  if (method === "OPTIONS") {
+    return { statusCode: 204 };
   }
-
-  // Only allow POST to /v1/collect
-  if (event.requestContext.http.method !== "POST") {
-    return errorResponse(405, "Method not allowed", origin);
+  if (method !== "POST") {
+    throw createError(405, "Method not allowed");
   }
-
   if (event.rawPath !== "/v1/collect") {
-    return errorResponse(404, "Not found", origin);
+    throw createError(404, "Not found");
   }
 
-  // AR-90: Check content type and encoding
-  const contentType = event.headers["content-type"]?.toLowerCase();
-  const contentEncoding = event.headers["content-encoding"]?.toLowerCase();
-  const isBinaryGzip = contentType === "application/octet-stream";
-  const hasGzipEncoding = contentEncoding === "gzip";
-
-  // AR-90: Binary payloads must have gzip encoding
-  if (isBinaryGzip && !hasGzipEncoding) {
-    logger.warn("Binary payload missing gzip encoding");
-    metrics.addMetric("MissingGzipEncoding", MetricUnit.Count, 1);
-    return errorResponse(
-      400,
-      "Binary payload requires Content-Encoding: gzip",
-      origin,
-    );
-  }
-
-  // Validate body size (different limits for compressed vs uncompressed)
-  const rawBody = event.body ?? "";
-  const maxSize = isBinaryGzip ? MAX_GZIP_BODY_SIZE : MAX_BODY_SIZE;
-  if (rawBody.length > maxSize) {
-    logger.warn("Payload too large", { size: rawBody.length, isBinaryGzip });
-    metrics.addMetric("PayloadTooLarge", MetricUnit.Count, 1);
-    return errorResponse(413, "Request entity too large", origin);
-  }
-
-  // AR-90: Decompress binary gzip payload
-  let body: string;
-  if (isBinaryGzip) {
-    const decompressResult = decompressBinaryGzipPayload(rawBody);
-    if ("error" in decompressResult) {
-      logger.warn("Gzip decompression failed", {
-        error: decompressResult.error,
-      });
-      metrics.addMetric("GzipDecompressionFailed", MetricUnit.Count, 1);
-      return errorResponse(400, decompressResult.error, origin);
-    }
-    body = decompressResult.data;
-    metrics.addMetric("BinaryGzipPayloadReceived", MetricUnit.Count, 1);
-  } else {
-    body = rawBody;
-  }
-
-  // Parse JSON
+  // Parse JSON (body already decompressed by middleware if binary)
   let payload: { session_id?: string; fingerprint?: unknown; sigint?: unknown };
   try {
-    payload = JSON.parse(body);
+    payload = JSON.parse(event.body ?? "{}");
   } catch {
-    logger.warn("Invalid JSON payload");
     metrics.addMetric("InvalidJson", MetricUnit.Count, 1);
-    return errorResponse(400, "Invalid JSON payload", origin);
+    throw createError(400, "Invalid JSON payload");
   }
 
   // Validate required fields
   if (!payload.session_id || typeof payload.session_id !== "string") {
-    logger.warn("Missing session_id");
     metrics.addMetric("MissingSessionId", MetricUnit.Count, 1);
-    return errorResponse(400, "Missing required field: session_id", origin);
+    throw createError(400, "Missing required field: session_id");
   }
 
-  // Check JSON depth (DoS prevention)
-  if (payload.fingerprint) {
-    const fingerprintJson = JSON.stringify(payload.fingerprint);
-    const depth = getJsonDepth(fingerprintJson);
-    if (depth > MAX_JSON_DEPTH) {
-      logger.warn("Fingerprint JSON too deeply nested", { depth });
-      metrics.addMetric("JsonTooDeep", MetricUnit.Count, 1);
-      return errorResponse(400, "Fingerprint JSON too deeply nested", origin);
+  // Tenant extraction from API key or header
+  let tenantId: string;
+  const apiKey = event.headers["x-api-key"];
+  if (Object.keys(API_KEYS).length > 0 && apiKey) {
+    tenantId = API_KEYS[apiKey];
+    if (!tenantId) {
+      metrics.addMetric("AuthFailed", MetricUnit.Count, 1);
+      throw createError(401, "Invalid API key");
     }
-  }
-
-  // Extract tenant
-  const tenantResult = extractTenant(event);
-  if ("error" in tenantResult) {
-    logger.warn("Authentication failed");
-    metrics.addMetric("AuthFailed", MetricUnit.Count, 1);
-    return errorResponse(tenantResult.status, tenantResult.error, origin);
+  } else {
+    tenantId = event.headers["x-tenant-id"] ?? "default";
   }
 
   // Build SQS message payload
-  const sqsPayload: FingerprintPayload = {
+  const sqsPayload = {
     session_id: payload.session_id,
-    tenant_id: tenantResult.tenant,
+    tenant_id: tenantId,
     fingerprint: payload.fingerprint,
-    sigint: payload.sigint, // AR-81: Pass sigint data from ms-argus-web
-    headers: extractHeaders(event),
+    sigint: payload.sigint,
+    headers: {
+      "User-Agent": event.headers["user-agent"],
+      "Accept-Language": event.headers["accept-language"],
+      "X-Forwarded-For": event.headers["x-forwarded-for"],
+    },
     timestamp: Date.now(),
   };
 
@@ -370,29 +247,36 @@ export async function handler(
   try {
     await sqs.send(
       new SendMessageCommand({
-        QueueUrl: envConfig.SQS_QUEUE_URL,
+        QueueUrl: SQS_QUEUE_URL,
         MessageBody: JSON.stringify(sqsPayload),
       }),
     );
-  } catch (error) {
-    logger.error("Failed to send to SQS", {
-      error,
+  } catch (err) {
+    logger.error("SQS send failed", {
+      error: err,
       session_id: payload.session_id,
     });
     metrics.addMetric("SqsSendFailed", MetricUnit.Count, 1);
-    return errorResponse(503, "Service temporarily unavailable", origin);
+    throw createError(503, "Service temporarily unavailable");
   }
 
-  // Success
-  const duration = Date.now() - startTime;
-  logger.info("Request queued", {
-    session_id: payload.session_id,
-    tenant_id: tenantResult.tenant,
-    duration_ms: duration,
-  });
+  // Success metrics
   metrics.addMetric("RequestQueued", MetricUnit.Count, 1);
-  metrics.addMetric("IngestionDuration", MetricUnit.Milliseconds, duration);
-  metrics.publishStoredMetrics();
+  metrics.addMetric(
+    "IngestionDuration",
+    MetricUnit.Milliseconds,
+    Date.now() - start,
+  );
 
-  return corsResponse(204, undefined, origin);
-}
+  return { statusCode: 204 };
+};
+
+// ==================== EXPORT WITH MIDDLEWARE ====================
+
+export const handler = middy(baseHandler)
+  .use(injectLambdaContext(logger))
+  .use(logMetrics(metrics)) // Auto-publishes metrics on success AND error
+  .use(httpHeaderNormalizer()) // Normalizes header casing
+  .use(binaryGzipBodyParser()) // Handles gzip decompression
+  .use(corsHeaders()) // Adds CORS headers to responses
+  .use(jsonErrorHandler()); // Returns JSON error responses (must be last)
