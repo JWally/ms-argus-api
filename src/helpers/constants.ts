@@ -62,6 +62,11 @@ export const SESSION_ANCHOR_VALIDITY_SECONDS = 600;
  * while enforcing the actual validity window in application code */
 export const SESSION_ANCHOR_CLEANUP_TTL_SECONDS = 3600;
 
+/** AR-94: IP+UA-only anchor validity window: 3 minutes (180 seconds)
+ * Shorter window than session anchor since it's less specific (no screen_dims).
+ * Catches cases where screen changes (dock/undock) but IP+UA stays same. */
+export const IP_UA_ANCHOR_VALIDITY_SECONDS = 180;
+
 /** Mutation gate TTL: 1 hour (3600 seconds) - prevents rapid repeated writes */
 export const MUTATION_GATE_TTL_SECONDS = 3600;
 

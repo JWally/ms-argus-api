@@ -25,6 +25,7 @@ import {
   PRIVACY_BROWSER_PENALTY,
   PRIVATE_BROWSING_PENALTY,
   SESSION_ANCHOR_VALIDITY_SECONDS,
+  IP_UA_ANCHOR_VALIDITY_SECONDS,
 } from "../../helpers/constants";
 import { fnv1a } from "../../helpers/hash";
 
@@ -182,6 +183,16 @@ export class MatchingService {
     if (sessionAnchorResult) {
       return {
         result: this.applyPrivacyPenalty(sessionAnchorResult, fingerprint),
+        tier2TimedOut: timedOut,
+      };
+    }
+
+    // AR-94: IP+UA-only anchor lookup (shorter window, catches screen changes)
+    // Fallback when session anchor (which includes screen_dims) fails
+    const ipUaAnchorResult = await this.ipUaAnchorLookup(tenantId, fingerprint);
+    if (ipUaAnchorResult) {
+      return {
+        result: this.applyPrivacyPenalty(ipUaAnchorResult, fingerprint),
         tier2TimedOut: timedOut,
       };
     }
@@ -597,6 +608,85 @@ export class MatchingService {
           risk_score: profile?.risk_score ?? 0.4,
           flags: profile?.flags ?? [],
           evidence_codes: ["SESSION_ANCHOR_BUCKET"] as EvidenceCode[],
+        };
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * AR-94: Build IP+UA-only anchor bucket key for ephemeral matching
+   * Does NOT include screen_dims - catches dock/undock screen changes
+   */
+  buildIpUaAnchorKey(
+    tenantId: string,
+    fingerprint: Fingerprint,
+  ): string | null {
+    if (!fingerprint.ip_address || !fingerprint.user_agent) {
+      return null;
+    }
+
+    const uaHash = fnv1a(fingerprint.user_agent);
+    return `${tenantId}#ip_ua_anchor#${fingerprint.ip_address}#${uaHash}`;
+  }
+
+  /**
+   * AR-94: Lookup by IP+UA-only anchor bucket with 3-minute validity window
+   * Shorter window than session anchor since it's less specific (no screen_dims)
+   * Catches cases where screen changes (dock/undock) but IP+UA stays same
+   */
+  async ipUaAnchorLookup(
+    tenantId: string,
+    fingerprint: Fingerprint,
+  ): Promise<MatchResult | null> {
+    const bucketKey = this.buildIpUaAnchorKey(tenantId, fingerprint);
+    if (!bucketKey) {
+      return null;
+    }
+
+    // Query the IP+UA anchor bucket for matching devices
+    const result = await this.deps.dynamodb.send(
+      new QueryCommand({
+        TableName: this.deps.config.tier2BucketsTable,
+        KeyConditionExpression: "bucket_key = :bk",
+        ExpressionAttributeValues: {
+          ":bk": { S: bucketKey },
+        },
+        ProjectionExpression: "device_id, created_at",
+        Limit: 10, // Only need recent entries
+      }),
+    );
+
+    if (!result.Items || result.Items.length === 0) {
+      return null;
+    }
+
+    const now = Date.now();
+    const validityWindowMs = IP_UA_ANCHOR_VALIDITY_SECONDS * 1000;
+
+    // Find the most recent valid entry
+    for (const item of result.Items) {
+      const unmarshalled = unmarshall(item);
+      const deviceId = unmarshalled.device_id;
+      const createdAt = unmarshalled.created_at;
+
+      // Skip stats entries
+      if (deviceId === TIER2_STATS_SK) {
+        continue;
+      }
+
+      // Check if within 3-minute validity window
+      if (createdAt && now - createdAt <= validityWindowMs) {
+        const profile = await this.loadProfile(tenantId, deviceId);
+        return {
+          device_id: deviceId,
+          confidence: 0.6, // Lower than session anchor (less specific)
+          match_tier: 2,
+          is_new_device: false,
+          risk_score: profile?.risk_score ?? 0.4,
+          flags: profile?.flags ?? [],
+          evidence_codes: ["IP_UA_ANCHOR_BUCKET"] as EvidenceCode[],
         };
       }
     }
