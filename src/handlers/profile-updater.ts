@@ -108,9 +108,13 @@ async function processRecord(
   const { tenant_id, device_id } = rawPayload;
 
   // AR-73: Normalize fingerprint from web library nested format to flat API format
+  // AR-81: Also extracts sigint data (third-party cookie, JA3/JA4, TCP probe)
   const payload: ProfileUpdatePayload = {
     ...rawPayload,
-    fingerprint: normalizeFingerprint(rawPayload.fingerprint),
+    fingerprint: normalizeFingerprint(
+      rawPayload.fingerprint,
+      rawPayload.sigint,
+    ),
   };
 
   logger.info("Processing profile update", { tenant_id, device_id });

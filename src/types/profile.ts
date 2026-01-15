@@ -2,6 +2,7 @@
 // AR-50: Consolidated profile domain types
 
 import type { Fingerprint } from "./fingerprint";
+import type { SigintData } from "./matching";
 
 /**
  * Profile update payload from matching worker (via SQS)
@@ -10,6 +11,8 @@ export interface ProfileUpdatePayload {
   tenant_id: string;
   device_id: string;
   fingerprint: Fingerprint;
+  /** AR-81: Sigint data from ms-argus-web */
+  sigint?: SigintData;
   tcp_blob?: string;
   tls_blob?: string;
   timestamp: number;

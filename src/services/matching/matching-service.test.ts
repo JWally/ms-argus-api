@@ -178,6 +178,60 @@ describe("MatchingService", () => {
     });
   });
 
+  // AR-81: Sigint ID (third-party cookie) matching tests
+  describe("tier05SigintIdLookup", () => {
+    it("should return null when sigint_id not found", async () => {
+      dynamoMock.on(GetItemCommand).resolves({ Item: undefined });
+
+      const result = await service.tier05SigintIdLookup(
+        "tenant1",
+        "unknown-sigint-id",
+      );
+      expect(result).toBeNull();
+    });
+
+    it("should return match result when sigint_id found", async () => {
+      const deviceId = "dev_existing";
+      dynamoMock.on(GetItemCommand).resolves({
+        Item: marshall({
+          tenant_id: "tenant1",
+          hash_key: "sigint#abc123-def456",
+          device_id: deviceId,
+          risk_score: 0.2,
+          flags: ["trusted"],
+        }),
+      });
+
+      const result = await service.tier05SigintIdLookup(
+        "tenant1",
+        "abc123-def456",
+      );
+
+      expect(result).not.toBeNull();
+      expect(result?.device_id).toBe(deviceId);
+      expect(result?.confidence).toBe(0.98); // Slightly lower than evercookie
+      expect(result?.match_tier).toBe(0.5);
+      expect(result?.is_new_device).toBe(false);
+      expect(result?.risk_score).toBe(0.2);
+      expect(result?.flags).toEqual(["trusted"]);
+      expect(result?.evidence_codes).toEqual(["SIGINT_ID_MATCH"]);
+    });
+
+    it("should use default risk_score when not in index", async () => {
+      dynamoMock.on(GetItemCommand).resolves({
+        Item: marshall({
+          tenant_id: "tenant1",
+          hash_key: "sigint#abc123",
+          device_id: "dev_123",
+        }),
+      });
+
+      const result = await service.tier05SigintIdLookup("tenant1", "abc123");
+      expect(result?.risk_score).toBe(0.3);
+      expect(result?.flags).toEqual([]);
+    });
+  });
+
   // AR-64: Public key (ECDSA) matching tests
   describe("tier05PublicKeyLookup", () => {
     it("should return null when public key not found", async () => {

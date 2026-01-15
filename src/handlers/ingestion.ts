@@ -81,6 +81,8 @@ interface FingerprintPayload {
   session_id: string;
   tenant_id: string;
   fingerprint?: unknown;
+  /** AR-81: Sigint data from ms-argus-web */
+  sigint?: unknown;
   tcp_blob?: string;
   tls_blob?: string;
   headers: Record<string, string>;
@@ -242,7 +244,7 @@ export async function handler(
   }
 
   // Parse JSON
-  let payload: { session_id?: string; fingerprint?: unknown };
+  let payload: { session_id?: string; fingerprint?: unknown; sigint?: unknown };
   try {
     payload = JSON.parse(body);
   } catch {
@@ -282,6 +284,7 @@ export async function handler(
     session_id: payload.session_id,
     tenant_id: tenantResult.tenant,
     fingerprint: payload.fingerprint,
+    sigint: payload.sigint, // AR-81: Pass sigint data from ms-argus-web
     headers: extractHeaders(event),
     timestamp: Date.now(),
   };

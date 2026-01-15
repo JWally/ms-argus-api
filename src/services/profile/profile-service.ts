@@ -16,7 +16,11 @@ import {
   DeviceProfile,
   DeviceFlags,
 } from "./types";
-import { TIER2_STATS_SK } from "../../helpers/constants";
+import {
+  TIER2_STATS_SK,
+  SESSION_ANCHOR_CLEANUP_TTL_SECONDS,
+} from "../../helpers/constants";
+import { fnv1a } from "../../helpers/hash";
 
 /**
  * Thresholds for flag computation
@@ -456,6 +460,16 @@ export class ProfileService {
       });
     }
 
+    // AR-81: Third-party cookie from sigint CloudFront edge
+    if (fingerprint.sigint_id) {
+      entries.push({
+        tenant_id: tenantId,
+        hash_key: `sigint#${fingerprint.sigint_id}`,
+        device_id: deviceId,
+        ttl,
+      });
+    }
+
     // AR-64: ECDSA public key for cryptographic device identity
     if (fingerprint.public_key) {
       entries.push({
@@ -684,6 +698,62 @@ export class ProfileService {
   }
 
   /**
+   * AR-82: Build session anchor bucket key for ephemeral short-window matching
+   * Combines IP + User-Agent hash + Screen dimensions
+   * Returns null if required signals are missing
+   */
+  buildSessionAnchorKey(
+    tenantId: string,
+    fingerprint: Fingerprint,
+  ): string | null {
+    if (
+      !fingerprint.ip_address ||
+      !fingerprint.user_agent ||
+      !fingerprint.screen_dims
+    ) {
+      return null;
+    }
+
+    // Hash user agent to keep key size reasonable (8 char hex)
+    const uaHash = fnv1a(fingerprint.user_agent);
+
+    return `${tenantId}#session_anchor#${fingerprint.ip_address}#${uaHash}#${fingerprint.screen_dims}`;
+  }
+
+  /**
+   * AR-82: Update session anchor bucket for ephemeral matching
+   * Stores created_at timestamp for application-side 10-minute validity check
+   * Uses shorter TTL (1 hour) for DynamoDB cleanup
+   */
+  async updateSessionAnchorBucket(
+    tenantId: string,
+    deviceId: string,
+    fingerprint: Fingerprint,
+  ): Promise<boolean> {
+    const bucketKey = this.buildSessionAnchorKey(tenantId, fingerprint);
+    if (!bucketKey) {
+      return false;
+    }
+
+    const now = Date.now();
+    const ttl = Math.floor(now / 1000) + SESSION_ANCHOR_CLEANUP_TTL_SECONDS;
+
+    await this.deps.dynamodb.send(
+      new PutItemCommand({
+        TableName: this.deps.config.tier2BucketsTable,
+        Item: {
+          bucket_key: { S: bucketKey },
+          device_id: { S: deviceId },
+          created_at: { N: String(now) },
+          ttl: { N: String(ttl) },
+        },
+      }),
+    );
+
+    return true;
+  }
+
+  /**
    * Process a complete profile update (orchestration method)
    * Returns object indicating what was done
    */
@@ -744,6 +814,9 @@ export class ProfileService {
       device_id,
       fingerprint,
     );
+
+    // AR-82: Update session anchor bucket for ephemeral short-window matching
+    await this.updateSessionAnchorBucket(tenant_id, device_id, fingerprint);
 
     return {
       skipped: false,

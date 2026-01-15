@@ -16,6 +16,10 @@ export interface Fingerprint {
   screen_dims?: string;
   timezone?: string;
   evercookie_id?: string;
+  // AR-81: Third-party cookie ID from CloudFront edge (sigint service)
+  // Cross-site persistent identifier - survives first-party cookie clearing
+  // Set by id.argus.pw CloudFront function with SameSite=None
+  sigint_id?: string;
   // AR-64: Cryptographic device identity (ECDSA P-256 public key, Base64 SPKI)
   // Near-perfect identifier - if present and matches, confidence 0.99
   public_key?: string;

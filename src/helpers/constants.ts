@@ -53,6 +53,15 @@ export const PROFILE_TTL_DAYS = 60;
 /** Tier 2 bucket TTL in DynamoDB: 7 days (AR-39: prevent accumulation) */
 export const TIER2_BUCKET_TTL_DAYS = 7;
 
+/** AR-82: Session anchor validity window: 10 minutes (600 seconds)
+ * Application-enforced TTL for short-window device matching */
+export const SESSION_ANCHOR_VALIDITY_SECONDS = 600;
+
+/** AR-82: Session anchor DynamoDB cleanup TTL: 1 hour (3600 seconds)
+ * DynamoDB TTL is eventually consistent, so we set a longer TTL for cleanup
+ * while enforcing the actual validity window in application code */
+export const SESSION_ANCHOR_CLEANUP_TTL_SECONDS = 3600;
+
 /** Mutation gate TTL: 1 hour (3600 seconds) - prevents rapid repeated writes */
 export const MUTATION_GATE_TTL_SECONDS = 3600;
 
