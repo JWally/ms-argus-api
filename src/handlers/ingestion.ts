@@ -1,6 +1,7 @@
 // src/handlers/ingestion.ts
 // AR-52: Lambda ingestion handler replacing Go/ECS service
 // AR-71: Reverted to async (SQS) for scalability at 30B RPY
+// AR-87: Added gzip decompression support for large fingerprint payloads
 // Receives fingerprints via HTTP API, validates, and queues to SQS
 
 import {
@@ -11,6 +12,7 @@ import {
 import { Logger } from "@aws-lambda-powertools/logger";
 import { Metrics, MetricUnit } from "@aws-lambda-powertools/metrics";
 import { SQSClient, SendMessageCommand } from "@aws-sdk/client-sqs";
+import { gunzipSync } from "zlib";
 
 // ==================== CONFIGURATION ====================
 
@@ -65,7 +67,9 @@ const sqs = new SQSClient({});
 
 // ==================== CONSTANTS ====================
 
-const MAX_BODY_SIZE = 64 * 1024; // 64KB
+const MAX_BODY_SIZE = 64 * 1024; // 64KB for uncompressed payloads
+const MAX_GZIP_BODY_SIZE = 64 * 1024; // 64KB for compressed payload (raw)
+const MAX_DECOMPRESSED_SIZE = 512 * 1024; // 512KB max after decompression (zip bomb defense)
 const MAX_JSON_DEPTH = 10;
 
 // CORS headers
@@ -175,6 +179,33 @@ function extractHeaders(event: APIGatewayProxyEventV2): Record<string, string> {
   return headers;
 }
 
+/**
+ * AR-87: Decompress gzip payload
+ * Returns decompressed string or error object
+ */
+function decompressGzipPayload(
+  body: string,
+  isBase64Encoded: boolean,
+): { data: string } | { error: string } {
+  try {
+    if (!isBase64Encoded) {
+      return { error: "Gzip payload must be base64 encoded" };
+    }
+
+    const buffer = Buffer.from(body, "base64");
+    const decompressed = gunzipSync(buffer);
+
+    // Check decompressed size (zip bomb defense)
+    if (decompressed.length > MAX_DECOMPRESSED_SIZE) {
+      return { error: "Decompressed payload too large" };
+    }
+
+    return { data: decompressed.toString("utf-8") };
+  } catch {
+    return { error: "Failed to decompress gzip payload" };
+  }
+}
+
 // ==================== RESPONSES ====================
 
 function corsResponse(
@@ -235,12 +266,37 @@ export async function handler(
     return errorResponse(404, "Not found", origin);
   }
 
-  // Validate body size
-  const body = event.body ?? "";
-  if (body.length > MAX_BODY_SIZE) {
-    logger.warn("Payload too large", { size: body.length });
+  // AR-87: Check for gzip encoding (case-insensitive)
+  const contentEncoding = event.headers["content-encoding"]?.toLowerCase();
+  const isGzipped = contentEncoding === "gzip";
+
+  // Validate body size (different limits for compressed vs uncompressed)
+  const rawBody = event.body ?? "";
+  const maxSize = isGzipped ? MAX_GZIP_BODY_SIZE : MAX_BODY_SIZE;
+  if (rawBody.length > maxSize) {
+    logger.warn("Payload too large", { size: rawBody.length, isGzipped });
     metrics.addMetric("PayloadTooLarge", MetricUnit.Count, 1);
     return errorResponse(413, "Request entity too large", origin);
+  }
+
+  // AR-87: Decompress if gzipped
+  let body: string;
+  if (isGzipped) {
+    const decompressResult = decompressGzipPayload(
+      rawBody,
+      event.isBase64Encoded,
+    );
+    if ("error" in decompressResult) {
+      logger.warn("Gzip decompression failed", {
+        error: decompressResult.error,
+      });
+      metrics.addMetric("GzipDecompressionFailed", MetricUnit.Count, 1);
+      return errorResponse(400, decompressResult.error, origin);
+    }
+    body = decompressResult.data;
+    metrics.addMetric("GzipPayloadReceived", MetricUnit.Count, 1);
+  } else {
+    body = rawBody;
   }
 
   // Parse JSON
