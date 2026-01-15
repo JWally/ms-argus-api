@@ -182,18 +182,40 @@ function extractHeaders(event: APIGatewayProxyEventV2): Record<string, string> {
 /**
  * AR-87: Decompress gzip payload
  * Returns decompressed string or error object
+ *
+ * Handles two cases:
+ * 1. API Gateway binary mode: isBase64Encoded=true, body is double-encoded
+ *    (API GW base64-encodes the base64 text we sent)
+ * 2. Browser sends base64 text: isBase64Encoded=false, body is our base64 gzip
  */
 function decompressGzipPayload(
   body: string,
   isBase64Encoded: boolean,
 ): { data: string } | { error: string } {
   try {
-    if (!isBase64Encoded) {
-      return { error: "Gzip payload must be base64 encoded" };
+    let gzipBase64: string;
+
+    if (isBase64Encoded) {
+      // API Gateway base64-encoded our base64 text, so decode once to get our original base64
+      gzipBase64 = Buffer.from(body, "base64").toString("utf-8");
+    } else {
+      // Body is our base64 text directly
+      gzipBase64 = body;
     }
 
-    const buffer = Buffer.from(body, "base64");
-    const decompressed = gunzipSync(buffer);
+    // Now decode our base64 to get the gzip bytes
+    const gzipBuffer = Buffer.from(gzipBase64, "base64");
+
+    // Validate it looks like gzip (magic bytes: 1f 8b)
+    if (
+      gzipBuffer.length < 2 ||
+      gzipBuffer[0] !== 0x1f ||
+      gzipBuffer[1] !== 0x8b
+    ) {
+      return { error: "Invalid gzip data" };
+    }
+
+    const decompressed = gunzipSync(gzipBuffer);
 
     // Check decompressed size (zip bomb defense)
     if (decompressed.length > MAX_DECOMPRESSED_SIZE) {
@@ -282,6 +304,13 @@ export async function handler(
   // AR-87: Decompress if gzipped
   let body: string;
   if (isGzipped) {
+    // Debug: log what we received
+    logger.info("Gzip request received", {
+      bodyLength: rawBody.length,
+      bodyStart: rawBody.substring(0, 50),
+      isBase64Encoded: event.isBase64Encoded,
+    });
+
     const decompressResult = decompressGzipPayload(
       rawBody,
       event.isBase64Encoded,
@@ -289,6 +318,7 @@ export async function handler(
     if ("error" in decompressResult) {
       logger.warn("Gzip decompression failed", {
         error: decompressResult.error,
+        bodyStart: rawBody.substring(0, 100),
       });
       metrics.addMetric("GzipDecompressionFailed", MetricUnit.Count, 1);
       return errorResponse(400, decompressResult.error, origin);

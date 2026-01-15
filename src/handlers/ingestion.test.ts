@@ -134,15 +134,25 @@ describe("ingestion handler", () => {
     });
   });
 
+  // Helper: Simulate API Gateway encoding of browser's base64 gzip text
+  // Browser sends: base64(gzip(json))
+  // API Gateway receives text, base64-encodes it, sets isBase64Encoded=true
+  // Lambda receives: base64(base64(gzip(json))) with isBase64Encoded=true
+  const simulateApiGatewayGzipBody = (payload: object): string => {
+    const jsonString = JSON.stringify(payload);
+    const gzipped = gzipSync(Buffer.from(jsonString));
+    const browserBase64 = gzipped.toString("base64"); // What browser sends
+    const apiGatewayEncoded = Buffer.from(browserBase64).toString("base64"); // What API GW does
+    return apiGatewayEncoded;
+  };
+
   // ==================== AR-87: GZIP COMPRESSION TESTS ====================
   describe("gzip compression support (AR-87)", () => {
     it("should decompress gzip payload with Content-Encoding: gzip header", async () => {
       const payload = createValidPayload("gzip-session-1");
-      const jsonString = JSON.stringify(payload);
-      const gzipped = gzipSync(Buffer.from(jsonString));
-      const base64Body = gzipped.toString("base64");
+      const body = simulateApiGatewayGzipBody(payload);
 
-      const event = createApiEvent(base64Body, {
+      const event = createApiEvent(body, {
         contentEncoding: "gzip",
         isBase64Encoded: true,
       });
@@ -180,9 +190,10 @@ describe("ingestion handler", () => {
       const gzipped = gzipSync(Buffer.from(jsonString));
       expect(gzipped.length).toBeLessThan(64 * 1024); // Verify compressed is < 64KB
 
-      const base64Body = gzipped.toString("base64");
+      // Simulate API Gateway double-encoding
+      const body = simulateApiGatewayGzipBody(largeData);
 
-      const event = createApiEvent(base64Body, {
+      const event = createApiEvent(body, {
         contentEncoding: "gzip",
         isBase64Encoded: true,
       });
@@ -199,12 +210,14 @@ describe("ingestion handler", () => {
     });
 
     it("should return 400 for invalid gzip data", async () => {
-      // Send base64-encoded garbage that isn't valid gzip
-      const invalidGzip = Buffer.from("this is not gzip data").toString(
+      // Browser sends base64-encoded garbage that isn't valid gzip
+      const browserBase64 = Buffer.from("this is not gzip data").toString(
         "base64",
       );
+      // API Gateway base64-encodes it again
+      const apiGatewayEncoded = Buffer.from(browserBase64).toString("base64");
 
-      const event = createApiEvent(invalidGzip, {
+      const event = createApiEvent(apiGatewayEncoded, {
         contentEncoding: "gzip",
         isBase64Encoded: true,
       });
@@ -213,16 +226,18 @@ describe("ingestion handler", () => {
 
       expect(result.statusCode).toBe(400);
       const body = JSON.parse(result.body ?? "");
-      expect(body.error).toContain("decompress");
+      expect(body.error).toContain("Invalid gzip");
     });
 
     it("should return 400 for gzip payload with invalid JSON inside", async () => {
       // Valid gzip but invalid JSON content
       const invalidJson = "{ this is not valid json }";
       const gzipped = gzipSync(Buffer.from(invalidJson));
-      const base64Body = gzipped.toString("base64");
+      const browserBase64 = gzipped.toString("base64");
+      // API Gateway base64-encodes it again
+      const apiGatewayEncoded = Buffer.from(browserBase64).toString("base64");
 
-      const event = createApiEvent(base64Body, {
+      const event = createApiEvent(apiGatewayEncoded, {
         contentEncoding: "gzip",
         isBase64Encoded: true,
       });
@@ -248,22 +263,26 @@ describe("ingestion handler", () => {
       expect(sentBody.session_id).toBe("uncompressed-session");
     });
 
-    it("should handle gzip with isBase64Encoded false (raw binary not supported)", async () => {
-      // API Gateway should always base64 encode binary content
-      // If it doesn't, we should handle gracefully
-      const payload = createValidPayload();
+    it("should handle gzip with isBase64Encoded false (browser sends base64 text)", async () => {
+      // Browser sends base64-encoded gzip as text body
+      // API Gateway passes through with isBase64Encoded=false
+      const payload = createValidPayload("browser-base64-session");
       const gzipped = gzipSync(Buffer.from(JSON.stringify(payload)));
+      const base64Body = gzipped.toString("base64");
 
-      // Raw binary (not base64) - this shouldn't happen but test defensive handling
-      const event = createApiEvent(gzipped.toString("binary"), {
+      const event = createApiEvent(base64Body, {
         contentEncoding: "gzip",
-        isBase64Encoded: false, // Not base64 encoded
+        isBase64Encoded: false, // Browser sends text, not binary
       });
 
       const result = asResult(await handler(event, mockContext));
 
-      // Should return error since we can't decompress non-base64 gzip
-      expect(result.statusCode).toBe(400);
+      // Should successfully decompress base64 text
+      expect(result.statusCode).toBe(204);
+
+      const sqsCalls = sqsMock.commandCalls(SendMessageCommand);
+      const sentBody = JSON.parse(sqsCalls[0].args[0].input.MessageBody!);
+      expect(sentBody.session_id).toBe("browser-base64-session");
     });
 
     it("should preserve sigint data in gzipped payload", async () => {
@@ -277,10 +296,10 @@ describe("ingestion handler", () => {
         },
       };
 
-      const gzipped = gzipSync(Buffer.from(JSON.stringify(payload)));
-      const base64Body = gzipped.toString("base64");
+      // Simulate API Gateway double-encoding
+      const body = simulateApiGatewayGzipBody(payload);
 
-      const event = createApiEvent(base64Body, {
+      const event = createApiEvent(body, {
         contentEncoding: "gzip",
         isBase64Encoded: true,
       });
@@ -299,9 +318,11 @@ describe("ingestion handler", () => {
 
     it("should handle empty gzipped payload", async () => {
       const gzipped = gzipSync(Buffer.from(""));
-      const base64Body = gzipped.toString("base64");
+      const browserBase64 = gzipped.toString("base64");
+      // API Gateway base64-encodes it again
+      const apiGatewayEncoded = Buffer.from(browserBase64).toString("base64");
 
-      const event = createApiEvent(base64Body, {
+      const event = createApiEvent(apiGatewayEncoded, {
         contentEncoding: "gzip",
         isBase64Encoded: true,
       });
@@ -314,11 +335,11 @@ describe("ingestion handler", () => {
 
     it("should handle gzip Content-Encoding case-insensitively", async () => {
       const payload = createValidPayload("case-insensitive-session");
-      const gzipped = gzipSync(Buffer.from(JSON.stringify(payload)));
-      const base64Body = gzipped.toString("base64");
+      // Simulate API Gateway double-encoding
+      const body = simulateApiGatewayGzipBody(payload);
 
       // Test with uppercase "GZIP"
-      const event = createApiEvent(base64Body, {
+      const event = createApiEvent(body, {
         contentEncoding: "GZIP",
         isBase64Encoded: true,
       });
@@ -343,9 +364,11 @@ describe("ingestion handler", () => {
       // Compresses extremely well - ~600 bytes for 600KB of repeated chars
       expect(gzipped.length).toBeLessThan(10 * 1024);
 
-      const base64Body = gzipped.toString("base64");
+      // Simulate API Gateway double-encoding
+      const browserBase64 = gzipped.toString("base64");
+      const apiGatewayEncoded = Buffer.from(browserBase64).toString("base64");
 
-      const event = createApiEvent(base64Body, {
+      const event = createApiEvent(apiGatewayEncoded, {
         contentEncoding: "gzip",
         isBase64Encoded: true,
       });
