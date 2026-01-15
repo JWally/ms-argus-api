@@ -146,7 +146,13 @@ export class HttpApiConstruct extends Construct {
           apigatewayv2.CorsHttpMethod.POST,
           apigatewayv2.CorsHttpMethod.OPTIONS,
         ],
-        allowHeaders: ["Content-Type", "X-Tenant-ID", "X-API-Key"],
+        // AR-91: Added Content-Encoding for binary gzip payloads
+        allowHeaders: [
+          "Content-Type",
+          "Content-Encoding",
+          "X-Tenant-ID",
+          "X-API-Key",
+        ],
         maxAge: Duration.hours(24),
       },
     });
