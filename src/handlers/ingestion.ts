@@ -12,8 +12,21 @@ import { injectLambdaContext } from "@aws-lambda-powertools/logger/middleware";
 import { SQSClient, SendMessageCommand } from "@aws-sdk/client-sqs";
 import middy from "@middy/core";
 import httpHeaderNormalizer from "@middy/http-header-normalizer";
-import createError from "http-errors";
 import { gunzipSync } from "zlib";
+
+// Custom HttpError class to replace http-errors module (ESM bundling compatible)
+class HttpError extends Error {
+  statusCode: number;
+  expose: boolean;
+  constructor(statusCode: number, message: string) {
+    super(message);
+    this.name = "HttpError";
+    this.statusCode = statusCode;
+    this.expose = statusCode < 500; // Only expose client errors
+  }
+}
+const createError = (statusCode: number, message: string) =>
+  new HttpError(statusCode, message);
 
 // ==================== CONFIGURATION ====================
 
@@ -111,7 +124,7 @@ const binaryGzipBodyParser =
         event.body = decompressed.toString("utf-8");
         metrics.addMetric("BinaryGzipPayloadReceived", MetricUnit.Count, 1);
       } catch (err) {
-        if (err instanceof createError.HttpError) throw err;
+        if (err instanceof HttpError) throw err;
         metrics.addMetric("GzipDecompressionFailed", MetricUnit.Count, 1);
         throw createError(400, "Failed to decompress gzip payload");
       }

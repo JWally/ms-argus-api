@@ -1394,3 +1394,196 @@ describe("generateUUID", () => {
     expect(uuids.size).toBe(count);
   });
 });
+
+// AR-95: Anchor lookup recency sorting tests
+describe("MatchingService anchor recency sorting", () => {
+  let dynamodb: DynamoDBClient;
+  let sqs: SQSClient;
+  let mockCache: ReturnType<typeof createMockCacheService>;
+  let service: MatchingService;
+
+  beforeEach(() => {
+    dynamoMock.reset();
+    sqsMock.reset();
+    mockCache = createMockCacheService();
+    dynamodb = new DynamoDBClient({});
+    sqs = new SQSClient({});
+
+    const deps: MatchingServiceDeps = {
+      dynamodb,
+      sqs,
+      cache: mockCache,
+      config: testConfig,
+    };
+    service = new MatchingService(deps);
+  });
+
+  it("should return most recent valid device, not first alphabetically", async () => {
+    const now = Date.now();
+
+    // Mock: Multiple devices in same anchor bucket
+    // DynamoDB returns items sorted by device_id (sort key) alphabetically
+    // dev_aaa is OLDER but comes first alphabetically
+    // dev_zzz is NEWER but comes last alphabetically
+    dynamoMock
+      .on(QueryCommand, { TableName: testConfig.tier2BucketsTable })
+      .callsFake((input) => {
+        const keyExpr = input.KeyConditionExpression || "";
+        // Session anchor query - return items sorted by device_id (DynamoDB default)
+        if (keyExpr.includes("bucket_key = :bk")) {
+          return {
+            Items: [
+              // First alphabetically, but OLDER (5 minutes ago - still valid for 10min window)
+              marshall({
+                bucket_key: "tenant1#session_anchor#1.2.3.4#uahash#1920x1080",
+                device_id: "dev_aaa_old",
+                created_at: now - 5 * 60 * 1000, // 5 minutes ago
+              }),
+              // Second alphabetically, but NEWER (1 minute ago)
+              marshall({
+                bucket_key: "tenant1#session_anchor#1.2.3.4#uahash#1920x1080",
+                device_id: "dev_zzz_new",
+                created_at: now - 1 * 60 * 1000, // 1 minute ago
+              }),
+            ],
+          };
+        }
+        return { Items: [] };
+      });
+
+    // Mock: Profile lookup for the expected device
+    dynamoMock.on(GetItemCommand).resolves({
+      Item: marshall({
+        tenant_id: "tenant1",
+        device_id: "dev_zzz_new",
+        risk_score: 0.3,
+        flags: [],
+      }),
+    });
+
+    // Fingerprint with no tier0.5/tier1 matches - will fall through to anchor lookup
+    const fingerprint: Fingerprint = {
+      ip_address: "1.2.3.4",
+      user_agent:
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36",
+      screen_dims: "1920x1080",
+    };
+
+    const { result } = await service.runTieredMatching("tenant1", fingerprint);
+
+    // AR-95: Should return the MOST RECENT valid device (dev_zzz_new),
+    // NOT the first alphabetically (dev_aaa_old)
+    expect(result.device_id).toBe("dev_zzz_new");
+    expect(result.evidence_codes).toContain("SESSION_ANCHOR_BUCKET");
+  });
+
+  it("should skip expired devices even if they are more recent", async () => {
+    const now = Date.now();
+
+    // Mock: One expired device (newer) and one valid device (older)
+    dynamoMock
+      .on(QueryCommand, { TableName: testConfig.tier2BucketsTable })
+      .callsFake((input) => {
+        const keyExpr = input.KeyConditionExpression || "";
+        if (keyExpr.includes("bucket_key = :bk")) {
+          return {
+            Items: [
+              // First alphabetically, EXPIRED (created 15 mins ago, validity is 10 mins)
+              marshall({
+                bucket_key: "tenant1#session_anchor#1.2.3.4#uahash#1920x1080",
+                device_id: "dev_aaa_expired",
+                created_at: now - 15 * 60 * 1000, // 15 minutes ago - EXPIRED
+              }),
+              // Second alphabetically, VALID but older within window
+              marshall({
+                bucket_key: "tenant1#session_anchor#1.2.3.4#uahash#1920x1080",
+                device_id: "dev_bbb_valid",
+                created_at: now - 8 * 60 * 1000, // 8 minutes ago - still valid
+              }),
+            ],
+          };
+        }
+        return { Items: [] };
+      });
+
+    // Mock: Profile lookup
+    dynamoMock.on(GetItemCommand).resolves({
+      Item: marshall({
+        tenant_id: "tenant1",
+        device_id: "dev_bbb_valid",
+        risk_score: 0.3,
+        flags: [],
+      }),
+    });
+
+    const fingerprint: Fingerprint = {
+      ip_address: "1.2.3.4",
+      user_agent:
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36",
+      screen_dims: "1920x1080",
+    };
+
+    const { result } = await service.runTieredMatching("tenant1", fingerprint);
+
+    // Should return the valid device, not the expired one
+    expect(result.device_id).toBe("dev_bbb_valid");
+  });
+
+  it("should prefer most recent among multiple valid devices", async () => {
+    const now = Date.now();
+
+    // Mock: Three valid devices with different ages
+    dynamoMock
+      .on(QueryCommand, { TableName: testConfig.tier2BucketsTable })
+      .callsFake((input) => {
+        const keyExpr = input.KeyConditionExpression || "";
+        if (keyExpr.includes("bucket_key = :bk")) {
+          return {
+            Items: [
+              // Alphabetically first, 7 minutes old
+              marshall({
+                bucket_key: "tenant1#session_anchor#1.2.3.4#uahash#1920x1080",
+                device_id: "dev_a",
+                created_at: now - 7 * 60 * 1000,
+              }),
+              // Alphabetically middle, 3 minutes old (NEWEST)
+              marshall({
+                bucket_key: "tenant1#session_anchor#1.2.3.4#uahash#1920x1080",
+                device_id: "dev_m",
+                created_at: now - 3 * 60 * 1000,
+              }),
+              // Alphabetically last, 5 minutes old
+              marshall({
+                bucket_key: "tenant1#session_anchor#1.2.3.4#uahash#1920x1080",
+                device_id: "dev_z",
+                created_at: now - 5 * 60 * 1000,
+              }),
+            ],
+          };
+        }
+        return { Items: [] };
+      });
+
+    // Mock: Profile lookup for expected device
+    dynamoMock.on(GetItemCommand).resolves({
+      Item: marshall({
+        tenant_id: "tenant1",
+        device_id: "dev_m",
+        risk_score: 0.3,
+        flags: [],
+      }),
+    });
+
+    const fingerprint: Fingerprint = {
+      ip_address: "1.2.3.4",
+      user_agent:
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36",
+      screen_dims: "1920x1080",
+    };
+
+    const { result } = await service.runTieredMatching("tenant1", fingerprint);
+
+    // Should return dev_m (3 minutes old) - the newest valid device
+    expect(result.device_id).toBe("dev_m");
+  });
+});
