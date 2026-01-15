@@ -24,6 +24,7 @@ import {
   TIER2_STATS_SK,
   PRIVACY_BROWSER_PENALTY,
   PRIVATE_BROWSING_PENALTY,
+  SESSION_ANCHOR_VALIDITY_SECONDS,
 } from "../../helpers/constants";
 import { fnv1a } from "../../helpers/hash";
 
@@ -139,6 +140,20 @@ export class MatchingService {
       }
     }
 
+    // Tier 0.5: Third-party cookie lookup (AR-81: from sigint service)
+    if (fingerprint.sigint_id) {
+      const result = await this.tier05SigintIdLookup(
+        tenantId,
+        fingerprint.sigint_id,
+      );
+      if (result) {
+        return {
+          result: this.applyPrivacyPenalty(result, fingerprint),
+          tier2TimedOut: false,
+        };
+      }
+    }
+
     // Tier 1: Strong hash match
     const tier1Result = await this.tier1HashMatch(tenantId, fingerprint);
     if (tier1Result) {
@@ -154,6 +169,19 @@ export class MatchingService {
     if (tier2Result) {
       return {
         result: this.applyPrivacyPenalty(tier2Result, fingerprint),
+        tier2TimedOut: timedOut,
+      };
+    }
+
+    // AR-82: Session anchor lookup (ephemeral short-window matching)
+    // Checked after tier2 compound match to give multi-bucket matching priority
+    const sessionAnchorResult = await this.sessionAnchorLookup(
+      tenantId,
+      fingerprint,
+    );
+    if (sessionAnchorResult) {
+      return {
+        result: this.applyPrivacyPenalty(sessionAnchorResult, fingerprint),
         tier2TimedOut: timedOut,
       };
     }
@@ -229,6 +257,40 @@ export class MatchingService {
         risk_score: item.risk_score ?? 0.3,
         flags: item.flags ?? [],
         evidence_codes: ["EVERCOOKIE_MATCH"] as EvidenceCode[],
+      };
+    }
+    return null;
+  }
+
+  /**
+   * Tier 0.5: Lookup by third-party cookie from sigint (AR-81)
+   * High confidence - cross-site cookie from CloudFront edge service
+   * Survives first-party cookie clearing, provides cross-site identity
+   */
+  async tier05SigintIdLookup(
+    tenantId: string,
+    sigintId: string,
+  ): Promise<MatchResult | null> {
+    const result = await this.deps.dynamodb.send(
+      new GetItemCommand({
+        TableName: this.deps.config.tier1IndexTable,
+        Key: {
+          tenant_id: { S: tenantId },
+          hash_key: { S: `sigint#${sigintId}` },
+        },
+      }),
+    );
+
+    if (result.Item) {
+      const item = unmarshall(result.Item);
+      return {
+        device_id: item.device_id,
+        confidence: 0.98, // Slightly lower than evercookie (can be shared across browsers)
+        match_tier: 0.5,
+        is_new_device: false,
+        risk_score: item.risk_score ?? 0.3,
+        flags: item.flags ?? [],
+        evidence_codes: ["SIGINT_ID_MATCH"] as EvidenceCode[],
       };
     }
     return null;
@@ -454,6 +516,89 @@ export class MatchingService {
         flags: profile?.flags ?? [],
         evidence_codes: bestEvidence,
       };
+    }
+
+    return null;
+  }
+
+  /**
+   * AR-82: Build session anchor bucket key for ephemeral matching
+   * Combines IP + User-Agent hash + Screen dimensions
+   */
+  buildSessionAnchorKey(
+    tenantId: string,
+    fingerprint: Fingerprint,
+  ): string | null {
+    if (
+      !fingerprint.ip_address ||
+      !fingerprint.user_agent ||
+      !fingerprint.screen_dims
+    ) {
+      return null;
+    }
+
+    const uaHash = fnv1a(fingerprint.user_agent);
+    return `${tenantId}#session_anchor#${fingerprint.ip_address}#${uaHash}#${fingerprint.screen_dims}`;
+  }
+
+  /**
+   * AR-82: Lookup by session anchor bucket with 10-minute validity window
+   * Used for short-session matching when other signals fail
+   * Application-side enforced validity (DynamoDB TTL is for cleanup only)
+   */
+  async sessionAnchorLookup(
+    tenantId: string,
+    fingerprint: Fingerprint,
+  ): Promise<MatchResult | null> {
+    const bucketKey = this.buildSessionAnchorKey(tenantId, fingerprint);
+    if (!bucketKey) {
+      return null;
+    }
+
+    // Query the session anchor bucket for matching devices
+    const result = await this.deps.dynamodb.send(
+      new QueryCommand({
+        TableName: this.deps.config.tier2BucketsTable,
+        KeyConditionExpression: "bucket_key = :bk",
+        ExpressionAttributeValues: {
+          ":bk": { S: bucketKey },
+        },
+        ProjectionExpression: "device_id, created_at",
+        Limit: 10, // Only need recent entries
+      }),
+    );
+
+    if (!result.Items || result.Items.length === 0) {
+      return null;
+    }
+
+    const now = Date.now();
+    const validityWindowMs = SESSION_ANCHOR_VALIDITY_SECONDS * 1000;
+
+    // Find the most recent valid entry
+    for (const item of result.Items) {
+      const unmarshalled = unmarshall(item);
+      const deviceId = unmarshalled.device_id;
+      const createdAt = unmarshalled.created_at;
+
+      // Skip stats entries
+      if (deviceId === TIER2_STATS_SK) {
+        continue;
+      }
+
+      // Check if within 10-minute validity window
+      if (createdAt && now - createdAt <= validityWindowMs) {
+        const profile = await this.loadProfile(tenantId, deviceId);
+        return {
+          device_id: deviceId,
+          confidence: 0.65, // Lower confidence than multi-bucket tier2 matches
+          match_tier: 2,
+          is_new_device: false,
+          risk_score: profile?.risk_score ?? 0.4,
+          flags: profile?.flags ?? [],
+          evidence_codes: ["SESSION_ANCHOR_BUCKET"] as EvidenceCode[],
+        };
+      }
     }
 
     return null;
@@ -800,6 +945,7 @@ export class MatchingService {
           tenant_id: tenantId,
           device_id: deviceId,
           fingerprint: payload.fingerprint,
+          sigint: payload.sigint, // AR-81: Pass sigint data for normalization
           tcp_blob: payload.tcp_blob,
           tls_blob: payload.tls_blob,
           timestamp: payload.timestamp,

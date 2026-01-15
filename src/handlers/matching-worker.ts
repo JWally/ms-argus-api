@@ -136,7 +136,8 @@ async function processRecord(
 
   // AR-73: Normalize fingerprint from web library nested format to flat API format
   // This extracts fields like canvas_hash, gpu_renderer, screen_dims from nested objects
-  const fingerprint = normalizeFingerprint(payload.fingerprint);
+  // AR-81: Also extracts sigint data (third-party cookie, JA3/JA4, TCP probe)
+  const fingerprint = normalizeFingerprint(payload.fingerprint, payload.sigint);
 
   logger.info("Processing fingerprint", { session_id, tenant_id });
 

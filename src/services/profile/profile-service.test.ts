@@ -263,6 +263,25 @@ describe("ProfileService", () => {
       });
     });
 
+    // AR-81: Test for sigint_id (third-party cookie)
+    it("should build sigint_id entry", () => {
+      const fingerprint: Fingerprint = { sigint_id: "abc123-def456-789" };
+      const entries = service.buildTier1IndexEntries(
+        "tenant1",
+        "dev_123",
+        fingerprint,
+        ttl,
+      );
+
+      expect(entries).toHaveLength(1);
+      expect(entries[0]).toEqual({
+        tenant_id: "tenant1",
+        hash_key: "sigint#abc123-def456-789",
+        device_id: "dev_123",
+        ttl,
+      });
+    });
+
     // AR-64: Test for ECDSA public key
     it("should build public_key entry", () => {
       const publicKey = "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE...base64...";
@@ -300,6 +319,7 @@ describe("ProfileService", () => {
       const publicKey = "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE...";
       const fingerprint: Fingerprint = {
         evercookie_id: "cookie",
+        sigint_id: "sigint-uuid-123", // AR-81
         public_key: publicKey, // AR-64
         stable_hash: "stable",
         fuzzy_hash: "fuzzy",
@@ -313,9 +333,10 @@ describe("ProfileService", () => {
         ttl,
       );
 
-      expect(entries).toHaveLength(5); // AR-64: Now 5 with public_key
+      expect(entries).toHaveLength(6); // AR-81: Now 6 with sigint_id
       const hashKeys = entries.map((e) => e.hash_key);
       expect(hashKeys).toContain("evercookie#cookie");
+      expect(hashKeys).toContain("sigint#sigint-uuid-123"); // AR-81
       expect(hashKeys).toContain(`pubkey#${publicKey}`); // AR-64
       expect(hashKeys).toContain("stable#stable");
       expect(hashKeys).toContain("fuzzy#fuzzy");

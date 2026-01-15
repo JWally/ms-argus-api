@@ -10,6 +10,7 @@
 // This helper extracts and flattens the nested structure.
 
 import type { Fingerprint } from "../types/fingerprint";
+import type { SigintData } from "../types/matching";
 
 /**
  * Web library FingerprintResult structure (nested)
@@ -91,12 +92,15 @@ interface WebFingerprintResult {
 /**
  * Normalize fingerprint from web library nested format to flat API format.
  * Handles both nested (web library) and already-flat (test/direct) formats.
+ * AR-81: Also extracts fields from sigint data (third-party signals from ms-argus-web)
  *
  * @param raw - Raw fingerprint data (may be nested or flat)
+ * @param sigint - Optional sigint data from ms-argus-web (TLS fingerprint, TCP probe, etc.)
  * @returns Normalized flat Fingerprint object
  */
 export function normalizeFingerprint(
   raw: WebFingerprintResult | Fingerprint | undefined,
+  sigint?: SigintData | null,
 ): Fingerprint {
   if (!raw) {
     return {};
@@ -238,6 +242,7 @@ export function normalizeFingerprint(
   // (for backwards compatibility with clients that send flat data)
   const passthroughFields: (keyof Fingerprint)[] = [
     "evercookie_id",
+    "sigint_id", // AR-81: Third-party cookie from sigint service
     "public_key",
     "ip_address",
     "ja3",
@@ -253,6 +258,56 @@ export function normalizeFingerprint(
     if (field in raw && raw[field as keyof typeof raw] !== undefined) {
       (normalized as Record<string, unknown>)[field] =
         raw[field as keyof typeof raw];
+    }
+  }
+
+  // AR-81: Extract sigint data (third-party signals from ms-argus-web)
+  // These take precedence over any values already in fingerprint
+  if (sigint) {
+    // TLS fingerprint data (from CloudFront edge at id.argus.pw)
+    if (sigint.tlsFingerprint) {
+      const tls = sigint.tlsFingerprint;
+
+      // Third-party cookie ID - the key identifier for cross-site tracking
+      if (tls.id) {
+        normalized.sigint_id = tls.id;
+      }
+
+      // JA3/JA4 TLS fingerprints - override if present in sigint
+      if (tls.ja3) {
+        normalized.ja3 = tls.ja3;
+      }
+      if (tls.ja4) {
+        normalized.ja4 = tls.ja4;
+      }
+
+      // IP address from edge (more reliable than X-Forwarded-For)
+      if (tls.ip) {
+        normalized.ip_address = tls.ip;
+      }
+    }
+
+    // TCP probe data
+    if (sigint.tcpProbe) {
+      const tcp = sigint.tcpProbe;
+
+      // Convert ms to μs for tcp_rtt_us
+      if (typeof tcp.rttMs === "number") {
+        normalized.tcp_rtt_us = Math.round(tcp.rttMs * 1000);
+      }
+
+      if (typeof tcp.proxyScore === "number") {
+        normalized.proxy_score = tcp.proxyScore;
+      }
+
+      if (typeof tcp.vpnScore === "number") {
+        normalized.vpn_score = tcp.vpnScore;
+      }
+    }
+
+    // Favicon cache device ID (evercookie-like persistence)
+    if (sigint.faviconCache?.deviceId) {
+      normalized.evercookie_id = sigint.faviconCache.deviceId;
     }
   }
 

@@ -286,6 +286,13 @@ describe("normalizeFingerprint", () => {
       expect(result.public_key).toBe("MFkw...");
     });
 
+    // AR-81: Third-party cookie from sigint service
+    it("should pass through sigint_id", () => {
+      const input = { sigint_id: "sigint-uuid-456" };
+      const result = normalizeFingerprint(input);
+      expect(result.sigint_id).toBe("sigint-uuid-456");
+    });
+
     it("should pass through sigint fields", () => {
       const input = {
         ip_address: "10.0.0.1",
@@ -536,6 +543,135 @@ describe("normalizeFingerprint", () => {
       const result = normalizeFingerprint(partial);
 
       expect(result.screen_dims).toBeUndefined();
+    });
+  });
+
+  // AR-81: Sigint data extraction tests
+  describe("extracts sigint data (AR-81)", () => {
+    it("should extract sigint_id from sigint.tlsFingerprint.id", () => {
+      const result = normalizeFingerprint(
+        {},
+        { tlsFingerprint: { id: "abc-123-def" } },
+      );
+
+      expect(result.sigint_id).toBe("abc-123-def");
+    });
+
+    it("should extract ja3 and ja4 from sigint.tlsFingerprint", () => {
+      const result = normalizeFingerprint(
+        {},
+        {
+          tlsFingerprint: {
+            ja3: "ja3_hash_from_sigint",
+            ja4: "ja4_hash_from_sigint",
+          },
+        },
+      );
+
+      expect(result.ja3).toBe("ja3_hash_from_sigint");
+      expect(result.ja4).toBe("ja4_hash_from_sigint");
+    });
+
+    it("should extract ip_address from sigint.tlsFingerprint.ip", () => {
+      const result = normalizeFingerprint(
+        {},
+        { tlsFingerprint: { ip: "192.168.1.100" } },
+      );
+
+      expect(result.ip_address).toBe("192.168.1.100");
+    });
+
+    it("should extract tcp probe data", () => {
+      const result = normalizeFingerprint(
+        {},
+        {
+          tcpProbe: {
+            rttMs: 15.5,
+            proxyScore: 0.2,
+            vpnScore: 0.1,
+          },
+        },
+      );
+
+      expect(result.tcp_rtt_us).toBe(15500); // ms to μs
+      expect(result.proxy_score).toBe(0.2);
+      expect(result.vpn_score).toBe(0.1);
+    });
+
+    it("should extract evercookie_id from faviconCache.deviceId", () => {
+      const result = normalizeFingerprint(
+        {},
+        { faviconCache: { deviceId: "favicon-device-123" } },
+      );
+
+      expect(result.evercookie_id).toBe("favicon-device-123");
+    });
+
+    it("should override fingerprint fields with sigint data", () => {
+      const fingerprint = {
+        ja4: "old_ja4_from_fingerprint",
+        ip_address: "old_ip",
+      };
+      const sigint = {
+        tlsFingerprint: {
+          ja4: "new_ja4_from_sigint",
+          ip: "new_ip_from_edge",
+        },
+      };
+
+      const result = normalizeFingerprint(fingerprint, sigint);
+
+      // sigint data should take precedence
+      expect(result.ja4).toBe("new_ja4_from_sigint");
+      expect(result.ip_address).toBe("new_ip_from_edge");
+    });
+
+    it("should handle complete sigint payload", () => {
+      const sigint = {
+        tlsFingerprint: {
+          id: "sigint-uuid-456",
+          new: false,
+          ip: "203.0.113.50",
+          asn: "AS12345",
+          country: "US",
+          ja3: "full_ja3_hash",
+          ja4: "full_ja4_hash",
+        },
+        tcpProbe: {
+          rttMs: 25,
+          proxyScore: 0.05,
+          vpnScore: 0.0,
+        },
+        faviconCache: {
+          deviceId: "favicon-persistent-id",
+        },
+      };
+
+      const result = normalizeFingerprint({}, sigint);
+
+      expect(result.sigint_id).toBe("sigint-uuid-456");
+      expect(result.ip_address).toBe("203.0.113.50");
+      expect(result.ja3).toBe("full_ja3_hash");
+      expect(result.ja4).toBe("full_ja4_hash");
+      expect(result.tcp_rtt_us).toBe(25000);
+      expect(result.proxy_score).toBe(0.05);
+      expect(result.vpn_score).toBe(0.0);
+      expect(result.evercookie_id).toBe("favicon-persistent-id");
+    });
+
+    it("should handle null sigint gracefully", () => {
+      const result = normalizeFingerprint({}, null);
+      expect(result).toEqual({});
+    });
+
+    it("should handle undefined sigint gracefully", () => {
+      const result = normalizeFingerprint({}, undefined);
+      expect(result).toEqual({});
+    });
+
+    it("should handle sigint with null tlsFingerprint", () => {
+      const result = normalizeFingerprint({}, { tlsFingerprint: null });
+      expect(result.sigint_id).toBeUndefined();
     });
   });
 });

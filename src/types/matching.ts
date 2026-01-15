@@ -10,6 +10,7 @@ import type { Fingerprint } from "./fingerprint";
  */
 export type EvidenceCode =
   | "EVERCOOKIE_MATCH" // T0.5: Matched on evercookie ID
+  | "SIGINT_ID_MATCH" // T0.5: Matched on third-party cookie from sigint (AR-81)
   | "PUBLIC_KEY_MATCH" // T0.5: Matched on ECDSA public key (AR-64)
   | "STABLE_HASH_MATCH" // T1: Matched on stable fingerprint hash
   | "FUZZY_HASH_MATCH" // T1: Matched on fuzzy fingerprint hash
@@ -20,6 +21,8 @@ export type EvidenceCode =
   | "MATHS_WINDOW_BUCKET" // T2: Matched in Maths+WindowFeatures bucket
   | "HTML_CSS_BUCKET" // T2: Matched in HtmlElement+CSS bucket
   | "WEBGL_STRUCT_BUCKET" // T2: Matched in WebGL+Extensions+SVG bucket
+  // AR-82: Ephemeral session anchor bucket
+  | "SESSION_ANCHOR_BUCKET" // T2: Matched in IP+UA+Screen with 10min validity
   | "NEW_DEVICE"; // No match found, new device created
 
 /**
@@ -39,12 +42,55 @@ export interface SessionCacheValue {
 }
 
 /**
+ * AR-81: Sigint data from ms-argus-web (third-party signals)
+ * Contains TLS fingerprint, TCP probe, STUN, and favicon cache data
+ */
+export interface SigintData {
+  tlsFingerprint?: {
+    /** Third-party cookie ID (the _fpid cookie from id.argus.pw) */
+    id?: string;
+    /** Whether this is a new visitor (cookie just created) */
+    new?: boolean;
+    /** Client IP as seen by CloudFront edge */
+    ip?: string | null;
+    /** ASN of client IP */
+    asn?: string | null;
+    /** Country code */
+    country?: string | null;
+    /** JA3 TLS fingerprint */
+    ja3?: string | null;
+    /** JA4 TLS fingerprint */
+    ja4?: string | null;
+  } | null;
+  tcpProbe?: {
+    /** TCP round-trip time in milliseconds */
+    rttMs?: number;
+    /** Proxy likelihood score 0-1 */
+    proxyScore?: number;
+    /** VPN likelihood score 0-1 */
+    vpnScore?: number;
+  } | null;
+  stun?: {
+    /** Local IP addresses from WebRTC */
+    localIps?: string[];
+    /** Public IP address */
+    publicIp?: string | null;
+  } | null;
+  faviconCache?: {
+    /** Persistent device ID via favicon cache timing */
+    deviceId?: string | null;
+  } | null;
+}
+
+/**
  * Fingerprint payload from SQS (sent by Go ingestion handler)
  */
 export interface FingerprintPayload {
   session_id: string;
   tenant_id: string;
   fingerprint: Fingerprint;
+  /** AR-81: Sigint data from ms-argus-web */
+  sigint?: SigintData;
   tcp_blob?: string;
   tls_blob?: string;
   headers: Record<string, string>;
