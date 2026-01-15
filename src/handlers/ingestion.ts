@@ -1,7 +1,7 @@
 // src/handlers/ingestion.ts
 // AR-52: Lambda ingestion handler replacing Go/ECS service
 // AR-71: Reverted to async (SQS) for scalability at 30B RPY
-// AR-87: Added gzip decompression support for large fingerprint payloads
+// AR-90: Simplified to binary gzip (application/octet-stream) - removed base64 text path
 // Receives fingerprints via HTTP API, validates, and queues to SQS
 
 import {
@@ -180,31 +180,19 @@ function extractHeaders(event: APIGatewayProxyEventV2): Record<string, string> {
 }
 
 /**
- * AR-87: Decompress gzip payload
+ * AR-90: Decompress binary gzip payload
  * Returns decompressed string or error object
  *
- * Handles two cases:
- * 1. API Gateway binary mode: isBase64Encoded=true, body is double-encoded
- *    (API GW base64-encodes the base64 text we sent)
- * 2. Browser sends base64 text: isBase64Encoded=false, body is our base64 gzip
+ * Browser sends raw gzip bytes with Content-Type: application/octet-stream
+ * API Gateway base64-encodes the binary and sets isBase64Encoded=true
+ * We decode base64 once to get gzip bytes, then decompress
  */
-function decompressGzipPayload(
+function decompressBinaryGzipPayload(
   body: string,
-  isBase64Encoded: boolean,
 ): { data: string } | { error: string } {
   try {
-    let gzipBase64: string;
-
-    if (isBase64Encoded) {
-      // API Gateway base64-encoded our base64 text, so decode once to get our original base64
-      gzipBase64 = Buffer.from(body, "base64").toString("utf-8");
-    } else {
-      // Body is our base64 text directly
-      gzipBase64 = body;
-    }
-
-    // Now decode our base64 to get the gzip bytes
-    const gzipBuffer = Buffer.from(gzipBase64, "base64");
+    // Decode base64 to get raw gzip bytes
+    const gzipBuffer = Buffer.from(body, "base64");
 
     // Validate it looks like gzip (magic bytes: 1f 8b)
     if (
@@ -288,43 +276,45 @@ export async function handler(
     return errorResponse(404, "Not found", origin);
   }
 
-  // AR-87: Check for gzip encoding (case-insensitive)
+  // AR-90: Check content type and encoding
+  const contentType = event.headers["content-type"]?.toLowerCase();
   const contentEncoding = event.headers["content-encoding"]?.toLowerCase();
-  const isGzipped = contentEncoding === "gzip";
+  const isBinaryGzip = contentType === "application/octet-stream";
+  const hasGzipEncoding = contentEncoding === "gzip";
+
+  // AR-90: Binary payloads must have gzip encoding
+  if (isBinaryGzip && !hasGzipEncoding) {
+    logger.warn("Binary payload missing gzip encoding");
+    metrics.addMetric("MissingGzipEncoding", MetricUnit.Count, 1);
+    return errorResponse(
+      400,
+      "Binary payload requires Content-Encoding: gzip",
+      origin,
+    );
+  }
 
   // Validate body size (different limits for compressed vs uncompressed)
   const rawBody = event.body ?? "";
-  const maxSize = isGzipped ? MAX_GZIP_BODY_SIZE : MAX_BODY_SIZE;
+  const maxSize = isBinaryGzip ? MAX_GZIP_BODY_SIZE : MAX_BODY_SIZE;
   if (rawBody.length > maxSize) {
-    logger.warn("Payload too large", { size: rawBody.length, isGzipped });
+    logger.warn("Payload too large", { size: rawBody.length, isBinaryGzip });
     metrics.addMetric("PayloadTooLarge", MetricUnit.Count, 1);
     return errorResponse(413, "Request entity too large", origin);
   }
 
-  // AR-87: Decompress if gzipped
+  // AR-90: Decompress binary gzip payload
   let body: string;
-  if (isGzipped) {
-    // Debug: log what we received
-    logger.info("Gzip request received", {
-      bodyLength: rawBody.length,
-      bodyStart: rawBody.substring(0, 50),
-      isBase64Encoded: event.isBase64Encoded,
-    });
-
-    const decompressResult = decompressGzipPayload(
-      rawBody,
-      event.isBase64Encoded,
-    );
+  if (isBinaryGzip) {
+    const decompressResult = decompressBinaryGzipPayload(rawBody);
     if ("error" in decompressResult) {
       logger.warn("Gzip decompression failed", {
         error: decompressResult.error,
-        bodyStart: rawBody.substring(0, 100),
       });
       metrics.addMetric("GzipDecompressionFailed", MetricUnit.Count, 1);
       return errorResponse(400, decompressResult.error, origin);
     }
     body = decompressResult.data;
-    metrics.addMetric("GzipPayloadReceived", MetricUnit.Count, 1);
+    metrics.addMetric("BinaryGzipPayloadReceived", MetricUnit.Count, 1);
   } else {
     body = rawBody;
   }
