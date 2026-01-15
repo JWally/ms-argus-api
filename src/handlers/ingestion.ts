@@ -75,7 +75,8 @@ const MAX_JSON_DEPTH = 10;
 // CORS headers
 const CORS_HEADERS = {
   "Access-Control-Allow-Methods": "POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, X-Tenant-ID, X-API-Key",
+  "Access-Control-Allow-Headers":
+    "Content-Type, Content-Encoding, X-Tenant-ID, X-API-Key",
   "Access-Control-Max-Age": "86400",
 };
 
