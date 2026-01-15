@@ -754,6 +754,56 @@ export class ProfileService {
   }
 
   /**
+   * AR-94: Build IP+UA-only anchor bucket key for ephemeral matching
+   * Does NOT include screen_dims - catches dock/undock screen changes
+   * Returns null if required signals are missing
+   */
+  buildIpUaAnchorKey(
+    tenantId: string,
+    fingerprint: Fingerprint,
+  ): string | null {
+    if (!fingerprint.ip_address || !fingerprint.user_agent) {
+      return null;
+    }
+
+    const uaHash = fnv1a(fingerprint.user_agent);
+    return `${tenantId}#ip_ua_anchor#${fingerprint.ip_address}#${uaHash}`;
+  }
+
+  /**
+   * AR-94: Update IP+UA-only anchor bucket for ephemeral matching
+   * Stores created_at timestamp for application-side 3-minute validity check
+   * Uses 1 hour TTL for DynamoDB cleanup (same as session anchor)
+   */
+  async updateIpUaAnchorBucket(
+    tenantId: string,
+    deviceId: string,
+    fingerprint: Fingerprint,
+  ): Promise<boolean> {
+    const bucketKey = this.buildIpUaAnchorKey(tenantId, fingerprint);
+    if (!bucketKey) {
+      return false;
+    }
+
+    const now = Date.now();
+    const ttl = Math.floor(now / 1000) + SESSION_ANCHOR_CLEANUP_TTL_SECONDS;
+
+    await this.deps.dynamodb.send(
+      new PutItemCommand({
+        TableName: this.deps.config.tier2BucketsTable,
+        Item: {
+          bucket_key: { S: bucketKey },
+          device_id: { S: deviceId },
+          created_at: { N: String(now) },
+          ttl: { N: String(ttl) },
+        },
+      }),
+    );
+
+    return true;
+  }
+
+  /**
    * Process a complete profile update (orchestration method)
    * Returns object indicating what was done
    */
@@ -817,6 +867,9 @@ export class ProfileService {
 
     // AR-82: Update session anchor bucket for ephemeral short-window matching
     await this.updateSessionAnchorBucket(tenant_id, device_id, fingerprint);
+
+    // AR-94: Update IP+UA-only anchor bucket (catches screen changes)
+    await this.updateIpUaAnchorBucket(tenant_id, device_id, fingerprint);
 
     return {
       skipped: false,

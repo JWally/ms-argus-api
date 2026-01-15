@@ -23,6 +23,8 @@ export type EvidenceCode =
   | "WEBGL_STRUCT_BUCKET" // T2: Matched in WebGL+Extensions+SVG bucket
   // AR-82: Ephemeral session anchor bucket
   | "SESSION_ANCHOR_BUCKET" // T2: Matched in IP+UA+Screen with 10min validity
+  // AR-94: IP+UA-only anchor bucket (no screen)
+  | "IP_UA_ANCHOR_BUCKET" // T2: Matched in IP+UA with 3min validity
   | "NEW_DEVICE"; // No match found, new device created
 
 /**
