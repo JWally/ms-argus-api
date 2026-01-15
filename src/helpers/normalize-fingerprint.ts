@@ -1,5 +1,6 @@
 // src/helpers/normalize-fingerprint.ts
 // AR-73: Normalize fingerprint from web library nested format to flat API format
+// AR-83: Added robust type coercion, validation, and sanitization
 //
 // The ms-argus-web library sends a complex nested FingerprintResult:
 //   { loose: {...}, stable: {...}, hashes: {stable, fuzzy, ...}, botSignals: {...} }
@@ -11,6 +12,80 @@
 
 import type { Fingerprint } from "../types/fingerprint";
 import type { SigintData } from "../types/matching";
+
+// AR-83: Maximum string length to prevent storage issues
+const MAX_STRING_LENGTH = 8192;
+
+/**
+ * AR-83: Safely coerce a value to a valid positive number.
+ * Returns undefined if the value cannot be coerced or is invalid.
+ */
+function toValidNumber(val: unknown): number | undefined {
+  if (val === undefined || val === null) return undefined;
+  const num = typeof val === "string" ? parseFloat(val) : Number(val);
+  if (!Number.isFinite(num)) return undefined;
+  return num;
+}
+
+/**
+ * AR-83: Safely coerce a value to a valid positive integer.
+ * Returns undefined if the value is negative, NaN, or Infinity.
+ */
+function toValidPositiveNumber(val: unknown): number | undefined {
+  const num = toValidNumber(val);
+  if (num === undefined || num < 0) return undefined;
+  return num;
+}
+
+/**
+ * AR-83: Safely coerce a value to a boolean.
+ * Handles string "true"/"false" as well as actual booleans.
+ */
+function toBoolean(val: unknown): boolean | undefined {
+  if (typeof val === "boolean") return val;
+  if (val === "true") return true;
+  if (val === "false") return false;
+  return undefined;
+}
+
+/**
+ * AR-83: Safely coerce a value to a valid integer.
+ * Returns undefined if invalid.
+ */
+function toValidInteger(val: unknown): number | undefined {
+  const num = toValidNumber(val);
+  if (num === undefined) return undefined;
+  return Math.round(num);
+}
+
+/**
+ * AR-83: Validate and sanitize a string value.
+ * Returns undefined for empty/whitespace strings, sanitizes null bytes, truncates long strings.
+ */
+function sanitizeString(val: unknown): string | undefined {
+  if (typeof val !== "string") return undefined;
+  // Trim whitespace
+  let str = val.trim();
+  if (str.length === 0) return undefined;
+  // Remove null bytes (using String.fromCharCode to avoid eslint no-control-regex)
+  // eslint-disable-next-line no-control-regex
+  str = str.replace(/\x00/g, "");
+  if (str.length === 0) return undefined;
+  // Truncate very long strings
+  if (str.length > MAX_STRING_LENGTH) {
+    str = str.substring(0, MAX_STRING_LENGTH);
+  }
+  return str;
+}
+
+/**
+ * AR-83: Validate a score is in the 0-1 range.
+ */
+function toValidScore(val: unknown): number | undefined {
+  const num = toValidNumber(val);
+  if (num === undefined || num < 0 || num > 1) return undefined;
+  return num;
+}
 
 /**
  * Web library FingerprintResult structure (nested)
@@ -106,135 +181,210 @@ export function normalizeFingerprint(
     return {};
   }
 
-  // If already flat (has stable_hash directly), return as-is with minimal processing
+  // AR-83: If already flat (has stable_hash directly), still process sigint overrides
   if (
     typeof raw.stable_hash === "string" ||
     typeof raw.fuzzy_hash === "string"
   ) {
-    return raw as Fingerprint;
+    // Start with the flat fingerprint but allow sigint to override
+    const result = { ...(raw as Fingerprint) };
+
+    // Apply sigint overrides even for flat fingerprints
+    if (sigint) {
+      if (sigint.tlsFingerprint && typeof sigint.tlsFingerprint === "object") {
+        const tls = sigint.tlsFingerprint;
+        const sigintId = sanitizeString(tls.id);
+        if (sigintId) result.sigint_id = sigintId;
+        const ja3 = sanitizeString(tls.ja3);
+        if (ja3) result.ja3 = ja3;
+        const ja4 = sanitizeString(tls.ja4);
+        if (ja4) result.ja4 = ja4;
+        const ip = sanitizeString(tls.ip);
+        if (ip) result.ip_address = ip;
+      }
+      if (sigint.tcpProbe && typeof sigint.tcpProbe === "object") {
+        const tcp = sigint.tcpProbe;
+        const rttMs = toValidPositiveNumber(tcp.rttMs);
+        if (rttMs !== undefined) result.tcp_rtt_us = Math.round(rttMs * 1000);
+        const proxyScore = toValidScore(tcp.proxyScore);
+        if (proxyScore !== undefined) result.proxy_score = proxyScore;
+        const vpnScore = toValidScore(tcp.vpnScore);
+        if (vpnScore !== undefined) result.vpn_score = vpnScore;
+      }
+      const faviconDeviceId = sanitizeString(sigint.faviconCache?.deviceId);
+      if (faviconDeviceId) result.evercookie_id = faviconDeviceId;
+    }
+
+    return result;
   }
 
   const webFp = raw as WebFingerprintResult;
   const normalized: Fingerprint = {};
 
-  // Extract hashes
-  if (webFp.hashes) {
-    if (webFp.hashes.stable) {
-      normalized.stable_hash = webFp.hashes.stable;
+  // AR-83: Extract hashes with validation
+  if (
+    webFp.hashes &&
+    typeof webFp.hashes === "object" &&
+    !Array.isArray(webFp.hashes)
+  ) {
+    const stableHash = sanitizeString(webFp.hashes.stable);
+    if (stableHash) {
+      normalized.stable_hash = stableHash;
     }
-    if (webFp.hashes.fuzzy) {
-      normalized.fuzzy_hash = webFp.hashes.fuzzy;
+    const fuzzyHash = sanitizeString(webFp.hashes.fuzzy);
+    if (fuzzyHash) {
+      normalized.fuzzy_hash = fuzzyHash;
     }
   }
 
-  // Extract from loose data
-  if (webFp.loose) {
+  // AR-83: Extract from loose data with validation
+  // Check that loose is actually an object (not array or primitive)
+  if (
+    webFp.loose &&
+    typeof webFp.loose === "object" &&
+    !Array.isArray(webFp.loose)
+  ) {
     // AR-77: Canvas hash - field is canvas2d (not canvas)
-    if (webFp.loose.canvas2d?.$hash) {
-      normalized.canvas_hash = webFp.loose.canvas2d.$hash;
+    // AR-83: Validate $hash is actually a string
+    const canvasHash = sanitizeString(webFp.loose.canvas2d?.$hash);
+    if (canvasHash) {
+      normalized.canvas_hash = canvasHash;
     }
 
     // AR-77: Audio hash - field is offlineAudioContext (not audio)
-    if (webFp.loose.offlineAudioContext?.$hash) {
-      normalized.audio_hash = webFp.loose.offlineAudioContext.$hash;
+    const audioHash = sanitizeString(webFp.loose.offlineAudioContext?.$hash);
+    if (audioHash) {
+      normalized.audio_hash = audioHash;
     }
 
     // AR-77: WebGL / GPU renderer - field is canvasWebgl (not webgl)
-    // GPU is at canvasWebgl.gpu.compressedGPU (not webgl.gpu)
-    if (webFp.loose.canvasWebgl) {
+    // AR-83: Validate GPU renderer is a string and not an object
+    if (
+      webFp.loose.canvasWebgl &&
+      typeof webFp.loose.canvasWebgl === "object"
+    ) {
       const webgl = webFp.loose.canvasWebgl;
-      // Try multiple locations for GPU renderer
-      const gpuRenderer =
+      // Try multiple locations for GPU renderer - but only accept strings
+      const gpuCandidate =
         webgl.gpu?.compressedGPU ||
         webgl.gpu?.renderer ||
         webgl.parameters?.renderer ||
-        (webgl.parameters?.UNMASKED_RENDERER_WEBGL as string | undefined);
+        webgl.parameters?.UNMASKED_RENDERER_WEBGL;
+      const gpuRenderer = sanitizeString(gpuCandidate);
       if (gpuRenderer) {
         normalized.gpu_renderer = gpuRenderer;
       }
-      if (webgl.$hash) {
-        normalized.webgl_hash = webgl.$hash;
+      const webglHash = sanitizeString(webgl.$hash);
+      if (webglHash) {
+        normalized.webgl_hash = webglHash;
+      }
+      // WebGL extensions count (capability signal)
+      if (Array.isArray(webgl.extensions)) {
+        normalized.webgl_extensions_count = webgl.extensions.length;
       }
     }
 
-    // Screen dimensions
-    if (webFp.loose.screen) {
+    // AR-83: Screen dimensions with validation (must be positive numbers)
+    if (webFp.loose.screen && typeof webFp.loose.screen === "object") {
       const screen = webFp.loose.screen;
-      if (screen.width && screen.height) {
-        normalized.screen_dims = `${screen.width}x${screen.height}`;
+      const width = toValidPositiveNumber(screen.width);
+      const height = toValidPositiveNumber(screen.height);
+      // Both must be positive (not zero, not negative)
+      if (width && width > 0 && height && height > 0) {
+        normalized.screen_dims = `${Math.round(width)}x${Math.round(height)}`;
       }
     }
 
-    // Timezone
-    if (webFp.loose.timezone) {
+    // Timezone with sanitization
+    if (webFp.loose.timezone && typeof webFp.loose.timezone === "object") {
       const tz = webFp.loose.timezone;
-      normalized.timezone = tz.location || tz.zone;
+      const timezone = sanitizeString(tz.location) || sanitizeString(tz.zone);
+      if (timezone) {
+        normalized.timezone = timezone;
+      }
     }
 
-    // Navigator signals
-    if (webFp.loose.navigator) {
+    // AR-83: Navigator signals with type coercion
+    if (webFp.loose.navigator && typeof webFp.loose.navigator === "object") {
       const nav = webFp.loose.navigator;
-      if (typeof nav.hardwareConcurrency === "number") {
-        normalized.hardware_concurrency = nav.hardwareConcurrency;
+      const hardwareConcurrency = toValidPositiveNumber(
+        nav.hardwareConcurrency,
+      );
+      if (hardwareConcurrency !== undefined) {
+        normalized.hardware_concurrency = Math.round(hardwareConcurrency);
       }
-      if (typeof nav.deviceMemory === "number") {
-        normalized.device_memory = nav.deviceMemory;
+      const deviceMemory = toValidPositiveNumber(nav.deviceMemory);
+      if (deviceMemory !== undefined) {
+        normalized.device_memory = deviceMemory;
       }
     }
 
     // AR-80: Structural fingerprint signals (stable browser engine anchors)
-    // These signals are based on browser internals that cannot be randomized
-    // without breaking website functionality. Useful for tier2 matching
-    // when canvas/audio are blocked (e.g., Brave).
-
-    if (webFp.loose.maths?.$hash) {
-      normalized.maths_hash = webFp.loose.maths.$hash;
+    // AR-83: All hashes validated through sanitizeString
+    const mathsHash = sanitizeString(webFp.loose.maths?.$hash);
+    if (mathsHash) {
+      normalized.maths_hash = mathsHash;
     }
-    if (webFp.loose.windowFeatures?.$hash) {
-      normalized.window_features_hash = webFp.loose.windowFeatures.$hash;
+    const windowFeaturesHash = sanitizeString(
+      webFp.loose.windowFeatures?.$hash,
+    );
+    if (windowFeaturesHash) {
+      normalized.window_features_hash = windowFeaturesHash;
     }
-    if (webFp.loose.htmlElementVersion?.$hash) {
-      normalized.html_element_hash = webFp.loose.htmlElementVersion.$hash;
+    const htmlElementHash = sanitizeString(
+      webFp.loose.htmlElementVersion?.$hash,
+    );
+    if (htmlElementHash) {
+      normalized.html_element_hash = htmlElementHash;
     }
-    if (webFp.loose.css?.$hash) {
-      normalized.css_hash = webFp.loose.css.$hash;
+    const cssHash = sanitizeString(webFp.loose.css?.$hash);
+    if (cssHash) {
+      normalized.css_hash = cssHash;
     }
-    if (webFp.loose.features?.$hash) {
-      normalized.features_hash = webFp.loose.features.$hash;
+    const featuresHash = sanitizeString(webFp.loose.features?.$hash);
+    if (featuresHash) {
+      normalized.features_hash = featuresHash;
     }
-    if (webFp.loose.svg?.$hash) {
-      normalized.svg_hash = webFp.loose.svg.$hash;
+    const svgHash = sanitizeString(webFp.loose.svg?.$hash);
+    if (svgHash) {
+      normalized.svg_hash = svgHash;
     }
-    if (webFp.loose.clientRects?.$hash) {
-      normalized.client_rects_hash = webFp.loose.clientRects.$hash;
+    const clientRectsHash = sanitizeString(webFp.loose.clientRects?.$hash);
+    if (clientRectsHash) {
+      normalized.client_rects_hash = clientRectsHash;
     }
-    if (webFp.loose.intl?.$hash) {
-      normalized.intl_hash = webFp.loose.intl.$hash;
+    const intlHash = sanitizeString(webFp.loose.intl?.$hash);
+    if (intlHash) {
+      normalized.intl_hash = intlHash;
     }
-    if (webFp.loose.consoleErrors?.$hash) {
-      normalized.console_errors_hash = webFp.loose.consoleErrors.$hash;
-    }
-    // WebGL extensions count (capability signal)
-    if (webFp.loose.canvasWebgl?.extensions) {
-      normalized.webgl_extensions_count =
-        webFp.loose.canvasWebgl.extensions.length;
+    const consoleErrorsHash = sanitizeString(webFp.loose.consoleErrors?.$hash);
+    if (consoleErrorsHash) {
+      normalized.console_errors_hash = consoleErrorsHash;
     }
   }
 
-  // Extract bot signals
-  if (webFp.botSignals) {
+  // AR-83: Extract bot signals with type coercion
+  if (
+    webFp.botSignals &&
+    typeof webFp.botSignals === "object" &&
+    !Array.isArray(webFp.botSignals)
+  ) {
     const bot = webFp.botSignals;
-    if (typeof bot.isHeadless === "boolean") {
-      normalized.is_headless = bot.isHeadless;
+    const isHeadless = toBoolean(bot.isHeadless);
+    if (isHeadless !== undefined) {
+      normalized.is_headless = isHeadless;
     }
-    if (typeof bot.lieCount === "number") {
-      normalized.lie_count = bot.lieCount;
+    const lieCount = toValidInteger(bot.lieCount);
+    if (lieCount !== undefined && lieCount >= 0) {
+      normalized.lie_count = lieCount;
     }
-    if (bot.botHash) {
-      normalized.bot_hash = bot.botHash;
+    const botHash = sanitizeString(bot.botHash);
+    if (botHash) {
+      normalized.bot_hash = botHash;
     }
-    if (typeof bot.isPrivate === "boolean") {
-      normalized.is_private_browsing = bot.isPrivate;
+    const isPrivate = toBoolean(bot.isPrivate);
+    if (isPrivate !== undefined) {
+      normalized.is_private_browsing = isPrivate;
     }
   }
 
@@ -262,52 +412,62 @@ export function normalizeFingerprint(
   }
 
   // AR-81: Extract sigint data (third-party signals from ms-argus-web)
+  // AR-83: Added type coercion and validation
   // These take precedence over any values already in fingerprint
   if (sigint) {
     // TLS fingerprint data (from CloudFront edge at id.argus.pw)
-    if (sigint.tlsFingerprint) {
+    if (sigint.tlsFingerprint && typeof sigint.tlsFingerprint === "object") {
       const tls = sigint.tlsFingerprint;
 
       // Third-party cookie ID - the key identifier for cross-site tracking
-      if (tls.id) {
-        normalized.sigint_id = tls.id;
+      const sigintId = sanitizeString(tls.id);
+      if (sigintId) {
+        normalized.sigint_id = sigintId;
       }
 
       // JA3/JA4 TLS fingerprints - override if present in sigint
-      if (tls.ja3) {
-        normalized.ja3 = tls.ja3;
+      const ja3 = sanitizeString(tls.ja3);
+      if (ja3) {
+        normalized.ja3 = ja3;
       }
-      if (tls.ja4) {
-        normalized.ja4 = tls.ja4;
+      const ja4 = sanitizeString(tls.ja4);
+      if (ja4) {
+        normalized.ja4 = ja4;
       }
 
       // IP address from edge (more reliable than X-Forwarded-For)
-      if (tls.ip) {
-        normalized.ip_address = tls.ip;
+      const ip = sanitizeString(tls.ip);
+      if (ip) {
+        normalized.ip_address = ip;
       }
     }
 
-    // TCP probe data
-    if (sigint.tcpProbe) {
+    // TCP probe data with validation
+    if (sigint.tcpProbe && typeof sigint.tcpProbe === "object") {
       const tcp = sigint.tcpProbe;
 
-      // Convert ms to μs for tcp_rtt_us
-      if (typeof tcp.rttMs === "number") {
-        normalized.tcp_rtt_us = Math.round(tcp.rttMs * 1000);
+      // AR-83: Convert ms to μs for tcp_rtt_us, with type coercion and validation
+      const rttMs = toValidPositiveNumber(tcp.rttMs);
+      if (rttMs !== undefined) {
+        normalized.tcp_rtt_us = Math.round(rttMs * 1000);
       }
 
-      if (typeof tcp.proxyScore === "number") {
-        normalized.proxy_score = tcp.proxyScore;
+      // AR-83: Validate scores are in 0-1 range
+      const proxyScore = toValidScore(tcp.proxyScore);
+      if (proxyScore !== undefined) {
+        normalized.proxy_score = proxyScore;
       }
 
-      if (typeof tcp.vpnScore === "number") {
-        normalized.vpn_score = tcp.vpnScore;
+      const vpnScore = toValidScore(tcp.vpnScore);
+      if (vpnScore !== undefined) {
+        normalized.vpn_score = vpnScore;
       }
     }
 
     // Favicon cache device ID (evercookie-like persistence)
-    if (sigint.faviconCache?.deviceId) {
-      normalized.evercookie_id = sigint.faviconCache.deviceId;
+    const faviconDeviceId = sanitizeString(sigint.faviconCache?.deviceId);
+    if (faviconDeviceId) {
+      normalized.evercookie_id = faviconDeviceId;
     }
   }
 

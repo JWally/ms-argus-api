@@ -34,10 +34,12 @@ describe("normalizeFingerprint", () => {
       expect(result.canvas_hash).toBe("canvas123");
     });
 
+    // AR-83: Changed from toBe to toStrictEqual - we now copy flat fingerprints
+    // to allow sigint data to override fields
     it("should detect flat format by stable_hash presence", () => {
       const flat = { stable_hash: "test123" };
       const result = normalizeFingerprint(flat);
-      expect(result).toBe(flat); // Same reference - no transformation needed
+      expect(result).toStrictEqual(flat); // Same content, but may be a copy for sigint override support
     });
   });
 
@@ -672,6 +674,528 @@ describe("normalizeFingerprint", () => {
     it("should handle sigint with null tlsFingerprint", () => {
       const result = normalizeFingerprint({}, { tlsFingerprint: null });
       expect(result.sigint_id).toBeUndefined();
+    });
+  });
+
+  // AR-83: Adversarial tests - testing robustness against malformed/unexpected input
+  // These tests expose gaps in current implementation that need fixing
+  describe("adversarial tests (AR-83)", () => {
+    describe("type coercion", () => {
+      it("should handle screen dimensions as strings", () => {
+        const nested = {
+          loose: {
+            screen: {
+              width: "1920" as unknown as number, // String instead of number
+              height: "1080" as unknown as number,
+            },
+          },
+        };
+
+        const result = normalizeFingerprint(nested);
+
+        // Should coerce strings to numbers and create valid screen_dims
+        expect(result.screen_dims).toBe("1920x1080");
+      });
+
+      it("should handle hardwareConcurrency as string", () => {
+        const nested = {
+          loose: {
+            navigator: {
+              hardwareConcurrency: "8" as unknown as number, // String instead of number
+              deviceMemory: "16" as unknown as number,
+            },
+          },
+        };
+
+        const result = normalizeFingerprint(nested);
+
+        // Should coerce or handle string values
+        expect(result.hardware_concurrency).toBe(8);
+        expect(result.device_memory).toBe(16);
+      });
+
+      it("should handle boolean isHeadless as string 'true'", () => {
+        const nested = {
+          botSignals: {
+            isHeadless: "true" as unknown as boolean, // String instead of boolean
+            isPrivate: "false" as unknown as boolean,
+          },
+        };
+
+        const result = normalizeFingerprint(nested);
+
+        // Should coerce string 'true'/'false' to boolean
+        expect(result.is_headless).toBe(true);
+        expect(result.is_private_browsing).toBe(false);
+      });
+
+      it("should handle lieCount as string", () => {
+        const nested = {
+          botSignals: {
+            lieCount: "5" as unknown as number,
+          },
+        };
+
+        const result = normalizeFingerprint(nested);
+
+        expect(result.lie_count).toBe(5);
+      });
+
+      it("should reject NaN values for numeric fields", () => {
+        const nested = {
+          loose: {
+            screen: {
+              width: NaN,
+              height: 1080,
+            },
+            navigator: {
+              hardwareConcurrency: NaN,
+            },
+          },
+        };
+
+        const result = normalizeFingerprint(nested);
+
+        // NaN should not produce invalid screen_dims
+        expect(result.screen_dims).toBeUndefined();
+        expect(result.hardware_concurrency).toBeUndefined();
+      });
+
+      it("should handle Infinity values", () => {
+        const nested = {
+          loose: {
+            navigator: {
+              hardwareConcurrency: Infinity,
+              deviceMemory: -Infinity,
+            },
+          },
+        };
+
+        const result = normalizeFingerprint(nested);
+
+        // Infinity should be rejected
+        expect(result.hardware_concurrency).toBeUndefined();
+        expect(result.device_memory).toBeUndefined();
+      });
+    });
+
+    describe("empty values", () => {
+      it("should treat empty string hash as undefined", () => {
+        const nested = {
+          loose: {
+            canvas2d: { $hash: "" }, // Empty string
+            maths: { $hash: "" },
+          },
+          hashes: {
+            stable: "",
+            fuzzy: "",
+          },
+        };
+
+        const result = normalizeFingerprint(nested);
+
+        // Empty strings should not be stored - they're not useful for matching
+        expect(result.canvas_hash).toBeUndefined();
+        expect(result.maths_hash).toBeUndefined();
+        expect(result.stable_hash).toBeUndefined();
+        expect(result.fuzzy_hash).toBeUndefined();
+      });
+
+      it("should handle whitespace-only strings as empty", () => {
+        const nested = {
+          loose: {
+            canvas2d: { $hash: "   " },
+            timezone: { location: "  ", zone: "\t\n" },
+          },
+        };
+
+        const result = normalizeFingerprint(nested);
+
+        expect(result.canvas_hash).toBeUndefined();
+        expect(result.timezone).toBeUndefined();
+      });
+
+      it("should handle zero dimensions gracefully", () => {
+        const nested = {
+          loose: {
+            screen: {
+              width: 0,
+              height: 0,
+            },
+          },
+        };
+
+        const result = normalizeFingerprint(nested);
+
+        // Zero dimensions are invalid - should not create screen_dims
+        expect(result.screen_dims).toBeUndefined();
+      });
+
+      it("should handle negative screen dimensions", () => {
+        const nested = {
+          loose: {
+            screen: {
+              width: -1920,
+              height: 1080,
+            },
+          },
+        };
+
+        const result = normalizeFingerprint(nested);
+
+        // Negative dimensions are invalid
+        expect(result.screen_dims).toBeUndefined();
+      });
+    });
+
+    describe("unexpected structure", () => {
+      it("should handle loose as array instead of object", () => {
+        const nested = {
+          loose: [{ canvas2d: { $hash: "test" } }], // Array instead of object
+        };
+
+        const result = normalizeFingerprint(
+          nested as unknown as Parameters<typeof normalizeFingerprint>[0],
+        );
+
+        // Should not crash, just return empty or partial result
+        expect(result.canvas_hash).toBeUndefined();
+      });
+
+      it("should handle hashes as string instead of object", () => {
+        const nested = {
+          hashes: "invalid_format", // String instead of object
+        };
+
+        const result = normalizeFingerprint(
+          nested as unknown as Parameters<typeof normalizeFingerprint>[0],
+        );
+
+        expect(result.stable_hash).toBeUndefined();
+      });
+
+      it("should handle botSignals as array", () => {
+        const nested = {
+          botSignals: [{ isHeadless: true }], // Array instead of object
+        };
+
+        const result = normalizeFingerprint(
+          nested as unknown as Parameters<typeof normalizeFingerprint>[0],
+        );
+
+        expect(result.is_headless).toBeUndefined();
+      });
+
+      it("should handle $hash as object instead of string", () => {
+        const nested = {
+          loose: {
+            canvas2d: {
+              $hash: { value: "hash_value" }, // Object instead of string
+            },
+          },
+        };
+
+        const result = normalizeFingerprint(
+          nested as unknown as Parameters<typeof normalizeFingerprint>[0],
+        );
+
+        expect(result.canvas_hash).toBeUndefined();
+      });
+
+      it("should handle deeply nested unexpected structure", () => {
+        const nested = {
+          loose: {
+            canvasWebgl: {
+              gpu: {
+                compressedGPU: {
+                  renderer: "NVIDIA", // Object instead of string
+                },
+              },
+            },
+          },
+        };
+
+        const result = normalizeFingerprint(
+          nested as unknown as Parameters<typeof normalizeFingerprint>[0],
+        );
+
+        // Should not use object as GPU renderer
+        expect(result.gpu_renderer).toBeUndefined();
+      });
+    });
+
+    describe("special characters and encoding", () => {
+      it("should handle unicode in GPU renderer", () => {
+        const nested = {
+          loose: {
+            canvasWebgl: {
+              gpu: {
+                compressedGPU: "NVIDIA® GeForce™ GTX 1080 🎮",
+              },
+            },
+          },
+        };
+
+        const result = normalizeFingerprint(nested);
+
+        // Unicode should be preserved
+        expect(result.gpu_renderer).toBe("NVIDIA® GeForce™ GTX 1080 🎮");
+      });
+
+      it("should handle null bytes in strings", () => {
+        const nested = {
+          loose: {
+            canvas2d: { $hash: "hash\x00with\x00nulls" },
+          },
+        };
+
+        const result = normalizeFingerprint(nested);
+
+        // Should either sanitize or reject null bytes
+        expect(result.canvas_hash).not.toContain("\x00");
+      });
+
+      it("should handle very long strings (potential DoS)", () => {
+        const veryLongString = "a".repeat(100_000);
+        const nested = {
+          loose: {
+            canvasWebgl: {
+              gpu: {
+                compressedGPU: veryLongString,
+              },
+            },
+          },
+        };
+
+        const result = normalizeFingerprint(nested);
+
+        // Should truncate extremely long values to prevent storage issues
+        expect(result.gpu_renderer?.length).toBeLessThan(10_000);
+      });
+
+      it("should handle script injection attempts in strings", () => {
+        const nested = {
+          loose: {
+            timezone: {
+              location: "<script>alert('xss')</script>America/Chicago",
+            },
+          },
+        };
+
+        const result = normalizeFingerprint(nested);
+
+        // Should sanitize or store as-is (storage is not HTML context)
+        // The value should be stored without interpretation
+        expect(result.timezone).toBeDefined();
+      });
+    });
+
+    describe("prototype pollution resistance", () => {
+      it("should not be affected by __proto__ in input", () => {
+        const nested = JSON.parse(
+          '{"__proto__": {"polluted": true}, "hashes": {"stable": "test"}}',
+        );
+
+        const result = normalizeFingerprint(nested);
+
+        expect(result.stable_hash).toBe("test");
+        // @ts-expect-error - checking prototype pollution
+        expect(result.polluted).toBeUndefined();
+        // @ts-expect-error - checking prototype pollution
+        expect({}.polluted).toBeUndefined();
+      });
+
+      it("should not be affected by constructor pollution", () => {
+        const nested = {
+          constructor: { prototype: { polluted: true } },
+          hashes: { stable: "safe" },
+        };
+
+        const result = normalizeFingerprint(
+          nested as unknown as Parameters<typeof normalizeFingerprint>[0],
+        );
+
+        expect(result.stable_hash).toBe("safe");
+      });
+    });
+
+    describe("null vs undefined handling", () => {
+      it("should handle null values in nested objects", () => {
+        const nested = {
+          loose: {
+            canvas2d: null,
+            screen: null,
+            timezone: null,
+          },
+          hashes: null,
+          botSignals: null,
+        };
+
+        const result = normalizeFingerprint(
+          nested as unknown as Parameters<typeof normalizeFingerprint>[0],
+        );
+
+        // Should not crash, return empty result
+        expect(result.canvas_hash).toBeUndefined();
+        expect(result.screen_dims).toBeUndefined();
+        expect(result.stable_hash).toBeUndefined();
+      });
+
+      it("should handle explicit undefined values", () => {
+        const nested = {
+          loose: {
+            canvas2d: { $hash: undefined },
+            screen: { width: undefined, height: undefined },
+          },
+        };
+
+        const result = normalizeFingerprint(
+          nested as unknown as Parameters<typeof normalizeFingerprint>[0],
+        );
+
+        expect(result.canvas_hash).toBeUndefined();
+        expect(result.screen_dims).toBeUndefined();
+      });
+    });
+
+    describe("sigint adversarial", () => {
+      it("should handle sigint.tcpProbe.rttMs as string", () => {
+        const result = normalizeFingerprint(
+          {},
+          {
+            tcpProbe: {
+              rttMs: "25.5" as unknown as number,
+            },
+          },
+        );
+
+        // Should coerce string to number
+        expect(result.tcp_rtt_us).toBe(25500);
+      });
+
+      it("should handle negative rttMs", () => {
+        const result = normalizeFingerprint(
+          {},
+          {
+            tcpProbe: {
+              rttMs: -10,
+            },
+          },
+        );
+
+        // Negative RTT is invalid
+        expect(result.tcp_rtt_us).toBeUndefined();
+      });
+
+      it("should handle proxyScore/vpnScore outside 0-1 range", () => {
+        const result = normalizeFingerprint(
+          {},
+          {
+            tcpProbe: {
+              proxyScore: 1.5, // Invalid: > 1
+              vpnScore: -0.5, // Invalid: < 0
+            },
+          },
+        );
+
+        // Scores should be clamped or rejected
+        expect(result.proxy_score).toBeUndefined();
+        expect(result.vpn_score).toBeUndefined();
+      });
+
+      it("should handle malformed IP addresses", () => {
+        const result = normalizeFingerprint(
+          {},
+          {
+            tlsFingerprint: {
+              ip: "not-an-ip-address",
+            },
+          },
+        );
+
+        // Should validate IP format or store as-is
+        expect(result.ip_address).toBeDefined();
+      });
+    });
+
+    describe("mixed format edge cases", () => {
+      it("should prefer sigint data even when fingerprint has same fields", () => {
+        const fingerprint = {
+          ip_address: "old-ip",
+          ja4: "old-ja4",
+          stable_hash: "should-not-be-processed", // Already flat
+        };
+        const sigint = {
+          tlsFingerprint: {
+            ip: "new-ip-from-sigint",
+            ja4: "new-ja4-from-sigint",
+          },
+        };
+
+        const result = normalizeFingerprint(fingerprint, sigint);
+
+        // Since fingerprint has stable_hash, it's treated as flat and returned as-is
+        // but sigint should still override fields
+        expect(result.ip_address).toBe("new-ip-from-sigint");
+        expect(result.ja4).toBe("new-ja4-from-sigint");
+      });
+
+      it("should handle fingerprint with both flat and nested data", () => {
+        const mixed = {
+          stable_hash: "flat-hash",
+          loose: {
+            canvas2d: { $hash: "nested-canvas" },
+          },
+        };
+
+        const result = normalizeFingerprint(mixed);
+
+        // Since stable_hash exists, it's treated as flat and returned as-is
+        // The nested data is ignored
+        expect(result.stable_hash).toBe("flat-hash");
+        expect(result.canvas_hash).toBeUndefined(); // Nested ignored
+      });
+    });
+
+    describe("large payload handling", () => {
+      it("should handle payload with 1000+ fields in loose", () => {
+        const loose: Record<string, { $hash: string }> = {};
+        for (let i = 0; i < 1000; i++) {
+          loose[`field_${i}`] = { $hash: `hash_${i}` };
+        }
+
+        const nested = {
+          loose: {
+            ...loose,
+            canvas2d: { $hash: "important_canvas" },
+          },
+        };
+
+        const result = normalizeFingerprint(nested);
+
+        // Should still extract known fields
+        expect(result.canvas_hash).toBe("important_canvas");
+      });
+
+      it("should handle deeply nested payload (100 levels)", () => {
+        let deep: Record<string, unknown> = { $hash: "deep_hash" };
+        for (let i = 0; i < 100; i++) {
+          deep = { nested: deep };
+        }
+
+        const nested = {
+          loose: {
+            canvas2d: deep,
+          },
+        };
+
+        const result = normalizeFingerprint(
+          nested as unknown as Parameters<typeof normalizeFingerprint>[0],
+        );
+
+        // Should not find $hash at wrong level
+        expect(result.canvas_hash).toBeUndefined();
+      });
     });
   });
 });
