@@ -20,11 +20,6 @@ import { onWarmup } from "../helpers/middy-helpers";
 import { createGunzip } from "zlib";
 import { pipeline } from "stream/promises";
 import { Readable } from "stream";
-import {
-  getApiKeysSecret,
-  initApiKeysSecret,
-} from "../services/get-api-keys-secret";
-import { API_KEYS_SECRET_ARN } from "../helpers/constants";
 
 // Custom HttpError class to replace http-errors module (ESM bundling compatible)
 class HttpError extends Error {
@@ -44,15 +39,6 @@ const createError = (statusCode: number, message: string) =>
 
 const SQS_QUEUE_URL = process.env.SQS_QUEUE_URL;
 if (!SQS_QUEUE_URL) throw new Error("Missing required env var: SQS_QUEUE_URL");
-
-// AR-131: API keys from Secrets Manager with caching
-// Initialize at Lambda init time - fail closed if unavailable
-// The _apiKeysInitPromise triggers the init but we use getApiKeysSecret() in the handler
-// which returns the cached value (or refreshes if TTL expired)
-const _apiKeysInitPromise = API_KEYS_SECRET_ARN ? initApiKeysSecret() : null;
-
-// AR-124: Stage for tenant isolation guard
-const STAGE = process.env.STAGE ?? "";
 
 // AR-139: Payload archiving configuration
 const PAYLOAD_ARCHIVE_BUCKET = process.env.PAYLOAD_ARCHIVE_BUCKET;
@@ -82,8 +68,7 @@ const MAX_DECOMPRESSED_BYTES = parseInt(
 // CORS headers (reflect origin for backward compatibility)
 const CORS_HEADERS = {
   "Access-Control-Allow-Methods": "POST, OPTIONS",
-  "Access-Control-Allow-Headers":
-    "Content-Type, Content-Encoding, X-Tenant-ID, X-API-Key",
+  "Access-Control-Allow-Headers": "Content-Type, Content-Encoding",
   "Access-Control-Max-Age": "86400",
 };
 
@@ -358,41 +343,9 @@ const baseHandler = async (
     throw createError(400, "Missing required field: session_id");
   }
 
-  // AR-131: Tenant extraction from API key (Secrets Manager) or header
-  let tenantId: string;
-  const apiKey = event.headers["x-api-key"];
-
-  // Get API keys from Secrets Manager (with caching)
-  const apiKeys = await getApiKeysSecret();
-
-  if (Object.keys(apiKeys).length > 0 && apiKey) {
-    tenantId = apiKeys[apiKey];
-    if (!tenantId) {
-      metrics.addMetric("AuthFailed", MetricUnit.Count, 1);
-      throw createError(401, "Invalid API key");
-    }
-  } else {
-    // AR-124: In production, require API key configuration - no silent fallback
-    const headerTenantId = event.headers["x-tenant-id"];
-    if (STAGE === "prod" && !headerTenantId) {
-      metrics.addMetric("TenantIsolationViolation", MetricUnit.Count, 1);
-      logger.error("Missing tenant ID in production", {
-        hasApiKeyConfig: Object.keys(apiKeys).length > 0,
-        hasApiKeyHeader: !!apiKey,
-        hasTenantIdHeader: !!headerTenantId,
-      });
-      throw createError(
-        500,
-        "Tenant configuration error - contact support. Missing tenant identification in production environment.",
-      );
-    }
-    tenantId = headerTenantId ?? "default";
-  }
-
   // Build SQS message payload
   const sqsPayload = {
     session_id: payload.session_id,
-    tenant_id: tenantId,
     fingerprint: payload.fingerprint,
     sigint: payload.sigint,
     headers: {

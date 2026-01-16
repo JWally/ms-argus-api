@@ -56,7 +56,7 @@ const cacheService = new DynamoCacheService(dynamodb, {
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Methods": "GET, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, X-Tenant-ID, X-API-Key",
+  "Access-Control-Allow-Headers": "Content-Type",
   "Access-Control-Max-Age": "86400",
 };
 

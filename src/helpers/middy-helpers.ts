@@ -7,9 +7,6 @@ import { Logger } from "@aws-lambda-powertools/logger";
 import { DEDUPE_CACHE_MAX_ENTRIES, DEDUPE_CACHE_TTL_MS } from "./constants";
 import { fnv1a } from "./hash";
 
-// AR-124: Stage for tenant isolation guard
-const STAGE = process.env.STAGE ?? "";
-
 // Custom HttpError class to replace http-errors module (ESM bundling compatible)
 class HttpError extends Error {
   statusCode: number;
@@ -62,8 +59,7 @@ export const _clearDeduplicateCache = (): void => {
 /**
  * Deduplicate middleware using LRU cache
  * Prevents duplicate requests from network retries
- * AR-97: Key now includes tenant ID to isolate deduplication per tenant
- * AR-124: Throws in production if tenant ID is missing (no silent fallback)
+ * AR-135: Simplified - no longer includes tenant ID in key
  */
 export const deduplicateMiddleware = (): MiddlewareObj<
   APIGatewayProxyEvent,
@@ -75,17 +71,7 @@ export const deduplicateMiddleware = (): MiddlewareObj<
 
       if (!event.body) return;
 
-      // AR-97: Include tenant ID in cache key to isolate deduplication per tenant
-      // AR-124: In production, require tenant ID - no silent fallback to "default"
-      const headerTenantId = event.headers["x-tenant-id"];
-      if (STAGE === "prod" && !headerTenantId) {
-        throw new HttpError(
-          500,
-          "Tenant configuration error - contact support. Missing tenant identification in production environment.",
-        );
-      }
-      const tenantId = headerTenantId ?? "default";
-      const key = fnv1a(`${tenantId}:${event.body}`);
+      const key = fnv1a(event.body);
 
       if (cache.has(key)) {
         const catchCount: number = cache.get(key) || 0;

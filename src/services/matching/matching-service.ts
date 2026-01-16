@@ -127,14 +127,12 @@ export class MatchingService {
 
   /** Run tiered matching strategy */
   async runTieredMatching(
-    tenantId: string,
     fingerprint: Fingerprint,
   ): Promise<{ result: MatchResult; tier2TimedOut: boolean }> {
     // Tier 0.5: Cryptographic identity lookup (highest confidence)
     if (fingerprint.public_key) {
       const result = await tier05PublicKeyLookup(
         this.tier05Deps,
-        tenantId,
         fingerprint.public_key,
       );
       if (result) {
@@ -149,7 +147,6 @@ export class MatchingService {
     if (fingerprint.evercookie_id) {
       const result = await tier05CookieLookup(
         this.tier05Deps,
-        tenantId,
         fingerprint.evercookie_id,
       );
       if (result) {
@@ -164,7 +161,6 @@ export class MatchingService {
     if (fingerprint.sigint_id) {
       const result = await tier05SigintIdLookup(
         this.tier05Deps,
-        tenantId,
         fingerprint.sigint_id,
       );
       if (result) {
@@ -176,11 +172,7 @@ export class MatchingService {
     }
 
     // Tier 1: Strong hash match
-    const tier1Result = await tier1HashMatch(
-      this.tier1Deps,
-      tenantId,
-      fingerprint,
-    );
+    const tier1Result = await tier1HashMatch(this.tier1Deps, fingerprint);
     if (tier1Result) {
       return {
         result: this.applyPrivacyPenalty(tier1Result, fingerprint),
@@ -190,11 +182,7 @@ export class MatchingService {
 
     // Tier 2: Compound filter match (with timeout)
     const { result: tier2Result, timedOut } =
-      await tier2CompoundMatchWithTimeout(
-        this.tier2Deps,
-        tenantId,
-        fingerprint,
-      );
+      await tier2CompoundMatchWithTimeout(this.tier2Deps, fingerprint);
     if (tier2Result) {
       return {
         result: this.applyPrivacyPenalty(tier2Result, fingerprint),
@@ -205,7 +193,6 @@ export class MatchingService {
     // Session anchor lookup
     const sessionAnchorResult = await sessionAnchorLookup(
       this.anchorDeps,
-      tenantId,
       fingerprint,
     );
     if (sessionAnchorResult) {
@@ -218,7 +205,6 @@ export class MatchingService {
     // IP+UA anchor lookup
     const ipUaAnchorResult = await ipUaAnchorLookup(
       this.anchorDeps,
-      tenantId,
       fingerprint,
     );
     if (ipUaAnchorResult) {
@@ -233,88 +219,65 @@ export class MatchingService {
   }
 
   // Delegate methods to tier modules for backward compatibility
-  async tier05PublicKeyLookup(
-    tenantId: string,
-    publicKey: string,
-  ): Promise<MatchResult | null> {
-    return tier05PublicKeyLookup(this.tier05Deps, tenantId, publicKey);
+  async tier05PublicKeyLookup(publicKey: string): Promise<MatchResult | null> {
+    return tier05PublicKeyLookup(this.tier05Deps, publicKey);
   }
 
-  async tier05CookieLookup(
-    tenantId: string,
-    evercookieId: string,
-  ): Promise<MatchResult | null> {
-    return tier05CookieLookup(this.tier05Deps, tenantId, evercookieId);
+  async tier05CookieLookup(evercookieId: string): Promise<MatchResult | null> {
+    return tier05CookieLookup(this.tier05Deps, evercookieId);
   }
 
-  async tier05SigintIdLookup(
-    tenantId: string,
-    sigintId: string,
-  ): Promise<MatchResult | null> {
-    return tier05SigintIdLookup(this.tier05Deps, tenantId, sigintId);
+  async tier05SigintIdLookup(sigintId: string): Promise<MatchResult | null> {
+    return tier05SigintIdLookup(this.tier05Deps, sigintId);
   }
 
-  async tier1HashMatch(
-    tenantId: string,
-    fingerprint: Fingerprint,
-  ): Promise<MatchResult | null> {
-    return tier1HashMatch(this.tier1Deps, tenantId, fingerprint);
+  async tier1HashMatch(fingerprint: Fingerprint): Promise<MatchResult | null> {
+    return tier1HashMatch(this.tier1Deps, fingerprint);
   }
 
   async tier2CompoundMatchWithTimeout(
-    tenantId: string,
     fingerprint: Fingerprint,
   ): Promise<{ result: MatchResult | null; timedOut: boolean }> {
-    return tier2CompoundMatchWithTimeout(this.tier2Deps, tenantId, fingerprint);
+    return tier2CompoundMatchWithTimeout(this.tier2Deps, fingerprint);
   }
 
   async tier2CompoundMatch(
-    tenantId: string,
     fingerprint: Fingerprint,
     options?: { abortSignal?: AbortSignal },
   ): Promise<MatchResult | null> {
     // Import inline to avoid circular deps
     const { tier2CompoundMatch } = await import("./tier2-compound");
-    return tier2CompoundMatch(this.tier2Deps, tenantId, fingerprint, options);
+    return tier2CompoundMatch(this.tier2Deps, fingerprint, options);
   }
 
-  buildSessionAnchorKey(
-    tenantId: string,
-    fingerprint: Fingerprint,
-  ): string | null {
-    return buildSessionAnchorKey(tenantId, fingerprint);
+  buildSessionAnchorKey(fingerprint: Fingerprint): string | null {
+    return buildSessionAnchorKey(fingerprint);
   }
 
   async sessionAnchorLookup(
-    tenantId: string,
     fingerprint: Fingerprint,
   ): Promise<MatchResult | null> {
-    return sessionAnchorLookup(this.anchorDeps, tenantId, fingerprint);
+    return sessionAnchorLookup(this.anchorDeps, fingerprint);
   }
 
-  buildIpUaAnchorKey(
-    tenantId: string,
-    fingerprint: Fingerprint,
-  ): string | null {
-    return buildIpUaAnchorKey(tenantId, fingerprint);
+  buildIpUaAnchorKey(fingerprint: Fingerprint): string | null {
+    return buildIpUaAnchorKey(fingerprint);
   }
 
   async ipUaAnchorLookup(
-    tenantId: string,
     fingerprint: Fingerprint,
   ): Promise<MatchResult | null> {
-    return ipUaAnchorLookup(this.anchorDeps, tenantId, fingerprint);
+    return ipUaAnchorLookup(this.anchorDeps, fingerprint);
   }
 
-  buildBucketKeys(tenantId: string, fingerprint: Fingerprint): string[] {
-    return buildBucketKeysHelper(tenantId, fingerprint);
+  buildBucketKeys(fingerprint: Fingerprint): string[] {
+    return buildBucketKeysHelper(fingerprint);
   }
 
   async loadProfile(
-    tenantId: string,
     deviceId: string,
   ): Promise<{ risk_score: number; flags: string[] } | null> {
-    return loadProfile(this.tier2Deps, tenantId, deviceId);
+    return loadProfile(this.tier2Deps, deviceId);
   }
 
   createNewDevice(): MatchResult {
@@ -354,7 +317,6 @@ export class MatchingService {
   }
 
   async queueProfileUpdate(
-    tenantId: string,
     deviceId: string,
     payload: FingerprintPayload,
     isNewDevice: boolean = false,
@@ -363,7 +325,6 @@ export class MatchingService {
       new SendMessageCommand({
         QueueUrl: this.deps.config.profileQueueUrl,
         MessageBody: JSON.stringify({
-          tenant_id: tenantId,
           device_id: deviceId,
           fingerprint: payload.fingerprint,
           sigint: payload.sigint,

@@ -98,13 +98,11 @@ describe("Tier Priority Tests", () => {
       dynamoMock
         .on(GetItemCommand, {
           Key: {
-            tenant_id: { S: "tenant1" },
             hash_key: { S: "evercookie#cookie123" },
           },
         })
         .resolves({
           Item: marshall({
-            tenant_id: "tenant1",
             hash_key: "evercookie#cookie123",
             device_id: "dev_evercookie",
             risk_score: 0.1,
@@ -112,13 +110,11 @@ describe("Tier Priority Tests", () => {
         })
         .on(GetItemCommand, {
           Key: {
-            tenant_id: { S: "tenant1" },
             hash_key: { S: "stable#stable456" },
           },
         })
         .resolves({
           Item: marshall({
-            tenant_id: "tenant1",
             hash_key: "stable#stable456",
             device_id: "dev_stable",
             risk_score: 0.2,
@@ -130,10 +126,7 @@ describe("Tier Priority Tests", () => {
         stable_hash: "stable456",
       };
 
-      const { result } = await service.runTieredMatching(
-        "tenant1",
-        fingerprint,
-      );
+      const { result } = await service.runTieredMatching(fingerprint);
 
       expect(result.match_tier).toBe(0.5);
       expect(result.device_id).toBe("dev_evercookie");
@@ -145,20 +138,17 @@ describe("Tier Priority Tests", () => {
       dynamoMock
         .on(GetItemCommand, {
           Key: {
-            tenant_id: { S: "tenant1" },
             hash_key: { S: "evercookie#cookie123" },
           },
         })
         .resolves({ Item: undefined })
         .on(GetItemCommand, {
           Key: {
-            tenant_id: { S: "tenant1" },
             hash_key: { S: "stable#stable456" },
           },
         })
         .resolves({
           Item: marshall({
-            tenant_id: "tenant1",
             hash_key: "stable#stable456",
             device_id: "dev_stable",
           }),
@@ -169,10 +159,7 @@ describe("Tier Priority Tests", () => {
         stable_hash: "stable456",
       };
 
-      const { result } = await service.runTieredMatching(
-        "tenant1",
-        fingerprint,
-      );
+      const { result } = await service.runTieredMatching(fingerprint);
 
       expect(result.match_tier).toBe(1);
       expect(result.device_id).toBe("dev_stable");
@@ -186,26 +173,22 @@ describe("Tier Priority Tests", () => {
       dynamoMock
         .on(GetItemCommand, {
           Key: {
-            tenant_id: { S: "tenant1" },
             hash_key: { S: "stable#stable123" },
           },
         })
         .resolves({
           Item: marshall({
-            tenant_id: "tenant1",
             hash_key: "stable#stable123",
             device_id: "dev_stable",
           }),
         })
         .on(GetItemCommand, {
           Key: {
-            tenant_id: { S: "tenant1" },
             hash_key: { S: "fuzzy#fuzzy456" },
           },
         })
         .resolves({
           Item: marshall({
-            tenant_id: "tenant1",
             hash_key: "fuzzy#fuzzy456",
             device_id: "dev_fuzzy",
           }),
@@ -216,10 +199,7 @@ describe("Tier Priority Tests", () => {
         fuzzy_hash: "fuzzy456",
       };
 
-      const { result } = await service.runTieredMatching(
-        "tenant1",
-        fingerprint,
-      );
+      const { result } = await service.runTieredMatching(fingerprint);
 
       expect(result.match_tier).toBe(1);
       expect(result.device_id).toBe("dev_stable");
@@ -231,20 +211,17 @@ describe("Tier Priority Tests", () => {
       dynamoMock
         .on(GetItemCommand, {
           Key: {
-            tenant_id: { S: "tenant1" },
             hash_key: { S: "stable#stable123" },
           },
         })
         .resolves({ Item: undefined })
         .on(GetItemCommand, {
           Key: {
-            tenant_id: { S: "tenant1" },
             hash_key: { S: "fuzzy#fuzzy456" },
           },
         })
         .resolves({
           Item: marshall({
-            tenant_id: "tenant1",
             hash_key: "fuzzy#fuzzy456",
             device_id: "dev_fuzzy",
           }),
@@ -255,10 +232,7 @@ describe("Tier Priority Tests", () => {
         fuzzy_hash: "fuzzy456",
       };
 
-      const { result } = await service.runTieredMatching(
-        "tenant1",
-        fingerprint,
-      );
+      const { result } = await service.runTieredMatching(fingerprint);
 
       expect(result.match_tier).toBe(1);
       expect(result.device_id).toBe("dev_fuzzy");
@@ -273,13 +247,11 @@ describe("Tier Priority Tests", () => {
       dynamoMock
         .on(GetItemCommand, {
           Key: {
-            tenant_id: { S: "tenant1" },
             hash_key: { S: "stable#stable123" },
           },
         })
         .resolves({
           Item: marshall({
-            tenant_id: "tenant1",
             hash_key: "stable#stable123",
             device_id: "dev_tier1",
           }),
@@ -300,10 +272,7 @@ describe("Tier Priority Tests", () => {
         canvas_hash: "canvas456",
       };
 
-      const { result } = await service.runTieredMatching(
-        "tenant1",
-        fingerprint,
-      );
+      const { result } = await service.runTieredMatching(fingerprint);
 
       expect(result.match_tier).toBe(1);
       expect(result.device_id).toBe("dev_tier1");
@@ -332,7 +301,6 @@ describe("Tier Priority Tests", () => {
         .on(GetItemCommand, { TableName: testConfig.profilesTable })
         .resolves({
           Item: marshall({
-            tenant_id: "tenant1",
             device_id: "dev_tier2",
             risk_score: 0.4,
             flags: [],
@@ -347,10 +315,7 @@ describe("Tier Priority Tests", () => {
         canvas_hash: "canvas456",
       };
 
-      const { result } = await service.runTieredMatching(
-        "tenant1",
-        fingerprint,
-      );
+      const { result } = await service.runTieredMatching(fingerprint);
 
       expect(result.match_tier).toBe(2);
       expect(result.device_id).toBe("dev_tier2");
@@ -460,13 +425,11 @@ describe("Signal Presence Matrix", () => {
           dynamoMock
             .on(GetItemCommand, {
               Key: {
-                tenant_id: { S: "tenant1" },
                 hash_key: { S: `evercookie#${fingerprint.evercookie_id}` },
               },
             })
             .resolves({
               Item: marshall({
-                tenant_id: "tenant1",
                 hash_key: `evercookie#${fingerprint.evercookie_id}`,
                 device_id: "dev_match",
                 risk_score: 0.3,
@@ -478,13 +441,11 @@ describe("Signal Presence Matrix", () => {
           dynamoMock
             .on(GetItemCommand, {
               Key: {
-                tenant_id: { S: "tenant1" },
                 hash_key: { S: `stable#${fingerprint.stable_hash}` },
               },
             })
             .resolves({
               Item: marshall({
-                tenant_id: "tenant1",
                 hash_key: `stable#${fingerprint.stable_hash}`,
                 device_id: "dev_match",
                 risk_score: 0.3,
@@ -501,13 +462,11 @@ describe("Signal Presence Matrix", () => {
           dynamoMock
             .on(GetItemCommand, {
               Key: {
-                tenant_id: { S: "tenant1" },
                 hash_key: { S: `fuzzy#${fingerprint.fuzzy_hash}` },
               },
             })
             .resolves({
               Item: marshall({
-                tenant_id: "tenant1",
                 hash_key: `fuzzy#${fingerprint.fuzzy_hash}`,
                 device_id: "dev_match",
                 risk_score: 0.3,
@@ -538,7 +497,6 @@ describe("Signal Presence Matrix", () => {
             .on(GetItemCommand, { TableName: testConfig.profilesTable })
             .resolves({
               Item: marshall({
-                tenant_id: "tenant1",
                 device_id: "dev_match",
                 risk_score: 0.3,
                 flags: [],
@@ -547,7 +505,6 @@ describe("Signal Presence Matrix", () => {
         }
 
         const { result } = await service.runTieredMatching(
-          "tenant1",
           fingerprint as Fingerprint,
         );
 
@@ -565,10 +522,7 @@ describe("Signal Presence Matrix", () => {
 
       const fingerprint: Fingerprint = {};
 
-      const { result } = await service.runTieredMatching(
-        "tenant1",
-        fingerprint,
-      );
+      const { result } = await service.runTieredMatching(fingerprint);
 
       expect(result.is_new_device).toBe(true);
       expect(result.match_tier).toBe(-1);
@@ -580,19 +534,19 @@ describe("Signal Presence Matrix", () => {
   describe("partial signals", () => {
     it("should not build ip_ja4 bucket when only ip_address present", () => {
       const fingerprint: Fingerprint = { ip_address: "10.0.0.1" };
-      const keys = service.buildBucketKeys("tenant1", fingerprint);
+      const keys = service.buildBucketKeys(fingerprint);
       expect(keys).toHaveLength(0);
     });
 
     it("should not build gpu_screen_tz bucket when only gpu_renderer present", () => {
       const fingerprint: Fingerprint = { gpu_renderer: "GPU" };
-      const keys = service.buildBucketKeys("tenant1", fingerprint);
+      const keys = service.buildBucketKeys(fingerprint);
       expect(keys).toHaveLength(0);
     });
 
     it("should not build audio_canvas bucket when only audio_hash present", () => {
       const fingerprint: Fingerprint = { audio_hash: "audio123" };
-      const keys = service.buildBucketKeys("tenant1", fingerprint);
+      const keys = service.buildBucketKeys(fingerprint);
       expect(keys).toHaveLength(0);
     });
   });
@@ -634,19 +588,17 @@ describe("Fingerprint Drift Scenarios", () => {
       dynamoMock
         .on(GetItemCommand, {
           Key: {
-            tenant_id: { S: "tenant1" },
             hash_key: { S: "stable#stable-device-123" },
           },
         })
         .resolves({
           Item: marshall({
-            tenant_id: "tenant1",
             hash_key: "stable#stable-device-123",
             device_id: "dev_original",
           }),
         });
 
-      const { result } = await service.runTieredMatching("tenant1", drifted);
+      const { result } = await service.runTieredMatching(drifted);
 
       expect(result.device_id).toBe("dev_original");
       expect(result.match_tier).toBe(1);
@@ -668,19 +620,17 @@ describe("Fingerprint Drift Scenarios", () => {
       dynamoMock
         .on(GetItemCommand, {
           Key: {
-            tenant_id: { S: "tenant1" },
             hash_key: { S: "stable#stable-device-456" },
           },
         })
         .resolves({
           Item: marshall({
-            tenant_id: "tenant1",
             hash_key: "stable#stable-device-456",
             device_id: "dev_original",
           }),
         });
 
-      const { result } = await service.runTieredMatching("tenant1", drifted);
+      const { result } = await service.runTieredMatching(drifted);
 
       expect(result.device_id).toBe("dev_original");
       expect(result.match_tier).toBe(1);
@@ -702,19 +652,17 @@ describe("Fingerprint Drift Scenarios", () => {
       dynamoMock
         .on(GetItemCommand, {
           Key: {
-            tenant_id: { S: "tenant1" },
             hash_key: { S: "stable#stable-traveler" },
           },
         })
         .resolves({
           Item: marshall({
-            tenant_id: "tenant1",
             hash_key: "stable#stable-traveler",
             device_id: "dev_traveler",
           }),
         });
 
-      const { result } = await service.runTieredMatching("tenant1", drifted);
+      const { result } = await service.runTieredMatching(drifted);
 
       expect(result.device_id).toBe("dev_traveler");
       expect(result.match_tier).toBe(1);
@@ -736,19 +684,17 @@ describe("Fingerprint Drift Scenarios", () => {
       dynamoMock
         .on(GetItemCommand, {
           Key: {
-            tenant_id: { S: "tenant1" },
             hash_key: { S: "stable#stable-browser-user" },
           },
         })
         .resolves({
           Item: marshall({
-            tenant_id: "tenant1",
             hash_key: "stable#stable-browser-user",
             device_id: "dev_browser",
           }),
         });
 
-      const { result } = await service.runTieredMatching("tenant1", drifted);
+      const { result } = await service.runTieredMatching(drifted);
 
       expect(result.device_id).toBe("dev_browser");
     });
@@ -767,7 +713,7 @@ describe("Fingerprint Drift Scenarios", () => {
       dynamoMock.on(GetItemCommand).resolves({ Item: undefined });
       dynamoMock.on(QueryCommand).resolves({ Items: [] });
 
-      const { result } = await service.runTieredMatching("tenant1", drifted);
+      const { result } = await service.runTieredMatching(drifted);
 
       expect(result.is_new_device).toBe(true);
       expect(result.match_tier).toBe(-1);
@@ -802,7 +748,7 @@ describe("Edge Cases", () => {
       dynamoMock.on(GetItemCommand).resolves({ Item: undefined });
       dynamoMock.on(QueryCommand).resolves({ Items: [] });
 
-      const { result } = await service.runTieredMatching("tenant1", {});
+      const { result } = await service.runTieredMatching({});
 
       expect(result.is_new_device).toBe(true);
       expect(result.evidence_codes).toEqual(["NEW_DEVICE"]);
@@ -821,10 +767,7 @@ describe("Edge Cases", () => {
         evercookie_id: "",
       };
 
-      const { result } = await service.runTieredMatching(
-        "tenant1",
-        fingerprint,
-      );
+      const { result } = await service.runTieredMatching(fingerprint);
 
       expect(result.is_new_device).toBe(true);
     });
@@ -838,7 +781,7 @@ describe("Edge Cases", () => {
         timezone: "",
       };
 
-      const keys = service.buildBucketKeys("tenant1", fingerprint);
+      const keys = service.buildBucketKeys(fingerprint);
       expect(keys).toHaveLength(0);
     });
   });
@@ -850,13 +793,11 @@ describe("Edge Cases", () => {
       dynamoMock
         .on(GetItemCommand, {
           Key: {
-            tenant_id: { S: "tenant1" },
             hash_key: { S: `stable#${longHash}` },
           },
         })
         .resolves({
           Item: marshall({
-            tenant_id: "tenant1",
             hash_key: `stable#${longHash}`,
             device_id: "dev_long",
           }),
@@ -864,10 +805,7 @@ describe("Edge Cases", () => {
 
       const fingerprint: Fingerprint = { stable_hash: longHash };
 
-      const { result } = await service.runTieredMatching(
-        "tenant1",
-        fingerprint,
-      );
+      const { result } = await service.runTieredMatching(fingerprint);
 
       expect(result.device_id).toBe("dev_long");
     });
@@ -880,13 +818,11 @@ describe("Edge Cases", () => {
       dynamoMock
         .on(GetItemCommand, {
           Key: {
-            tenant_id: { S: "tenant1" },
             hash_key: { S: `stable#${specialHash}` },
           },
         })
         .resolves({
           Item: marshall({
-            tenant_id: "tenant1",
             hash_key: `stable#${specialHash}`,
             device_id: "dev_special",
           }),
@@ -894,10 +830,7 @@ describe("Edge Cases", () => {
 
       const fingerprint: Fingerprint = { stable_hash: specialHash };
 
-      const { result } = await service.runTieredMatching(
-        "tenant1",
-        fingerprint,
-      );
+      const { result } = await service.runTieredMatching(fingerprint);
 
       expect(result.device_id).toBe("dev_special");
     });
@@ -930,7 +863,6 @@ describe("Edge Cases", () => {
         .on(GetItemCommand, { TableName: testConfig.profilesTable })
         .resolves({
           Item: marshall({
-            tenant_id: "tenant1",
             device_id: "dev_winner",
             risk_score: 0.3,
             flags: [],
@@ -947,10 +879,7 @@ describe("Edge Cases", () => {
         canvas_hash: "canvas",
       };
 
-      const { result } = await service.runTieredMatching(
-        "tenant1",
-        fingerprint,
-      );
+      const { result } = await service.runTieredMatching(fingerprint);
 
       expect(result.match_tier).toBe(2);
       // The device with most bucket appearances should be selected
@@ -962,18 +891,14 @@ describe("Edge Cases", () => {
       // Simulate race condition where tier 2 might return first
       // but tier 0.5 evercookie should still win
 
-      let tier1CallCount = 0;
-
       dynamoMock.on(GetItemCommand).callsFake(async (input) => {
         const key = input.Key?.hash_key?.S;
-        tier1CallCount++;
 
         if (key?.startsWith("evercookie#")) {
           // Evercookie lookup is slow but returns
-          await new Promise((r) => setTimeout(r, 50));
+          await new Promise((resolve) => setTimeout(resolve, 50));
           return {
             Item: marshall({
-              tenant_id: "tenant1",
               hash_key: key,
               device_id: "dev_evercookie",
             }),
@@ -992,10 +917,7 @@ describe("Edge Cases", () => {
         ja4: "ja4hash",
       };
 
-      const { result } = await service.runTieredMatching(
-        "tenant1",
-        fingerprint,
-      );
+      const { result } = await service.runTieredMatching(fingerprint);
 
       // Even though tier 2 might have been faster, evercookie should win
       expect(result.match_tier).toBe(0.5);
@@ -1044,7 +966,7 @@ describe("Using Fingerprint Factory Presets", () => {
 
     it("should build all 3 bucket keys", () => {
       const fp = createFingerprint(FingerprintPresets.FULL);
-      const keys = service.buildBucketKeys("tenant1", fp);
+      const keys = service.buildBucketKeys(fp);
       expect(keys).toHaveLength(3);
     });
   });
@@ -1060,7 +982,7 @@ describe("Using Fingerprint Factory Presets", () => {
 
     it("should build no bucket keys", () => {
       const fp = createFingerprint(FingerprintPresets.MINIMAL);
-      const keys = service.buildBucketKeys("tenant1", fp);
+      const keys = service.buildBucketKeys(fp);
       expect(keys).toHaveLength(0);
     });
   });

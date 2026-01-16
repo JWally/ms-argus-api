@@ -105,7 +105,6 @@ export interface SigintData {
  */
 export interface FingerprintPayload {
   session_id: string;
-  tenant_id: string;
   fingerprint: Fingerprint;
   /** AR-81: Sigint data from ms-argus-web */
   sigint?: SigintData;
@@ -132,7 +131,6 @@ export interface MatchResult {
  * Tier 1 index entry
  */
 export interface Tier1IndexEntry {
-  tenant_id: string;
   hash_key: string;
   device_id: string;
   risk_score?: number;

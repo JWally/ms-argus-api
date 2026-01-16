@@ -77,7 +77,7 @@ export class ArgusApiStack extends cdk.Stack {
     // SHARED RESOURCES
     // =========================================================================
 
-    const secrets = new SecretConstruct(this, "Secrets", {
+    const _secrets = new SecretConstruct(this, "Secrets", {
       environment,
       stackName,
       stage,
@@ -122,7 +122,6 @@ export class ArgusApiStack extends cdk.Stack {
     // HTTP API + Lambda for ingestion (replaces ALB + ECS)
     // AR-67: Added session retrieval endpoint
     // AR-71: Reverted to async (SQS) for scalability
-    // AR-131: API keys from Secrets Manager
     // AR-139: Payload archiving
     const httpApi = new HttpApiConstruct(this, "HttpApi", {
       stackName,
@@ -130,7 +129,6 @@ export class ArgusApiStack extends cdk.Stack {
       matchingQueue: queues.matchingQueue,
       sessionCacheTable: dynamodb.sessionCacheTable,
       alarmsTopic,
-      apiKeysSecret: secrets.apiKeysSecret,
       payloadArchiveBucket: analytics.payloadArchiveBucket,
     });
 
