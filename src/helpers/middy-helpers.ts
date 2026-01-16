@@ -59,6 +59,7 @@ export const _clearDeduplicateCache = (): void => {
 /**
  * Deduplicate middleware using LRU cache
  * Prevents duplicate requests from network retries
+ * AR-97: Key now includes tenant ID to isolate deduplication per tenant
  */
 export const deduplicateMiddleware = (): MiddlewareObj<
   APIGatewayProxyEvent,
@@ -70,7 +71,9 @@ export const deduplicateMiddleware = (): MiddlewareObj<
 
       if (!event.body) return;
 
-      const key = fnv1a(event.body);
+      // AR-97: Include tenant ID in cache key to isolate deduplication per tenant
+      const tenantId = event.headers["x-tenant-id"] ?? "default";
+      const key = fnv1a(`${tenantId}:${event.body}`);
 
       if (cache.has(key)) {
         const catchCount: number = cache.get(key) || 0;
