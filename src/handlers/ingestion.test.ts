@@ -1,5 +1,6 @@
 // src/handlers/ingestion.test.ts
 // AR-90: Tests for ingestion handler with binary gzip compression support
+/* eslint-disable @typescript-eslint/no-non-null-assertion */
 
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { gzipSync } from "zlib";
@@ -433,6 +434,48 @@ describe("ingestion handler", () => {
       const result = asResult(await handler(event, mockContext));
 
       expect(result.statusCode).toBe(413);
+    });
+  });
+
+  // AR-124: Non-production (STAGE not set or not "prod") allows default tenant fallback
+  describe("tenant isolation non-production fallback (AR-124)", () => {
+    it("should allow default tenant fallback when STAGE is not set (dev/test)", async () => {
+      // STAGE is not set in test environment, so default fallback should work
+      const payload = createValidPayload("dev-fallback-test-session");
+      const event = createApiEvent(JSON.stringify(payload));
+      // No x-tenant-id header, no x-api-key header
+
+      const result = asResult(await handler(event, mockContext));
+
+      // Should succeed (204) - dev allows default fallback
+      expect(result.statusCode).toBe(204);
+
+      // Verify SQS was called with "default" tenant
+      const sqsCalls = sqsMock.commandCalls(SendMessageCommand);
+      expect(sqsCalls.length).toBe(1);
+      const sentBody = JSON.parse(sqsCalls[0].args[0].input.MessageBody!);
+      expect(sentBody.tenant_id).toBe("default");
+    });
+
+    it("should use x-tenant-id header when provided in non-prod", async () => {
+      const payload = createValidPayload("explicit-tenant-test-session");
+      const event: APIGatewayProxyEventV2 = {
+        ...createApiEvent(JSON.stringify(payload)),
+        headers: {
+          ...createApiEvent(JSON.stringify(payload)).headers,
+          "x-tenant-id": "explicit-tenant",
+        },
+      };
+
+      const result = asResult(await handler(event, mockContext));
+
+      expect(result.statusCode).toBe(204);
+
+      // Verify SQS was called with explicit tenant
+      const sqsCalls = sqsMock.commandCalls(SendMessageCommand);
+      expect(sqsCalls.length).toBe(1);
+      const sentBody = JSON.parse(sqsCalls[0].args[0].input.MessageBody!);
+      expect(sentBody.tenant_id).toBe("explicit-tenant");
     });
   });
 });
