@@ -83,7 +83,7 @@ export class WorkersConstruct extends Construct {
         sourceMap: true,
         target: "node20",
         keepNames: true,
-        format: OutputFormat.CJS,
+        format: OutputFormat.ESM,
         mainFields: ["module", "main"],
         environment: { NODE_ENV: "production" },
         // AR-52: No longer need ioredis - using DynamoDB for caching
