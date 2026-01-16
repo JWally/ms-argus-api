@@ -1,5 +1,6 @@
 // lib/constructs/workers.ts
 // AR-52: Simplified - removed VPC/Redis, uses DynamoDB for all caching
+// AR-130: Added cardinality recalculation Lambda with daily EventBridge rule
 import * as path from "path";
 import { Construct } from "constructs";
 import * as lambda from "aws-cdk-lib/aws-lambda-nodejs";
@@ -13,6 +14,8 @@ import * as codedeploy from "aws-cdk-lib/aws-codedeploy";
 import * as sns from "aws-cdk-lib/aws-sns";
 import * as sqs from "aws-cdk-lib/aws-sqs";
 import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
+import * as events from "aws-cdk-lib/aws-events";
+import * as targets from "aws-cdk-lib/aws-events-targets";
 import { Duration } from "aws-cdk-lib";
 import * as actions from "aws-cdk-lib/aws-cloudwatch-actions";
 import { getStageConfig } from "../config";
@@ -47,6 +50,7 @@ interface WorkersConstructProps {
 export class WorkersConstruct extends Construct {
   public readonly matchingWorker: lambda.NodejsFunction;
   public readonly profileUpdater: lambda.NodejsFunction;
+  public readonly cardinalityRecalc: lambda.NodejsFunction; // AR-130
   public readonly matchingWorkerAlias: Alias;
   public readonly profileUpdaterAlias: Alias;
 
@@ -205,6 +209,59 @@ export class WorkersConstruct extends Construct {
     tier2BucketsTable.grantReadWriteData(this.profileUpdater);
     sessionCacheTable.grantReadWriteData(this.profileUpdater); // AR-52
     profileQueue.grantConsumeMessages(this.profileUpdater);
+
+    // =====================================
+    // AR-130: CARDINALITY RECALCULATION LAMBDA
+    // =====================================
+    // Daily Lambda to fix drift in Tier2 bucket cardinalities
+    // Bucket cardinality counters use ADD which only increments.
+    // When devices expire via TTL, cardinalities drift higher than reality.
+    // This affects high-cardinality penalty calculations in fraud scoring.
+
+    this.cardinalityRecalc = new lambda.NodejsFunction(
+      this,
+      "CardinalityRecalc",
+      {
+        ...commonConfig,
+        entry: path.join(__dirname, "../../src/handlers/cardinality-recalc.ts"),
+        functionName: `${stackName}-cardinality-recalc`,
+        memorySize: 256, // Low memory - simple scan/update operations
+        timeout: Duration.minutes(15), // Max Lambda timeout for large tables
+        environment: {
+          AWS_NODEJS_CONNECTION_REUSE_ENABLED: "1",
+          ENVIRONMENT: stage,
+          POWERTOOLS_SERVICE_NAME: `${stackName}-cardinality-recalc`,
+          POWERTOOLS_METRICS_NAMESPACE: stackName,
+          LOG_LEVEL: "INFO",
+          TIER2_BUCKETS_TABLE: tier2BucketsTable.tableName,
+        },
+      },
+    );
+
+    // Permissions - read/write to Tier2Buckets table
+    this.cardinalityRecalc.addToRolePolicy(loggingPolicy);
+    tier2BucketsTable.grantReadWriteData(this.cardinalityRecalc);
+
+    // EventBridge rule - run daily at 3 AM UTC (low traffic time)
+    const cardinalityRecalcRule = new events.Rule(
+      this,
+      "CardinalityRecalcRule",
+      {
+        ruleName: `${stackName}-cardinality-recalc-daily`,
+        description: "AR-130: Daily cardinality recalculation to fix TTL drift",
+        schedule: events.Schedule.cron({
+          minute: "0",
+          hour: "3",
+          day: "*",
+          month: "*",
+          year: "*",
+        }),
+      },
+    );
+
+    cardinalityRecalcRule.addTarget(
+      new targets.LambdaFunction(this.cardinalityRecalc),
+    );
 
     // Alarms
     const matchingWorkerAlarms = this.createWorkerAlarms(
