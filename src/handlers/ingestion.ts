@@ -12,6 +12,8 @@ import { injectLambdaContext } from "@aws-lambda-powertools/logger/middleware";
 import { SQSClient, SendMessageCommand } from "@aws-sdk/client-sqs";
 import middy from "@middy/core";
 import httpHeaderNormalizer from "@middy/http-header-normalizer";
+import warmup from "@middy/warmup";
+import { onWarmup } from "../helpers/middy-helpers";
 import { gunzipSync } from "zlib";
 
 // Custom HttpError class to replace http-errors module (ESM bundling compatible)
@@ -304,6 +306,7 @@ const baseHandler = async (
 // ==================== EXPORT WITH MIDDLEWARE ====================
 
 export const handler = middy(baseHandler)
+  .use(warmup({ onWarmup })) // AR-127: Short-circuit warmup events first
   .use(injectLambdaContext(logger))
   .use(logMetrics(metrics)) // Auto-publishes metrics on success AND error
   .use(httpHeaderNormalizer()) // Normalizes header casing
