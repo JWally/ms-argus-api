@@ -323,7 +323,7 @@ describe("ProfileService", () => {
         public_key: publicKey, // AR-64
         stable_hash: "stable",
         fuzzy_hash: "fuzzy",
-        ja4: "ja4hash",
+        ja4: "ja4hash", // ja4 is in fingerprint but NOT indexed in Tier1 (AR-115)
       };
 
       const entries = service.buildTier1IndexEntries(
@@ -333,14 +333,16 @@ describe("ProfileService", () => {
         ttl,
       );
 
-      expect(entries).toHaveLength(6); // AR-81: Now 6 with sigint_id
+      // AR-115: Now 5 entries - removed standalone ja4# indexing (not unique enough)
+      expect(entries).toHaveLength(5);
       const hashKeys = entries.map((e) => e.hash_key);
       expect(hashKeys).toContain("evercookie#cookie");
       expect(hashKeys).toContain("sigint#sigint-uuid-123"); // AR-81
       expect(hashKeys).toContain(`pubkey#${publicKey}`); // AR-64
       expect(hashKeys).toContain("stable#stable");
       expect(hashKeys).toContain("fuzzy#fuzzy");
-      expect(hashKeys).toContain("ja4#ja4hash");
+      // AR-115: ja4 is NOT indexed standalone - only used in Tier2 ip_ja4 buckets
+      expect(hashKeys).not.toContain("ja4#ja4hash");
     });
   });
 
@@ -843,7 +845,8 @@ describe("ProfileService", () => {
       const result = await service.processProfileUpdate(payload);
 
       expect(result.skipped).toBe(false);
-      expect(result.tier1Writes).toBe(3); // stable_hash, evercookie_id, and ja4
+      // AR-115: Now 2 tier1 writes (stable_hash, evercookie_id) - ja4 no longer indexed standalone
+      expect(result.tier1Writes).toBe(2);
       expect(result.tier2Writes).toBe(1); // ip_ja4
 
       // Verify mutation gate was acquired

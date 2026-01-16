@@ -1,0 +1,395 @@
+================================================================================
+MS-ARGUS-API ARCHITECTURE REVIEW
+================================================================================
+Date: 2026-01-15
+Reviewer: Senior Engineer II (Architecture/AWS)
+Scale: 15-30B requests/year (~950 QPS avg, 3K QPS peak)
+Constraints: No Redis, No Go-Lang Clusters, Cost/Performance paramount
+
+================================================================================
+SECTION 1: DEAD CODE & UNUSED DEPENDENCIES (IMMEDIATE REMOVAL)
+================================================================================
+
+These can be safely removed TODAY - they are costing bundle size, cold start
+time, and cognitive overhead.
+
+1.1 IOREDIS DEPENDENCY - REMOVE IMMEDIATELY
+    Location: package.json:88
+    Issue: "ioredis": "^5.4.1" is still in production dependencies
+    Context: Redis was removed in AR-52, replaced with DynamoDB SessionCache
+    Impact: ~2MB added to Lambda bundles, wasted cold start time
+    Action: npm uninstall ioredis
+
+1.2 IOREDIS-MOCK DEV DEPENDENCY - REMOVE
+    Location: package.json:60
+    Issue: "ioredis-mock": "^8.13.1" in devDependencies
+    Action: npm uninstall -D ioredis-mock @types/ioredis-mock
+
+1.3 DEAD AWS SDK DEV DEPENDENCIES - REMOVE
+    Location: package.json:41-46
+    Issue: These are leftovers from the ECS/Fargate architecture:
+      - @aws-sdk/client-ec2
+      - @aws-sdk/client-ecs
+      - @aws-sdk/client-elastic-load-balancing-v2
+      - @aws-sdk/client-elasticache
+    Action: npm uninstall -D @aws-sdk/client-ec2 @aws-sdk/client-ecs \
+            @aws-sdk/client-elastic-load-balancing-v2 @aws-sdk/client-elasticache
+
+1.4 ENTIRE GO SERVICE - DELETE DIRECTORY
+    Location: cmd/ingestion/ (337 lines Go + Dockerfile + Makefile)
+    Issue: Deprecated per AR-52, replaced by Lambda ingestion handler
+    Impact:
+      - Confusing for new engineers
+      - npm scripts still reference Go (go:build, go:test, etc.)
+      - CI/CD might still try to build it
+    Action:
+      - rm -rf cmd/ingestion/
+      - Remove Go-related scripts from package.json (lines 17-34)
+      - Or move to separate maintenance/archive repo if you want history
+
+1.5 DEAD METHOD: scoreDeviceCandidates
+    Location: src/services/matching/matching-service.ts:856-874
+    Issue: This method is never called - replaced by scoreDeviceCandidatesWithEvidence
+    Action: Delete the scoreDeviceCandidates method
+
+================================================================================
+SECTION 2: BUGS & CORRECTNESS ISSUES
+================================================================================
+
+2.1 POTENTIAL RACE CONDITION IN CARDINALITY COUNTERS
+    Location: src/services/profile/profile-service.ts:554-582
+    Issue: incrementBucketCardinalities uses ADD which only increments.
+           But devices can be removed (TTL), causing cardinality to drift
+           higher than reality over time.
+    Impact: High-cardinality penalty may be applied incorrectly
+    Severity: Low (eventually self-corrects via TTL on stats items)
+    Fix: Add a periodic job to recalculate cardinalities, or accept drift
+
+2.2 SESSION ANCHOR RETURNS WRONG "MOST RECENT" DEVICE - ACTUAL BUG
+    Location: src/services/matching/matching-service.ts:569-593, 649-672
+
+    Issue: Session anchor lookup is fundamentally broken:
+      1. Query with Limit:10 returns first 10 items by SORT KEY (device_id)
+      2. device_id is `dev_${uuid}` - random, NOT time-ordered
+      3. Code then sorts these 10 random devices by created_at in memory
+      4. Returns "most recent" from this arbitrary subset
+
+    Bug: The ACTUAL most recent device might have a device_id that sorts
+         alphabetically after the first 10 - it would never be returned!
+         Example: If newest device is `dev_zzz...` but first 10 alphabetically
+         are `dev_aaa...` through `dev_jjj...`, we miss it entirely.
+
+    Current code (WRONG):
+      const result = await query({ Limit: 10 });  // 10 random by alphabet
+      const sorted = result.Items.sort(byCreatedAt);  // Sort wrong subset
+
+    Fix: Make device_id time-sortable using ULID instead of UUID
+
+    ULID (Universally Unique Lexicographically Sortable Identifier):
+      - 26 chars, first 10 encode millisecond timestamp
+      - Lexicographically sortable by creation time
+      - Example: 01ARZ3NDEKTSV4RRFFQ69G5FAV
+      - Tiny library: npm install ulid (~1KB)
+
+    Code change in matching-service.ts:
+      // Before:
+      import { randomUUID } from "crypto";
+      const deviceId = `dev_${randomUUID()}`;
+
+      // After:
+      import { ulid } from 'ulid';
+      const deviceId = `dev_${ulid()}`;
+
+    Query change:
+      // Before: Get 10 random, sort in memory (WRONG)
+      const result = await query({ Limit: 10 });
+      const sorted = result.Items.sort(byCreatedAt);
+
+      // After: Get 10 newest directly from DynamoDB (CORRECT)
+      const result = await query({
+        Limit: 10,
+        ScanIndexForward: false  // Descending by sort key
+      });
+      // No in-memory sort needed - already time-ordered
+
+    Benefits:
+      - Fixes the bug (returns actual most recent devices)
+      - No GSI needed (saves money)
+      - Removes in-memory sorting code
+      - ULID is a well-known pattern for this exact problem
+
+    Migration: Old `dev_uuid` devices sort before new `dev_ulid` ones.
+               For session anchors (10-min window), this is fine.
+
+    Additional Benefits of ULID (beyond fixing the bug):
+
+    a) Admin GSI (device-index) on Profiles table:
+       - Currently allows looking up device across tenants
+       - With ULID: can query/scan for recently created devices
+       - Location: lib/constructs/dynamodb.ts:43-47
+
+    b) Tier2 compound match tie-breaker:
+       - When 2 devices have same bucket overlap score, winner is arbitrary
+       - With ULID + ScanIndexForward:false, newest device wins ties
+       - More appropriate for fraud detection (recent activity = relevant)
+       - Location: matching-service.ts:492-498
+
+    c) Analytics/Athena queries:
+       - Can extract creation timestamp from device_id without extra column
+       - Enables time-range filtering directly on device_id
+       - Location: lib/constructs/analytics.ts
+
+    d) Test suite already expects time-ordering:
+       - Tests document "should return most recent valid device"
+       - With ULID these pass naturally, no in-memory sort needed
+       - Location: matching-service.test.ts:1421-1586
+
+2.3 MISSING NULL CHECK IN WARMUP EVENT
+    Location: src/helpers/constants.ts:133-139
+    Issue: WARMUP_EVENT object is exported but there's no handler for warmup
+           events in ingestion.ts - @middy/warmup middleware was imported
+           but not used in the middleware chain.
+    Impact: Cold starts not optimally handled
+    Fix: Add .use(warmup()) to the middy chain in ingestion.ts:289
+
+2.4 HARDCODED DEFAULT TENANT
+    Location: src/handlers/ingestion.ts:242
+    Issue: Falls back to "default" tenant when no API key configured
+    Impact: Multi-tenant isolation could be compromised if API key config
+            is accidentally removed - all traffic would merge into "default"
+    Fix: Make this configurable or throw error in production
+
+================================================================================
+SECTION 3: PERFORMANCE OPTIMIZATIONS
+================================================================================
+
+At 30B requests/year, every millisecond and every dollar matters.
+
+3.1 DYNAMODB BILLING MODE - SWITCH TO PROVISIONED + AUTO-SCALING
+    Location: lib/constructs/dynamodb.ts (all 4 tables use PAY_PER_REQUEST)
+    Issue: On-demand billing at 30B requests/year is expensive
+    Math:
+      - On-demand: ~$1.25 per million reads, $1.25 per million writes
+      - Provisioned: ~$0.25 per million at high utilization
+      - 30B requests = ~60B DynamoDB operations (read + write)
+      - On-demand: ~$75,000/year
+      - Provisioned: ~$25,000/year
+    Savings: ~$50,000/year (66% reduction on DynamoDB alone)
+    Action:
+      - Calculate baseline capacity from CloudWatch metrics
+      - Set base capacity at 70% of average
+      - Configure auto-scaling from 50% to 200% of base
+      - Target utilization: 70%
+    Environment: Future State, production only. This needs to be marked as a "TODO" or part of a "GO LIVE" checklist in the readme or something
+
+3.2 LAMBDA MEMORY SIZING - INCREASE MATCHING WORKER
+    Location: lib/config/stage-config.ts (matching worker: 512MB)
+    Issue: Matching worker executes 6+ parallel DynamoDB queries.
+           More memory = more CPU = faster execution.
+    Math:
+      - Lambda pricing is linear with memory AND duration
+      - 512MB @ 100ms = 1024MB @ 50ms (same cost, faster response)
+      - Reduced p99 latency improves SQS throughput
+    Action: Test with 1024MB and 1536MB, measure p95 duration
+    Expected: 20-30% latency reduction at same or lower cost
+
+3.3 BATCH OPERATIONS - CONSOLIDATE TIER2 QUERIES
+    Location: src/services/matching/matching-service.ts:443-458
+    Issue: 6 separate QueryCommand calls in parallel. Network overhead.
+    Alternative: Use BatchGetItem for stats + TransactGetItems consideration
+    Note: Current parallel approach is actually fine - just documenting
+          that BatchGetItem could reduce round trips if queries grow
+
+3.4 CONNECTION REUSE - VERIFY SDK CONFIGURATION
+    Location: src/handlers/matching-worker.ts (env vars)
+    Check: AWS_NODEJS_CONNECTION_REUSE_ENABLED is set to "1" - good!
+    But: DynamoDB client is created at module scope in service constructors.
+         For Lambda, this is correct (reused across invocations).
+    Status: Already optimized - no action needed
+
+3.5 CONSIDER DAX FOR SESSION CACHE
+    Issue: DynamoDB reads for session cache are ~5-10ms
+    DAX: Would reduce to <1ms (microsecond latency)
+    Trade-off:
+      - DAX cluster: ~$30-50/month minimum
+      - But VPC required (you removed VPC in AR-52)
+    Recommendation: SKIP for now. 5ms session cache latency is acceptable.
+                    DAX only makes sense if you need <1ms cache reads.
+                    Mark this as part of a TODO or GOLIVE Checklist on the README
+
+================================================================================
+SECTION 4: CODE QUALITY & MAINTAINABILITY
+================================================================================
+
+4.1 FILE TOO LONG: matching-service.ts (1,068 lines)
+    Issue: Single file with 6 tiers of matching logic, caching, queue handling
+    Cognitive load: Very high - hard to onboard new engineers
+    Suggested split:
+      src/services/matching/
+        index.ts              - exports
+        matching-service.ts   - orchestration only (~200 lines)
+        tier0-cache.ts        - session cache methods
+        tier05-identity.ts    - evercookie, public key, sigint lookups
+        tier1-hash.ts         - stable/fuzzy hash matching
+        tier2-compound.ts     - bucket matching with cardinality
+        session-anchors.ts    - session anchor / IP+UA anchor logic
+
+4.2 FILE TOO LONG: profile-service.ts (881 lines)
+    Issue: Profile updates, drift detection, flag computation, bucket writes
+    Suggested split:
+      src/services/profile/
+        index.ts              - exports
+        profile-service.ts    - orchestration (~200 lines)
+        drift-detection.ts    - hasSignificantDrift logic
+        flag-computation.ts   - computeFlags, computeRiskScore
+        index-writers.ts      - updateTier1Indexes, updateTier2Buckets
+
+4.3 CODE DUPLICATION: BUCKET KEY BUILDING
+    Locations:
+      - matching-service.ts:782-850 (buildBucketKeysWithTypes)
+      - profile-service.ts:640-698 (buildTier2BucketKeys)
+    Issue: Same bucket key format built in two places
+    Risk: Format drift between read and write paths
+    Fix: Extract to shared utility in src/helpers/bucket-keys.ts
+
+4.4 CONSTANTS MUTABLE AT LOAD TIME
+    Location: src/helpers/constants.ts:111-124
+    Issue: ALLOWED_ORIGINS parsed from env var at module load time
+    Impact: Changes to ALLOWED_ORIGINS env var require Lambda redeploy
+    Fix: Use a function that reads env var on each call, with caching
+
+4.5 INCONSISTENT CJS vs ESM BUNDLING
+    Locations:
+      - lib/constructs/http-api.ts:85   - format: OutputFormat.ESM
+      - lib/constructs/workers.ts:86    - format: OutputFormat.CJS
+    Issue: Ingestion uses ESM, workers use CJS
+    Impact: Potential for subtle module resolution differences
+    Fix: Standardize on ESM for all handlers (modern Node.js 20 supports it)
+
+================================================================================
+SECTION 5: SECURITY CONSIDERATIONS
+================================================================================
+
+5.1 CORS ALLOWS WILDCARD ORIGIN
+    Location: lib/constructs/http-api.ts:143
+    Code: allowOrigins: ["*"]
+    Context: Comment says "CloudFront handles real CORS"
+    Risk: If CloudFront misconfigured, API is wide open
+    Recommendation: If possible let cloudfront handle CORS and keep logic and code out of application layer. Lets confirm that it works first; and actually is the right answer. Also, allow * has to exist because we are a third-party-service with lots of customers.
+
+5.2 NO PER-TENANT RATE LIMITING
+    Current: Global WAF rate limiting only
+    Risk: One bad tenant can exhaust capacity for all tenants
+    Fix options:
+      a) Lambda@Edge with tenant-aware rate limiting
+      b) DynamoDB token bucket per tenant (check in ingestion Lambda)
+      c) API Gateway usage plans per API key
+    Recommended: WAF is fine. If we serve customers like WalMart or Lowes - they'll have a lot of requests. Plus this is a public "API" that is hit from websites.
+
+5.3 API KEY STORAGE IN ENVIRONMENT VARIABLE
+    Location: src/handlers/ingestion.ts:36-38
+    Issue: API_KEYS parsed from env var as JSON
+    Risk: Env vars visible in AWS console, CloudWatch logs (if logged)
+    Current mitigation: Secrets Manager exists but not used here
+    Fix: Move API_KEYS to Secrets Manager, cache in Lambda memory
+
+================================================================================
+SECTION 6: OBSERVABILITY GAPS
+================================================================================
+
+6.1 MISSING METRIC: NEW DEVICE RATE
+    Issue: No easy way to see what % of requests are new vs returning devices
+    Impact: Hard to detect fraud spikes (sudden new device surge)
+    Fix: Add metric in matching-worker when is_new_device is true
+
+6.2 MISSING METRIC: TIER2 BUCKET CARDINALITY DISTRIBUTION
+    Issue: Can't see if buckets are getting too large
+    Fix: Emit cardinality as metric dimension or log structured data
+
+6.3 NO DISTRIBUTED TRACING
+    Location: lib/constructs/workers.ts:91
+    Code: tracing: Tracing.DISABLED
+    Issue: X-Ray disabled - hard to trace requests across Lambda/SQS/DynamoDB
+    Fix: Enable X-Ray tracing (small cost, big debuggability win)
+         tracing: Tracing.ACTIVE
+
+================================================================================
+SECTION 7: COST OPTIMIZATION SUMMARY
+================================================================================
+
+CURRENT ESTIMATED ANNUAL COST (30B requests/year):
+  CloudFront:           $22,500
+  Lambda:               $15,000
+  DynamoDB (on-demand): $75,000
+  SQS:                  $10,000
+  S3 + Firehose:        $2,000
+  TOTAL:                ~$124,500
+
+AFTER RECOMMENDED OPTIMIZATIONS:
+  DynamoDB (provisioned + auto-scale): $25,000 (save $50,000)
+  Remove unused deps (smaller bundles): ~$500 savings (cold start)
+  Lambda memory tuning (same cost, better perf): $0 savings
+  TOTAL:                ~$74,500
+
+POTENTIAL ANNUAL SAVINGS: ~$50,000 (40% reduction)
+
+================================================================================
+SECTION 8: PRIORITIZED ACTION ITEMS
+================================================================================
+
+IMMEDIATE ():
+  [x] Remove ioredis, ioredis-mock dependencies
+  [ ] Remove dead AWS SDK dev dependencies
+  [ ] Delete cmd/ingestion/ directory
+  [ ] Delete scoreDeviceCandidates dead method
+  [ ] Enable X-Ray tracing
+  [ ] FIX BUG: Switch device_id from UUID to ULID (see 2.2 - wrong devices returned)
+
+SHORT-TERM ():
+  [ ] Switch DynamoDB to provisioned capacity with auto-scaling
+  [ ] Add @middy/warmup to ingestion handler
+  [ ] Test Lambda at 1024MB memory
+  [ ] Add NEW_DEVICE_RATE metric
+  [ ] Standardize on ESM bundling
+
+MEDIUM-TERM (This Quarter):
+  [ ] Split matching-service.ts into smaller modules
+  [ ] Split profile-service.ts into smaller modules
+  [ ] Extract bucket key building to shared utility
+  [ ] Move API_KEYS to Secrets Manager
+
+LONG-TERM (Consider):
+  [ ] Graviton3 when available for Lambda
+  [ ] Step Functions for complex matching workflows (if logic grows)
+
+================================================================================
+SECTION 9: THINGS THAT ARE ACTUALLY GOOD
+================================================================================
+
+Credit where due - these architectural decisions are solid:
+
++ AR-52: Removing Redis/VPC was the right call. DynamoDB session cache is
+  simpler, cheaper, and scales better for this use case.
+
++ HTTP API vs REST API: 70% cost savings, lower latency. Good choice.
+
++ ARM64 Lambda: 20% cheaper, often faster. Good choice.
+
++ Tiered matching architecture: Elegant design. Tier 0.5 -> Tier 1 -> Tier 2
+  progression makes sense for cost/accuracy tradeoff.
+
++ Adjacency list pattern for Tier2: Solves the 400KB item limit elegantly.
+
++ Mutation gate pattern: Prevents thundering herd writes. Smart.
+
++ Canary deployments with CodeDeploy: Good safety net for production.
+
++ Firehose analytics pipeline: Clean separation of hot path from analytics.
+
++ Pre-commit hooks with lefthook: Catches issues before CI.
+
++ 434+ unit tests: Good coverage for a project this size.
+
+================================================================================
+END OF REVIEW
+================================================================================
