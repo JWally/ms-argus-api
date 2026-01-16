@@ -895,7 +895,8 @@ export class MatchingService {
           const unmarshalled = unmarshall(item);
           const deviceId = unmarshalled.device_id;
           // AR-77: Filter out _stats entries (used for bucket cardinality tracking)
-          if (deviceId && deviceId !== "_stats") {
+          // AR-98: Use TIER2_STATS_SK constant instead of hardcoded string
+          if (deviceId && deviceId !== TIER2_STATS_SK) {
             const existing = candidates.get(deviceId);
             if (existing) {
               existing.score += 1;
