@@ -260,6 +260,98 @@ describe("middy-helpers", () => {
     });
   });
 
+  // AR-97: Tenant-based deduplication tests
+  describe("deduplicateMiddleware tenant isolation", () => {
+    beforeEach(() => {
+      _clearDeduplicateCache();
+    });
+
+    const createMockRequestWithTenant = (body: string, tenantId: string) => ({
+      event: {
+        body,
+        headers: {
+          "x-tenant-id": tenantId,
+        },
+        httpMethod: "POST",
+        isBase64Encoded: false,
+        path: "/test",
+        pathParameters: null,
+        queryStringParameters: null,
+        requestContext: {} as any,
+        resource: "/test",
+        stageVariables: null,
+        multiValueHeaders: {},
+        multiValueQueryStringParameters: null,
+      } as APIGatewayProxyEvent,
+      context: {} as any,
+      response: null,
+      error: null,
+      internal: {},
+    });
+
+    it("should allow same body from different tenants", () => {
+      const middleware = deduplicateMiddleware();
+      const sameBody = '{"session_id": "123", "fingerprint": {}}';
+
+      // Tenant A sends request
+      const requestTenantA = createMockRequestWithTenant(sameBody, "tenant-a");
+      expect(() => middleware.before!(requestTenantA as any)).not.toThrow();
+
+      // Tenant B sends identical body - should NOT be flagged as duplicate
+      const requestTenantB = createMockRequestWithTenant(sameBody, "tenant-b");
+      expect(() => middleware.before!(requestTenantB as any)).not.toThrow();
+    });
+
+    it("should block duplicate from same tenant", () => {
+      const middleware = deduplicateMiddleware();
+      const sameBody = '{"session_id": "456", "fingerprint": {}}';
+
+      // Same tenant sends two identical requests
+      const request1 = createMockRequestWithTenant(sameBody, "tenant-a");
+      const request2 = createMockRequestWithTenant(sameBody, "tenant-a");
+
+      expect(() => middleware.before!(request1 as any)).not.toThrow();
+      expect(() => middleware.before!(request2 as any)).toThrow(
+        /Duplicate request detected/,
+      );
+    });
+
+    it("should treat missing tenant header as 'default' tenant", () => {
+      const middleware = deduplicateMiddleware();
+      const sameBody = '{"session_id": "789", "fingerprint": {}}';
+
+      // Request without tenant header
+      const requestNoTenant = {
+        event: {
+          body: sameBody,
+          headers: {},
+          httpMethod: "POST",
+          isBase64Encoded: false,
+          path: "/test",
+          pathParameters: null,
+          queryStringParameters: null,
+          requestContext: {} as any,
+          resource: "/test",
+          stageVariables: null,
+          multiValueHeaders: {},
+          multiValueQueryStringParameters: null,
+        } as APIGatewayProxyEvent,
+        context: {} as any,
+        response: null,
+        error: null,
+        internal: {},
+      };
+
+      // First request passes
+      expect(() => middleware.before!(requestNoTenant as any)).not.toThrow();
+
+      // Second identical request (also no tenant) should be blocked
+      expect(() => middleware.before!(requestNoTenant as any)).toThrow(
+        /Duplicate request detected/,
+      );
+    });
+  });
+
   describe("_clearDeduplicateCache", () => {
     it("should clear the cache allowing same request again", () => {
       const middleware = deduplicateMiddleware();
