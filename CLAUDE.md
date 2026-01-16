@@ -143,9 +143,12 @@ Browser → CloudFront → API Gateway (HTTP API) → Lambda (Ingestion) → SQS
                                                           Lambda (Matching) → DynamoDB
                                                                       ↓
                                                           SQS → Lambda (Profile) → DynamoDB
+
+EventBridge (daily) → Lambda (Cardinality Recalc) → DynamoDB (Tier2Buckets)
 ```
 
-AR-52: Replaced Go/ECS ingestion with HTTP API + Lambda. AR-52: Replaced Redis cache with DynamoDB session cache.
+AR-52: Replaced Go/ECS ingestion with HTTP API + Lambda. Replaced Redis cache with DynamoDB session cache.
+AR-130: Added daily cardinality recalculation Lambda to fix bucket stats drift.
 
 ### Key Files
 
@@ -159,7 +162,7 @@ AR-52: Replaced Go/ECS ingestion with HTTP API + Lambda. AR-52: Replaced Redis c
 ### DynamoDB Tables
 
 - `Profiles` - Device fingerprint profiles
-- `Tier1Index` - Hash lookups (evercookie, stable, fuzzy, ja4)
+- `Tier1Index` - Hash lookups (evercookie, stable, fuzzy, public_key, sigint_id)
 - `Tier2Buckets` - Compound filter matching
 - `SessionCache` - Session state and mutation gates (AR-52)
 
