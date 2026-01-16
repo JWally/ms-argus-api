@@ -1,61 +1,33 @@
 // src/services/profile/profile-service.ts
 // AR-52: Replaced Redis with DynamoDB session cache
+// AR-120: Refactored to orchestration-only, delegates to focused modules
 import {
   DynamoDBClient,
   GetItemCommand,
   PutItemCommand,
-  BatchWriteItemCommand,
-  UpdateItemCommand,
-  WriteRequest,
 } from "@aws-sdk/client-dynamodb";
 import { marshall, unmarshall } from "@aws-sdk/util-dynamodb";
 import { DynamoCacheService } from "../cache";
+import { Fingerprint, ProfileUpdatePayload, DeviceProfile } from "./types";
+import { hasSignificantDrift } from "./drift-detection";
 import {
-  Fingerprint,
-  ProfileUpdatePayload,
-  DeviceProfile,
-  DeviceFlags,
-} from "./types";
+  detectBotSignals,
+  computeFlags,
+  computeRiskScore,
+} from "./flag-computation";
 import {
-  TIER2_STATS_SK,
-  SESSION_ANCHOR_CLEANUP_TTL_SECONDS,
-} from "../../helpers/constants";
-import {
-  buildTier2BucketKeys as buildTier2BucketKeysHelper,
-  buildSessionAnchorKey as buildSessionAnchorKeyHelper,
-  buildIpUaAnchorKey as buildIpUaAnchorKeyHelper,
-} from "../../helpers/bucket-keys";
-
-/**
- * Thresholds for flag computation
- */
-const FLAG_THRESHOLDS = {
-  /** Requests per hour that triggers RAPID_REQUESTS flag */
-  RAPID_REQUESTS_PER_HOUR: 50,
-} as const;
-
-/**
- * Risk score weights for different flags
- * Positive values increase risk, negative values decrease risk
- */
-const RISK_WEIGHTS = {
-  /** Base risk for new devices (neutral) */
-  BASE_NEW_DEVICE: 0.5,
-  /** Base risk for returning devices without flags */
-  BASE_RETURNING: 0.3,
-  /** Bot detection is a strong negative signal */
-  BOT_DETECTED: 0.25,
-  /** Headless browser is a strong negative signal */
-  HEADLESS_BROWSER: 0.15,
-  /** Fingerprint mismatch suggests device spoofing */
-  FINGERPRINT_MISMATCH: 0.15,
-  /** Rapid requests suggests automated behavior */
-  RAPID_REQUESTS: 0.1,
-  /** Verified devices get trust bonus */
-  VERIFIED: -0.2,
-  /** Returning users get slight trust bonus */
-  RETURNING_USER: -0.1,
-} as const;
+  buildTier1IndexEntries,
+  batchWriteTier1Indexes,
+  buildTier2BucketKeys,
+  batchWriteTier2Buckets,
+  incrementBucketCardinalities,
+  buildSessionAnchorKey,
+  writeSessionAnchorBucket,
+  buildIpUaAnchorKey,
+  writeIpUaAnchorBucket,
+  Tier1IndexEntry,
+  IndexWriterDeps,
+} from "./index-writers";
 
 /**
  * Configuration for the profile service
@@ -81,9 +53,19 @@ export interface ProfileServiceDeps {
 /**
  * Profile service handles device profile updates
  * Implements mutation gating to reduce unnecessary writes
+ * AR-120: Orchestration-only - delegates to focused modules
  */
 export class ProfileService {
-  constructor(private deps: ProfileServiceDeps) {}
+  private indexWriterDeps: IndexWriterDeps;
+
+  constructor(private deps: ProfileServiceDeps) {
+    // Create index writer deps from service deps
+    this.indexWriterDeps = {
+      dynamodb: deps.dynamodb,
+      tier1IndexTable: deps.config.tier1IndexTable,
+      tier2BucketsTable: deps.config.tier2BucketsTable,
+    };
+  }
 
   /**
    * Atomically try to acquire the mutation gate for a device
@@ -118,74 +100,21 @@ export class ProfileService {
   }
 
   /**
-   * Check if incoming fingerprint has significant drift from existing profile
-   * Returns true if we should update, false if fingerprint is essentially the same
+   * AR-120: Delegates to drift-detection module
    */
   hasSignificantDrift(existing: DeviceProfile, incoming: Fingerprint): boolean {
-    // Major drift: stable hash changed
-    if (existing.stable_hash !== incoming.stable_hash) {
-      return true;
-    }
-
-    // Count how many signals have changed
-    let changedSignals = 0;
-
-    if (existing.canvas_hash !== incoming.canvas_hash) changedSignals++;
-    if (existing.webgl_hash !== incoming.webgl_hash) changedSignals++;
-    if (existing.audio_hash !== incoming.audio_hash) changedSignals++;
-    if (existing.gpu_renderer !== incoming.gpu_renderer) changedSignals++;
-    if (existing.screen_dims !== incoming.screen_dims) changedSignals++;
-
-    // Drift threshold: 2+ signals changed
-    return changedSignals >= 2;
+    return hasSignificantDrift(existing, incoming);
   }
 
   /**
-   * Detect bot-like signals in fingerprint
-   * Returns array of detected bot flags
+   * AR-120: Delegates to flag-computation module
    */
   detectBotSignals(fingerprint: Fingerprint): string[] {
-    const flags: string[] = [];
-
-    // SwiftShader is a software renderer commonly used by headless browsers
-    if (fingerprint.gpu_renderer?.toLowerCase().includes("swiftshader")) {
-      flags.push(DeviceFlags.HEADLESS_BROWSER);
-      flags.push(DeviceFlags.BOT_DETECTED);
-    }
-
-    // Very small viewport (800x600) is typical of automated browsers
-    if (fingerprint.screen_dims === "800x600") {
-      flags.push(DeviceFlags.BOT_DETECTED);
-    }
-
-    // Check user agent for bot patterns
-    if (fingerprint.user_agent) {
-      const ua = fingerprint.user_agent.toLowerCase();
-      if (
-        ua.includes("bot") ||
-        ua.includes("crawler") ||
-        ua.includes("spider") ||
-        ua.includes("headless")
-      ) {
-        flags.push(DeviceFlags.BOT_DETECTED);
-      }
-    }
-
-    // Single CPU core and very low memory are atypical for real devices
-    if (
-      fingerprint.hardware_concurrency === 1 &&
-      fingerprint.device_memory !== undefined &&
-      fingerprint.device_memory < 1
-    ) {
-      flags.push(DeviceFlags.BOT_DETECTED);
-    }
-
-    // Remove duplicates
-    return [...new Set(flags)];
+    return detectBotSignals(fingerprint);
   }
 
   /**
-   * Compute all flags for a profile based on fingerprint and profile state
+   * AR-120: Delegates to flag-computation module
    */
   computeFlags(
     fingerprint: Fingerprint,
@@ -193,100 +122,18 @@ export class ProfileService {
     isNewDevice: boolean,
     hasDrift: boolean,
   ): string[] {
-    const flags: string[] = [];
-
-    // NEW_DEVICE flag for first-time devices
-    if (isNewDevice) {
-      flags.push(DeviceFlags.NEW_DEVICE);
-    }
-
-    // Bot detection flags
-    const botFlags = this.detectBotSignals(fingerprint);
-    flags.push(...botFlags);
-
-    // FINGERPRINT_MISMATCH flag when significant drift is detected
-    if (existingProfile && hasDrift) {
-      flags.push(DeviceFlags.FINGERPRINT_MISMATCH);
-    }
-
-    // RAPID_REQUESTS flag - check if request rate is suspicious
-    if (existingProfile) {
-      const hoursSinceFirstSeen =
-        (Date.now() - existingProfile.first_seen_at) / (1000 * 60 * 60);
-      const requestsPerHour =
-        hoursSinceFirstSeen > 0
-          ? (existingProfile.request_count + 1) / hoursSinceFirstSeen
-          : existingProfile.request_count + 1;
-
-      if (requestsPerHour > FLAG_THRESHOLDS.RAPID_REQUESTS_PER_HOUR) {
-        flags.push(DeviceFlags.RAPID_REQUESTS);
-      }
-    }
-
-    // Preserve existing positive flags (VERIFIED, RETURNING_USER)
-    if (existingProfile?.flags) {
-      const positiveFlags = existingProfile.flags.filter(
-        (f) => f === DeviceFlags.VERIFIED || f === DeviceFlags.RETURNING_USER,
-      );
-      flags.push(...positiveFlags);
-    }
-
-    // Remove duplicates and return
-    return [...new Set(flags)];
+    return computeFlags(fingerprint, existingProfile, isNewDevice, hasDrift);
   }
 
   /**
-   * Compute risk score based on flags and profile history
-   * Returns a value between 0 (trusted) and 1 (high risk)
+   * AR-120: Delegates to flag-computation module
    */
   computeRiskScore(
     flags: string[],
     existingProfile: DeviceProfile | null,
     isNewDevice: boolean,
   ): number {
-    // Treat as new device if explicitly marked or no existing profile
-    const effectivelyNewDevice = isNewDevice || existingProfile === null;
-
-    // Start with base risk
-    let riskScore = effectivelyNewDevice
-      ? RISK_WEIGHTS.BASE_NEW_DEVICE
-      : RISK_WEIGHTS.BASE_RETURNING;
-
-    // Apply flag-based adjustments
-    for (const flag of flags) {
-      switch (flag) {
-        case DeviceFlags.BOT_DETECTED:
-          riskScore += RISK_WEIGHTS.BOT_DETECTED;
-          break;
-        case DeviceFlags.HEADLESS_BROWSER:
-          riskScore += RISK_WEIGHTS.HEADLESS_BROWSER;
-          break;
-        case DeviceFlags.FINGERPRINT_MISMATCH:
-          riskScore += RISK_WEIGHTS.FINGERPRINT_MISMATCH;
-          break;
-        case DeviceFlags.RAPID_REQUESTS:
-          riskScore += RISK_WEIGHTS.RAPID_REQUESTS;
-          break;
-        case DeviceFlags.VERIFIED:
-          riskScore += RISK_WEIGHTS.VERIFIED;
-          break;
-        case DeviceFlags.RETURNING_USER:
-          riskScore += RISK_WEIGHTS.RETURNING_USER;
-          break;
-      }
-    }
-
-    // For returning devices, blend with historical risk (weighted average)
-    // This prevents risk from changing too dramatically on a single request
-    if (existingProfile && !effectivelyNewDevice) {
-      const historicalWeight = 0.3;
-      riskScore =
-        riskScore * (1 - historicalWeight) +
-        existingProfile.risk_score * historicalWeight;
-    }
-
-    // Clamp to valid range [0, 1]
-    return Math.max(0, Math.min(1, riskScore));
+    return computeRiskScore(flags, existingProfile, isNewDevice);
   }
 
   /**
@@ -352,6 +199,7 @@ export class ProfileService {
   /**
    * Update Tier 1 indexes (O(1) hash lookups)
    * Uses BatchWriteItem to reduce round-trips to DynamoDB
+   * AR-120: Delegates to index-writers module
    */
   async updateTier1Indexes(
     tenantId: string,
@@ -373,140 +221,21 @@ export class ProfileService {
       return 0;
     }
 
-    // Use BatchWriteItem for efficiency (max 4 entries, well under 25 limit)
-    await this.batchWriteTier1Indexes(indexEntries);
+    // Use BatchWriteItem for efficiency
+    await batchWriteTier1Indexes(this.indexWriterDeps, indexEntries);
     return indexEntries.length;
   }
 
   /**
-   * Batch write Tier 1 index entries with retry logic for unprocessed items
-   */
-  private async batchWriteTier1Indexes(
-    entries: Array<{
-      tenant_id: string;
-      hash_key: string;
-      device_id: string;
-      ttl: number;
-    }>,
-    maxRetries: number = 3,
-  ): Promise<void> {
-    const tableName = this.deps.config.tier1IndexTable;
-    let unprocessedItems: WriteRequest[] = entries.map((entry) => ({
-      PutRequest: {
-        Item: marshall(entry),
-      },
-    }));
-
-    let attempt = 0;
-
-    while (unprocessedItems.length > 0 && attempt < maxRetries) {
-      const result = await this.deps.dynamodb.send(
-        new BatchWriteItemCommand({
-          RequestItems: {
-            [tableName]: unprocessedItems,
-          },
-        }),
-      );
-
-      // Check for unprocessed items (can happen during throttling)
-      const remaining = result.UnprocessedItems?.[tableName];
-      if (remaining && remaining.length > 0) {
-        unprocessedItems = remaining;
-        attempt++;
-        // Exponential backoff: 100ms, 200ms, 400ms
-        await this.sleep(Math.pow(2, attempt) * 100);
-      } else {
-        unprocessedItems = [];
-      }
-    }
-
-    if (unprocessedItems.length > 0) {
-      throw new Error(
-        `Failed to write ${unprocessedItems.length} Tier1 index items after ${maxRetries} retries`,
-      );
-    }
-  }
-
-  /**
-   * Sleep utility for retry backoff
-   */
-  private sleep(ms: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, ms));
-  }
-
-  /**
-   * Build Tier 1 index entries for a fingerprint
+   * AR-120: Delegates to index-writers module
    */
   buildTier1IndexEntries(
     tenantId: string,
     deviceId: string,
     fingerprint: Fingerprint,
     ttl: number,
-  ): Array<{
-    tenant_id: string;
-    hash_key: string;
-    device_id: string;
-    ttl: number;
-  }> {
-    const entries: Array<{
-      tenant_id: string;
-      hash_key: string;
-      device_id: string;
-      ttl: number;
-    }> = [];
-
-    if (fingerprint.evercookie_id) {
-      entries.push({
-        tenant_id: tenantId,
-        hash_key: `evercookie#${fingerprint.evercookie_id}`,
-        device_id: deviceId,
-        ttl,
-      });
-    }
-
-    // AR-81: Third-party cookie from sigint CloudFront edge
-    if (fingerprint.sigint_id) {
-      entries.push({
-        tenant_id: tenantId,
-        hash_key: `sigint#${fingerprint.sigint_id}`,
-        device_id: deviceId,
-        ttl,
-      });
-    }
-
-    // AR-64: ECDSA public key for cryptographic device identity
-    if (fingerprint.public_key) {
-      entries.push({
-        tenant_id: tenantId,
-        hash_key: `pubkey#${fingerprint.public_key}`,
-        device_id: deviceId,
-        ttl,
-      });
-    }
-
-    if (fingerprint.stable_hash) {
-      entries.push({
-        tenant_id: tenantId,
-        hash_key: `stable#${fingerprint.stable_hash}`,
-        device_id: deviceId,
-        ttl,
-      });
-    }
-
-    if (fingerprint.fuzzy_hash) {
-      entries.push({
-        tenant_id: tenantId,
-        hash_key: `fuzzy#${fingerprint.fuzzy_hash}`,
-        device_id: deviceId,
-        ttl,
-      });
-    }
-
-    // AR-115: Removed standalone ja4# indexing - JA4 alone is not unique enough
-    // for direct matching (many devices share the same JA4). JA4 is still used
-    // in Tier2 compound buckets (ip_ja4) where it's combined with other signals.
-
-    return entries;
+  ): Tier1IndexEntry[] {
+    return buildTier1IndexEntries(tenantId, deviceId, fingerprint, ttl);
   }
 
   /**
@@ -514,6 +243,7 @@ export class ProfileService {
    * Uses shorter TTL (7 days) to prevent bucket accumulation (AR-39)
    * Uses BatchWriteItem with retry logic for reliability (AR-40)
    * AR-56: Also increments cardinality counters for each bucket
+   * AR-120: Delegates to index-writers module
    */
   async updateTier2Buckets(
     tenantId: string,
@@ -535,127 +265,41 @@ export class ProfileService {
       ttl,
     }));
 
-    // Use BatchWriteItem with retry logic (consistent with Tier 1)
-    await this.batchWriteTier2Buckets(bucketEntries);
+    // Use BatchWriteItem with retry logic
+    await batchWriteTier2Buckets(this.indexWriterDeps, bucketEntries);
 
     // AR-56: Increment cardinality counters for each bucket
-    // Uses atomic ADD to track approximate bucket size
-    await this.incrementBucketCardinalities(bucketKeys, ttl);
+    await incrementBucketCardinalities(this.indexWriterDeps, bucketKeys, ttl);
 
     return bucketEntries.length;
   }
 
   /**
-   * AR-56: Increment cardinality counters for Tier 2 buckets
-   * Uses UpdateItem with ADD for atomic increment
-   * Stats items use "_stats" as sort key to distinguish from device entries
-   */
-  private async incrementBucketCardinalities(
-    bucketKeys: string[],
-    ttl: number,
-  ): Promise<void> {
-    const tableName = this.deps.config.tier2BucketsTable;
-
-    // Increment all counters in parallel
-    const updates = bucketKeys.map((bucketKey) =>
-      this.deps.dynamodb.send(
-        new UpdateItemCommand({
-          TableName: tableName,
-          Key: {
-            bucket_key: { S: bucketKey },
-            device_id: { S: TIER2_STATS_SK },
-          },
-          UpdateExpression: "ADD cardinality :inc SET #ttl = :ttl",
-          ExpressionAttributeNames: {
-            "#ttl": "ttl",
-          },
-          ExpressionAttributeValues: {
-            ":inc": { N: "1" },
-            ":ttl": { N: String(ttl) },
-          },
-        }),
-      ),
-    );
-
-    await Promise.all(updates);
-  }
-
-  /**
-   * Batch write Tier 2 bucket entries with retry logic for unprocessed items (AR-40)
-   * Mirrors batchWriteTier1Indexes for consistency
-   */
-  private async batchWriteTier2Buckets(
-    entries: Array<{
-      bucket_key: string;
-      device_id: string;
-      ttl: number;
-    }>,
-    maxRetries: number = 3,
-  ): Promise<void> {
-    const tableName = this.deps.config.tier2BucketsTable;
-    let unprocessedItems: WriteRequest[] = entries.map((entry) => ({
-      PutRequest: {
-        Item: {
-          bucket_key: { S: entry.bucket_key },
-          device_id: { S: entry.device_id },
-          ttl: { N: String(entry.ttl) },
-        },
-      },
-    }));
-
-    let attempt = 0;
-
-    while (unprocessedItems.length > 0 && attempt < maxRetries) {
-      const result = await this.deps.dynamodb.send(
-        new BatchWriteItemCommand({
-          RequestItems: {
-            [tableName]: unprocessedItems,
-          },
-        }),
-      );
-
-      // Check for unprocessed items (can happen during throttling)
-      const remaining = result.UnprocessedItems?.[tableName];
-      if (remaining && remaining.length > 0) {
-        unprocessedItems = remaining;
-        attempt++;
-        // Exponential backoff: 100ms, 200ms, 400ms
-        await this.sleep(Math.pow(2, attempt) * 100);
-      } else {
-        unprocessedItems = [];
-      }
-    }
-
-    if (unprocessedItems.length > 0) {
-      throw new Error(
-        `Failed to write ${unprocessedItems.length} Tier2 bucket items after ${maxRetries} retries`,
-      );
-    }
-  }
-
-  /**
    * Build Tier 2 bucket keys for compound matching
    * AR-117: Delegates to shared bucket-keys helper
+   * AR-120: Delegates to index-writers module
    */
   buildTier2BucketKeys(tenantId: string, fingerprint: Fingerprint): string[] {
-    return buildTier2BucketKeysHelper(tenantId, fingerprint);
+    return buildTier2BucketKeys(tenantId, fingerprint);
   }
 
   /**
    * AR-82: Build session anchor bucket key for ephemeral short-window matching
    * AR-117: Delegates to shared bucket-keys helper
+   * AR-120: Delegates to index-writers module
    */
   buildSessionAnchorKey(
     tenantId: string,
     fingerprint: Fingerprint,
   ): string | null {
-    return buildSessionAnchorKeyHelper(tenantId, fingerprint);
+    return buildSessionAnchorKey(tenantId, fingerprint);
   }
 
   /**
    * AR-82: Update session anchor bucket for ephemeral matching
    * Stores created_at timestamp for application-side 10-minute validity check
    * Uses shorter TTL (1 hour) for DynamoDB cleanup
+   * AR-120: Delegates to index-writers module
    */
   async updateSessionAnchorBucket(
     tenantId: string,
@@ -667,39 +311,27 @@ export class ProfileService {
       return false;
     }
 
-    const now = Date.now();
-    const ttl = Math.floor(now / 1000) + SESSION_ANCHOR_CLEANUP_TTL_SECONDS;
-
-    await this.deps.dynamodb.send(
-      new PutItemCommand({
-        TableName: this.deps.config.tier2BucketsTable,
-        Item: {
-          bucket_key: { S: bucketKey },
-          device_id: { S: deviceId },
-          created_at: { N: String(now) },
-          ttl: { N: String(ttl) },
-        },
-      }),
-    );
-
+    await writeSessionAnchorBucket(this.indexWriterDeps, bucketKey, deviceId);
     return true;
   }
 
   /**
    * AR-94: Build IP+UA-only anchor bucket key for ephemeral matching
    * AR-117: Delegates to shared bucket-keys helper
+   * AR-120: Delegates to index-writers module
    */
   buildIpUaAnchorKey(
     tenantId: string,
     fingerprint: Fingerprint,
   ): string | null {
-    return buildIpUaAnchorKeyHelper(tenantId, fingerprint);
+    return buildIpUaAnchorKey(tenantId, fingerprint);
   }
 
   /**
    * AR-94: Update IP+UA-only anchor bucket for ephemeral matching
    * Stores created_at timestamp for application-side 3-minute validity check
    * Uses 1 hour TTL for DynamoDB cleanup (same as session anchor)
+   * AR-120: Delegates to index-writers module
    */
   async updateIpUaAnchorBucket(
     tenantId: string,
@@ -711,21 +343,7 @@ export class ProfileService {
       return false;
     }
 
-    const now = Date.now();
-    const ttl = Math.floor(now / 1000) + SESSION_ANCHOR_CLEANUP_TTL_SECONDS;
-
-    await this.deps.dynamodb.send(
-      new PutItemCommand({
-        TableName: this.deps.config.tier2BucketsTable,
-        Item: {
-          bucket_key: { S: bucketKey },
-          device_id: { S: deviceId },
-          created_at: { N: String(now) },
-          ttl: { N: String(ttl) },
-        },
-      }),
-    );
-
+    await writeIpUaAnchorBucket(this.indexWriterDeps, bucketKey, deviceId);
     return true;
   }
 
