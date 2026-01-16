@@ -498,14 +498,9 @@ export class ProfileService {
       });
     }
 
-    if (fingerprint.ja4) {
-      entries.push({
-        tenant_id: tenantId,
-        hash_key: `ja4#${fingerprint.ja4}`,
-        device_id: deviceId,
-        ttl,
-      });
-    }
+    // AR-115: Removed standalone ja4# indexing - JA4 alone is not unique enough
+    // for direct matching (many devices share the same JA4). JA4 is still used
+    // in Tier2 compound buckets (ip_ja4) where it's combined with other signals.
 
     return entries;
   }
