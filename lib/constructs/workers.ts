@@ -88,7 +88,7 @@ export class WorkersConstruct extends Construct {
         environment: { NODE_ENV: "production" },
         // AR-52: No longer need ioredis - using DynamoDB for caching
       },
-      tracing: Tracing.DISABLED,
+      tracing: Tracing.ACTIVE,
       // AR-52: No VPC - workers access DynamoDB/SQS via IAM
     };
 
