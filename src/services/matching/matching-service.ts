@@ -1,6 +1,7 @@
 // src/services/matching/matching-service.ts
 // AR-119: Refactored to orchestration only - delegates to tier modules
-import { randomUUID } from "crypto";
+// AR-121: Replaced UUID with ULID for time-sortable device IDs
+import { ulid } from "ulid";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { SQSClient, SendMessageCommand } from "@aws-sdk/client-sqs";
 import { DynamoCacheService } from "../cache";
@@ -316,7 +317,8 @@ export class MatchingService {
   }
 
   createNewDevice(): MatchResult {
-    const deviceId = `dev_${generateUUID()}`;
+    // AR-121: Use ULID for time-sortable device IDs
+    const deviceId = `dev_${generateULID()}`;
     return {
       device_id: deviceId,
       confidence: 0,
@@ -381,7 +383,11 @@ export function generateIdempotencyKey(
   return fnv1a(input);
 }
 
-/** Generate a cryptographically secure UUID v4 */
-export function generateUUID(): string {
-  return randomUUID();
+/**
+ * AR-121: Generate a ULID (Universally Unique Lexicographically Sortable Identifier)
+ * ULIDs encode timestamp in first 10 characters, making them time-sortable
+ * Format: 26 alphanumeric characters (Crockford's Base32)
+ */
+export function generateULID(): string {
+  return ulid();
 }

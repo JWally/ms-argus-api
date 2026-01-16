@@ -86,6 +86,7 @@
     "constructs": "^10.4.2",
     "http-errors": "^2.0.0",
     "ioredis": "^5.4.1",
-    "lru-cache": "^11.0.2"
+    "lru-cache": "^11.0.2",
+    "ulid": "^3.0.2"
   }
 }
