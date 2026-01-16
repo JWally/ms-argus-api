@@ -778,30 +778,6 @@ export class MatchingService {
   }
 
   /**
-   * Score device candidates by counting bucket matches
-   * Works with Query results from adjacency list pattern
-   */
-  private scoreDeviceCandidates(
-    results: QueryCommandOutput[],
-  ): Map<string, number> {
-    const candidates = new Map<string, number>();
-
-    for (const result of results) {
-      if (result.Items && result.Items.length > 0) {
-        for (const item of result.Items) {
-          const unmarshalled = unmarshall(item);
-          const deviceId = unmarshalled.device_id;
-          if (deviceId) {
-            candidates.set(deviceId, (candidates.get(deviceId) ?? 0) + 1);
-          }
-        }
-      }
-    }
-
-    return candidates;
-  }
-
-  /**
    * Score device candidates and track which buckets matched
    * AR-54: Used to populate evidence_codes in match results
    */
