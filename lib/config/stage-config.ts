@@ -91,6 +91,20 @@ export interface StageConfig {
     rateLimitPerFiveMinutes: number;
     bodySizeLimitBytes: number;
   };
+
+  // AR-133: DynamoDB billing configuration
+  dynamodb: {
+    // If true, use provisioned capacity with auto-scaling; if false, use PAY_PER_REQUEST
+    useProvisionedCapacity: boolean;
+    // Base read/write capacity units (only used if useProvisionedCapacity is true)
+    baseReadCapacity: number;
+    baseWriteCapacity: number;
+    // Auto-scaling configuration
+    autoScaling: {
+      targetUtilizationPercent: number; // Target utilization (e.g., 70%)
+      maxCapacityMultiplier: number; // Max capacity as multiplier of base (e.g., 2 = 200%)
+    };
+  };
 }
 
 /**
@@ -175,6 +189,17 @@ const devConfig: StageConfig = {
     rateLimitPerFiveMinutes: 2000, // Higher limit in dev for testing
     bodySizeLimitBytes: 102400, // 100KB
   },
+
+  // AR-133: DynamoDB provisioned capacity for dev - conservative values to test infrastructure
+  dynamodb: {
+    useProvisionedCapacity: true, // Test provisioned capacity in dev
+    baseReadCapacity: 5, // Conservative base - enough for dev testing
+    baseWriteCapacity: 5, // Conservative base - enough for dev testing
+    autoScaling: {
+      targetUtilizationPercent: 70, // Scale when 70% utilized
+      maxCapacityMultiplier: 2, // Scale up to 200% of base (10 RCU/WCU)
+    },
+  },
 };
 
 /**
@@ -258,6 +283,20 @@ const prodConfig: StageConfig = {
     enabled: true, // WAF enabled in production for security
     rateLimitPerFiveMinutes: 600,
     bodySizeLimitBytes: 102400, // 100KB
+  },
+
+  // AR-133: DynamoDB - keep PAY_PER_REQUEST in prod until capacity analysis is done
+  // Per FINAL-PLAN.md: Switch to provisioned 4 weeks before go-live after capacity analysis
+  // Process: Set base capacity at 150% of p99, auto-scale to 200%
+  // Expected savings: ~$31K/year once implemented
+  dynamodb: {
+    useProvisionedCapacity: false, // Stay on-demand until capacity analysis complete
+    baseReadCapacity: 0, // Placeholder - set to 150% of p99 after analysis
+    baseWriteCapacity: 0, // Placeholder - set to 150% of p99 after analysis
+    autoScaling: {
+      targetUtilizationPercent: 70,
+      maxCapacityMultiplier: 2,
+    },
   },
 };
 
