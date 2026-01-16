@@ -1,4 +1,5 @@
 // src/helpers/middy-helpers.test.ts
+/* eslint-disable @typescript-eslint/no-explicit-any, @typescript-eslint/no-non-null-assertion */
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { APIGatewayProxyEvent } from "aws-lambda";
 import {
@@ -382,6 +383,96 @@ describe("middy-helpers", () => {
       // Same request should now pass again
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       expect(() => middleware.before!(request as any)).not.toThrow();
+    });
+  });
+
+  // AR-124: Non-prod (STAGE not set or not "prod") should still allow default fallback
+  describe("deduplicateMiddleware non-production fallback (AR-124)", () => {
+    beforeEach(() => {
+      _clearDeduplicateCache();
+    });
+
+    it("should allow default tenant fallback when STAGE is not set", () => {
+      // STAGE is not set in the test environment (or is not "prod")
+      // so default fallback should still work
+      const middleware = deduplicateMiddleware();
+      const request = {
+        event: {
+          body: '{"session_id": "dev-test", "fingerprint": {}}',
+          headers: {}, // No x-tenant-id header
+          httpMethod: "POST",
+          isBase64Encoded: false,
+          path: "/test",
+          pathParameters: null,
+          queryStringParameters: null,
+          requestContext: {} as any,
+          resource: "/test",
+          stageVariables: null,
+          multiValueHeaders: {},
+          multiValueQueryStringParameters: null,
+        } as APIGatewayProxyEvent,
+        context: {} as any,
+        response: null,
+        error: null,
+        internal: {},
+      };
+
+      // Should NOT throw - dev environment allows default fallback
+      expect(() => middleware.before!(request as any)).not.toThrow();
+    });
+
+    it("should still use tenant-isolated deduplication in non-prod", () => {
+      const middleware = deduplicateMiddleware();
+      const sameBody =
+        '{"session_id": "dev-isolation-test", "fingerprint": {}}';
+
+      // Request with tenant A
+      const requestTenantA = {
+        event: {
+          body: sameBody,
+          headers: { "x-tenant-id": "tenant-a" },
+          httpMethod: "POST",
+          isBase64Encoded: false,
+          path: "/test",
+          pathParameters: null,
+          queryStringParameters: null,
+          requestContext: {} as any,
+          resource: "/test",
+          stageVariables: null,
+          multiValueHeaders: {},
+          multiValueQueryStringParameters: null,
+        } as APIGatewayProxyEvent,
+        context: {} as any,
+        response: null,
+        error: null,
+        internal: {},
+      };
+
+      // Request with no tenant (should use "default")
+      const requestNoTenant = {
+        event: {
+          body: sameBody,
+          headers: {},
+          httpMethod: "POST",
+          isBase64Encoded: false,
+          path: "/test",
+          pathParameters: null,
+          queryStringParameters: null,
+          requestContext: {} as any,
+          resource: "/test",
+          stageVariables: null,
+          multiValueHeaders: {},
+          multiValueQueryStringParameters: null,
+        } as APIGatewayProxyEvent,
+        context: {} as any,
+        response: null,
+        error: null,
+        internal: {},
+      };
+
+      // Both should pass (different tenants)
+      expect(() => middleware.before!(requestTenantA as any)).not.toThrow();
+      expect(() => middleware.before!(requestNoTenant as any)).not.toThrow();
     });
   });
 });

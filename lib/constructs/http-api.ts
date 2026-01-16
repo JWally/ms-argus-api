@@ -74,6 +74,7 @@ export class HttpApiConstruct extends Construct {
         logGroup,
         environment: {
           SQS_QUEUE_URL: matchingQueue.queueUrl,
+          STAGE: stage, // AR-124: For tenant isolation guard
           POWERTOOLS_SERVICE_NAME: "argus-ingestion",
           POWERTOOLS_METRICS_NAMESPACE: `argus-${stage}`,
           NODE_OPTIONS: "--enable-source-maps",

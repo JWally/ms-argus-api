@@ -37,6 +37,9 @@ const API_KEYS: Record<string, string> = process.env.API_KEYS
   ? JSON.parse(process.env.API_KEYS)
   : {};
 
+// AR-124: Stage for tenant isolation guard
+const STAGE = process.env.STAGE ?? "";
+
 const logger = new Logger({
   serviceName: process.env.POWERTOOLS_SERVICE_NAME ?? "argus-ingestion",
 });
@@ -239,7 +242,21 @@ const baseHandler = async (
       throw createError(401, "Invalid API key");
     }
   } else {
-    tenantId = event.headers["x-tenant-id"] ?? "default";
+    // AR-124: In production, require API key configuration - no silent fallback
+    const headerTenantId = event.headers["x-tenant-id"];
+    if (STAGE === "prod" && !headerTenantId) {
+      metrics.addMetric("TenantIsolationViolation", MetricUnit.Count, 1);
+      logger.error("Missing tenant ID in production", {
+        hasApiKeyConfig: Object.keys(API_KEYS).length > 0,
+        hasApiKeyHeader: !!apiKey,
+        hasTenantIdHeader: !!headerTenantId,
+      });
+      throw createError(
+        500,
+        "Tenant configuration error - contact support. Missing tenant identification in production environment.",
+      );
+    }
+    tenantId = headerTenantId ?? "default";
   }
 
   // Build SQS message payload
