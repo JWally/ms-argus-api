@@ -346,66 +346,7 @@ describe("ProfileService", () => {
     });
   });
 
-  describe("buildTier2BucketKeys", () => {
-    it("should return empty array when no compound signals", () => {
-      const fingerprint: Fingerprint = {};
-      const keys = service.buildTier2BucketKeys("tenant1", fingerprint);
-      expect(keys).toEqual([]);
-    });
-
-    it("should build ip_ja4 bucket key", () => {
-      const fingerprint: Fingerprint = {
-        ip_address: "192.168.1.100",
-        ja4: "t13d1516h2_abc123",
-      };
-
-      const keys = service.buildTier2BucketKeys("tenant1", fingerprint);
-
-      expect(keys).toHaveLength(1);
-      expect(keys[0]).toBe("tenant1#ip_ja4#192.168.1.100#t13d1516h2_abc123");
-    });
-
-    it("should build gpu_screen_tz bucket key", () => {
-      const fingerprint: Fingerprint = {
-        gpu_renderer: "NVIDIA GeForce RTX 3080",
-        screen_dims: "2560x1440",
-        timezone: "America/Los_Angeles",
-      };
-
-      const keys = service.buildTier2BucketKeys("tenant1", fingerprint);
-
-      expect(keys).toHaveLength(1);
-      expect(keys[0]).toContain("gpu_screen_tz");
-      expect(keys[0]).toContain("2560x1440");
-    });
-
-    it("should build audio_canvas bucket key", () => {
-      const fingerprint: Fingerprint = {
-        audio_hash: "audio123",
-        canvas_hash: "canvas456",
-      };
-
-      const keys = service.buildTier2BucketKeys("tenant1", fingerprint);
-
-      expect(keys).toHaveLength(1);
-      expect(keys[0]).toBe("tenant1#audio_canvas#audio123#canvas456");
-    });
-
-    it("should build all bucket keys when all signals present", () => {
-      const fingerprint: Fingerprint = {
-        ip_address: "10.0.0.1",
-        ja4: "ja4",
-        gpu_renderer: "GPU",
-        screen_dims: "1920x1080",
-        timezone: "UTC",
-        audio_hash: "audio",
-        canvas_hash: "canvas",
-      };
-
-      const keys = service.buildTier2BucketKeys("tenant1", fingerprint);
-      expect(keys).toHaveLength(3);
-    });
-  });
+  // AR-120: buildTier2BucketKeys tests removed - now comprehensively tested in bucket-keys.test.ts (AR-117)
 
   describe("updateProfile", () => {
     it("should create new profile with defaults", async () => {
