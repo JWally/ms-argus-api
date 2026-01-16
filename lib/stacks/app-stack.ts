@@ -251,6 +251,12 @@ export class ArgusApiStack extends cdk.Stack {
       description: "Profile updater Lambda ARN",
     });
 
+    // AR-130: Cardinality recalculation Lambda output
+    new cdk.CfnOutput(this, "CardinalityRecalcArn", {
+      value: workers.cardinalityRecalc.functionArn,
+      description: "Cardinality recalculation Lambda ARN",
+    });
+
     // AR-57: Analytics outputs
     new cdk.CfnOutput(this, "ObservationsBucketName", {
       value: analytics.observationsBucket.bucketName,
