@@ -134,6 +134,9 @@ async function processRecord(
   const payload: FingerprintPayload = JSON.parse(record.body);
   const { session_id, tenant_id } = payload;
 
+  // AR-123: Add tenant_id dimension for all metrics in this request
+  metrics.addDimension("tenant_id", tenant_id);
+
   // AR-73: Normalize fingerprint from web library nested format to flat API format
   // This extracts fields like canvas_hash, gpu_renderer, screen_dims from nested objects
   // AR-81: Also extracts sigint data (third-party cookie, JA3/JA4, TCP probe)
@@ -216,6 +219,9 @@ async function processRecord(
 function recordTierMetric(tier: number, isNewDevice: boolean): void {
   if (isNewDevice) {
     metrics.addMetric("NewDevice", MetricUnit.Count, 1);
+    // AR-123: NEW_DEVICE_RATE metric for anomaly detection (fraud indicator)
+    // This metric is monitored for sudden spikes that may indicate fraud attacks
+    metrics.addMetric("NEW_DEVICE_RATE", MetricUnit.Count, 1);
     // AR-121: Track device ID format for migration monitoring
     // New devices always use ULID format now
     metrics.addMetric("DeviceIdFormat_ulid", MetricUnit.Count, 1);
