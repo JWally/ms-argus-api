@@ -1,5 +1,6 @@
 // src/handlers/ingestion.test.ts
 // AR-90: Tests for ingestion handler with binary gzip compression support
+// AR-127: Added warmup middleware tests
 /* eslint-disable @typescript-eslint/no-non-null-assertion */
 
 import { describe, it, expect, beforeEach, vi } from "vitest";
@@ -476,6 +477,54 @@ describe("ingestion handler", () => {
       expect(sqsCalls.length).toBe(1);
       const sentBody = JSON.parse(sqsCalls[0].args[0].input.MessageBody!);
       expect(sentBody.tenant_id).toBe("explicit-tenant");
+    });
+  });
+
+  // AR-127: Warmup middleware tests
+  describe("warmup middleware (AR-127)", () => {
+    it("should short-circuit warmup events with serverless-plugin-warmup source", async () => {
+      // Warmup event from serverless-plugin-warmup
+      const warmupEvent = {
+        source: "serverless-plugin-warmup",
+      } as unknown as APIGatewayProxyEventV2;
+
+      const result = await handler(warmupEvent, mockContext);
+
+      // Warmup events return early - no SQS call
+      const sqsCalls = sqsMock.commandCalls(SendMessageCommand);
+      expect(sqsCalls.length).toBe(0);
+
+      // @middy/warmup returns "warmup" string when short-circuiting
+      expect(result).toBe("warmup");
+    });
+
+    it("should process normal events (non-warmup) as usual", async () => {
+      const payload = createValidPayload("normal-event-after-warmup-test");
+      const event = createApiEvent(JSON.stringify(payload));
+
+      const result = asResult(await handler(event, mockContext));
+
+      // Normal event should be processed
+      expect(result.statusCode).toBe(204);
+
+      // SQS should be called
+      const sqsCalls = sqsMock.commandCalls(SendMessageCommand);
+      expect(sqsCalls.length).toBe(1);
+      const sentBody = JSON.parse(sqsCalls[0].args[0].input.MessageBody!);
+      expect(sentBody.session_id).toBe("normal-event-after-warmup-test");
+    });
+
+    it("should not call SQS for warmup events", async () => {
+      // Warmup event
+      const warmupEvent = {
+        source: "serverless-plugin-warmup",
+      } as unknown as APIGatewayProxyEventV2;
+
+      await handler(warmupEvent, mockContext);
+
+      // Verify no SQS call was made
+      const sqsCalls = sqsMock.commandCalls(SendMessageCommand);
+      expect(sqsCalls.length).toBe(0);
     });
   });
 });
