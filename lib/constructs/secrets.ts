@@ -1,5 +1,6 @@
 // lib/constructs/secrets.ts
 import { Construct } from "constructs";
+import * as cdk from "aws-cdk-lib";
 import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
 
 interface SecretConstructProps {
@@ -25,6 +26,8 @@ interface SecretConstructProps {
  */
 export class SecretConstruct extends Construct {
   public readonly secret: secretsmanager.Secret;
+  /** AR-131: API keys secret for tenant authentication */
+  public readonly apiKeysSecret: secretsmanager.Secret;
 
   constructor(scope: Construct, id: string, props: SecretConstructProps) {
     super(scope, id);
@@ -43,6 +46,15 @@ export class SecretConstruct extends Construct {
         excludePunctuation: true,
         passwordLength: 64,
       },
+    });
+
+    // AR-131: Create API keys secret for tenant authentication
+    // Format: { "api-key-1": "tenant-id-1", "api-key-2": "tenant-id-2" }
+    // Initial value is empty object - populate via AWS Console or CLI
+    this.apiKeysSecret = new secretsmanager.Secret(this, `API_KEYS_${id}`, {
+      secretName: `${stage}/${projectName}/api-keys`,
+      description: "API keys to tenant ID mapping for authentication",
+      secretStringValue: cdk.SecretValue.unsafePlainText(JSON.stringify({})),
     });
   }
 }
