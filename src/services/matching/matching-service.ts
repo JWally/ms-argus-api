@@ -1,39 +1,48 @@
 // src/services/matching/matching-service.ts
+// AR-119: Refactored to orchestration only - delegates to tier modules
 import { randomUUID } from "crypto";
-import {
-  DynamoDBClient,
-  GetItemCommand,
-  QueryCommand,
-  QueryCommandOutput,
-  BatchGetItemCommand,
-} from "@aws-sdk/client-dynamodb";
+import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { SQSClient, SendMessageCommand } from "@aws-sdk/client-sqs";
-import { unmarshall } from "@aws-sdk/util-dynamodb";
 import { DynamoCacheService } from "../cache";
 import {
-  EvidenceCode,
   Fingerprint,
   FingerprintPayload,
   MatchResult,
   SessionCacheValue,
 } from "./types";
 import {
-  TIER2_BUCKET_LIMIT,
-  TIER2_HIGH_CARDINALITY_THRESHOLD,
-  TIER2_CARDINALITY_PENALTY,
-  TIER2_STATS_SK,
   PRIVACY_BROWSER_PENALTY,
   PRIVATE_BROWSING_PENALTY,
-  SESSION_ANCHOR_VALIDITY_SECONDS,
-  IP_UA_ANCHOR_VALIDITY_SECONDS,
 } from "../../helpers/constants";
 import { fnv1a } from "../../helpers/hash";
+import { buildBucketKeys as buildBucketKeysHelper } from "../../helpers/bucket-keys";
+
+// Tier module imports
 import {
-  buildBucketKeys as buildBucketKeysHelper,
-  buildBucketKeysWithTypes as buildBucketKeysWithTypesHelper,
-  buildSessionAnchorKey as buildSessionAnchorKeyHelper,
-  buildIpUaAnchorKey as buildIpUaAnchorKeyHelper,
-} from "../../helpers/bucket-keys";
+  checkCache as tier0CheckCache,
+  writeMatchResult as tier0WriteMatchResult,
+  writeDegradedResult as tier0WriteDegradedResult,
+  Tier0CacheDeps,
+} from "./tier0-cache";
+import {
+  tier05PublicKeyLookup,
+  tier05CookieLookup,
+  tier05SigintIdLookup,
+  Tier05IdentityDeps,
+} from "./tier05-identity";
+import { tier1HashMatch, Tier1HashDeps } from "./tier1-hash";
+import {
+  tier2CompoundMatchWithTimeout,
+  loadProfile,
+  Tier2CompoundDeps,
+} from "./tier2-compound";
+import {
+  sessionAnchorLookup,
+  ipUaAnchorLookup,
+  buildSessionAnchorKey,
+  buildIpUaAnchorKey,
+  SessionAnchorDeps,
+} from "./session-anchors";
 
 /**
  * Configuration for the matching service
@@ -53,75 +62,76 @@ export interface MatchingServiceConfig {
 export interface MatchingServiceDeps {
   dynamodb: DynamoDBClient;
   sqs: SQSClient;
-  cache: DynamoCacheService; // AR-52: DynamoDB cache replaces Redis
+  cache: DynamoCacheService;
   config: MatchingServiceConfig;
 }
 
 /**
  * Matching service handles device fingerprint matching logic
  * Uses tiered matching strategy:
- * - Tier 0: DynamoDB session cache hit (AR-52: was Redis)
- * - Tier 0.5: Evercookie/cookie lookup
+ * - Tier 0: DynamoDB session cache hit
+ * - Tier 0.5: Evercookie/cookie lookup, public key, sigint
  * - Tier 1: Strong hash match (stable_hash, fuzzy_hash)
  * - Tier 2: Compound filter match (ip+ja4, gpu+screen+tz, etc)
  * - New Device: Create new device_id
  */
 export class MatchingService {
-  constructor(private deps: MatchingServiceDeps) {}
+  private tier0Deps: Tier0CacheDeps;
+  private tier05Deps: Tier05IdentityDeps;
+  private tier1Deps: Tier1HashDeps;
+  private tier2Deps: Tier2CompoundDeps;
+  private anchorDeps: SessionAnchorDeps;
 
-  /**
-   * Check if session is already cached (AR-52: DynamoDB replaces Redis)
-   */
-  async checkCache(sessionId: string): Promise<SessionCacheValue | null> {
-    return this.deps.cache.checkSessionCache(sessionId);
+  constructor(private deps: MatchingServiceDeps) {
+    // Initialize tier-specific dependencies
+    this.tier0Deps = { cache: deps.cache };
+    this.tier05Deps = {
+      dynamodb: deps.dynamodb,
+      tier1IndexTable: deps.config.tier1IndexTable,
+    };
+    this.tier1Deps = {
+      dynamodb: deps.dynamodb,
+      tier1IndexTable: deps.config.tier1IndexTable,
+    };
+    this.tier2Deps = {
+      dynamodb: deps.dynamodb,
+      tier2BucketsTable: deps.config.tier2BucketsTable,
+      profilesTable: deps.config.profilesTable,
+      tier2TimeoutMs: deps.config.tier2TimeoutMs,
+    };
+    this.anchorDeps = {
+      dynamodb: deps.dynamodb,
+      tier2BucketsTable: deps.config.tier2BucketsTable,
+      profilesTable: deps.config.profilesTable,
+    };
   }
 
-  /**
-   * AR-65: Apply confidence penalty for privacy browser detection
-   * Returns a new MatchResult with reduced confidence if privacy signals detected
-   */
+  /** Check if session is already cached */
+  async checkCache(sessionId: string): Promise<SessionCacheValue | null> {
+    return tier0CheckCache(this.tier0Deps, sessionId);
+  }
+
+  /** AR-65: Apply confidence penalty for privacy browser detection */
   applyPrivacyPenalty(
     result: MatchResult,
     fingerprint: Fingerprint,
   ): MatchResult {
     let penalty = 0;
-
-    // Privacy browser (Brave, Firefox RFP, Tor, etc.)
-    if (fingerprint.privacy_browser) {
-      penalty += PRIVACY_BROWSER_PENALTY;
-    }
-
-    // Private/incognito browsing mode
-    if (fingerprint.is_private_browsing) {
-      penalty += PRIVATE_BROWSING_PENALTY;
-    }
-
-    if (penalty === 0) {
-      return result;
-    }
-
-    // Apply penalty and clamp to valid range
-    return {
-      ...result,
-      confidence: Math.max(0, result.confidence - penalty),
-    };
+    if (fingerprint.privacy_browser) penalty += PRIVACY_BROWSER_PENALTY;
+    if (fingerprint.is_private_browsing) penalty += PRIVATE_BROWSING_PENALTY;
+    if (penalty === 0) return result;
+    return { ...result, confidence: Math.max(0, result.confidence - penalty) };
   }
 
-  /**
-   * Run tiered matching strategy
-   * Returns match result along with metadata about the matching process
-   */
+  /** Run tiered matching strategy */
   async runTieredMatching(
     tenantId: string,
     fingerprint: Fingerprint,
-  ): Promise<{
-    result: MatchResult;
-    tier2TimedOut: boolean;
-  }> {
+  ): Promise<{ result: MatchResult; tier2TimedOut: boolean }> {
     // Tier 0.5: Cryptographic identity lookup (highest confidence)
-    // AR-64: Public key match - ECDSA P-256 key stored in IndexedDB, non-extractable
     if (fingerprint.public_key) {
-      const result = await this.tier05PublicKeyLookup(
+      const result = await tier05PublicKeyLookup(
+        this.tier05Deps,
         tenantId,
         fingerprint.public_key,
       );
@@ -133,9 +143,10 @@ export class MatchingService {
       }
     }
 
-    // Tier 0.5: Evercookie/Cookie lookup
+    // Tier 0.5: Evercookie lookup
     if (fingerprint.evercookie_id) {
-      const result = await this.tier05CookieLookup(
+      const result = await tier05CookieLookup(
+        this.tier05Deps,
         tenantId,
         fingerprint.evercookie_id,
       );
@@ -147,9 +158,10 @@ export class MatchingService {
       }
     }
 
-    // Tier 0.5: Third-party cookie lookup (AR-81: from sigint service)
+    // Tier 0.5: Sigint ID lookup
     if (fingerprint.sigint_id) {
-      const result = await this.tier05SigintIdLookup(
+      const result = await tier05SigintIdLookup(
+        this.tier05Deps,
         tenantId,
         fingerprint.sigint_id,
       );
@@ -162,7 +174,11 @@ export class MatchingService {
     }
 
     // Tier 1: Strong hash match
-    const tier1Result = await this.tier1HashMatch(tenantId, fingerprint);
+    const tier1Result = await tier1HashMatch(
+      this.tier1Deps,
+      tenantId,
+      fingerprint,
+    );
     if (tier1Result) {
       return {
         result: this.applyPrivacyPenalty(tier1Result, fingerprint),
@@ -172,7 +188,11 @@ export class MatchingService {
 
     // Tier 2: Compound filter match (with timeout)
     const { result: tier2Result, timedOut } =
-      await this.tier2CompoundMatchWithTimeout(tenantId, fingerprint);
+      await tier2CompoundMatchWithTimeout(
+        this.tier2Deps,
+        tenantId,
+        fingerprint,
+      );
     if (tier2Result) {
       return {
         result: this.applyPrivacyPenalty(tier2Result, fingerprint),
@@ -180,9 +200,9 @@ export class MatchingService {
       };
     }
 
-    // AR-82: Session anchor lookup (ephemeral short-window matching)
-    // Checked after tier2 compound match to give multi-bucket matching priority
-    const sessionAnchorResult = await this.sessionAnchorLookup(
+    // Session anchor lookup
+    const sessionAnchorResult = await sessionAnchorLookup(
+      this.anchorDeps,
       tenantId,
       fingerprint,
     );
@@ -193,9 +213,12 @@ export class MatchingService {
       };
     }
 
-    // AR-94: IP+UA-only anchor lookup (shorter window, catches screen changes)
-    // Fallback when session anchor (which includes screen_dims) fails
-    const ipUaAnchorResult = await this.ipUaAnchorLookup(tenantId, fingerprint);
+    // IP+UA anchor lookup
+    const ipUaAnchorResult = await ipUaAnchorLookup(
+      this.anchorDeps,
+      tenantId,
+      fingerprint,
+    );
     if (ipUaAnchorResult) {
       return {
         result: this.applyPrivacyPenalty(ipUaAnchorResult, fingerprint),
@@ -203,730 +226,128 @@ export class MatchingService {
       };
     }
 
-    // Tier 3: Vector similarity (TODO: implement when Qdrant is deployed)
-
-    // New device - no match found (no penalty needed, confidence is 0)
-    return {
-      result: this.createNewDevice(),
-      tier2TimedOut: timedOut,
-    };
+    // New device - no match found
+    return { result: this.createNewDevice(), tier2TimedOut: timedOut };
   }
 
-  /**
-   * Tier 0.5: Lookup by ECDSA public key (AR-64)
-   * Near-perfect confidence - cryptographic identity stored in IndexedDB
-   * Private key is non-extractable, so public key proves device possession
-   */
+  // Delegate methods to tier modules for backward compatibility
   async tier05PublicKeyLookup(
     tenantId: string,
     publicKey: string,
   ): Promise<MatchResult | null> {
-    const result = await this.deps.dynamodb.send(
-      new GetItemCommand({
-        TableName: this.deps.config.tier1IndexTable,
-        Key: {
-          tenant_id: { S: tenantId },
-          hash_key: { S: `pubkey#${publicKey}` },
-        },
-      }),
-    );
-
-    if (result.Item) {
-      const item = unmarshall(result.Item);
-      return {
-        device_id: item.device_id,
-        confidence: 0.99,
-        match_tier: 0.5,
-        is_new_device: false,
-        risk_score: item.risk_score ?? 0.3,
-        flags: item.flags ?? [],
-        evidence_codes: ["PUBLIC_KEY_MATCH"] as EvidenceCode[],
-      };
-    }
-    return null;
+    return tier05PublicKeyLookup(this.tier05Deps, tenantId, publicKey);
   }
 
-  /**
-   * Tier 0.5: Lookup by evercookie ID
-   * Highest confidence - evercookie is hard to clear
-   */
   async tier05CookieLookup(
     tenantId: string,
     evercookieId: string,
   ): Promise<MatchResult | null> {
-    const result = await this.deps.dynamodb.send(
-      new GetItemCommand({
-        TableName: this.deps.config.tier1IndexTable,
-        Key: {
-          tenant_id: { S: tenantId },
-          hash_key: { S: `evercookie#${evercookieId}` },
-        },
-      }),
-    );
-
-    if (result.Item) {
-      const item = unmarshall(result.Item);
-      return {
-        device_id: item.device_id,
-        confidence: 0.99,
-        match_tier: 0.5,
-        is_new_device: false,
-        risk_score: item.risk_score ?? 0.3,
-        flags: item.flags ?? [],
-        evidence_codes: ["EVERCOOKIE_MATCH"] as EvidenceCode[],
-      };
-    }
-    return null;
+    return tier05CookieLookup(this.tier05Deps, tenantId, evercookieId);
   }
 
-  /**
-   * Tier 0.5: Lookup by third-party cookie from sigint (AR-81)
-   * High confidence - cross-site cookie from CloudFront edge service
-   * Survives first-party cookie clearing, provides cross-site identity
-   */
   async tier05SigintIdLookup(
     tenantId: string,
     sigintId: string,
   ): Promise<MatchResult | null> {
-    const result = await this.deps.dynamodb.send(
-      new GetItemCommand({
-        TableName: this.deps.config.tier1IndexTable,
-        Key: {
-          tenant_id: { S: tenantId },
-          hash_key: { S: `sigint#${sigintId}` },
-        },
-      }),
-    );
-
-    if (result.Item) {
-      const item = unmarshall(result.Item);
-      return {
-        device_id: item.device_id,
-        confidence: 0.98, // Slightly lower than evercookie (can be shared across browsers)
-        match_tier: 0.5,
-        is_new_device: false,
-        risk_score: item.risk_score ?? 0.3,
-        flags: item.flags ?? [],
-        evidence_codes: ["SIGINT_ID_MATCH"] as EvidenceCode[],
-      };
-    }
-    return null;
+    return tier05SigintIdLookup(this.tier05Deps, tenantId, sigintId);
   }
 
-  /**
-   * Tier 1: Match by stable or fuzzy hash
-   * High confidence - these hashes are computed from multiple signals
-   */
   async tier1HashMatch(
     tenantId: string,
     fingerprint: Fingerprint,
   ): Promise<MatchResult | null> {
-    // Try stable hash first (higher confidence)
-    if (fingerprint.stable_hash) {
-      const result = await this.lookupTier1Index(
-        tenantId,
-        `stable#${fingerprint.stable_hash}`,
-      );
-      if (result) {
-        return {
-          device_id: result.device_id,
-          confidence: 0.95,
-          match_tier: 1,
-          is_new_device: false,
-          risk_score: result.risk_score ?? 0.3,
-          flags: result.flags ?? [],
-          evidence_codes: ["STABLE_HASH_MATCH"] as EvidenceCode[],
-        };
-      }
-    }
-
-    // Try fuzzy hash (slightly lower confidence)
-    if (fingerprint.fuzzy_hash) {
-      const result = await this.lookupTier1Index(
-        tenantId,
-        `fuzzy#${fingerprint.fuzzy_hash}`,
-      );
-      if (result) {
-        return {
-          device_id: result.device_id,
-          confidence: 0.85,
-          match_tier: 1,
-          is_new_device: false,
-          risk_score: result.risk_score ?? 0.3,
-          flags: result.flags ?? [],
-          evidence_codes: ["FUZZY_HASH_MATCH"] as EvidenceCode[],
-        };
-      }
-    }
-
-    return null;
+    return tier1HashMatch(this.tier1Deps, tenantId, fingerprint);
   }
 
-  /**
-   * Lookup a single entry in the Tier 1 index
-   */
-  private async lookupTier1Index(
-    tenantId: string,
-    hashKey: string,
-  ): Promise<{
-    device_id: string;
-    risk_score?: number;
-    flags?: string[];
-  } | null> {
-    const result = await this.deps.dynamodb.send(
-      new GetItemCommand({
-        TableName: this.deps.config.tier1IndexTable,
-        Key: {
-          tenant_id: { S: tenantId },
-          hash_key: { S: hashKey },
-        },
-      }),
-    );
-
-    if (result.Item) {
-      const item = unmarshall(result.Item);
-      return {
-        device_id: item.device_id,
-        risk_score: item.risk_score,
-        flags: item.flags,
-      };
-    }
-    return null;
-  }
-
-  /**
-   * Tier 2: Compound filter match with timeout protection
-   * Returns result with timedOut flag to track "fail open" scenarios
-   * Uses AbortController to cancel in-flight DynamoDB requests on timeout
-   */
   async tier2CompoundMatchWithTimeout(
     tenantId: string,
     fingerprint: Fingerprint,
   ): Promise<{ result: MatchResult | null; timedOut: boolean }> {
-    const timeoutMs = this.deps.config.tier2TimeoutMs;
-    const abortController = new AbortController();
-
-    // Use a sentinel to distinguish timeout from null result
-    const TIMEOUT_SENTINEL = Symbol("timeout");
-
-    const raceResult = await Promise.race([
-      this.tier2CompoundMatch(tenantId, fingerprint, {
-        abortSignal: abortController.signal,
-      }).then((r) => ({
-        value: r,
-        timedOut: false,
-      })),
-      new Promise<{ value: typeof TIMEOUT_SENTINEL; timedOut: true }>(
-        (resolve) =>
-          setTimeout(() => {
-            abortController.abort();
-            resolve({ value: TIMEOUT_SENTINEL, timedOut: true });
-          }, timeoutMs),
-      ),
-    ]);
-
-    if (raceResult.timedOut) {
-      return { result: null, timedOut: true };
-    }
-
-    return { result: raceResult.value as MatchResult | null, timedOut: false };
+    return tier2CompoundMatchWithTimeout(this.tier2Deps, tenantId, fingerprint);
   }
 
-  /**
-   * Tier 2: Match by compound signal buckets
-   * Lower confidence - relies on multiple weak signals
-   * Uses Query with adjacency list pattern (bucket_key, device_id)
-   * AR-56: Applies cardinality penalty for high-traffic buckets
-   */
   async tier2CompoundMatch(
     tenantId: string,
     fingerprint: Fingerprint,
     options?: { abortSignal?: AbortSignal },
   ): Promise<MatchResult | null> {
-    const bucketInfos = this.buildBucketKeysWithTypes(tenantId, fingerprint);
-    if (bucketInfos.length === 0) return null;
-
-    // Query all buckets in parallel using adjacency list pattern
-    // Pass abortSignal to allow cancellation on timeout
-    const queries = bucketInfos.map((info) =>
-      this.deps.dynamodb.send(
-        new QueryCommand({
-          TableName: this.deps.config.tier2BucketsTable,
-          KeyConditionExpression: "bucket_key = :bk",
-          ExpressionAttributeValues: {
-            ":bk": { S: info.key },
-          },
-          ProjectionExpression: "device_id",
-          Limit: TIER2_BUCKET_LIMIT,
-        }),
-        { abortSignal: options?.abortSignal },
-      ),
-    );
-
-    // AR-56: Fetch bucket cardinalities in parallel with device queries
-    const cardinalityPromise = this.fetchBucketCardinalities(
-      bucketInfos.map((info) => info.key),
-      options,
-    );
-
-    let results;
-    let cardinalities: Map<string, number>;
-    try {
-      [results, cardinalities] = await Promise.all([
-        Promise.all(queries),
-        cardinalityPromise,
-      ]);
-    } catch (error) {
-      // If the request was aborted, return null gracefully
-      if (error instanceof Error && error.name === "AbortError") {
-        return null;
-      }
-      throw error;
-    }
-
-    // Track which buckets each device matched in
-    const candidates = this.scoreDeviceCandidatesWithEvidence(
-      results,
-      bucketInfos,
-    );
-
-    // Find best match (highest bucket overlap)
-    let bestDeviceId: string | null = null;
-    let bestScore = 0;
-    let bestEvidence: EvidenceCode[] = [];
-
-    for (const [deviceId, data] of candidates) {
-      if (data.score > bestScore) {
-        bestScore = data.score;
-        bestDeviceId = deviceId;
-        bestEvidence = data.evidenceCodes;
-      }
-    }
-
-    // Require at least 2 bucket matches for confidence
-    if (bestDeviceId && bestScore >= 2) {
-      const profile = await this.loadProfile(tenantId, bestDeviceId);
-
-      // AR-56: Calculate base confidence
-      let confidence = Math.min(0.6 + bestScore * 0.1, 0.85);
-
-      // AR-56: Apply cardinality penalty if any matched bucket exceeds threshold
-      const highCardinalityCount = this.countHighCardinalityBuckets(
-        bestEvidence,
-        bucketInfos,
-        cardinalities,
-      );
-      if (highCardinalityCount > 0) {
-        // Penalize proportionally to how many buckets are high-cardinality
-        const penaltyFactor =
-          (highCardinalityCount / bestEvidence.length) *
-          TIER2_CARDINALITY_PENALTY;
-        confidence = Math.max(0.3, confidence - penaltyFactor);
-      }
-
-      return {
-        device_id: bestDeviceId,
-        confidence,
-        match_tier: 2,
-        is_new_device: false,
-        risk_score: profile?.risk_score ?? 0.4,
-        flags: profile?.flags ?? [],
-        evidence_codes: bestEvidence,
-      };
-    }
-
-    return null;
+    // Import inline to avoid circular deps
+    const { tier2CompoundMatch } = await import("./tier2-compound");
+    return tier2CompoundMatch(this.tier2Deps, tenantId, fingerprint, options);
   }
 
-  /**
-   * AR-82: Build session anchor bucket key for ephemeral matching
-   * AR-117: Delegates to shared bucket-keys helper
-   */
   buildSessionAnchorKey(
     tenantId: string,
     fingerprint: Fingerprint,
   ): string | null {
-    return buildSessionAnchorKeyHelper(tenantId, fingerprint);
+    return buildSessionAnchorKey(tenantId, fingerprint);
   }
 
-  /**
-   * AR-82: Lookup by session anchor bucket with 10-minute validity window
-   * Used for short-session matching when other signals fail
-   * Application-side enforced validity (DynamoDB TTL is for cleanup only)
-   */
   async sessionAnchorLookup(
     tenantId: string,
     fingerprint: Fingerprint,
   ): Promise<MatchResult | null> {
-    const bucketKey = this.buildSessionAnchorKey(tenantId, fingerprint);
-    if (!bucketKey) {
-      return null;
-    }
-
-    // Query the session anchor bucket for matching devices
-    const result = await this.deps.dynamodb.send(
-      new QueryCommand({
-        TableName: this.deps.config.tier2BucketsTable,
-        KeyConditionExpression: "bucket_key = :bk",
-        ExpressionAttributeValues: {
-          ":bk": { S: bucketKey },
-        },
-        ProjectionExpression: "device_id, created_at",
-        Limit: 10, // Only need recent entries
-      }),
-    );
-
-    if (!result.Items || result.Items.length === 0) {
-      return null;
-    }
-
-    const now = Date.now();
-    const validityWindowMs = SESSION_ANCHOR_VALIDITY_SECONDS * 1000;
-
-    // AR-95: Sort by created_at descending to find the most recent entry first
-    // DynamoDB Query returns items sorted by sort key (device_id), not by created_at
-    const sortedItems = result.Items.map((item) => unmarshall(item))
-      .filter((item) => item.device_id !== TIER2_STATS_SK) // Filter out stats entries
-      .sort((a, b) => (b.created_at ?? 0) - (a.created_at ?? 0)); // Most recent first
-
-    // Find the most recent valid entry
-    for (const item of sortedItems) {
-      const deviceId = item.device_id;
-      const createdAt = item.created_at;
-
-      // Check if within 10-minute validity window
-      if (createdAt && now - createdAt <= validityWindowMs) {
-        const profile = await this.loadProfile(tenantId, deviceId);
-        return {
-          device_id: deviceId,
-          confidence: 0.65, // Lower confidence than multi-bucket tier2 matches
-          match_tier: 2,
-          is_new_device: false,
-          risk_score: profile?.risk_score ?? 0.4,
-          flags: profile?.flags ?? [],
-          evidence_codes: ["SESSION_ANCHOR_BUCKET"] as EvidenceCode[],
-        };
-      }
-    }
-
-    return null;
+    return sessionAnchorLookup(this.anchorDeps, tenantId, fingerprint);
   }
 
-  /**
-   * AR-94: Build IP+UA-only anchor bucket key for ephemeral matching
-   * AR-117: Delegates to shared bucket-keys helper
-   */
   buildIpUaAnchorKey(
     tenantId: string,
     fingerprint: Fingerprint,
   ): string | null {
-    return buildIpUaAnchorKeyHelper(tenantId, fingerprint);
+    return buildIpUaAnchorKey(tenantId, fingerprint);
   }
 
-  /**
-   * AR-94: Lookup by IP+UA-only anchor bucket with 3-minute validity window
-   * Shorter window than session anchor since it's less specific (no screen_dims)
-   * Catches cases where screen changes (dock/undock) but IP+UA stays same
-   */
   async ipUaAnchorLookup(
     tenantId: string,
     fingerprint: Fingerprint,
   ): Promise<MatchResult | null> {
-    const bucketKey = this.buildIpUaAnchorKey(tenantId, fingerprint);
-    if (!bucketKey) {
-      return null;
-    }
-
-    // Query the IP+UA anchor bucket for matching devices
-    const result = await this.deps.dynamodb.send(
-      new QueryCommand({
-        TableName: this.deps.config.tier2BucketsTable,
-        KeyConditionExpression: "bucket_key = :bk",
-        ExpressionAttributeValues: {
-          ":bk": { S: bucketKey },
-        },
-        ProjectionExpression: "device_id, created_at",
-        Limit: 10, // Only need recent entries
-      }),
-    );
-
-    if (!result.Items || result.Items.length === 0) {
-      return null;
-    }
-
-    const now = Date.now();
-    const validityWindowMs = IP_UA_ANCHOR_VALIDITY_SECONDS * 1000;
-
-    // AR-95: Sort by created_at descending to find the most recent entry first
-    // DynamoDB Query returns items sorted by sort key (device_id), not by created_at
-    const sortedItems = result.Items.map((item) => unmarshall(item))
-      .filter((item) => item.device_id !== TIER2_STATS_SK) // Filter out stats entries
-      .sort((a, b) => (b.created_at ?? 0) - (a.created_at ?? 0)); // Most recent first
-
-    // Find the most recent valid entry
-    for (const item of sortedItems) {
-      const deviceId = item.device_id;
-      const createdAt = item.created_at;
-
-      // Check if within 3-minute validity window
-      if (createdAt && now - createdAt <= validityWindowMs) {
-        const profile = await this.loadProfile(tenantId, deviceId);
-        return {
-          device_id: deviceId,
-          confidence: 0.6, // Lower than session anchor (less specific)
-          match_tier: 2,
-          is_new_device: false,
-          risk_score: profile?.risk_score ?? 0.4,
-          flags: profile?.flags ?? [],
-          evidence_codes: ["IP_UA_ANCHOR_BUCKET"] as EvidenceCode[],
-        };
-      }
-    }
-
-    return null;
+    return ipUaAnchorLookup(this.anchorDeps, tenantId, fingerprint);
   }
 
-  /**
-   * AR-56: Fetch cardinality stats for multiple buckets using BatchGetItem
-   */
-  private async fetchBucketCardinalities(
-    bucketKeys: string[],
-    options?: { abortSignal?: AbortSignal },
-  ): Promise<Map<string, number>> {
-    const cardinalities = new Map<string, number>();
-    if (bucketKeys.length === 0) return cardinalities;
-
-    try {
-      const result = await this.deps.dynamodb.send(
-        new BatchGetItemCommand({
-          RequestItems: {
-            [this.deps.config.tier2BucketsTable]: {
-              Keys: bucketKeys.map((key) => ({
-                bucket_key: { S: key },
-                device_id: { S: TIER2_STATS_SK },
-              })),
-              ProjectionExpression: "bucket_key, cardinality",
-            },
-          },
-        }),
-        { abortSignal: options?.abortSignal },
-      );
-
-      // Parse results
-      const responses =
-        result.Responses?.[this.deps.config.tier2BucketsTable] ?? [];
-      for (const item of responses) {
-        const unmarshalled = unmarshall(item);
-        if (unmarshalled.bucket_key && unmarshalled.cardinality) {
-          cardinalities.set(
-            unmarshalled.bucket_key,
-            unmarshalled.cardinality as number,
-          );
-        }
-      }
-    } catch (error) {
-      // If aborted or error, return empty map (fail open)
-      if (error instanceof Error && error.name === "AbortError") {
-        return cardinalities;
-      }
-      // Log error but don't fail matching - cardinality check is optional
-      console.warn("Failed to fetch bucket cardinalities:", error);
-    }
-
-    return cardinalities;
-  }
-
-  /**
-   * AR-56: Count how many matched buckets exceed the cardinality threshold
-   */
-  private countHighCardinalityBuckets(
-    evidenceCodes: EvidenceCode[],
-    bucketInfos: { key: string; evidenceCode: EvidenceCode }[],
-    cardinalities: Map<string, number>,
-  ): number {
-    let count = 0;
-    for (const code of evidenceCodes) {
-      // Find the bucket key for this evidence code
-      const bucketInfo = bucketInfos.find((info) => info.evidenceCode === code);
-      if (bucketInfo) {
-        const cardinality = cardinalities.get(bucketInfo.key) ?? 0;
-        if (cardinality > TIER2_HIGH_CARDINALITY_THRESHOLD) {
-          count++;
-        }
-      }
-    }
-    return count;
-  }
-
-  /**
-   * Build compound bucket keys for Tier 2 matching
-   * AR-117: Delegates to shared bucket-keys helper
-   */
   buildBucketKeys(tenantId: string, fingerprint: Fingerprint): string[] {
     return buildBucketKeysHelper(tenantId, fingerprint);
   }
 
-  /**
-   * Build compound bucket keys with their evidence code types
-   * AR-117: Delegates to shared bucket-keys helper
-   */
-  private buildBucketKeysWithTypes(
-    tenantId: string,
-    fingerprint: Fingerprint,
-  ): { key: string; evidenceCode: EvidenceCode }[] {
-    return buildBucketKeysWithTypesHelper(tenantId, fingerprint);
-  }
-
-  /**
-   * Score device candidates and track which buckets matched
-   * AR-54: Used to populate evidence_codes in match results
-   */
-  private scoreDeviceCandidatesWithEvidence(
-    results: QueryCommandOutput[],
-    bucketInfos: { key: string; evidenceCode: EvidenceCode }[],
-  ): Map<string, { score: number; evidenceCodes: EvidenceCode[] }> {
-    const candidates = new Map<
-      string,
-      { score: number; evidenceCodes: Set<EvidenceCode> }
-    >();
-
-    for (let i = 0; i < results.length; i++) {
-      const result = results[i];
-      const evidenceCode = bucketInfos[i].evidenceCode;
-
-      if (result.Items && result.Items.length > 0) {
-        for (const item of result.Items) {
-          const unmarshalled = unmarshall(item);
-          const deviceId = unmarshalled.device_id;
-          // AR-77: Filter out _stats entries (used for bucket cardinality tracking)
-          // AR-98: Use TIER2_STATS_SK constant instead of hardcoded string
-          if (deviceId && deviceId !== TIER2_STATS_SK) {
-            const existing = candidates.get(deviceId);
-            if (existing) {
-              existing.score += 1;
-              existing.evidenceCodes.add(evidenceCode);
-            } else {
-              candidates.set(deviceId, {
-                score: 1,
-                evidenceCodes: new Set([evidenceCode]),
-              });
-            }
-          }
-        }
-      }
-    }
-
-    // Convert Sets to arrays for the return value
-    const result = new Map<
-      string,
-      { score: number; evidenceCodes: EvidenceCode[] }
-    >();
-    for (const [deviceId, data] of candidates) {
-      result.set(deviceId, {
-        score: data.score,
-        evidenceCodes: Array.from(data.evidenceCodes),
-      });
-    }
-
-    return result;
-  }
-
-  /**
-   * Load device profile from DynamoDB
-   */
   async loadProfile(
     tenantId: string,
     deviceId: string,
   ): Promise<{ risk_score: number; flags: string[] } | null> {
-    const result = await this.deps.dynamodb.send(
-      new GetItemCommand({
-        TableName: this.deps.config.profilesTable,
-        Key: {
-          tenant_id: { S: tenantId },
-          device_id: { S: deviceId },
-        },
-        ProjectionExpression: "risk_score, flags",
-      }),
-    );
-
-    if (result.Item) {
-      const item = unmarshall(result.Item);
-      return {
-        risk_score: item.risk_score,
-        flags: item.flags ?? [],
-      };
-    }
-    return null;
+    return loadProfile(this.tier2Deps, tenantId, deviceId);
   }
 
-  /**
-   * Create a new device when no match is found
-   * AR-55: confidence is 0 since no match occurred (confidence = match confidence)
-   */
   createNewDevice(): MatchResult {
     const deviceId = `dev_${generateUUID()}`;
     return {
       device_id: deviceId,
-      confidence: 0, // AR-55: No match confidence for new devices
+      confidence: 0,
       match_tier: -1,
       is_new_device: true,
-      risk_score: 0.5, // Neutral for new devices
+      risk_score: 0.5,
       flags: [],
       evidence_codes: ["NEW_DEVICE"],
     };
   }
 
-  /**
-   * Write match result to session cache (AR-52: DynamoDB replaces Redis)
-   */
   async writeMatchResult(
     sessionId: string,
     result: MatchResult,
     idempotencyKey: string,
   ): Promise<void> {
-    const value: SessionCacheValue = {
-      status: "complete",
-      device_id: result.device_id,
-      risk_score: result.risk_score,
-      confidence: result.confidence,
-      match_tier: result.match_tier,
-      match_version: Date.now(),
-      idempotency_key: idempotencyKey,
-      flags: result.flags,
-      evidence_codes: result.evidence_codes, // AR-54
-      updated_at: Date.now(),
-    };
-
-    // DynamoCacheService handles conditional write (only updates if confidence is higher)
-    await this.deps.cache.writeSessionCache(sessionId, value);
+    return tier0WriteMatchResult(
+      this.tier0Deps,
+      sessionId,
+      result,
+      idempotencyKey,
+    );
   }
 
-  /**
-   * Write degraded status to cache when matching fails (AR-52: DynamoDB replaces Redis)
-   */
   async writeDegradedResult(
     sessionId: string,
     idempotencyKey: string,
   ): Promise<void> {
-    const value: SessionCacheValue = {
-      status: "degraded",
-      device_id: "",
-      risk_score: 0.5,
-      confidence: 0,
-      match_tier: -1,
-      match_version: Date.now(),
-      idempotency_key: idempotencyKey,
-      flags: ["matching_failed"],
-      evidence_codes: [], // AR-54: No evidence when matching fails
-      updated_at: Date.now(),
-    };
-
-    await this.deps.cache.writeSessionCache(sessionId, value);
+    return tier0WriteDegradedResult(this.tier0Deps, sessionId, idempotencyKey);
   }
 
-  /**
-   * Queue profile update to SQS for async processing
-   */
   async queueProfileUpdate(
     tenantId: string,
     deviceId: string,
@@ -940,7 +361,7 @@ export class MatchingService {
           tenant_id: tenantId,
           device_id: deviceId,
           fingerprint: payload.fingerprint,
-          sigint: payload.sigint, // AR-81: Pass sigint data for normalization
+          sigint: payload.sigint,
           tcp_blob: payload.tcp_blob,
           tls_blob: payload.tls_blob,
           timestamp: payload.timestamp,
@@ -951,10 +372,7 @@ export class MatchingService {
   }
 }
 
-/**
- * Generate idempotency key from session and fingerprint data
- * Uses FNV-1a hash (AR-32: consolidated from helpers/hash.ts)
- */
+/** Generate idempotency key from session and fingerprint data */
 export function generateIdempotencyKey(
   sessionId: string,
   fingerprint: Fingerprint,
@@ -963,10 +381,7 @@ export function generateIdempotencyKey(
   return fnv1a(input);
 }
 
-/**
- * Generate a cryptographically secure UUID v4
- * Uses Node.js crypto module for secure random generation
- */
+/** Generate a cryptographically secure UUID v4 */
 export function generateUUID(): string {
   return randomUUID();
 }
