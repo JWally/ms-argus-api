@@ -8,15 +8,61 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
-- Core Principles, Sprint Planning, and Documentation sections in CLAUDE.md
-- `docs/features/` for user-facing feature documentation
-- `docs/adr/` for Architecture Decision Records
-- This changelog
-- Cost trade-off note in README (~$15K/year premium for simplicity/reliability)
+- AR-98: Use TIER2_STATS_SK constant consistently
+- AR-97: Tenant ID in deduplication cache key (prevents cross-tenant collisions)
+- AR-96: Middy middleware for session-get (auto metrics publishing on all paths)
+- AR-95: Anchor lookup recency sorting (returns most recent device, not alphabetically first)
+- AR-94: IP+UA-only anchor bucket for short-window matching
+- AR-82: Session anchor bucket (IP + UA hash + screen, 5-min TTL)
+
+### Fixed
+
+- AR-95: Anchor lookups now sort by `created_at` descending before iterating
+- AR-96: Metrics now publish on error paths (400, 404, 503) via Middy logMetrics
+- AR-97: Different tenants with identical payloads no longer trigger duplicate detection
+- ESM bundling: Replaced `http-errors` module with custom HttpError class
+
+---
+
+## [2025-01-15] - Lambda Architecture & Web Library Support
+
+### Added
+
+- AR-90: Binary gzip payload support (`application/octet-stream` + `Content-Encoding: gzip`)
+- AR-87: Gzip decompression middleware with zip bomb protection (512KB limit)
+- AR-83: Full loose object normalization from web library format
+- AR-77: Field name normalization (`canvas2d.$hash` → `canvas_hash`, etc.)
+- AR-76: Web library format integration tests
+- AR-73: Fingerprint normalization layer for nested web library objects
+- AR-72: SQS warmup for reduced async pipeline latency
+- AR-69: Bot detection verification tests
+- AR-68: Demo polling for session endpoint
+- AR-67: GET /v1/session/{session_id} endpoint for retrieving match results
+- AR-66: Demo wired to submit fingerprints to API
+- AR-65: Privacy browser and bot signals in Fingerprint type
 
 ### Changed
 
-- AR-47: Consolidated Redis client wrapper - handlers now use shared `getRedis()` from redis-client.ts
+- AR-52: Replaced Go/ECS ingestion with HTTP API + Lambda
+- AR-52: Replaced Redis cache with DynamoDB SessionCache
+- Handlers now use Middy middleware pattern for cleaner code
+
+---
+
+## [2025-01-14] - Tier 2 Bucket Improvements
+
+### Added
+
+- Structural WebGL bucket type (parameters + extensions + shader precisions)
+- Audio + Canvas compound bucket
+- GPU + Screen + Timezone bucket
+- HTML element + CSS support bucket
+- Maths quirks + Window features bucket
+
+### Changed
+
+- Tier2Buckets now use adjacency list pattern (device per item, not string sets)
+- Bucket cardinality tracked via `_stats` sort key entries
 
 ---
 

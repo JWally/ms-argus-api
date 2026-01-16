@@ -2,100 +2,122 @@
 
 High-throughput device fingerprint ingestion and matching pipeline for fraud detection.
 
-## V4 Architecture
+## Architecture
 
 ```
                                     ┌──────────────────────────────────────────────────────────────┐
                                     │                         AWS Cloud                            │
-┌──────────┐   ┌────────────┐      │  ┌───────────┐    ┌─────────────────────────────────────┐   │
-│  Browser │──▶│ CloudFront │──────┼─▶│    ALB    │───▶│  ECS Fargate (Go Ingestion)         │   │
-│          │   │   + WAF    │      │  └───────────┘    │  - Validate JSON                    │   │
-└──────────┘   └────────────┘      │                   │  - Extract tenant                   │   │
-                                   │                   │  - Send to SQS → 204                │   │
-                                   │                   └─────────────────┬───────────────────┘   │
-                                   │                                     │                        │
-                                   │                                     ▼                        │
-                                   │                   ┌─────────────────────────────────────┐   │
-                                   │                   │     SQS (Matching Queue)            │   │
-                                   │                   └─────────────────┬───────────────────┘   │
-                                   │                                     │                        │
-                                   │                                     ▼                        │
-                                   │                   ┌─────────────────────────────────────┐   │
-                                   │                   │  Lambda (Matching Worker)           │   │
-                                   │                   │  - T0: Redis cache check            │   │
-                                   │                   │  - T0.5: Evercookie lookup          │   │
-                                   │                   │  - T1: Hash match (stable/fuzzy)    │   │
-                                   │                   │  - T2: Compound filter match        │   │
-                                   │                   │  - Write result → Redis             │   │
-                                   │                   └────────────┬────┬──────────────────┘   │
-                                   │                    Read/Write ◀┘    └▶ Queue               │
-                                   │                   ┌────────────┐    ┌──────────────────┐   │
-                                   │                   │   Redis    │    │ SQS (Profile Q)  │   │
-                                   │                   │  (Cache)   │    └────────┬─────────┘   │
-                                   │                   └────────────┘             │              │
-                                   │                                              ▼              │
-                                   │                   ┌─────────────────────────────────────┐   │
-                                   │                   │  Lambda (Profile Updater)           │   │
-                                   │                   │  - Mutation gating (1hr)            │   │
-                                   │                   │  - Drift detection                  │   │
-                                   │                   │  - Update profiles + indexes        │   │
-                                   │                   └────────────────┬────────────────────┘   │
-                                   │                                    │                        │
-                                   │                                    ▼                        │
-                                   │                   ┌─────────────────────────────────────┐   │
-                                   │                   │            DynamoDB                 │   │
-                                   │                   │  - Profiles (device data)           │   │
-                                   │                   │  - Tier1Index (hash lookups)        │   │
-                                   │                   │  - Tier2Buckets (compound filters)  │   │
-                                   │                   └─────────────────────────────────────┘   │
+┌──────────┐   ┌────────────┐      │  ┌───────────────────────────────────────────────────────┐   │
+│  Browser │──▶│ CloudFront │──────┼─▶│  API Gateway (HTTP API)                               │   │
+│          │   │   + WAF    │      │  │  - Binary media type support (gzip)                   │   │
+└──────────┘   └────────────┘      │  │  - CORS configuration                                 │   │
+                                   │  └───────────────────┬───────────────────────────────────┘   │
+                                   │                      │                                        │
+                                   │          ┌───────────┴───────────┐                           │
+                                   │          ▼                       ▼                           │
+                                   │  ┌───────────────┐      ┌───────────────┐                   │
+                                   │  │    Lambda     │      │    Lambda     │                   │
+                                   │  │  (Ingestion)  │      │ (Session Get) │                   │
+                                   │  │  POST /v1/    │      │ GET /v1/      │                   │
+                                   │  │    collect    │      │ session/{id}  │                   │
+                                   │  └───────┬───────┘      └───────┬───────┘                   │
+                                   │          │                      │                            │
+                                   │          ▼                      ▼                            │
+                                   │  ┌───────────────┐      ┌───────────────┐                   │
+                                   │  │     SQS       │      │   DynamoDB    │                   │
+                                   │  │   (Matching)  │      │ SessionCache  │                   │
+                                   │  └───────┬───────┘      └───────────────┘                   │
+                                   │          │                                                   │
+                                   │          ▼                                                   │
+                                   │  ┌─────────────────────────────────────┐                    │
+                                   │  │  Lambda (Matching Worker)           │                    │
+                                   │  │  - T0: Session cache check          │                    │
+                                   │  │  - T0.5: Evercookie lookup          │                    │
+                                   │  │  - T1: Hash match (stable/fuzzy)    │                    │
+                                   │  │  - T2: Compound filter match        │                    │
+                                   │  │  - Write result → SessionCache      │                    │
+                                   │  └────────────┬────┬───────────────────┘                    │
+                                   │   Read/Write ◀┘    └▶ Queue                                 │
+                                   │  ┌────────────┐    ┌──────────────────┐                     │
+                                   │  │  DynamoDB  │    │ SQS (Profile Q)  │                     │
+                                   │  │  Tables    │    └────────┬─────────┘                     │
+                                   │  └────────────┘             │                               │
+                                   │                             ▼                               │
+                                   │  ┌─────────────────────────────────────┐                    │
+                                   │  │  Lambda (Profile Updater)           │                    │
+                                   │  │  - Mutation gating (1hr)            │                    │
+                                   │  │  - Drift detection                  │                    │
+                                   │  │  - Update profiles + indexes        │                    │
+                                   │  └────────────────┬────────────────────┘                    │
+                                   │                   │                                         │
+                                   │                   ▼                                         │
+                                   │  ┌─────────────────────────────────────┐                    │
+                                   │  │            DynamoDB                 │                    │
+                                   │  │  - Profiles (device data)           │                    │
+                                   │  │  - Tier1Index (hash lookups)        │                    │
+                                   │  │  - Tier2Buckets (compound filters)  │                    │
+                                   │  │  - SessionCache (results + gates)   │                    │
+                                   │  └─────────────────────────────────────┘                    │
                                    │                                                             │
                                    │   ┌─────────────────────────────────────────────────────┐   │
-                                   │   │         Analytics Pipeline (Planned)                │   │
-                                   │   │   SNS → Firehose → S3 (Parquet) → Athena           │   │
+                                   │   │         Analytics Pipeline                          │   │
+                                   │   │   Firehose → S3 (Parquet) → Athena                 │   │
                                    │   └─────────────────────────────────────────────────────┘   │
                                    └──────────────────────────────────────────────────────────────┘
 ```
 
 ## Components
 
-### Go Ingestion Service (`cmd/ingestion/`)
+### Ingestion Lambda (`src/handlers/ingestion.ts`)
 
-Ultra-thin HTTP handler running on ECS Fargate behind an ALB:
+Serverless HTTP handler for fingerprint collection:
 
 - **Routes**: `/health`, `/v1/collect`
-- **Behavior**: Validate JSON → Extract tenant → Send to SQS → Return 204
-- **Throughput**: Designed for 30B requests/year scale
+- **Behavior**: Validate → Decompress (if gzip) → Extract tenant → Send to SQS → Return 204
 - **Features**:
-  - Graceful shutdown handling
-  - Structured JSON logging
-  - Automatic tenant extraction from `X-Tenant-ID` header or payload
-  - API key authentication with multi-tenant support (`X-API-Key` header)
-  - CORS middleware support
-  - Request validation (64KB body limit, max 10 JSON depth levels)
-  - Request header extraction (User-Agent, Accept-Language, X-Forwarded-For)
+  - Binary gzip payload support (`application/octet-stream` + `Content-Encoding: gzip`)
+  - Web library format normalization (nested `loose`, `hashes`, `botSignals` objects)
+  - API key authentication with multi-tenant support
+  - Request deduplication middleware
+  - CORS support
+
+### Session Get Lambda (`src/handlers/session-get.ts`)
+
+Returns match results for a session:
+
+- **Route**: `GET /v1/session/{session_id}`
+- **Returns**: Match status, device_id, confidence, risk_score, flags, evidence_codes
 
 ### Matching Worker (`src/handlers/matching-worker.ts`)
 
-Node.js Lambda that processes fingerprints from SQS and performs device matching:
+Processes fingerprints from SQS and performs device matching:
 
 **Tiered Matching Strategy:**
 
-| Tier | Method          | Confidence | Description                                                 |
-| ---- | --------------- | ---------- | ----------------------------------------------------------- |
-| T0   | Redis Cache     | N/A        | Session already processed                                   |
-| T0.5 | Evercookie      | 0.99       | Hard-to-clear browser storage                               |
-| T1   | Stable Hash     | 0.95       | Multiple stable signals combined                            |
-| T1   | Fuzzy Hash      | 0.85       | Similar signals, less strict                                |
-| T2   | Compound Filter | 0.6-0.85   | Multiple weak signals (IP+JA4, GPU+Screen+TZ, Audio+Canvas) |
-| New  | Generate UUID   | 1.0        | No match found, create new device                           |
+| Tier | Method         | Confidence | Description                          |
+| ---- | -------------- | ---------- | ------------------------------------ |
+| T0   | Session Cache  | N/A        | Session already processed (DynamoDB) |
+| T0.5 | Evercookie     | 0.99       | Hard-to-clear browser storage        |
+| T1   | Stable Hash    | 0.95       | Multiple stable signals combined     |
+| T1   | Fuzzy Hash     | 0.85       | Similar signals, less strict         |
+| T1   | JA4 Hash       | 0.80       | TLS fingerprint                      |
+| T2   | Session Anchor | 0.75       | IP + UA hash + screen (5-min TTL)    |
+| T2   | IP+UA Anchor   | 0.70       | IP + UA hash only (5-min TTL)        |
+| T2   | Maths+Window   | 0.70       | Math quirks + window features        |
+| T2   | HTML+CSS       | 0.70       | HTML element + CSS support           |
+| T2   | GPU+Screen+TZ  | 0.65       | Hardware + location signals          |
+| T2   | Audio+Canvas   | 0.65       | Audio context + canvas hash          |
+| T2   | WebGL Struct   | 0.60       | WebGL parameters + extensions        |
+| T2   | IP+JA4         | 0.60       | Network + TLS combination            |
+| New  | Generate UUID  | 1.0        | No match found, create new device    |
 
-**Output**: Writes result to Redis (15-min TTL) and queues profile update.
+**Output**: Writes result to SessionCache and queues profile update.
 
 ### Profile Updater (`src/handlers/profile-updater.ts`)
 
-Node.js Lambda that maintains device profiles and search indexes:
+Maintains device profiles and search indexes:
 
-- **Mutation Gating**: Redis key prevents writes for 1 hour after update
+- **Mutation Gating**: DynamoDB key prevents writes for 1 hour after update
 - **Drift Detection**: Skips update if <2 signals changed
 - **Updates**:
   - `Profiles` table: Full device profile with TTL
@@ -106,11 +128,11 @@ Node.js Lambda that maintains device profiles and search indexes:
 
 | Component                 | Purpose                         | TTL                               |
 | ------------------------- | ------------------------------- | --------------------------------- |
-| **Redis**                 | Session cache, mutation gates   | 15 min (sessions), 1 hour (gates) |
+| **DynamoDB SessionCache** | Session results, mutation gates | 15 min (sessions), 1 hour (gates) |
 | **DynamoDB Profiles**     | Device profiles                 | 60 days                           |
 | **DynamoDB Tier1Index**   | Hash-based lookups              | 60 days                           |
-| **DynamoDB Tier2Buckets** | Compound filter matching        | 7 days                            |
-| **S3**                    | Analytics (Parquet) _(planned)_ | Configurable                      |
+| **DynamoDB Tier2Buckets** | Compound filter matching        | 7 days (anchor: 5 min)            |
+| **S3**                    | Analytics (Parquet)             | Configurable                      |
 
 #### Tier2Buckets Schema
 
@@ -119,7 +141,7 @@ Uses an **adjacency list pattern** to avoid DynamoDB's 400KB item size limit:
 - **PK**: `bucket_key` (e.g., `tenant#ip_ja4#192.168.1.1#ja4_hash`)
 - **SK**: `device_id`
 
-Each device in a bucket is stored as a separate item, allowing unlimited devices per bucket via `Query` operations. This replaces the previous String Set approach which could hit the 400KB limit with high-cardinality buckets.
+Each device in a bucket is stored as a separate item, allowing unlimited devices per bucket via `Query` operations.
 
 ## API
 
@@ -127,26 +149,47 @@ Each device in a bucket is stored as a separate item, allowing unlimited devices
 
 Collect fingerprint data from a client.
 
-**Request:**
+**Content Types Supported:**
+
+- `application/json` - Plain JSON
+- `application/octet-stream` with `Content-Encoding: gzip` - Binary gzip (recommended)
+
+**Request (Web Library Format):**
 
 ```json
 {
   "session_id": "unique-session-id",
-  "tenant_id": "optional-tenant-id",
   "fingerprint": {
-    "stable_hash": "abc123",
-    "fuzzy_hash": "def456",
-    "canvas_hash": "...",
-    "webgl_hash": "...",
-    "audio_hash": "...",
-    "gpu_renderer": "...",
-    "screen_dims": "1920x1080",
-    "timezone": "America/New_York",
-    "evercookie_id": "...",
-    "ja4": "..."
+    "loose": {
+      "maths": { "$hash": "..." },
+      "windowFeatures": { "$hash": "..." },
+      "htmlElementVersion": { "$hash": "..." },
+      "css": { "$hash": "..." },
+      "canvas2d": { "$hash": "..." },
+      "offlineAudioContext": { "$hash": "..." },
+      "canvasWebgl": {
+        "gpu": { "compressedGPU": "ANGLE (NVIDIA...)" },
+        "parameters": { "$hash": "..." },
+        "extensions": { "$hash": "..." },
+        "shaderPrecisions": { "$hash": "..." }
+      },
+      "screen": { "width": 1920, "height": 1080 }
+    },
+    "hashes": {
+      "stable": "abc123",
+      "fuzzy": "def456"
+    },
+    "botSignals": {
+      "isHeadless": false,
+      "isAutomation": false
+    }
   },
-  "tcp_blob": "base64-encrypted-tcp-fingerprint",
-  "tls_blob": "base64-encrypted-tls-fingerprint"
+  "sigint": {
+    "evercookie_id": "...",
+    "ja4": "t13d1516h2_...",
+    "public_key": "...",
+    "sigint_id": "..."
+  }
 }
 ```
 
@@ -155,6 +198,26 @@ Collect fingerprint data from a client.
 **Headers:**
 
 - `X-Tenant-ID`: Optional tenant identifier (defaults to `default`)
+- `X-API-Key`: API key for authentication (optional)
+
+### `GET /v1/session/{session_id}`
+
+Retrieve match results for a session.
+
+**Response:**
+
+```json
+{
+  "session_id": "unique-session-id",
+  "status": "matched",
+  "device_id": "dev_abc123",
+  "confidence": 0.95,
+  "match_tier": "STABLE_HASH",
+  "risk_score": 15,
+  "flags": ["CANVAS_BLOCKED"],
+  "evidence_codes": ["STABLE_HASH_MATCH"]
+}
+```
 
 ### `GET /health`
 
@@ -171,7 +234,6 @@ Health check endpoint.
 ### Prerequisites
 
 - Node.js 20+
-- Go 1.21+
 - AWS CLI configured
 - AWS CDK CLI (`npm install -g aws-cdk`)
 
@@ -179,26 +241,19 @@ Health check endpoint.
 
 ```bash
 npm install
-cd cmd/ingestion && go mod download
 ```
 
 ### Run Tests
 
 ```bash
-# Unit tests
+# Unit tests (434+ tests)
 npm test
 
 # Unit tests with coverage
 npm run test:coverage
 
-# Integration tests (against deployed API)
-ARGUS_API_URL=https://api-dev-jw.argus.pw npx vitest run tests/integration/
-
-# Go tests
-npm run test:go
-
-# All tests with coverage
-npm run test:all
+# Integration tests (requires deployed stack)
+cd ~/Dev/ms-argus-automation && npm test
 ```
 
 ### Lint & Format
@@ -216,11 +271,7 @@ npm run format
 ### Build
 
 ```bash
-# TypeScript
 npm run build
-
-# Go
-npm run go:build
 ```
 
 ## Deployment
@@ -235,10 +286,10 @@ cdk bootstrap
 
 ```bash
 # Development
-cdk deploy ms-argus-api-dev
+npx cdk deploy ms-argus-api-dev-jw --require-approval never
 
 # Production
-cdk deploy ms-argus-api-prod
+npx cdk deploy ms-argus-api-prod --require-approval never
 ```
 
 ### Configuration
@@ -253,33 +304,20 @@ Update `bin/config.ts` with:
 
 The CDK stack (`lib/stacks/app-stack.ts`) provisions:
 
-- **VPC**: 2 AZs, public/private subnets, NAT Gateway
-- **ECS Fargate**: Go ingestion service behind ALB
-- **Lambda**: Matching worker + Profile updater (with CodeDeploy canary deployments)
+- **API Gateway**: HTTP API with Lambda integrations
+- **Lambda**: Ingestion, Session Get, Matching Worker, Profile Updater
 - **SQS**: Matching queue + Profile queue (with DLQs)
-- **ElastiCache**: Redis cluster for session caching
-- **DynamoDB**: Profiles, Tier1Index, Tier2Buckets tables
+- **DynamoDB**: Profiles, Tier1Index, Tier2Buckets, SessionCache tables
 - **CloudFront + WAF**: Edge protection with rate limiting
 - **VPC Endpoints**: DynamoDB, SQS, Secrets Manager (cost optimization)
-- **S3 + Firehose + Glue**: Analytics pipeline _(planned, not yet implemented)_
+- **Firehose + S3**: Analytics pipeline to Parquet
 - **Route53 + ACM**: Custom domain with SSL
-
-## Canary Deployments
-
-Lambda functions use CodeDeploy for safe deployments:
-
-- **Strategy**: `CANARY_10PERCENT_5MINUTES` - 10% traffic for 5 minutes before full rollout
-- **Auto-rollback**: Triggers on deployment failure or CloudWatch alarm
-- **Alarms monitored**: Error count, p95 duration
-
-This reduces blast radius by catching issues before they affect all traffic.
 
 ## Observability
 
 - **Logging**: AWS Lambda Powertools with structured JSON
-- **Metrics**: Custom CloudWatch metrics for each tier hit, errors, durations
+- **Metrics**: CloudWatch metrics via Powertools (auto-published via Middy middleware)
 - **Alarms**: SNS topic for CloudWatch alarms
-- **Tracing**: X-Ray (temporarily disabled due to bundling issues)
 
 ## Git Hooks
 
@@ -288,35 +326,21 @@ Pre-commit and pre-push hooks via [Lefthook](https://github.com/evilmartians/lef
 - **Pre-commit**: TypeScript build, ESLint, Prettier
 - **Pre-push**: Full test suite
 
-## Documentation
-
-- [API Gateway Evaluation (AR-22)](docs/AR-22-api-gateway-evaluation.md) - Cost analysis comparing ECS vs API Gateway direct-to-SQS
-
 ## Related Repositories
 
-- `argus` - Browser fingerprinting library
-- `ms-argus-tcp-probe` - TCP/TLS fingerprinting service
+- `ms-argus-web` - Browser fingerprinting library
+- `ms-argus-automation` - Integration test suite
 
 ## Cost Estimate (30B requests/year)
 
 | Component     | Cost/Year |
 | ------------- | --------- |
 | CloudFront    | ~$22,500  |
-| ECS Fargate   | ~$35,000  |
-| Lambda        | ~$15,000  |
+| API Gateway   | ~$30,000  |
+| Lambda        | ~$20,000  |
 | SQS           | ~$10,000  |
-| ElastiCache   | ~$8,000   |
-| DynamoDB      | ~$12,000  |
+| DynamoDB      | ~$15,000  |
 | S3 + Firehose | ~$2,000   |
-| **Total**     | ~$104,500 |
+| **Total**     | ~$99,500  |
 
-~$3.48/million requests
-
-### Cost Trade-off Note
-
-We're paying a premium of ~$15K/year for simplicity and reliability by using ECS Fargate + Redis instead of optimized alternatives:
-
-- **ECS Fargate vs API Gateway direct-to-SQS**: ~$10K/year premium, but gives us full control over request handling, easier debugging, and no API Gateway quirks
-- **Redis vs DynamoDB on-demand for caching**: ~$5K/year premium at scale, but provides sub-millisecond latency, atomic operations (SET NX EX), and predictable costs regardless of traffic spikes
-
-This is a deliberate choice: boring, proven infrastructure over clever cost optimization. The reduced operational complexity and faster debugging pay for themselves in engineer time.
+~$3.32/million requests
