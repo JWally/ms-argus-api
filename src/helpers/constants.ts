@@ -8,6 +8,9 @@ export const SECURITY_KEY_NAME = "argus-keys";
 /** Cache duration for AWS Secrets: 15 minutes (900,000ms) */
 export const KEY_CACHE_DURATION: number = 1000 * 60 * 15;
 
+/** AR-131: Cache duration for API Keys: 5 minutes (300,000ms) */
+export const API_KEYS_CACHE_TTL: number = 1000 * 60 * 5;
+
 // ==================== FNV-1A HASH CONSTANTS ====================
 // Used for fast idempotency key generation and request deduplication
 // See: https://en.wikipedia.org/wiki/Fowler%E2%80%93Noll%E2%80%93Vo_hash_function
@@ -146,12 +149,17 @@ export const AWS_SECRETS_REQUIRED_KEYS: string[] = [
 export const ERROR_STRINGS = {
   SECRETS_MANAGER_FAILED: "Failed to retrieve secrets from Secrets Manager",
   KEY_ARN_NOT_SET: "Environment variables SECRET_KEY_ARN must be set",
+  API_KEYS_ARN_NOT_SET: "Environment variable API_KEYS_SECRET_ARN must be set",
+  API_KEYS_FETCH_FAILED: "Failed to retrieve API keys from Secrets Manager",
   CANNOT_PARSE_JSON: "Cannot Parse JSON Data",
   CANNOT_DECRYPT: "Cannot Decrypt Payload",
   CANNOT_VERIFY_SIGNATURE: "Cannot Verify Signature",
 };
 
 export const SECRET_KEY_ARN: string | undefined = process.env.SECRET_KEY_ARN;
+/** AR-131: API Keys secret ARN for tenant authentication */
+export const API_KEYS_SECRET_ARN: string | undefined =
+  process.env.API_KEYS_SECRET_ARN;
 export const POWERTOOLS_METRICS_NAMESPACE: string | undefined =
   process.env.POWERTOOLS_METRICS_NAMESPACE;
 export const POWERTOOLS_SERVICE_NAME: string | undefined =

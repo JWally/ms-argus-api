@@ -3,6 +3,7 @@
 // AR-71: Reverted to async (SQS) for scalability at 30B RPY
 // AR-90: Simplified to binary gzip (application/octet-stream)
 // AR-XX: Refactored to use middy middleware for cleaner code
+// AR-131: API keys from Secrets Manager instead of env var
 
 import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from "aws-lambda";
 import { Logger } from "@aws-lambda-powertools/logger";
@@ -15,6 +16,11 @@ import httpHeaderNormalizer from "@middy/http-header-normalizer";
 import warmup from "@middy/warmup";
 import { onWarmup } from "../helpers/middy-helpers";
 import { gunzipSync } from "zlib";
+import {
+  getApiKeysSecret,
+  initApiKeysSecret,
+} from "../services/get-api-keys-secret";
+import { API_KEYS_SECRET_ARN } from "../helpers/constants";
 
 // Custom HttpError class to replace http-errors module (ESM bundling compatible)
 class HttpError extends Error {
@@ -35,9 +41,11 @@ const createError = (statusCode: number, message: string) =>
 const SQS_QUEUE_URL = process.env.SQS_QUEUE_URL;
 if (!SQS_QUEUE_URL) throw new Error("Missing required env var: SQS_QUEUE_URL");
 
-const API_KEYS: Record<string, string> = process.env.API_KEYS
-  ? JSON.parse(process.env.API_KEYS)
-  : {};
+// AR-131: API keys from Secrets Manager with caching
+// Initialize at Lambda init time - fail closed if unavailable
+// The _apiKeysInitPromise triggers the init but we use getApiKeysSecret() in the handler
+// which returns the cached value (or refreshes if TTL expired)
+const _apiKeysInitPromise = API_KEYS_SECRET_ARN ? initApiKeysSecret() : null;
 
 // AR-124: Stage for tenant isolation guard
 const STAGE = process.env.STAGE ?? "";
@@ -234,11 +242,15 @@ const baseHandler = async (
     throw createError(400, "Missing required field: session_id");
   }
 
-  // Tenant extraction from API key or header
+  // AR-131: Tenant extraction from API key (Secrets Manager) or header
   let tenantId: string;
   const apiKey = event.headers["x-api-key"];
-  if (Object.keys(API_KEYS).length > 0 && apiKey) {
-    tenantId = API_KEYS[apiKey];
+
+  // Get API keys from Secrets Manager (with caching)
+  const apiKeys = await getApiKeysSecret();
+
+  if (Object.keys(apiKeys).length > 0 && apiKey) {
+    tenantId = apiKeys[apiKey];
     if (!tenantId) {
       metrics.addMetric("AuthFailed", MetricUnit.Count, 1);
       throw createError(401, "Invalid API key");
@@ -249,7 +261,7 @@ const baseHandler = async (
     if (STAGE === "prod" && !headerTenantId) {
       metrics.addMetric("TenantIsolationViolation", MetricUnit.Count, 1);
       logger.error("Missing tenant ID in production", {
-        hasApiKeyConfig: Object.keys(API_KEYS).length > 0,
+        hasApiKeyConfig: Object.keys(apiKeys).length > 0,
         hasApiKeyHeader: !!apiKey,
         hasTenantIdHeader: !!headerTenantId,
       });

@@ -15,6 +15,7 @@ import * as logs from "aws-cdk-lib/aws-logs";
 import * as cloudwatch from "aws-cdk-lib/aws-cloudwatch";
 import * as sns from "aws-cdk-lib/aws-sns";
 import * as actions from "aws-cdk-lib/aws-cloudwatch-actions";
+import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
 import { Duration, RemovalPolicy } from "aws-cdk-lib";
 
 interface HttpApiConstructProps {
@@ -23,6 +24,8 @@ interface HttpApiConstructProps {
   matchingQueue: sqs.IQueue;
   sessionCacheTable: dynamodb.ITable;
   alarmsTopic: sns.ITopic;
+  /** AR-131: API keys secret for tenant authentication */
+  apiKeysSecret: secretsmanager.ISecret;
 }
 
 /**
@@ -48,8 +51,14 @@ export class HttpApiConstruct extends Construct {
   constructor(scope: Construct, id: string, props: HttpApiConstructProps) {
     super(scope, id);
 
-    const { stackName, stage, matchingQueue, sessionCacheTable, alarmsTopic } =
-      props;
+    const {
+      stackName,
+      stage,
+      matchingQueue,
+      sessionCacheTable,
+      alarmsTopic,
+      apiKeysSecret,
+    } = props;
 
     // CloudWatch log group for Lambda
     const logGroup = new logs.LogGroup(this, "IngestionLogGroup", {
@@ -75,6 +84,7 @@ export class HttpApiConstruct extends Construct {
         environment: {
           SQS_QUEUE_URL: matchingQueue.queueUrl,
           STAGE: stage, // AR-124: For tenant isolation guard
+          API_KEYS_SECRET_ARN: apiKeysSecret.secretArn, // AR-131: API keys from Secrets Manager
           POWERTOOLS_SERVICE_NAME: "argus-ingestion",
           POWERTOOLS_METRICS_NAMESPACE: `argus-${stage}`,
           NODE_OPTIONS: "--enable-source-maps",
@@ -94,6 +104,9 @@ export class HttpApiConstruct extends Construct {
 
     // Grant SQS permissions
     matchingQueue.grantSendMessages(this.ingestionFunction);
+
+    // AR-131: Grant Lambda permission to read API keys secret
+    apiKeysSecret.grantRead(this.ingestionFunction);
 
     // AR-67: Session retrieval Lambda
     const sessionGetLogGroup = new logs.LogGroup(this, "SessionGetLogGroup", {
