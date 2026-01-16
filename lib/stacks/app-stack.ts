@@ -93,9 +93,11 @@ export class ArgusApiStack extends cdk.Stack {
     // DATA LAYER
     // =========================================================================
 
+    // AR-133: Pass stage to DynamoDB construct for conditional provisioned capacity
     const dynamodb = new DynamoDbConstruct(this, "DynamoDB", {
       stackName,
       alarmsTopic,
+      stage,
     });
 
     const queues = new QueuesConstruct(this, "Queues", {

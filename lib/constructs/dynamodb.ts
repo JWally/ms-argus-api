@@ -1,14 +1,17 @@
 // lib/constructs/dynamodb.ts
+// AR-133: Added stage-conditional provisioned capacity with auto-scaling
 import { Construct } from "constructs";
 import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
 import * as cloudwatch from "aws-cdk-lib/aws-cloudwatch";
 import * as sns from "aws-cdk-lib/aws-sns";
 import * as actions from "aws-cdk-lib/aws-cloudwatch-actions";
 import { Duration, RemovalPolicy } from "aws-cdk-lib";
+import { getStageConfig } from "../config";
 
 interface DynamoDbConstructProps {
   stackName: string;
   alarmsTopic: sns.ITopic;
+  stage: string;
 }
 
 /**
@@ -26,7 +29,18 @@ export class DynamoDbConstruct extends Construct {
   constructor(scope: Construct, id: string, props: DynamoDbConstructProps) {
     super(scope, id);
 
-    const { stackName, alarmsTopic } = props;
+    const { stackName, alarmsTopic, stage } = props;
+
+    // AR-133: Get stage config for DynamoDB billing mode
+    const config = getStageConfig(stage);
+    const dbConfig = config.dynamodb;
+
+    // AR-133: Determine billing mode based on stage config
+    // Dev: provisioned capacity with auto-scaling (for testing the infrastructure)
+    // Prod: PAY_PER_REQUEST until capacity analysis is done
+    const billingMode = dbConfig.useProvisionedCapacity
+      ? dynamodb.BillingMode.PROVISIONED
+      : dynamodb.BillingMode.PAY_PER_REQUEST;
 
     // Profiles table - main device profile storage
     // PK: tenant_id, SK: device_id
@@ -34,7 +48,11 @@ export class DynamoDbConstruct extends Construct {
       tableName: `${stackName}-profiles`,
       partitionKey: { name: "tenant_id", type: dynamodb.AttributeType.STRING },
       sortKey: { name: "device_id", type: dynamodb.AttributeType.STRING },
-      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      billingMode,
+      ...(dbConfig.useProvisionedCapacity && {
+        readCapacity: dbConfig.baseReadCapacity,
+        writeCapacity: dbConfig.baseWriteCapacity,
+      }),
       pointInTimeRecovery: true,
       timeToLiveAttribute: "ttl",
       removalPolicy: RemovalPolicy.RETAIN,
@@ -53,7 +71,11 @@ export class DynamoDbConstruct extends Construct {
       tableName: `${stackName}-tier1-index`,
       partitionKey: { name: "tenant_id", type: dynamodb.AttributeType.STRING },
       sortKey: { name: "hash_key", type: dynamodb.AttributeType.STRING },
-      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      billingMode,
+      ...(dbConfig.useProvisionedCapacity && {
+        readCapacity: dbConfig.baseReadCapacity,
+        writeCapacity: dbConfig.baseWriteCapacity,
+      }),
       timeToLiveAttribute: "ttl",
       removalPolicy: RemovalPolicy.RETAIN,
     });
@@ -67,7 +89,11 @@ export class DynamoDbConstruct extends Construct {
       tableName: `${stackName}-tier2-buckets-v2`,
       partitionKey: { name: "bucket_key", type: dynamodb.AttributeType.STRING },
       sortKey: { name: "device_id", type: dynamodb.AttributeType.STRING },
-      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      billingMode,
+      ...(dbConfig.useProvisionedCapacity && {
+        readCapacity: dbConfig.baseReadCapacity,
+        writeCapacity: dbConfig.baseWriteCapacity,
+      }),
       timeToLiveAttribute: "ttl",
       removalPolicy: RemovalPolicy.RETAIN,
     });
@@ -79,16 +105,93 @@ export class DynamoDbConstruct extends Construct {
     this.sessionCacheTable = new dynamodb.Table(this, "SessionCacheTable", {
       tableName: `${stackName}-session-cache`,
       partitionKey: { name: "cache_key", type: dynamodb.AttributeType.STRING },
-      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      billingMode,
+      ...(dbConfig.useProvisionedCapacity && {
+        readCapacity: dbConfig.baseReadCapacity,
+        writeCapacity: dbConfig.baseWriteCapacity,
+      }),
       timeToLiveAttribute: "ttl",
       removalPolicy: RemovalPolicy.DESTROY, // Cache data is ephemeral
     });
+
+    // AR-133: Configure auto-scaling for provisioned capacity tables
+    if (dbConfig.useProvisionedCapacity) {
+      const maxCapacity = Math.ceil(
+        dbConfig.baseReadCapacity * dbConfig.autoScaling.maxCapacityMultiplier,
+      );
+      const targetUtilization = dbConfig.autoScaling.targetUtilizationPercent;
+
+      // Enable auto-scaling for all tables
+      this.enableAutoScaling(
+        this.profilesTable,
+        "Profiles",
+        dbConfig.baseReadCapacity,
+        dbConfig.baseWriteCapacity,
+        maxCapacity,
+        targetUtilization,
+      );
+      this.enableAutoScaling(
+        this.tier1IndexTable,
+        "Tier1Index",
+        dbConfig.baseReadCapacity,
+        dbConfig.baseWriteCapacity,
+        maxCapacity,
+        targetUtilization,
+      );
+      this.enableAutoScaling(
+        this.tier2BucketsTable,
+        "Tier2Buckets",
+        dbConfig.baseReadCapacity,
+        dbConfig.baseWriteCapacity,
+        maxCapacity,
+        targetUtilization,
+      );
+      this.enableAutoScaling(
+        this.sessionCacheTable,
+        "SessionCache",
+        dbConfig.baseReadCapacity,
+        dbConfig.baseWriteCapacity,
+        maxCapacity,
+        targetUtilization,
+      );
+    }
 
     // Alarms
     this.createTableAlarms(this.profilesTable, "Profiles", alarmsTopic);
     this.createTableAlarms(this.tier1IndexTable, "Tier1Index", alarmsTopic);
     this.createTableAlarms(this.tier2BucketsTable, "Tier2Buckets", alarmsTopic);
     this.createTableAlarms(this.sessionCacheTable, "SessionCache", alarmsTopic);
+  }
+
+  /**
+   * AR-133: Enable auto-scaling for a DynamoDB table
+   * Configures both read and write capacity auto-scaling with the specified parameters
+   */
+  private enableAutoScaling(
+    table: dynamodb.Table,
+    prefix: string,
+    minReadCapacity: number,
+    minWriteCapacity: number,
+    maxCapacity: number,
+    targetUtilizationPercent: number,
+  ) {
+    // Auto-scale read capacity
+    const readScaling = table.autoScaleReadCapacity({
+      minCapacity: minReadCapacity,
+      maxCapacity,
+    });
+    readScaling.scaleOnUtilization({
+      targetUtilizationPercent,
+    });
+
+    // Auto-scale write capacity
+    const writeScaling = table.autoScaleWriteCapacity({
+      minCapacity: minWriteCapacity,
+      maxCapacity,
+    });
+    writeScaling.scaleOnUtilization({
+      targetUtilizationPercent,
+    });
   }
 
   private createTableAlarms(
