@@ -100,7 +100,7 @@ export interface StageConfig {
 const devConfig: StageConfig = {
   lambda: {
     matching: {
-      memorySize: 256,
+      memorySize: 1024,
       timeout: Duration.seconds(20),
       reservedConcurrency: 25,
     },

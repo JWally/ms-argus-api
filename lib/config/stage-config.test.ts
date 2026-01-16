@@ -7,7 +7,7 @@ describe("stage-config", () => {
     it("should return dev config for 'dev' stage", () => {
       const config = getStageConfig("dev");
       expect(config).toBe(configs.dev);
-      expect(config.lambda.matching.memorySize).toBe(256);
+      expect(config.lambda.matching.memorySize).toBe(1024);
     });
 
     it("should return dev config for 'dev-jw' stage", () => {
@@ -69,7 +69,7 @@ describe("stage-config", () => {
       const dev = configs.dev;
 
       it("should have smaller Lambda memory", () => {
-        expect(dev.lambda.matching.memorySize).toBe(256);
+        expect(dev.lambda.matching.memorySize).toBe(1024);
         expect(dev.lambda.profile.memorySize).toBe(128);
       });
 
