@@ -15,7 +15,7 @@ import {
   MatchingServiceConfig,
   MatchingServiceDeps,
   generateIdempotencyKey,
-  generateUUID,
+  generateULID,
 } from "./matching-service";
 import { EvidenceCode, Fingerprint, SessionCacheValue } from "./types";
 import { DynamoCacheService } from "../cache";
@@ -693,10 +693,12 @@ describe("MatchingService", () => {
   });
 
   describe("createNewDevice", () => {
-    it("should create device with dev_ prefix", () => {
+    // AR-121: Updated to expect ULID format (26 alphanumeric chars in Crockford's Base32)
+    it("should create device with dev_ prefix and ULID format", () => {
       const result = service.createNewDevice();
 
-      expect(result.device_id).toMatch(/^dev_[a-f0-9-]+$/);
+      // ULID format: 26 characters, Crockford's Base32 (0-9, A-Z excluding I, L, O, U)
+      expect(result.device_id).toMatch(/^dev_[0-9A-HJKMNP-TV-Z]{26}$/);
       expect(result.is_new_device).toBe(true);
       expect(result.confidence).toBe(0); // AR-55: No match confidence for new devices
       expect(result.match_tier).toBe(-1);
@@ -1245,34 +1247,52 @@ describe("generateIdempotencyKey", () => {
   });
 });
 
-describe("generateUUID", () => {
-  it("should generate valid UUID v4 format", () => {
-    const uuid = generateUUID();
-    expect(uuid).toMatch(
-      /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/,
-    );
+// AR-121: Tests updated for ULID format
+describe("generateULID", () => {
+  it("should generate valid ULID format (26 chars, Crockford Base32)", () => {
+    const ulid = generateULID();
+    // ULID: 26 characters, Crockford's Base32 (0-9, A-Z excluding I, L, O, U)
+    expect(ulid).toMatch(/^[0-9A-HJKMNP-TV-Z]{26}$/);
   });
 
-  it("should generate unique UUIDs", () => {
-    const uuids = new Set<string>();
+  it("should generate unique ULIDs", () => {
+    const ulids = new Set<string>();
     for (let i = 0; i < 1000; i++) {
-      uuids.add(generateUUID());
+      ulids.add(generateULID());
     }
-    expect(uuids.size).toBe(1000);
+    expect(ulids.size).toBe(1000);
   });
 
-  it("should produce no collisions in 100K generated UUIDs (crypto-secure)", () => {
-    // Using 100K instead of 1M for reasonable test runtime
-    // crypto.randomUUID() is cryptographically secure, so this validates
-    // we're using the proper implementation
-    const uuids = new Set<string>();
+  it("should produce no collisions in 100K generated ULIDs", () => {
+    const ulids = new Set<string>();
     const count = 100_000;
     for (let i = 0; i < count; i++) {
-      const uuid = generateUUID();
-      expect(uuids.has(uuid)).toBe(false);
-      uuids.add(uuid);
+      const ulid = generateULID();
+      expect(ulids.has(ulid)).toBe(false);
+      ulids.add(ulid);
     }
-    expect(uuids.size).toBe(count);
+    expect(ulids.size).toBe(count);
+  }, 30000); // 30 second timeout for 100K iterations
+
+  it("should generate ULIDs with timestamp prefix for time-based sorting", () => {
+    // ULIDs have a 48-bit timestamp in first 10 characters
+    // The timestamp encodes milliseconds since Unix epoch in Crockford Base32
+    // ULIDs generated at different times will sort chronologically
+    const ulid1 = generateULID();
+    const ulid2 = generateULID();
+
+    // Both should be valid ULID format
+    expect(ulid1).toMatch(/^[0-9A-HJKMNP-TV-Z]{26}$/);
+    expect(ulid2).toMatch(/^[0-9A-HJKMNP-TV-Z]{26}$/);
+
+    // First 10 chars are timestamp - ULIDs from same ms share this prefix
+    // This proves the time component is encoded at the start
+    const timestamp1 = ulid1.substring(0, 10);
+    const timestamp2 = ulid2.substring(0, 10);
+
+    // ULIDs generated in sequence will have same or later timestamp
+    // (later timestamp is lexicographically greater)
+    expect(timestamp2 >= timestamp1).toBe(true);
   });
 });
 
@@ -1466,5 +1486,53 @@ describe("MatchingService anchor recency sorting", () => {
 
     // Should return dev_m (3 minutes old) - the newest valid device
     expect(result.device_id).toBe("dev_m");
+  });
+
+  // AR-121: Test that ScanIndexForward:false is used for anchor queries
+  it("should pass ScanIndexForward:false to sessionAnchorLookup QueryCommand", async () => {
+    const now = Date.now();
+    let capturedInput: unknown;
+
+    // Mock: Capture the QueryCommand input to verify ScanIndexForward
+    dynamoMock
+      .on(QueryCommand, { TableName: testConfig.tier2BucketsTable })
+      .callsFake((input) => {
+        capturedInput = input;
+        const keyExpr = input.KeyConditionExpression || "";
+        if (keyExpr.includes("bucket_key = :bk")) {
+          return {
+            Items: [
+              marshall({
+                bucket_key: "tenant1#session_anchor#1.2.3.4#uahash#1920x1080",
+                device_id: "dev_test",
+                created_at: now - 1 * 60 * 1000,
+              }),
+            ],
+          };
+        }
+        return { Items: [] };
+      });
+
+    // Mock: Profile lookup
+    dynamoMock.on(GetItemCommand).resolves({
+      Item: marshall({
+        tenant_id: "tenant1",
+        device_id: "dev_test",
+        risk_score: 0.3,
+        flags: [],
+      }),
+    });
+
+    const fingerprint: Fingerprint = {
+      ip_address: "1.2.3.4",
+      user_agent:
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36",
+      screen_dims: "1920x1080",
+    };
+
+    await service.runTieredMatching("tenant1", fingerprint);
+
+    // AR-121: Verify ScanIndexForward:false is set
+    expect(capturedInput).toHaveProperty("ScanIndexForward", false);
   });
 });

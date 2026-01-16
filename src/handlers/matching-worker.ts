@@ -216,6 +216,9 @@ async function processRecord(
 function recordTierMetric(tier: number, isNewDevice: boolean): void {
   if (isNewDevice) {
     metrics.addMetric("NewDevice", MetricUnit.Count, 1);
+    // AR-121: Track device ID format for migration monitoring
+    // New devices always use ULID format now
+    metrics.addMetric("DeviceIdFormat_ulid", MetricUnit.Count, 1);
   } else if (tier === 0.5) {
     metrics.addMetric("Tier05Hit", MetricUnit.Count, 1);
   } else if (tier === 1) {

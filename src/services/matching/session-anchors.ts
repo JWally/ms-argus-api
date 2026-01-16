@@ -53,6 +53,8 @@ export async function sessionAnchorLookup(
   }
 
   // Query the session anchor bucket for matching devices
+  // AR-121: ScanIndexForward:false returns newest entries first (by device_id sort key)
+  // With ULID device IDs, this returns most recently created devices first
   const result = await deps.dynamodb.send(
     new QueryCommand({
       TableName: deps.tier2BucketsTable,
@@ -62,6 +64,7 @@ export async function sessionAnchorLookup(
       },
       ProjectionExpression: "device_id, created_at",
       Limit: 10, // Only need recent entries
+      ScanIndexForward: false, // AR-121: Descending order by sort key (device_id)
     }),
   );
 
@@ -128,6 +131,8 @@ export async function ipUaAnchorLookup(
   }
 
   // Query the IP+UA anchor bucket for matching devices
+  // AR-121: ScanIndexForward:false returns newest entries first (by device_id sort key)
+  // With ULID device IDs, this returns most recently created devices first
   const result = await deps.dynamodb.send(
     new QueryCommand({
       TableName: deps.tier2BucketsTable,
@@ -137,6 +142,7 @@ export async function ipUaAnchorLookup(
       },
       ProjectionExpression: "device_id, created_at",
       Limit: 10, // Only need recent entries
+      ScanIndexForward: false, // AR-121: Descending order by sort key (device_id)
     }),
   );
 
