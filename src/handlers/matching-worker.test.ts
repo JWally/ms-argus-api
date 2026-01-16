@@ -1,6 +1,28 @@
 // src/handlers/matching-worker.test.ts
 // AR-52: Updated to use DynamoDB session cache instead of Redis
+// AR-123: Added tests for NEW_DEVICE_RATE metric and tenant_id dimension
 import { describe, it, expect, beforeEach, vi } from "vitest";
+
+// AR-123: Mock Powertools Metrics to verify metric emission
+// Must use vi.hoisted to create mock functions before vi.mock runs
+const { mockAddMetric, mockAddDimension, mockPublishStoredMetrics } =
+  vi.hoisted(() => ({
+    mockAddMetric: vi.fn(),
+    mockAddDimension: vi.fn(),
+    mockPublishStoredMetrics: vi.fn(),
+  }));
+
+vi.mock("@aws-lambda-powertools/metrics", () => ({
+  Metrics: vi.fn().mockImplementation(() => ({
+    addMetric: mockAddMetric,
+    addDimension: mockAddDimension,
+    publishStoredMetrics: mockPublishStoredMetrics,
+  })),
+  MetricUnit: {
+    Count: "Count",
+    Milliseconds: "Milliseconds",
+  },
+}));
 
 // Set environment variables BEFORE any module imports using vi.hoisted
 // This ensures env validation passes during module load
@@ -52,6 +74,10 @@ describe("matching-worker handler", () => {
     dynamoMock.reset();
     sqsMock.reset();
     vi.clearAllMocks();
+    // AR-123: Reset metric mocks
+    mockAddMetric.mockClear();
+    mockAddDimension.mockClear();
+    mockPublishStoredMetrics.mockClear();
   });
 
   const createSQSRecord = (
@@ -374,6 +400,83 @@ describe("matching-worker handler", () => {
 
       // DynamoDB should be called only for regular message
       expect(dynamoMock.calls().length).toBeGreaterThan(0);
+    });
+  });
+
+  // AR-123: NEW_DEVICE_RATE metric tests
+  describe("NEW_DEVICE_RATE metric emission", () => {
+    it("should emit NEW_DEVICE_RATE metric when is_new_device=true", async () => {
+      const payload = createFingerprintPayload({
+        fingerprint: {
+          stable_hash: "brand-new-hash",
+          fuzzy_hash: "brand-new-fuzzy",
+        },
+      });
+
+      // Mock no match found in any tier (new device)
+      dynamoMock.on(GetItemCommand).resolves({});
+      dynamoMock.on(QueryCommand).resolves({ Items: [] });
+      sqsMock.on(SendMessageCommand).resolves({ MessageId: "msg-1" });
+
+      const event = createSQSEvent([createSQSRecord(payload)]);
+      await handler(event, mockContext, () => {});
+
+      // Verify NEW_DEVICE_RATE metric was emitted
+      expect(mockAddMetric).toHaveBeenCalledWith("NEW_DEVICE_RATE", "Count", 1);
+      // Also verify NewDevice metric (legacy)
+      expect(mockAddMetric).toHaveBeenCalledWith("NewDevice", "Count", 1);
+    });
+
+    it("should include tenant_id dimension for all metrics", async () => {
+      const payload = createFingerprintPayload({
+        tenant_id: "test-tenant-xyz",
+        fingerprint: {
+          stable_hash: "brand-new-hash",
+          fuzzy_hash: "brand-new-fuzzy",
+        },
+      });
+
+      // Mock no match found (new device)
+      dynamoMock.on(GetItemCommand).resolves({});
+      dynamoMock.on(QueryCommand).resolves({ Items: [] });
+      sqsMock.on(SendMessageCommand).resolves({ MessageId: "msg-1" });
+
+      const event = createSQSEvent([createSQSRecord(payload)]);
+      await handler(event, mockContext, () => {});
+
+      // Verify tenant_id dimension was added
+      expect(mockAddDimension).toHaveBeenCalledWith(
+        "tenant_id",
+        "test-tenant-xyz",
+      );
+    });
+
+    it("should NOT emit NEW_DEVICE_RATE when is_new_device=false", async () => {
+      const payload = createFingerprintPayload();
+
+      // Mock Tier 1 match (existing device)
+      dynamoMock.on(GetItemCommand).resolves({
+        Item: marshall({
+          tenant_id: "tenant-abc",
+          hash_value: "hash-abc123",
+          device_id: "existing-device-123",
+        }),
+      });
+      sqsMock.on(SendMessageCommand).resolves({ MessageId: "msg-1" });
+
+      const event = createSQSEvent([createSQSRecord(payload)]);
+      await handler(event, mockContext, () => {});
+
+      // Verify NEW_DEVICE_RATE metric was NOT emitted
+      expect(mockAddMetric).not.toHaveBeenCalledWith(
+        "NEW_DEVICE_RATE",
+        "Count",
+        1,
+      );
+      // Verify NewDevice metric was NOT emitted
+      expect(mockAddMetric).not.toHaveBeenCalledWith("NewDevice", "Count", 1);
+      // Should have emitted Tier1Hit instead
+      expect(mockAddMetric).toHaveBeenCalledWith("Tier1Hit", "Count", 1);
     });
   });
 });

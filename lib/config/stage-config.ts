@@ -76,6 +76,8 @@ export interface StageConfig {
       throttleThreshold: number;
       errorThreshold: number;
     };
+    // AR-123: New device rate anomaly detection
+    newDeviceAnomalyStdDev: number;
     ecs: {
       cpuThreshold: number;
       latencyThresholdMs: number;
@@ -159,6 +161,8 @@ const devConfig: StageConfig = {
       throttleThreshold: 2,
       errorThreshold: 1,
     },
+    // AR-123: Anomaly detection for new device rate (fraud indicator)
+    newDeviceAnomalyStdDev: 2,
     ecs: {
       cpuThreshold: 75,
       latencyThresholdMs: 50,
@@ -241,6 +245,8 @@ const prodConfig: StageConfig = {
       throttleThreshold: 10,
       errorThreshold: 5,
     },
+    // AR-123: Anomaly detection for new device rate (fraud indicator)
+    newDeviceAnomalyStdDev: 2,
     ecs: {
       cpuThreshold: 85,
       latencyThresholdMs: 10,

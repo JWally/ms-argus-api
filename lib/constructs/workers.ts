@@ -222,6 +222,14 @@ export class WorkersConstruct extends Construct {
       config.alarms.lambda,
     );
 
+    // AR-123: New device rate anomaly detection alarm (fraud indicator)
+    // Uses CloudWatch anomaly detection to alert on sudden spikes in new device creation
+    this.createNewDeviceAnomalyAlarm(
+      stackName,
+      alarmsTopic,
+      config.alarms.newDeviceAnomalyStdDev,
+    );
+
     // =====================================
     // CANARY DEPLOYMENTS (AR-24)
     // =====================================
@@ -335,5 +343,70 @@ export class WorkersConstruct extends Construct {
     concurrencyAlarm.addAlarmAction(new actions.SnsAction(alarmsTopic));
 
     return { errorAlarm, durationAlarm };
+  }
+
+  /**
+   * AR-123: Create anomaly detection alarm for NEW_DEVICE_RATE metric
+   * Alerts when new device creation rate exceeds normal baseline (potential fraud indicator)
+   */
+  private createNewDeviceAnomalyAlarm(
+    stackName: string,
+    alarmsTopic: sns.ITopic,
+    stdDevThreshold: number,
+  ): void {
+    const metricNamespace = stackName;
+    const metricName = "NEW_DEVICE_RATE";
+
+    // Create anomaly detector for the NEW_DEVICE_RATE metric
+    const anomalyDetector = new cloudwatch.CfnAnomalyDetector(
+      this,
+      "NewDeviceRateAnomalyDetector",
+      {
+        namespace: metricNamespace,
+        metricName: metricName,
+        stat: "Sum",
+      },
+    );
+
+    // Create alarm using anomaly detection band
+    // Alarm triggers when metric exceeds the upper band of the anomaly model
+    const anomalyAlarm = new cloudwatch.CfnAlarm(
+      this,
+      "NewDeviceRateAnomalyAlarm",
+      {
+        alarmName: `${stackName}-new-device-rate-anomaly`,
+        alarmDescription: `NEW_DEVICE_RATE exceeds ${stdDevThreshold} standard deviations from baseline - potential fraud attack`,
+        comparisonOperator: "GreaterThanUpperThreshold",
+        evaluationPeriods: 3,
+        datapointsToAlarm: 2,
+        thresholdMetricId: "ad1",
+        metrics: [
+          {
+            id: "m1",
+            metricStat: {
+              metric: {
+                namespace: metricNamespace,
+                metricName: metricName,
+              },
+              period: 300, // 5 minutes
+              stat: "Sum",
+            },
+            returnData: true,
+          },
+          {
+            id: "ad1",
+            expression: `ANOMALY_DETECTION_BAND(m1, ${stdDevThreshold})`,
+            label: "NewDeviceRateAnomalyBand",
+            returnData: true,
+          },
+        ],
+        treatMissingData: "notBreaching",
+        alarmActions: [alarmsTopic.topicArn],
+        okActions: [alarmsTopic.topicArn],
+      },
+    );
+
+    // Ensure alarm depends on the anomaly detector
+    anomalyAlarm.addDependency(anomalyDetector);
   }
 }
