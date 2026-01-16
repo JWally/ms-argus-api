@@ -28,6 +28,12 @@ import {
   IP_UA_ANCHOR_VALIDITY_SECONDS,
 } from "../../helpers/constants";
 import { fnv1a } from "../../helpers/hash";
+import {
+  buildBucketKeys as buildBucketKeysHelper,
+  buildBucketKeysWithTypes as buildBucketKeysWithTypesHelper,
+  buildSessionAnchorKey as buildSessionAnchorKeyHelper,
+  buildIpUaAnchorKey as buildIpUaAnchorKeyHelper,
+} from "../../helpers/bucket-keys";
 
 /**
  * Configuration for the matching service
@@ -534,22 +540,13 @@ export class MatchingService {
 
   /**
    * AR-82: Build session anchor bucket key for ephemeral matching
-   * Combines IP + User-Agent hash + Screen dimensions
+   * AR-117: Delegates to shared bucket-keys helper
    */
   buildSessionAnchorKey(
     tenantId: string,
     fingerprint: Fingerprint,
   ): string | null {
-    if (
-      !fingerprint.ip_address ||
-      !fingerprint.user_agent ||
-      !fingerprint.screen_dims
-    ) {
-      return null;
-    }
-
-    const uaHash = fnv1a(fingerprint.user_agent);
-    return `${tenantId}#session_anchor#${fingerprint.ip_address}#${uaHash}#${fingerprint.screen_dims}`;
+    return buildSessionAnchorKeyHelper(tenantId, fingerprint);
   }
 
   /**
@@ -617,18 +614,13 @@ export class MatchingService {
 
   /**
    * AR-94: Build IP+UA-only anchor bucket key for ephemeral matching
-   * Does NOT include screen_dims - catches dock/undock screen changes
+   * AR-117: Delegates to shared bucket-keys helper
    */
   buildIpUaAnchorKey(
     tenantId: string,
     fingerprint: Fingerprint,
   ): string | null {
-    if (!fingerprint.ip_address || !fingerprint.user_agent) {
-      return null;
-    }
-
-    const uaHash = fnv1a(fingerprint.user_agent);
-    return `${tenantId}#ip_ua_anchor#${fingerprint.ip_address}#${uaHash}`;
+    return buildIpUaAnchorKeyHelper(tenantId, fingerprint);
   }
 
   /**
@@ -768,85 +760,21 @@ export class MatchingService {
 
   /**
    * Build compound bucket keys for Tier 2 matching
+   * AR-117: Delegates to shared bucket-keys helper
    */
   buildBucketKeys(tenantId: string, fingerprint: Fingerprint): string[] {
-    return this.buildBucketKeysWithTypes(tenantId, fingerprint).map(
-      (info) => info.key,
-    );
+    return buildBucketKeysHelper(tenantId, fingerprint);
   }
 
   /**
    * Build compound bucket keys with their evidence code types
-   * AR-54: Used for evidence tracking in match results
+   * AR-117: Delegates to shared bucket-keys helper
    */
   private buildBucketKeysWithTypes(
     tenantId: string,
     fingerprint: Fingerprint,
   ): { key: string; evidenceCode: EvidenceCode }[] {
-    const buckets: { key: string; evidenceCode: EvidenceCode }[] = [];
-
-    // IP + JA4 (network identity)
-    if (fingerprint.ip_address && fingerprint.ja4) {
-      buckets.push({
-        key: `${tenantId}#ip_ja4#${fingerprint.ip_address}#${fingerprint.ja4}`,
-        evidenceCode: "IP_JA4_BUCKET",
-      });
-    }
-
-    // GPU + Screen + Timezone (hardware/locale identity)
-    if (
-      fingerprint.gpu_renderer &&
-      fingerprint.screen_dims &&
-      fingerprint.timezone
-    ) {
-      buckets.push({
-        key: `${tenantId}#gpu_screen_tz#${fingerprint.gpu_renderer}#${fingerprint.screen_dims}#${fingerprint.timezone}`,
-        evidenceCode: "GPU_SCREEN_TZ_BUCKET",
-      });
-    }
-
-    // Audio + Canvas (rendering identity)
-    if (fingerprint.audio_hash && fingerprint.canvas_hash) {
-      buckets.push({
-        key: `${tenantId}#audio_canvas#${fingerprint.audio_hash}#${fingerprint.canvas_hash}`,
-        evidenceCode: "AUDIO_CANVAS_BUCKET",
-      });
-    }
-
-    // AR-80: Structural tier2 buckets (stable browser engine anchors)
-    // These signals are based on browser internals that cannot be randomized
-    // without breaking website functionality. Useful when canvas/audio are
-    // blocked (e.g., Brave private browsing).
-
-    // Maths + WindowFeatures (FPU + browser engine signals)
-    if (fingerprint.maths_hash && fingerprint.window_features_hash) {
-      buckets.push({
-        key: `${tenantId}#maths_window#${fingerprint.maths_hash}#${fingerprint.window_features_hash}`,
-        evidenceCode: "MATHS_WINDOW_BUCKET",
-      });
-    }
-
-    // HtmlElement + CSS (DOM/CSS capabilities)
-    if (fingerprint.html_element_hash && fingerprint.css_hash) {
-      buckets.push({
-        key: `${tenantId}#html_css#${fingerprint.html_element_hash}#${fingerprint.css_hash}`,
-        evidenceCode: "HTML_CSS_BUCKET",
-      });
-    }
-
-    // WebGL + Extensions + SVG (rendering capabilities)
-    if (
-      fingerprint.webgl_hash &&
-      fingerprint.webgl_extensions_count !== undefined &&
-      fingerprint.svg_hash
-    ) {
-      buckets.push({
-        key: `${tenantId}#webgl_struct#${fingerprint.webgl_hash}#${fingerprint.webgl_extensions_count}#${fingerprint.svg_hash}`,
-        evidenceCode: "WEBGL_STRUCT_BUCKET",
-      });
-    }
-
-    return buckets;
+    return buildBucketKeysWithTypesHelper(tenantId, fingerprint);
   }
 
   /**

@@ -20,7 +20,11 @@ import {
   TIER2_STATS_SK,
   SESSION_ANCHOR_CLEANUP_TTL_SECONDS,
 } from "../../helpers/constants";
-import { fnv1a } from "../../helpers/hash";
+import {
+  buildTier2BucketKeys as buildTier2BucketKeysHelper,
+  buildSessionAnchorKey as buildSessionAnchorKeyHelper,
+  buildIpUaAnchorKey as buildIpUaAnchorKeyHelper,
+} from "../../helpers/bucket-keys";
 
 /**
  * Thresholds for flag computation
@@ -631,88 +635,21 @@ export class ProfileService {
 
   /**
    * Build Tier 2 bucket keys for compound matching
+   * AR-117: Delegates to shared bucket-keys helper
    */
   buildTier2BucketKeys(tenantId: string, fingerprint: Fingerprint): string[] {
-    const keys: string[] = [];
-
-    // IP + JA4 bucket
-    if (fingerprint.ip_address && fingerprint.ja4) {
-      keys.push(
-        `${tenantId}#ip_ja4#${fingerprint.ip_address}#${fingerprint.ja4}`,
-      );
-    }
-
-    // GPU + Screen + Timezone bucket
-    if (
-      fingerprint.gpu_renderer &&
-      fingerprint.screen_dims &&
-      fingerprint.timezone
-    ) {
-      keys.push(
-        `${tenantId}#gpu_screen_tz#${fingerprint.gpu_renderer}#${fingerprint.screen_dims}#${fingerprint.timezone}`,
-      );
-    }
-
-    // Audio + Canvas bucket
-    if (fingerprint.audio_hash && fingerprint.canvas_hash) {
-      keys.push(
-        `${tenantId}#audio_canvas#${fingerprint.audio_hash}#${fingerprint.canvas_hash}`,
-      );
-    }
-
-    // AR-80: Structural tier2 buckets (stable browser engine anchors)
-    // These signals are based on browser internals that cannot be randomized
-    // without breaking website functionality.
-
-    // Maths + WindowFeatures (FPU + browser engine signals)
-    if (fingerprint.maths_hash && fingerprint.window_features_hash) {
-      keys.push(
-        `${tenantId}#maths_window#${fingerprint.maths_hash}#${fingerprint.window_features_hash}`,
-      );
-    }
-
-    // HtmlElement + CSS (DOM/CSS capabilities)
-    if (fingerprint.html_element_hash && fingerprint.css_hash) {
-      keys.push(
-        `${tenantId}#html_css#${fingerprint.html_element_hash}#${fingerprint.css_hash}`,
-      );
-    }
-
-    // WebGL + Extensions + SVG (rendering capabilities)
-    if (
-      fingerprint.webgl_hash &&
-      fingerprint.webgl_extensions_count !== undefined &&
-      fingerprint.svg_hash
-    ) {
-      keys.push(
-        `${tenantId}#webgl_struct#${fingerprint.webgl_hash}#${fingerprint.webgl_extensions_count}#${fingerprint.svg_hash}`,
-      );
-    }
-
-    return keys;
+    return buildTier2BucketKeysHelper(tenantId, fingerprint);
   }
 
   /**
    * AR-82: Build session anchor bucket key for ephemeral short-window matching
-   * Combines IP + User-Agent hash + Screen dimensions
-   * Returns null if required signals are missing
+   * AR-117: Delegates to shared bucket-keys helper
    */
   buildSessionAnchorKey(
     tenantId: string,
     fingerprint: Fingerprint,
   ): string | null {
-    if (
-      !fingerprint.ip_address ||
-      !fingerprint.user_agent ||
-      !fingerprint.screen_dims
-    ) {
-      return null;
-    }
-
-    // Hash user agent to keep key size reasonable (8 char hex)
-    const uaHash = fnv1a(fingerprint.user_agent);
-
-    return `${tenantId}#session_anchor#${fingerprint.ip_address}#${uaHash}#${fingerprint.screen_dims}`;
+    return buildSessionAnchorKeyHelper(tenantId, fingerprint);
   }
 
   /**
@@ -750,19 +687,13 @@ export class ProfileService {
 
   /**
    * AR-94: Build IP+UA-only anchor bucket key for ephemeral matching
-   * Does NOT include screen_dims - catches dock/undock screen changes
-   * Returns null if required signals are missing
+   * AR-117: Delegates to shared bucket-keys helper
    */
   buildIpUaAnchorKey(
     tenantId: string,
     fingerprint: Fingerprint,
   ): string | null {
-    if (!fingerprint.ip_address || !fingerprint.user_agent) {
-      return null;
-    }
-
-    const uaHash = fnv1a(fingerprint.user_agent);
-    return `${tenantId}#ip_ua_anchor#${fingerprint.ip_address}#${uaHash}`;
+    return buildIpUaAnchorKeyHelper(tenantId, fingerprint);
   }
 
   /**
