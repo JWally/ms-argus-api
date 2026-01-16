@@ -7,7 +7,7 @@ Work through JIRA tickets autonomously. For each ticket:
 1. **Get ticket** → Query JIRA for To Do tickets (bugs first, then by priority P0-P3)
 2. **Branch** → `git checkout -b AR-XX`
 3. **Implement** → Make changes
-4. **Test** → `npm test` (434+ tests must pass)
+4. **Test** → `npm test` (517+ tests must pass)
 5. **Deploy** → `npx cdk deploy ms-argus-api-dev-jw --require-approval never`
 6. **Integration test** → `cd ~/Dev/ms-argus-automation && npm test`
 7. **PR** → `gh pr create` then `gh pr merge --squash --delete-branch`
@@ -79,7 +79,7 @@ curl -s -X POST -u "jira@wolcott.io:$JIRA_TOKEN" \
 ```bash
 npm run format       # Prettier
 npm run lint:test    # ESLint (warnings OK, errors fail)
-npm test             # Vitest unit tests (434+)
+npm test             # Vitest unit tests (517+)
 ```
 
 ### Deployment
@@ -169,7 +169,7 @@ AR-52: Replaced Go/ECS ingestion with HTTP API + Lambda. AR-52: Replaced Redis c
 
 Before merging ANY PR:
 
-- [ ] Unit tests pass (`npm test` - all 434+)
+- [ ] Unit tests pass (`npm test` - all 517+)
 - [ ] Lint passes (warnings OK)
 - [ ] Deployed to dev (`cdk deploy ms-argus-api-dev-jw`)
 - [ ] Integration tests pass (`cd ms-argus-automation && npm test`)

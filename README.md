@@ -109,7 +109,7 @@ Processes fingerprints from SQS and performs device matching:
 | T2   | Audio+Canvas   | 0.65       | Audio context + canvas hash          |
 | T2   | WebGL Struct   | 0.60       | WebGL parameters + extensions        |
 | T2   | IP+JA4         | 0.60       | Network + TLS combination            |
-| New  | Generate UUID  | 1.0        | No match found, create new device    |
+| New  | Generate ULID  | 1.0        | No match found, create new device    |
 
 **Output**: Writes result to SessionCache and queues profile update.
 
@@ -246,7 +246,7 @@ npm install
 ### Run Tests
 
 ```bash
-# Unit tests (434+ tests)
+# Unit tests (517+ tests)
 npm test
 
 # Unit tests with coverage
@@ -317,7 +317,8 @@ The CDK stack (`lib/stacks/app-stack.ts`) provisions:
 
 - **Logging**: AWS Lambda Powertools with structured JSON
 - **Metrics**: CloudWatch metrics via Powertools (auto-published via Middy middleware)
-- **Alarms**: SNS topic for CloudWatch alarms
+- **Tracing**: AWS X-Ray active tracing on all Lambda functions
+- **Alarms**: SNS topic for CloudWatch alarms + anomaly detection for new device rate
 
 ## Git Hooks
 
