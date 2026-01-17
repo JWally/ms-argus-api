@@ -11,6 +11,7 @@ import * as apigatewayv2 from "aws-cdk-lib/aws-apigatewayv2";
 import * as integrations from "aws-cdk-lib/aws-apigatewayv2-integrations";
 import * as sqs from "aws-cdk-lib/aws-sqs";
 import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
+import * as s3 from "aws-cdk-lib/aws-s3";
 import * as logs from "aws-cdk-lib/aws-logs";
 import * as cloudwatch from "aws-cdk-lib/aws-cloudwatch";
 import * as sns from "aws-cdk-lib/aws-sns";
@@ -26,6 +27,8 @@ interface HttpApiConstructProps {
   alarmsTopic: sns.ITopic;
   /** AR-131: API keys secret for tenant authentication */
   apiKeysSecret: secretsmanager.ISecret;
+  /** AR-139: S3 bucket for payload archiving */
+  payloadArchiveBucket: s3.IBucket;
 }
 
 /**
@@ -58,6 +61,7 @@ export class HttpApiConstruct extends Construct {
       sessionCacheTable,
       alarmsTopic,
       apiKeysSecret,
+      payloadArchiveBucket,
     } = props;
 
     // CloudWatch log group for Lambda
@@ -85,6 +89,9 @@ export class HttpApiConstruct extends Construct {
           SQS_QUEUE_URL: matchingQueue.queueUrl,
           STAGE: stage, // AR-124: For tenant isolation guard
           API_KEYS_SECRET_ARN: apiKeysSecret.secretArn, // AR-131: API keys from Secrets Manager
+          // AR-139: Payload archiving configuration
+          PAYLOAD_ARCHIVE_BUCKET: payloadArchiveBucket.bucketName,
+          PAYLOAD_ARCHIVE_SAMPLE_RATE: stage.startsWith("dev") ? "1.0" : "0",
           POWERTOOLS_SERVICE_NAME: "argus-ingestion",
           POWERTOOLS_METRICS_NAMESPACE: `argus-${stage}`,
           NODE_OPTIONS: "--enable-source-maps",
@@ -107,6 +114,9 @@ export class HttpApiConstruct extends Construct {
 
     // AR-131: Grant Lambda permission to read API keys secret
     apiKeysSecret.grantRead(this.ingestionFunction);
+
+    // AR-139: Grant Lambda permission to write to payload archive bucket
+    payloadArchiveBucket.grantWrite(this.ingestionFunction);
 
     // AR-67: Session retrieval Lambda
     const sessionGetLogGroup = new logs.LogGroup(this, "SessionGetLogGroup", {

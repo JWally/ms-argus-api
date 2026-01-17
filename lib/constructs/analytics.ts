@@ -27,6 +27,7 @@ interface AnalyticsConstructProps {
  */
 export class AnalyticsConstruct extends Construct {
   public readonly observationsBucket: s3.Bucket;
+  public readonly payloadArchiveBucket: s3.Bucket; // AR-139
   public readonly deliveryStream: kinesisfirehose.CfnDeliveryStream;
   public readonly deliveryStreamArn: string;
   public readonly glueDatabase: glue.CfnDatabase;
@@ -65,6 +66,34 @@ export class AnalyticsConstruct extends Construct {
         },
       ],
       versioned: true,
+      removalPolicy:
+        stage === "prod" ? RemovalPolicy.RETAIN : RemovalPolicy.DESTROY,
+      autoDeleteObjects: stage !== "prod",
+    });
+
+    // =====================================
+    // AR-139: S3 BUCKET FOR PAYLOAD ARCHIVES
+    // Raw fingerprint payloads for debugging and ML training
+    // =====================================
+    this.payloadArchiveBucket = new s3.Bucket(this, "PayloadArchiveBucket", {
+      bucketName: `${stackName}-payload-archive-${accountId}-${region}`,
+      encryption: s3.BucketEncryption.S3_MANAGED,
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      lifecycleRules: [
+        {
+          id: "TransitionToIntelligentTiering",
+          transitions: [
+            {
+              storageClass: s3.StorageClass.INTELLIGENT_TIERING,
+              transitionAfter: Duration.days(30),
+            },
+          ],
+        },
+        {
+          id: "ExpireAfter90Days",
+          expiration: Duration.days(90),
+        },
+      ],
       removalPolicy:
         stage === "prod" ? RemovalPolicy.RETAIN : RemovalPolicy.DESTROY,
       autoDeleteObjects: stage !== "prod",

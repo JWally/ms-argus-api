@@ -11,6 +11,8 @@ import { Metrics, MetricUnit } from "@aws-lambda-powertools/metrics";
 import { logMetrics } from "@aws-lambda-powertools/metrics/middleware";
 import { injectLambdaContext } from "@aws-lambda-powertools/logger/middleware";
 import { SQSClient, SendMessageCommand } from "@aws-sdk/client-sqs";
+import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
+import { gzipSync } from "zlib";
 import middy from "@middy/core";
 import httpHeaderNormalizer from "@middy/http-header-normalizer";
 import warmup from "@middy/warmup";
@@ -52,6 +54,13 @@ const _apiKeysInitPromise = API_KEYS_SECRET_ARN ? initApiKeysSecret() : null;
 // AR-124: Stage for tenant isolation guard
 const STAGE = process.env.STAGE ?? "";
 
+// AR-139: Payload archiving configuration
+const PAYLOAD_ARCHIVE_BUCKET = process.env.PAYLOAD_ARCHIVE_BUCKET;
+const PAYLOAD_ARCHIVE_SAMPLE_RATE = parseFloat(
+  process.env.PAYLOAD_ARCHIVE_SAMPLE_RATE ?? "0",
+);
+const s3 = PAYLOAD_ARCHIVE_BUCKET ? new S3Client({}) : null;
+
 const logger = new Logger({
   serviceName: process.env.POWERTOOLS_SERVICE_NAME ?? "argus-ingestion",
 });
@@ -69,6 +78,58 @@ const CORS_HEADERS = {
   "Access-Control-Allow-Headers":
     "Content-Type, Content-Encoding, X-Tenant-ID, X-API-Key",
   "Access-Control-Max-Age": "86400",
+};
+
+// ==================== AR-139: PAYLOAD ARCHIVING ====================
+
+/**
+ * Archive raw payload to S3 with Hive-style partitioning.
+ * Fire-and-forget: errors are logged but do not fail the request.
+ * Key format: year=YYYY/month=MM/day=DD/hour=HH/{sessionId}.json.gz
+ */
+export const archivePayload = async (
+  sessionId: string,
+  payload: unknown,
+): Promise<void> => {
+  // Check if archiving is enabled and sample rate check
+  if (!s3 || !PAYLOAD_ARCHIVE_BUCKET || PAYLOAD_ARCHIVE_SAMPLE_RATE <= 0) {
+    return;
+  }
+
+  // Sample rate check (0.0 = never, 1.0 = always)
+  if (Math.random() > PAYLOAD_ARCHIVE_SAMPLE_RATE) {
+    return;
+  }
+
+  try {
+    const now = new Date();
+    const year = now.getUTCFullYear();
+    const month = String(now.getUTCMonth() + 1).padStart(2, "0");
+    const day = String(now.getUTCDate()).padStart(2, "0");
+    const hour = String(now.getUTCHours()).padStart(2, "0");
+
+    const key = `year=${year}/month=${month}/day=${day}/hour=${hour}/${sessionId}.json.gz`;
+    const body = gzipSync(Buffer.from(JSON.stringify(payload)));
+
+    await s3.send(
+      new PutObjectCommand({
+        Bucket: PAYLOAD_ARCHIVE_BUCKET,
+        Key: key,
+        Body: body,
+        ContentType: "application/json",
+        ContentEncoding: "gzip",
+      }),
+    );
+
+    metrics.addMetric("PayloadArchived", MetricUnit.Count, 1);
+  } catch (err) {
+    // Log error but don't fail the request (fire-and-forget)
+    logger.warn("Payload archive failed", {
+      error: err,
+      session_id: sessionId,
+    });
+    metrics.addMetric("PayloadArchiveFailed", MetricUnit.Count, 1);
+  }
 };
 
 // ==================== CUSTOM MIDDLEWARE ====================
@@ -351,6 +412,12 @@ const baseHandler = async (
     metrics.addMetric("SqsSendFailed", MetricUnit.Count, 1);
     throw createError(503, "Service temporarily unavailable");
   }
+
+  // AR-139: Archive raw payload (async fire-and-forget, does not block response)
+  // Archive the original parsed payload for debugging/ML training
+  archivePayload(payload.session_id, payload).catch(() => {
+    // Error already logged in archivePayload
+  });
 
   // Success metrics
   metrics.addMetric("RequestQueued", MetricUnit.Count, 1);
