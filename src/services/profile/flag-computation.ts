@@ -32,6 +32,25 @@ export const RISK_WEIGHTS = {
   [DeviceFlags.VERIFIED]: -0.2,
   /** Returning users get slight trust bonus */
   [DeviceFlags.RETURNING_USER]: -0.1,
+  // Anomaly detection weights (AR-141)
+  /** Navigator API tampering */
+  [DeviceFlags.NAVIGATOR_LIES]: 0.15,
+  /** High proxy likelihood */
+  [DeviceFlags.LIKELY_PROXY]: 0.1,
+  /** VPN usage detected */
+  [DeviceFlags.LIKELY_VPN]: 0.05,
+  /** Navigator/Worker scope mismatch */
+  [DeviceFlags.WORKER_MISMATCH]: 0.2,
+  /** Screen/CSS dimension mismatch */
+  [DeviceFlags.SCREEN_CSS_MISMATCH]: 0.1,
+  /** Faster-than-light network violation */
+  [DeviceFlags.FTL_VIOLATION]: 0.35,
+  /** IP-based timezone mismatch */
+  [DeviceFlags.IP_TIMEZONE_MISMATCH]: 0.1,
+  /** Server vs client timezone mismatch */
+  [DeviceFlags.SERVER_CLIENT_TZ_MISMATCH]: 0.12,
+  /** Math engine doesn't match claimed browser */
+  [DeviceFlags.MATH_ENGINE_MISMATCH]: 0.25,
 } as const;
 
 /**
