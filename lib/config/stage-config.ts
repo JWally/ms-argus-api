@@ -186,7 +186,7 @@ const devConfig: StageConfig = {
 
   waf: {
     enabled: false, // AR-51: WAF disabled in dev to reduce costs (~$30/month savings)
-    rateLimitPerFiveMinutes: 2000, // Higher limit in dev for testing
+    rateLimitPerFiveMinutes: 100000, // AR-137: Effectively disabled in dev for testing
     bodySizeLimitBytes: 102400, // 100KB
   },
 
