@@ -39,9 +39,13 @@ export class AnalyticsConstruct extends Construct {
 
     // =====================================
     // S3 BUCKET FOR OBSERVATIONS
+    // AR-138: Include account/region to avoid global S3 name collisions
     // =====================================
+    const accountId = Stack.of(this).account;
+    const region = Stack.of(this).region;
+
     this.observationsBucket = new s3.Bucket(this, "ObservationsBucket", {
-      bucketName: `${stackName}-observations`,
+      bucketName: `${stackName}-observations-${accountId}-${region}`,
       encryption: s3.BucketEncryption.S3_MANAGED,
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
       lifecycleRules: [
@@ -69,8 +73,6 @@ export class AnalyticsConstruct extends Construct {
     // =====================================
     // IAM ROLE FOR FIREHOSE
     // =====================================
-    const accountId = Stack.of(this).account;
-    const region = Stack.of(this).region;
     const glueDbName = `${stackName.replace(/-/g, "_")}_analytics`;
 
     // Create role with inline policies to ensure all permissions are ready
