@@ -3,6 +3,7 @@
 
 import { Fingerprint } from "../../../types";
 import { AnomalySignal, AnomalyResult } from "./types";
+import { detectQuickWinAnomalies } from "./quick-wins";
 
 /**
  * Detector function signature
@@ -15,7 +16,8 @@ type DetectorFn = (fingerprint: Fingerprint, raw?: unknown) => AnomalySignal[];
  * Each detector is isolated with try/catch for error resilience
  */
 const detectors: DetectorFn[] = [
-  // Phase 1: detectQuickWinAnomalies will be added here
+  // Phase 1: Quick wins (AR-142)
+  detectQuickWinAnomalies,
   // Phase 2: detectCrossFieldAnomalies will be added here
   // Phase 3: detectBrowserEngineAnomalies will be added here
   // Phase 4: detectNetworkAnomalies will be added here
