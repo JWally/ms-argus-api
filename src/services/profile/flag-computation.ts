@@ -1,6 +1,7 @@
 // src/services/profile/flag-computation.ts
 // AR-120: Extracted flag computation logic from profile-service.ts
 import { Fingerprint, DeviceProfile, DeviceFlags } from "./types";
+import { detectAllAnomalies } from "./anomaly";
 
 /**
  * Thresholds for flag computation
@@ -116,6 +117,10 @@ export function computeFlags(
   // Bot detection flags
   const botFlags = detectBotSignals(fingerprint);
   flags.push(...botFlags);
+
+  // Anomaly detection flags (AR-142)
+  const anomalyResult = detectAllAnomalies(fingerprint);
+  flags.push(...anomalyResult.suggestedFlags);
 
   // FINGERPRINT_MISMATCH flag when significant drift is detected
   if (existingProfile && hasDrift) {
