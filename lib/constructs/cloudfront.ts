@@ -91,13 +91,13 @@ export class CloudFrontWafConstruct extends Construct {
               metricName: `${stackName}-CommonRuleSet`,
             },
           },
-          // Rate limiting per IP
+          // Rate limiting per IP (AR-137: wired to config)
           {
             name: "RateLimitIP",
             priority: 2,
             statement: {
               rateBasedStatement: {
-                limit: 600, // requests per 5 minutes per IP
+                limit: stageConfig.waf.rateLimitPerFiveMinutes,
                 aggregateKeyType: "IP",
               },
             },
@@ -116,7 +116,7 @@ export class CloudFrontWafConstruct extends Construct {
               metricName: `${stackName}-IpRateLimit`,
             },
           },
-          // Body size limit (100KB)
+          // Body size limit (AR-137: wired to config)
           {
             name: "LimitBodySize100KB",
             priority: 3,
@@ -125,7 +125,7 @@ export class CloudFrontWafConstruct extends Construct {
                 fieldToMatch: { body: { oversizeHandling: "CONTINUE" } },
                 textTransformations: [{ priority: 0, type: "NONE" }],
                 comparisonOperator: "GT",
-                size: 102_400,
+                size: stageConfig.waf.bodySizeLimitBytes,
               },
             },
             action: { block: {} },
