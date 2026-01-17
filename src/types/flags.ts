@@ -15,6 +15,16 @@ export const DeviceFlags = {
   HEADLESS_BROWSER: "headless_browser",
   FINGERPRINT_MISMATCH: "fingerprint_mismatch",
   RAPID_REQUESTS: "rapid_requests",
+  // Anomaly detection flags (AR-141)
+  NAVIGATOR_LIES: "navigator_lies",
+  LIKELY_PROXY: "likely_proxy",
+  LIKELY_VPN: "likely_vpn",
+  WORKER_MISMATCH: "worker_mismatch",
+  SCREEN_CSS_MISMATCH: "screen_css_mismatch",
+  FTL_VIOLATION: "ftl_violation",
+  IP_TIMEZONE_MISMATCH: "ip_timezone_mismatch",
+  SERVER_CLIENT_TZ_MISMATCH: "server_client_tz_mismatch",
+  MATH_ENGINE_MISMATCH: "math_engine_mismatch",
 } as const;
 
 export type DeviceFlag = (typeof DeviceFlags)[keyof typeof DeviceFlags];
