@@ -339,7 +339,82 @@ describe("ingestion handler", () => {
       // Should reject oversized decompressed content (zip bomb defense)
       expect(result.statusCode).toBe(400);
       const parsedBody = JSON.parse(result.body ?? "");
-      expect(parsedBody.error).toContain("too large");
+      // AR-136: Now includes size limit in message
+      expect(parsedBody.error).toContain("exceeds limit");
+    });
+
+    // AR-136: ZIP bomb vulnerability tests - streaming decompression with early abort
+    it("should include size limit in error message when decompression exceeds limit (AR-136 AC2)", async () => {
+      const hugePayload = {
+        session_id: "zipbomb-error-message-test",
+        data: "B".repeat(600 * 1024), // Exceeds 512KB limit
+      };
+
+      const gzipped = gzipSync(Buffer.from(JSON.stringify(hugePayload)));
+      const body = gzipped.toString("base64");
+
+      const event = createApiEvent(body, {
+        contentType: "application/octet-stream",
+        contentEncoding: "gzip",
+        isBase64Encoded: true,
+      });
+
+      const result = asResult(await handler(event, mockContext));
+
+      expect(result.statusCode).toBe(400);
+      const parsedBody = JSON.parse(result.body ?? "");
+      // AC2: Error message should include size limit
+      expect(parsedBody.error).toMatch(/512|524288/); // 512KB or 524288 bytes
+    });
+
+    it("should abort decompression early without allocating full buffer (AR-136 AC1)", async () => {
+      // This test verifies behavior - actual memory behavior tested via integration
+      // Create payload that would expand to several MB
+      const largeExpandingPayload = {
+        session_id: "early-abort-test",
+        // Repetitive data compresses well, expands to >512KB
+        data: "ABCDEFGHIJ".repeat(100000), // 1MB of text
+      };
+
+      const gzipped = gzipSync(
+        Buffer.from(JSON.stringify(largeExpandingPayload)),
+      );
+      const body = gzipped.toString("base64");
+
+      const event = createApiEvent(body, {
+        contentType: "application/octet-stream",
+        contentEncoding: "gzip",
+        isBase64Encoded: true,
+      });
+
+      const result = asResult(await handler(event, mockContext));
+
+      // Should reject with clear error - streaming should abort early
+      expect(result.statusCode).toBe(400);
+      const parsedBody = JSON.parse(result.body ?? "");
+      expect(parsedBody.error).toContain("exceeds");
+    });
+
+    it("should successfully decompress payloads just under the limit (AR-136 AC4)", async () => {
+      // 500KB is just under 512KB limit - should succeed
+      const nearLimitPayload = {
+        session_id: "near-limit-success-test",
+        data: "X".repeat(450 * 1024), // 450KB, safely under 512KB
+      };
+
+      const gzipped = gzipSync(Buffer.from(JSON.stringify(nearLimitPayload)));
+      const body = gzipped.toString("base64");
+
+      const event = createApiEvent(body, {
+        contentType: "application/octet-stream",
+        contentEncoding: "gzip",
+        isBase64Encoded: true,
+      });
+
+      const result = asResult(await handler(event, mockContext));
+
+      // Should succeed - payload is under limit
+      expect(result.statusCode).toBe(204);
     });
 
     it("should require Content-Encoding: gzip for binary payloads", async () => {

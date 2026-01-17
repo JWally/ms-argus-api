@@ -15,7 +15,9 @@ import middy from "@middy/core";
 import httpHeaderNormalizer from "@middy/http-header-normalizer";
 import warmup from "@middy/warmup";
 import { onWarmup } from "../helpers/middy-helpers";
-import { gunzipSync } from "zlib";
+import { createGunzip } from "zlib";
+import { pipeline } from "stream/promises";
+import { Readable } from "stream";
 import {
   getApiKeysSecret,
   initApiKeysSecret,
@@ -72,12 +74,53 @@ const CORS_HEADERS = {
 // ==================== CUSTOM MIDDLEWARE ====================
 
 /**
+ * Streaming gunzip with early abort when size threshold exceeded.
+ * AR-136: Prevents ZIP bomb attacks by aborting before allocating full buffer.
+ */
+const streamingGunzip = async (
+  gzipBuffer: Buffer,
+  maxBytes: number,
+): Promise<Buffer> => {
+  const chunks: Buffer[] = [];
+  let totalBytes = 0;
+
+  const gunzip = createGunzip();
+
+  // Track bytes and abort early if threshold exceeded
+  gunzip.on("data", (chunk: Buffer) => {
+    totalBytes += chunk.length;
+    if (totalBytes > maxBytes) {
+      gunzip.destroy(
+        new Error(
+          `Decompressed size exceeds limit (${maxBytes} bytes) - aborting`,
+        ),
+      );
+      return;
+    }
+    chunks.push(chunk);
+  });
+
+  try {
+    await pipeline(Readable.from(gzipBuffer), gunzip);
+    return Buffer.concat(chunks);
+  } catch (err) {
+    // Re-throw our size limit error with clear message
+    if (err instanceof Error && err.message.includes("exceeds limit")) {
+      throw err;
+    }
+    // Other decompression errors
+    throw new Error("Failed to decompress gzip payload");
+  }
+};
+
+/**
  * Handles binary gzip decompression (AR-90)
+ * AR-136: Uses streaming decompression to abort early on ZIP bombs
  * Validates isBase64Encoded flag and enforces byte limits
  */
 const binaryGzipBodyParser =
   (): middy.MiddlewareObj<APIGatewayProxyEventV2> => ({
-    before: (request) => {
+    before: async (request) => {
       const { event } = request;
       const contentType = (event.headers["content-type"] ?? "").toLowerCase();
       const contentEncoding = (
@@ -128,18 +171,23 @@ const binaryGzipBodyParser =
         throw createError(400, "Invalid gzip data");
       }
 
-      // Decompress with size limit (zip bomb defense)
+      // AR-136: Streaming decompress with early abort (zip bomb defense)
       try {
-        const decompressed = gunzipSync(gzipBuffer);
-        if (decompressed.length > MAX_DECOMPRESSED_BYTES) {
-          throw createError(400, "Decompressed payload too large");
-        }
+        const decompressed = await streamingGunzip(
+          gzipBuffer,
+          MAX_DECOMPRESSED_BYTES,
+        );
         event.body = decompressed.toString("utf-8");
         metrics.addMetric("BinaryGzipPayloadReceived", MetricUnit.Count, 1);
       } catch (err) {
         if (err instanceof HttpError) throw err;
         metrics.addMetric("GzipDecompressionFailed", MetricUnit.Count, 1);
-        throw createError(400, "Failed to decompress gzip payload");
+        // Preserve error message for size limit errors (AC2)
+        const message =
+          err instanceof Error && err.message.includes("exceeds limit")
+            ? err.message
+            : "Failed to decompress gzip payload";
+        throw createError(400, message);
       }
     },
   });
