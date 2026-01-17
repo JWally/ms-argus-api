@@ -1184,5 +1184,25 @@ describe("ProfileService", () => {
       const score = service.computeRiskScore(["verified"], null, true);
       expect(score).toBe(0.3); // 0.5 - 0.2 = 0.3, no blending
     });
+
+    it("should silently ignore unknown flags", () => {
+      // Unknown flags should not throw errors or affect the score
+      const score = service.computeRiskScore(
+        ["unknown_flag", "another_unknown"],
+        null,
+        true,
+      );
+      expect(score).toBe(0.5); // Base score only, unknown flags ignored
+    });
+
+    it("should process known flags and ignore unknown flags in same array", () => {
+      const score = service.computeRiskScore(
+        ["bot_detected", "unknown_flag", "verified"],
+        null,
+        true,
+      );
+      // 0.5 base + 0.25 bot - 0.2 verified = 0.55 (unknown ignored)
+      expect(score).toBe(0.55);
+    });
   });
 });

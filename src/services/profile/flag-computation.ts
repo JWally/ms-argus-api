@@ -13,6 +13,7 @@ export const FLAG_THRESHOLDS = {
 /**
  * Risk score weights for different flags
  * Positive values increase risk, negative values decrease risk
+ * Flag-based weights use the exact flag values as keys for lookup table pattern
  */
 export const RISK_WEIGHTS = {
   /** Base risk for new devices (neutral) */
@@ -20,17 +21,17 @@ export const RISK_WEIGHTS = {
   /** Base risk for returning devices without flags */
   BASE_RETURNING: 0.3,
   /** Bot detection is a strong negative signal */
-  BOT_DETECTED: 0.25,
+  [DeviceFlags.BOT_DETECTED]: 0.25,
   /** Headless browser is a strong negative signal */
-  HEADLESS_BROWSER: 0.15,
+  [DeviceFlags.HEADLESS_BROWSER]: 0.15,
   /** Fingerprint mismatch suggests device spoofing */
-  FINGERPRINT_MISMATCH: 0.15,
+  [DeviceFlags.FINGERPRINT_MISMATCH]: 0.15,
   /** Rapid requests suggests automated behavior */
-  RAPID_REQUESTS: 0.1,
+  [DeviceFlags.RAPID_REQUESTS]: 0.1,
   /** Verified devices get trust bonus */
-  VERIFIED: -0.2,
+  [DeviceFlags.VERIFIED]: -0.2,
   /** Returning users get slight trust bonus */
-  RETURNING_USER: -0.1,
+  [DeviceFlags.RETURNING_USER]: -0.1,
 } as const;
 
 /**
@@ -145,27 +146,11 @@ export function computeRiskScore(
     ? RISK_WEIGHTS.BASE_NEW_DEVICE
     : RISK_WEIGHTS.BASE_RETURNING;
 
-  // Apply flag-based adjustments
+  // Apply flag-based adjustments using lookup table
   for (const flag of flags) {
-    switch (flag) {
-      case DeviceFlags.BOT_DETECTED:
-        riskScore += RISK_WEIGHTS.BOT_DETECTED;
-        break;
-      case DeviceFlags.HEADLESS_BROWSER:
-        riskScore += RISK_WEIGHTS.HEADLESS_BROWSER;
-        break;
-      case DeviceFlags.FINGERPRINT_MISMATCH:
-        riskScore += RISK_WEIGHTS.FINGERPRINT_MISMATCH;
-        break;
-      case DeviceFlags.RAPID_REQUESTS:
-        riskScore += RISK_WEIGHTS.RAPID_REQUESTS;
-        break;
-      case DeviceFlags.VERIFIED:
-        riskScore += RISK_WEIGHTS.VERIFIED;
-        break;
-      case DeviceFlags.RETURNING_USER:
-        riskScore += RISK_WEIGHTS.RETURNING_USER;
-        break;
+    const weight = RISK_WEIGHTS[flag as keyof typeof RISK_WEIGHTS];
+    if (weight !== undefined) {
+      riskScore += weight;
     }
   }
 
