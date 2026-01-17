@@ -123,6 +123,7 @@ export class ArgusApiStack extends cdk.Stack {
     // AR-67: Added session retrieval endpoint
     // AR-71: Reverted to async (SQS) for scalability
     // AR-131: API keys from Secrets Manager
+    // AR-139: Payload archiving
     const httpApi = new HttpApiConstruct(this, "HttpApi", {
       stackName,
       stage,
@@ -130,6 +131,7 @@ export class ArgusApiStack extends cdk.Stack {
       sessionCacheTable: dynamodb.sessionCacheTable,
       alarmsTopic,
       apiKeysSecret: secrets.apiKeysSecret,
+      payloadArchiveBucket: analytics.payloadArchiveBucket,
     });
 
     // Worker Lambdas (no VPC - access DynamoDB/SQS via IAM)
@@ -270,6 +272,12 @@ export class ArgusApiStack extends cdk.Stack {
     new cdk.CfnOutput(this, "ObservationsDeliveryStreamName", {
       value: analytics.deliveryStream.deliveryStreamName!,
       description: "Firehose delivery stream for observations",
+    });
+
+    // AR-139: Payload archive bucket output
+    new cdk.CfnOutput(this, "PayloadArchiveBucketName", {
+      value: analytics.payloadArchiveBucket.bucketName,
+      description: "S3 bucket for payload archives",
     });
   }
 }
