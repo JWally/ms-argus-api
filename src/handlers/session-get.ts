@@ -205,6 +205,7 @@ const baseHandler = async (
   metrics.addMetric("SessionGetDuration", MetricUnit.Milliseconds, duration);
 
   // Return relevant fields (exclude internal fields like idempotency_key)
+  // AR-148: Include anomalies if present (server-side anomaly detection results)
   return {
     statusCode: 200,
     headers: { "Content-Type": "application/json" },
@@ -217,6 +218,7 @@ const baseHandler = async (
       risk_score: session.risk_score,
       flags: session.flags,
       evidence_codes: session.evidence_codes,
+      anomalies: session.anomalies, // AR-148: Server-side anomaly detection results
     }),
   };
 };

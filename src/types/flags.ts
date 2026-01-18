@@ -21,10 +21,8 @@ export const DeviceFlags = {
   LIKELY_VPN: "likely_vpn",
   WORKER_MISMATCH: "worker_mismatch",
   SCREEN_CSS_MISMATCH: "screen_css_mismatch",
-  FTL_VIOLATION: "ftl_violation",
   IP_TIMEZONE_MISMATCH: "ip_timezone_mismatch",
   SERVER_CLIENT_TZ_MISMATCH: "server_client_tz_mismatch",
-  MATH_ENGINE_MISMATCH: "math_engine_mismatch",
 } as const;
 
 export type DeviceFlag = (typeof DeviceFlags)[keyof typeof DeviceFlags];

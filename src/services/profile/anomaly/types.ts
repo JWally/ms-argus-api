@@ -16,7 +16,6 @@ export const AnomalyCodes = {
   WORKER_MISMATCH: "WORKER_MISMATCH",
   SCREEN_CSS_MISMATCH: "SCREEN_CSS_MISMATCH",
   // Network anomalies
-  FTL_VIOLATION: "FTL_VIOLATION",
   IP_TIMEZONE_MISMATCH: "IP_TIMEZONE_MISMATCH",
   SERVER_CLIENT_TZ_MISMATCH: "SERVER_CLIENT_TZ_MISMATCH",
   JA4_UA_MISMATCH: "JA4_UA_MISMATCH",
@@ -24,8 +23,6 @@ export const AnomalyCodes = {
   HEADLESS_DETECTED: "HEADLESS_DETECTED",
   HIGH_PROXY_SCORE: "HIGH_PROXY_SCORE",
   HIGH_VPN_SCORE: "HIGH_VPN_SCORE",
-  // Browser engine anomalies
-  MATH_ENGINE_MISMATCH: "MATH_ENGINE_MISMATCH",
 } as const;
 
 export type AnomalyCode = (typeof AnomalyCodes)[keyof typeof AnomalyCodes];

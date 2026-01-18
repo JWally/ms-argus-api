@@ -28,6 +28,21 @@ export type EvidenceCode =
   | "NEW_DEVICE"; // No match found, new device created
 
 /**
+ * Anomaly signal exposed in session response
+ * AR-148: Expose server-side anomaly detection results
+ */
+export interface SessionAnomalySignal {
+  type: "CROSS_FIELD" | "NETWORK" | "HARDWARE" | "IDENTITY";
+  code: string;
+  severity: number;
+  evidence: {
+    expected: string;
+    actual: string;
+    fields?: string[];
+  };
+}
+
+/**
  * Session cache value stored in DynamoDB (AR-52: was Redis)
  */
 export interface SessionCacheValue {
@@ -40,6 +55,7 @@ export interface SessionCacheValue {
   idempotency_key: string;
   flags: string[];
   evidence_codes: EvidenceCode[]; // AR-54: Which signals contributed to match
+  anomalies?: SessionAnomalySignal[]; // AR-148: Server-side anomaly detection results
   updated_at: number;
 }
 

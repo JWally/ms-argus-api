@@ -25,6 +25,7 @@ import {
   writeDegradedResult as tier0WriteDegradedResult,
   Tier0CacheDeps,
 } from "./tier0-cache";
+import type { SessionAnomalySignal } from "./types";
 import {
   tier05PublicKeyLookup,
   tier05CookieLookup,
@@ -334,12 +335,14 @@ export class MatchingService {
     sessionId: string,
     result: MatchResult,
     idempotencyKey: string,
+    anomalies?: SessionAnomalySignal[],
   ): Promise<void> {
     return tier0WriteMatchResult(
       this.tier0Deps,
       sessionId,
       result,
       idempotencyKey,
+      anomalies,
     );
   }
 

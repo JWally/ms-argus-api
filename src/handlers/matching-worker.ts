@@ -3,6 +3,7 @@
 // AR-57: Added Firehose observations for analytics
 // AR-71: Added warmup detection for SQS pipeline warming
 // AR-73: Added fingerprint normalization for web library compatibility
+// AR-148: Added anomaly detection for session response
 import {
   SQSHandler,
   SQSBatchResponse,
@@ -31,6 +32,8 @@ import {
   MUTATION_GATE_TTL_SECONDS,
 } from "../helpers/constants";
 import { normalizeFingerprint } from "../helpers/normalize-fingerprint";
+import { detectAllAnomalies } from "../services/profile/anomaly";
+import type { SessionAnomalySignal } from "../types";
 
 // Validate environment variables at module load (cold start)
 // Throws immediately if required env vars are missing
@@ -182,8 +185,30 @@ async function processRecord(
     throw error;
   }
 
-  // Write result to DynamoDB session cache
-  await service.writeMatchResult(session_id, matchResult, idempotencyKey);
+  // AR-148: Run anomaly detection on fingerprint
+  // Note: Network anomaly detection (timezone mismatch) requires geo.timezone from IP geolocation
+  // which isn't currently in the sigint payload. Pass undefined for now (graceful degradation).
+  const anomalyResult = detectAllAnomalies(
+    fingerprint,
+    payload.fingerprint, // Raw payload for cross-field checks
+    undefined, // sigint - no geo.timezone available yet
+  );
+
+  // Convert anomaly signals to session format
+  const anomalies: SessionAnomalySignal[] = anomalyResult.signals.map((s) => ({
+    type: s.type,
+    code: s.code,
+    severity: s.severity,
+    evidence: s.evidence,
+  }));
+
+  // Write result to DynamoDB session cache (now with anomalies)
+  await service.writeMatchResult(
+    session_id,
+    matchResult,
+    idempotencyKey,
+    anomalies,
+  );
 
   // Queue profile update (pass is_new_device for flag computation)
   await service.queueProfileUpdate(

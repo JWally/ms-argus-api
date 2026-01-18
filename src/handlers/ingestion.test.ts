@@ -322,13 +322,14 @@ describe("ingestion handler", () => {
 
     it("should reject binary gzip payload that exceeds size limit after decompression", async () => {
       // Create a payload that compresses small but decompresses huge (zip bomb defense)
+      // AR-149: Default limit increased to 2MB
       const hugePayload = {
         session_id: "zipbomb-binary-test",
-        data: "A".repeat(600 * 1024), // 600KB of 'A' characters - exceeds 512KB limit
+        data: "A".repeat(2.5 * 1024 * 1024), // 2.5MB of 'A' characters - exceeds 2MB limit
       };
 
       const jsonString = JSON.stringify(hugePayload);
-      expect(jsonString.length).toBeGreaterThan(512 * 1024); // Verify exceeds limit
+      expect(jsonString.length).toBeGreaterThan(2 * 1024 * 1024); // Verify exceeds limit
 
       const gzipped = gzipSync(Buffer.from(jsonString));
       expect(gzipped.length).toBeLessThan(10 * 1024); // Compresses well
@@ -351,10 +352,11 @@ describe("ingestion handler", () => {
     });
 
     // AR-136: ZIP bomb vulnerability tests - streaming decompression with early abort
+    // AR-149: Default limit increased to 2MB
     it("should include size limit in error message when decompression exceeds limit (AR-136 AC2)", async () => {
       const hugePayload = {
         session_id: "zipbomb-error-message-test",
-        data: "B".repeat(600 * 1024), // Exceeds 512KB limit
+        data: "B".repeat(2.5 * 1024 * 1024), // Exceeds 2MB limit
       };
 
       const gzipped = gzipSync(Buffer.from(JSON.stringify(hugePayload)));
@@ -371,16 +373,17 @@ describe("ingestion handler", () => {
       expect(result.statusCode).toBe(400);
       const parsedBody = JSON.parse(result.body ?? "");
       // AC2: Error message should include size limit
-      expect(parsedBody.error).toMatch(/512|524288/); // 512KB or 524288 bytes
+      expect(parsedBody.error).toMatch(/2097152|2MB/); // 2MB or 2097152 bytes
     });
 
     it("should abort decompression early without allocating full buffer (AR-136 AC1)", async () => {
       // This test verifies behavior - actual memory behavior tested via integration
       // Create payload that would expand to several MB
+      // AR-149: Default limit increased to 2MB
       const largeExpandingPayload = {
         session_id: "early-abort-test",
-        // Repetitive data compresses well, expands to >512KB
-        data: "ABCDEFGHIJ".repeat(100000), // 1MB of text
+        // Repetitive data compresses well, expands to >2MB
+        data: "ABCDEFGHIJ".repeat(300000), // ~3MB of text
       };
 
       const gzipped = gzipSync(
@@ -403,10 +406,11 @@ describe("ingestion handler", () => {
     });
 
     it("should successfully decompress payloads just under the limit (AR-136 AC4)", async () => {
-      // 500KB is just under 512KB limit - should succeed
+      // AR-149: Default limit increased to 2MB
+      // 1.5MB is safely under 2MB limit - should succeed
       const nearLimitPayload = {
         session_id: "near-limit-success-test",
-        data: "X".repeat(450 * 1024), // 450KB, safely under 512KB
+        data: "X".repeat(1.5 * 1024 * 1024), // 1.5MB, safely under 2MB
       };
 
       const gzipped = gzipSync(Buffer.from(JSON.stringify(nearLimitPayload)));
@@ -508,9 +512,10 @@ describe("ingestion handler", () => {
     });
 
     it("should return 413 for oversized uncompressed payload", async () => {
+      // AR-149: Default limit increased to 256KB, test with larger payload
       const oversizedPayload = {
         session_id: "test",
-        data: "x".repeat(70 * 1024), // 70KB > 64KB limit
+        data: "x".repeat(300 * 1024), // 300KB > 256KB default limit
       };
 
       const event = createApiEvent(JSON.stringify(oversizedPayload));

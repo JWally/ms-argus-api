@@ -44,14 +44,10 @@ export const RISK_WEIGHTS = {
   [DeviceFlags.WORKER_MISMATCH]: 0.2,
   /** Screen/CSS dimension mismatch */
   [DeviceFlags.SCREEN_CSS_MISMATCH]: 0.1,
-  /** Faster-than-light network violation */
-  [DeviceFlags.FTL_VIOLATION]: 0.35,
   /** IP-based timezone mismatch */
   [DeviceFlags.IP_TIMEZONE_MISMATCH]: 0.1,
   /** Server vs client timezone mismatch */
   [DeviceFlags.SERVER_CLIENT_TZ_MISMATCH]: 0.12,
-  /** Math engine doesn't match claimed browser */
-  [DeviceFlags.MATH_ENGINE_MISMATCH]: 0.25,
 } as const;
 
 /**

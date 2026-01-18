@@ -1,7 +1,8 @@
 // src/services/matching/tier0-cache.ts
 // AR-119: Extracted from matching-service.ts - Session cache operations (Tier 0)
+// AR-148: Added anomalies parameter to writeMatchResult
 import { DynamoCacheService } from "../cache";
-import { MatchResult, SessionCacheValue } from "./types";
+import { MatchResult, SessionCacheValue, SessionAnomalySignal } from "./types";
 
 /**
  * Dependencies for tier 0 cache operations
@@ -22,12 +23,14 @@ export async function checkCache(
 
 /**
  * Write match result to session cache (AR-52: DynamoDB replaces Redis)
+ * AR-148: Added optional anomalies parameter for server-side detection results
  */
 export async function writeMatchResult(
   deps: Tier0CacheDeps,
   sessionId: string,
   result: MatchResult,
   idempotencyKey: string,
+  anomalies?: SessionAnomalySignal[],
 ): Promise<void> {
   const value: SessionCacheValue = {
     status: "complete",
@@ -39,6 +42,7 @@ export async function writeMatchResult(
     idempotency_key: idempotencyKey,
     flags: result.flags,
     evidence_codes: result.evidence_codes, // AR-54
+    anomalies: anomalies?.length ? anomalies : undefined, // AR-148: Only include if signals detected
     updated_at: Date.now(),
   };
 

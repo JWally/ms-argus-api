@@ -190,14 +190,15 @@ const devConfig: StageConfig = {
     bodySizeLimitBytes: 102400, // 100KB
   },
 
-  // AR-133: DynamoDB provisioned capacity for dev - conservative values to test infrastructure
+  // DynamoDB billing - use PAY_PER_REQUEST for dev to avoid throughput limits during testing
+  // AR-133 originally set provisioned capacity, but Scan operations in test helpers hit limits
   dynamodb: {
-    useProvisionedCapacity: true, // Test provisioned capacity in dev
-    baseReadCapacity: 5, // Conservative base - enough for dev testing
-    baseWriteCapacity: 5, // Conservative base - enough for dev testing
+    useProvisionedCapacity: false, // On-demand for dev - no throughput limits
+    baseReadCapacity: 0,
+    baseWriteCapacity: 0,
     autoScaling: {
-      targetUtilizationPercent: 70, // Scale when 70% utilized
-      maxCapacityMultiplier: 2, // Scale up to 200% of base (10 RCU/WCU)
+      targetUtilizationPercent: 70,
+      maxCapacityMultiplier: 2,
     },
   },
 };

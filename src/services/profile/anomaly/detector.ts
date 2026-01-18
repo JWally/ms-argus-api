@@ -5,7 +5,6 @@ import { Fingerprint } from "../../../types";
 import { AnomalySignal, AnomalyResult } from "./types";
 import { detectQuickWinAnomalies } from "./quick-wins";
 import { detectCrossFieldAnomalies } from "./cross-field";
-import { detectBrowserEngineAnomalies } from "./browser-engine";
 import { detectNetworkAnomalies } from "./network";
 
 /**
@@ -13,12 +12,7 @@ import { detectNetworkAnomalies } from "./network";
  */
 interface SigintData {
   geo?: {
-    lat?: number;
-    lon?: number;
     timezone?: string;
-  };
-  tcpProbe?: {
-    rttMs?: number;
   };
 }
 
@@ -41,9 +35,7 @@ const detectors: DetectorFn[] = [
   detectQuickWinAnomalies,
   // Phase 2: Cross-field anomalies (AR-145)
   detectCrossFieldAnomalies,
-  // Phase 3: Browser engine anomalies (AR-143)
-  detectBrowserEngineAnomalies,
-  // Phase 4: Network anomalies (AR-144)
+  // Phase 3: Network anomalies (AR-144)
   detectNetworkAnomalies,
 ];
 
