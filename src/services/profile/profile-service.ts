@@ -115,14 +115,22 @@ export class ProfileService {
 
   /**
    * AR-120: Delegates to flag-computation module
+   * AR-145: Added raw parameter for cross-field anomaly detection
    */
   computeFlags(
     fingerprint: Fingerprint,
     existingProfile: DeviceProfile | null,
     isNewDevice: boolean,
     hasDrift: boolean,
+    raw?: unknown,
   ): string[] {
-    return computeFlags(fingerprint, existingProfile, isNewDevice, hasDrift);
+    return computeFlags(
+      fingerprint,
+      existingProfile,
+      isNewDevice,
+      hasDrift,
+      raw,
+    );
   }
 
   /**
@@ -138,6 +146,7 @@ export class ProfileService {
 
   /**
    * Update device profile in DynamoDB
+   * AR-145: Added rawFingerprint for cross-field anomaly detection
    */
   async updateProfile(
     tenantId: string,
@@ -147,6 +156,7 @@ export class ProfileService {
     existingProfile: DeviceProfile | null,
     isNewDevice: boolean = false,
     hasDrift: boolean = false,
+    rawFingerprint?: unknown,
   ): Promise<void> {
     const ttlSeconds = this.deps.config.profileTtlDays * 24 * 60 * 60;
     const ttl = Math.floor(Date.now() / 1000) + ttlSeconds;
@@ -160,11 +170,13 @@ export class ProfileService {
     const shouldUpdateLastSeen = currentHour !== existingHour;
 
     // Compute flags based on fingerprint and profile state
+    // AR-145: Pass raw fingerprint for cross-field anomaly detection
     const flags = this.computeFlags(
       fingerprint,
       existingProfile,
       isNewDevice,
       hasDrift,
+      rawFingerprint,
     );
 
     const profileData: Record<string, unknown> = {
@@ -361,6 +373,7 @@ export class ProfileService {
       tenant_id,
       device_id,
       fingerprint,
+      raw_fingerprint,
       timestamp,
       is_new_device = false,
     } = payload;
@@ -394,6 +407,7 @@ export class ProfileService {
     }
 
     // Perform updates (with flag computation)
+    // AR-145: Pass raw_fingerprint for cross-field anomaly detection
     await this.updateProfile(
       tenant_id,
       device_id,
@@ -402,6 +416,7 @@ export class ProfileService {
       existingProfile,
       is_new_device,
       hasDrift,
+      raw_fingerprint,
     );
     const tier1Writes = await this.updateTier1Indexes(
       tenant_id,

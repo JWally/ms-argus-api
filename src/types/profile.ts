@@ -11,6 +11,8 @@ export interface ProfileUpdatePayload {
   tenant_id: string;
   device_id: string;
   fingerprint: Fingerprint;
+  /** AR-145: Raw fingerprint for cross-field anomaly detection */
+  raw_fingerprint?: unknown;
   /** AR-81: Sigint data from ms-argus-web */
   sigint?: SigintData;
   tcp_blob?: string;

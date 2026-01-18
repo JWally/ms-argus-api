@@ -100,12 +100,14 @@ export function detectBotSignals(fingerprint: Fingerprint): string[] {
 
 /**
  * Compute all flags for a profile based on fingerprint and profile state
+ * AR-145: Added raw parameter for cross-field anomaly detection
  */
 export function computeFlags(
   fingerprint: Fingerprint,
   existingProfile: DeviceProfile | null,
   isNewDevice: boolean,
   hasDrift: boolean,
+  raw?: unknown,
 ): string[] {
   const flags: string[] = [];
 
@@ -119,7 +121,8 @@ export function computeFlags(
   flags.push(...botFlags);
 
   // Anomaly detection flags (AR-142)
-  const anomalyResult = detectAllAnomalies(fingerprint);
+  // AR-145: Pass raw for cross-field anomaly detection
+  const anomalyResult = detectAllAnomalies(fingerprint, raw);
   flags.push(...anomalyResult.suggestedFlags);
 
   // FINGERPRINT_MISMATCH flag when significant drift is detected
