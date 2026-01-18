@@ -16,9 +16,10 @@ interface DynamoDbConstructProps {
 
 /**
  * DynamoDB tables for Argus device profiles and indexes
- * - Profiles: (tenant, device_id) -> profile blob
- * - Tier1Index: (tenant, hash_type#hash_value) -> device_id (for O(1) lookups)
- * - Tier2Buckets: (bucket_key) -> [device_ids] (for compound filter matching)
+ * AR-134: Removed tenant concept - device identity is global across Signifyd network
+ * - Profiles: (device_id) -> profile blob
+ * - Tier1Index: (hash_key) -> device_id (for O(1) lookups)
+ * - Tier2Buckets: (bucket_key, device_id) -> metadata (for compound filter matching)
  */
 export class DynamoDbConstruct extends Construct {
   public readonly profilesTable: dynamodb.Table;
@@ -42,12 +43,11 @@ export class DynamoDbConstruct extends Construct {
       ? dynamodb.BillingMode.PROVISIONED
       : dynamodb.BillingMode.PAY_PER_REQUEST;
 
-    // Profiles table - main device profile storage
-    // PK: tenant_id, SK: device_id
+    // AR-134: Profiles table - main device profile storage
+    // PK: device_id (no tenant - device identity is global)
     this.profilesTable = new dynamodb.Table(this, "ProfilesTable", {
       tableName: `${stackName}-profiles`,
-      partitionKey: { name: "tenant_id", type: dynamodb.AttributeType.STRING },
-      sortKey: { name: "device_id", type: dynamodb.AttributeType.STRING },
+      partitionKey: { name: "device_id", type: dynamodb.AttributeType.STRING },
       billingMode,
       ...(dbConfig.useProvisionedCapacity && {
         readCapacity: dbConfig.baseReadCapacity,
@@ -55,34 +55,36 @@ export class DynamoDbConstruct extends Construct {
       }),
       pointInTimeRecovery: true,
       timeToLiveAttribute: "ttl",
-      removalPolicy: RemovalPolicy.RETAIN,
+      removalPolicy: RemovalPolicy.DESTROY, // Allow destruction for schema changes
     });
 
-    // GSI for looking up by device_id across tenants (admin queries)
+    // GSI for looking up profiles by stable_hash (for test cleanup and debugging)
     this.profilesTable.addGlobalSecondaryIndex({
-      indexName: "device-index",
-      partitionKey: { name: "device_id", type: dynamodb.AttributeType.STRING },
+      indexName: "stable-hash-index",
+      partitionKey: {
+        name: "stable_hash",
+        type: dynamodb.AttributeType.STRING,
+      },
       projectionType: dynamodb.ProjectionType.KEYS_ONLY,
     });
 
-    // Tier 1 Index table - O(1) hash lookups
-    // PK: tenant_id, SK: hash_type#hash_value (e.g., "stable_hash#abc123")
+    // AR-134: Tier 1 Index table - O(1) hash lookups
+    // PK: hash_key (e.g., "stable_hash#abc123" or "evercookie#xyz789")
     this.tier1IndexTable = new dynamodb.Table(this, "Tier1IndexTable", {
       tableName: `${stackName}-tier1-index`,
-      partitionKey: { name: "tenant_id", type: dynamodb.AttributeType.STRING },
-      sortKey: { name: "hash_key", type: dynamodb.AttributeType.STRING },
+      partitionKey: { name: "hash_key", type: dynamodb.AttributeType.STRING },
       billingMode,
       ...(dbConfig.useProvisionedCapacity && {
         readCapacity: dbConfig.baseReadCapacity,
         writeCapacity: dbConfig.baseWriteCapacity,
       }),
       timeToLiveAttribute: "ttl",
-      removalPolicy: RemovalPolicy.RETAIN,
+      removalPolicy: RemovalPolicy.DESTROY, // Allow destruction for schema changes
     });
 
-    // Tier 2 Buckets table - compound filter matching
+    // AR-134: Tier 2 Buckets table - compound filter matching
     // Uses adjacency list pattern to avoid 400KB item size limit
-    // PK: bucket_key (e.g., "tenant#ip_ja4#192.168.1.1#ja4_hash")
+    // PK: bucket_key (e.g., "ip_ja4#192.168.1.1#ja4_hash" - no tenant prefix)
     // SK: device_id - allows unlimited devices per bucket via Query
     // Note: table name has -v2 suffix due to schema change (added sort key)
     this.tier2BucketsTable = new dynamodb.Table(this, "Tier2BucketsTableV2", {
@@ -95,7 +97,7 @@ export class DynamoDbConstruct extends Construct {
         writeCapacity: dbConfig.baseWriteCapacity,
       }),
       timeToLiveAttribute: "ttl",
-      removalPolicy: RemovalPolicy.RETAIN,
+      removalPolicy: RemovalPolicy.DESTROY, // Allow destruction for schema changes
     });
 
     // AR-52: Session cache table - replaces Redis for session caching
