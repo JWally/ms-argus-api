@@ -6,20 +6,17 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 
 // AR-123: Mock Powertools Metrics to verify metric emission
 // Must use vi.hoisted to create mock functions before vi.mock runs
-const {
-  mockAddMetric,
-  mockPublishStoredMetrics,
-  mockDetectAllAnomalies,
-} = vi.hoisted(() => ({
-  mockAddMetric: vi.fn(),
-  mockPublishStoredMetrics: vi.fn(),
-  // AR-148: Mock anomaly detection
-  mockDetectAllAnomalies: vi.fn().mockReturnValue({
-    signals: [],
-    aggregateScore: 0,
-    suggestedFlags: [],
-  }),
-}));
+const { mockAddMetric, mockPublishStoredMetrics, mockDetectAllAnomalies } =
+  vi.hoisted(() => ({
+    mockAddMetric: vi.fn(),
+    mockPublishStoredMetrics: vi.fn(),
+    // AR-148: Mock anomaly detection
+    mockDetectAllAnomalies: vi.fn().mockReturnValue({
+      signals: [],
+      aggregateScore: 0,
+      suggestedFlags: [],
+    }),
+  }));
 
 // AR-148: Mock anomaly detection to avoid errors in tests
 vi.mock("../services/profile/anomaly", () => ({
