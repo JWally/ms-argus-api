@@ -33,7 +33,7 @@ describe("Anomaly Detection Foundation", () => {
     it("should clamp severity to maximum of 1.0", () => {
       const signal = createSignal(
         "NETWORK",
-        AnomalyCodes.FTL_VIOLATION,
+        AnomalyCodes.IP_TIMEZONE_MISMATCH,
         1.5,
         "expected",
         "actual",
@@ -44,8 +44,8 @@ describe("Anomaly Detection Foundation", () => {
 
     it("should clamp severity to minimum of 0.0", () => {
       const signal = createSignal(
-        "HARDWARE",
-        AnomalyCodes.MATH_ENGINE_MISMATCH,
+        "CROSS_FIELD",
+        AnomalyCodes.WORKER_MISMATCH,
         -0.5,
         "expected",
         "actual",
@@ -71,11 +71,10 @@ describe("Anomaly Detection Foundation", () => {
     it("should have all expected anomaly codes", () => {
       expect(AnomalyCodes.NAVIGATOR_LIES).toBe("NAVIGATOR_LIES");
       expect(AnomalyCodes.WORKER_MISMATCH).toBe("WORKER_MISMATCH");
-      expect(AnomalyCodes.FTL_VIOLATION).toBe("FTL_VIOLATION");
+      expect(AnomalyCodes.IP_TIMEZONE_MISMATCH).toBe("IP_TIMEZONE_MISMATCH");
       expect(AnomalyCodes.HEADLESS_DETECTED).toBe("HEADLESS_DETECTED");
       expect(AnomalyCodes.HIGH_PROXY_SCORE).toBe("HIGH_PROXY_SCORE");
       expect(AnomalyCodes.HIGH_VPN_SCORE).toBe("HIGH_VPN_SCORE");
-      expect(AnomalyCodes.MATH_ENGINE_MISMATCH).toBe("MATH_ENGINE_MISMATCH");
     });
   });
 
@@ -139,10 +138,10 @@ describe("Anomaly Detection Foundation", () => {
       const highSeverityDetector = (): AnomalySignal[] => [
         createSignal(
           "NETWORK",
-          AnomalyCodes.FTL_VIOLATION,
+          AnomalyCodes.IP_TIMEZONE_MISMATCH,
           0.95,
-          "100ms",
-          "5ms",
+          "America/New_York",
+          "Asia/Tokyo",
         ),
         createSignal(
           "CROSS_FIELD",

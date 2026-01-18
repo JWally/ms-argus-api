@@ -1,16 +1,32 @@
 // src/handlers/matching-worker.test.ts
 // AR-52: Updated to use DynamoDB session cache instead of Redis
 // AR-123: Added tests for NEW_DEVICE_RATE metric and tenant_id dimension
+// AR-148: Added mock for anomaly detection
 import { describe, it, expect, beforeEach, vi } from "vitest";
 
 // AR-123: Mock Powertools Metrics to verify metric emission
 // Must use vi.hoisted to create mock functions before vi.mock runs
-const { mockAddMetric, mockAddDimension, mockPublishStoredMetrics } =
-  vi.hoisted(() => ({
-    mockAddMetric: vi.fn(),
-    mockAddDimension: vi.fn(),
-    mockPublishStoredMetrics: vi.fn(),
-  }));
+const {
+  mockAddMetric,
+  mockAddDimension,
+  mockPublishStoredMetrics,
+  mockDetectAllAnomalies,
+} = vi.hoisted(() => ({
+  mockAddMetric: vi.fn(),
+  mockAddDimension: vi.fn(),
+  mockPublishStoredMetrics: vi.fn(),
+  // AR-148: Mock anomaly detection
+  mockDetectAllAnomalies: vi.fn().mockReturnValue({
+    signals: [],
+    aggregateScore: 0,
+    suggestedFlags: [],
+  }),
+}));
+
+// AR-148: Mock anomaly detection to avoid errors in tests
+vi.mock("../services/profile/anomaly", () => ({
+  detectAllAnomalies: mockDetectAllAnomalies,
+}));
 
 vi.mock("@aws-lambda-powertools/metrics", () => ({
   Metrics: vi.fn().mockImplementation(() => ({

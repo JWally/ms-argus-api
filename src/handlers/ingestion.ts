@@ -69,8 +69,15 @@ const metrics = new Metrics({
 });
 const sqs = new SQSClient({});
 
-const MAX_BODY_BYTES = 64 * 1024; // 64KB
-const MAX_DECOMPRESSED_BYTES = 512 * 1024; // 512KB (zip bomb defense)
+// AR-149: Configurable body size limits via env vars for dev data collection
+const MAX_BODY_BYTES = parseInt(
+  process.env.MAX_BODY_BYTES ?? String(256 * 1024),
+  10,
+); // 256KB default (was 64KB)
+const MAX_DECOMPRESSED_BYTES = parseInt(
+  process.env.MAX_DECOMPRESSED_BYTES ?? String(2 * 1024 * 1024),
+  10,
+); // 2MB default (was 512KB)
 
 // CORS headers (reflect origin for backward compatibility)
 const CORS_HEADERS = {

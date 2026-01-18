@@ -109,12 +109,14 @@ async function processRecord(
 
   // AR-73: Normalize fingerprint from web library nested format to flat API format
   // AR-81: Also extracts sigint data (third-party cookie, JA3/JA4, TCP probe)
+  // AR-145: Preserve raw fingerprint for cross-field anomaly detection
   const payload: ProfileUpdatePayload = {
     ...rawPayload,
     fingerprint: normalizeFingerprint(
       rawPayload.fingerprint,
       rawPayload.sigint,
     ),
+    raw_fingerprint: rawPayload.fingerprint,
   };
 
   logger.info("Processing profile update", { tenant_id, device_id });

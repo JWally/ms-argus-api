@@ -4,12 +4,27 @@
 import { Fingerprint } from "../../../types";
 import { AnomalySignal, AnomalyResult } from "./types";
 import { detectQuickWinAnomalies } from "./quick-wins";
+import { detectCrossFieldAnomalies } from "./cross-field";
+import { detectNetworkAnomalies } from "./network";
+
+/**
+ * Sigint data structure for network anomaly detection
+ */
+interface SigintData {
+  geo?: {
+    timezone?: string;
+  };
+}
 
 /**
  * Detector function signature
- * Takes fingerprint and optional raw payload, returns array of signals
+ * Takes fingerprint, optional raw payload, and optional sigint data
  */
-type DetectorFn = (fingerprint: Fingerprint, raw?: unknown) => AnomalySignal[];
+type DetectorFn = (
+  fingerprint: Fingerprint,
+  raw?: unknown,
+  sigint?: SigintData,
+) => AnomalySignal[];
 
 /**
  * Array of detector functions - add more as phases complete
@@ -18,24 +33,30 @@ type DetectorFn = (fingerprint: Fingerprint, raw?: unknown) => AnomalySignal[];
 const detectors: DetectorFn[] = [
   // Phase 1: Quick wins (AR-142)
   detectQuickWinAnomalies,
-  // Phase 2: detectCrossFieldAnomalies will be added here
-  // Phase 3: detectBrowserEngineAnomalies will be added here
-  // Phase 4: detectNetworkAnomalies will be added here
+  // Phase 2: Cross-field anomalies (AR-145)
+  detectCrossFieldAnomalies,
+  // Phase 3: Network anomalies (AR-144)
+  detectNetworkAnomalies,
 ];
 
 /**
  * Run all registered anomaly detectors
  * Errors in individual detectors are caught and logged, not propagated
+ *
+ * @param fingerprint - Normalized fingerprint data
+ * @param raw - Raw payload with nested structure (for cross-field checks)
+ * @param sigint - Signal intelligence data (for network checks)
  */
 export function detectAllAnomalies(
   fingerprint: Fingerprint,
   raw?: unknown,
+  sigint?: SigintData,
 ): AnomalyResult {
   const signals: AnomalySignal[] = [];
 
   for (const detector of detectors) {
     try {
-      signals.push(...detector(fingerprint, raw));
+      signals.push(...detector(fingerprint, raw, sigint));
     } catch (error) {
       // Log but don't fail - detector errors shouldn't block matching
       console.error("Anomaly detector failed:", error);
@@ -71,7 +92,13 @@ function codeToFlag(code: string): string {
  * Register a new detector function
  * Used by detector modules to add themselves to the detector array
  */
-export function registerDetector(detector: DetectorFn): void {
+export function registerDetector(
+  detector: (
+    fingerprint: Fingerprint,
+    raw?: unknown,
+    sigint?: SigintData,
+  ) => AnomalySignal[],
+): void {
   detectors.push(detector);
 }
 

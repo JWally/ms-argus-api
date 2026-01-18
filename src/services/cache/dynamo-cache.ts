@@ -80,12 +80,15 @@ export class DynamoCacheService {
       await this.dynamodb.send(
         new PutItemCommand({
           TableName: this.config.tableName,
-          Item: marshall({
-            cache_key: key,
-            value,
-            confidence: value.confidence,
-            ttl,
-          }),
+          Item: marshall(
+            {
+              cache_key: key,
+              value,
+              confidence: value.confidence,
+              ttl,
+            },
+            { removeUndefinedValues: true },
+          ),
           // Only write if: key doesn't exist OR new confidence > existing
           ConditionExpression:
             "attribute_not_exists(cache_key) OR confidence < :conf",

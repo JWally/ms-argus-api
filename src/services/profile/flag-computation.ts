@@ -44,14 +44,10 @@ export const RISK_WEIGHTS = {
   [DeviceFlags.WORKER_MISMATCH]: 0.2,
   /** Screen/CSS dimension mismatch */
   [DeviceFlags.SCREEN_CSS_MISMATCH]: 0.1,
-  /** Faster-than-light network violation */
-  [DeviceFlags.FTL_VIOLATION]: 0.35,
   /** IP-based timezone mismatch */
   [DeviceFlags.IP_TIMEZONE_MISMATCH]: 0.1,
   /** Server vs client timezone mismatch */
   [DeviceFlags.SERVER_CLIENT_TZ_MISMATCH]: 0.12,
-  /** Math engine doesn't match claimed browser */
-  [DeviceFlags.MATH_ENGINE_MISMATCH]: 0.25,
 } as const;
 
 /**
@@ -100,12 +96,14 @@ export function detectBotSignals(fingerprint: Fingerprint): string[] {
 
 /**
  * Compute all flags for a profile based on fingerprint and profile state
+ * AR-145: Added raw parameter for cross-field anomaly detection
  */
 export function computeFlags(
   fingerprint: Fingerprint,
   existingProfile: DeviceProfile | null,
   isNewDevice: boolean,
   hasDrift: boolean,
+  raw?: unknown,
 ): string[] {
   const flags: string[] = [];
 
@@ -119,7 +117,8 @@ export function computeFlags(
   flags.push(...botFlags);
 
   // Anomaly detection flags (AR-142)
-  const anomalyResult = detectAllAnomalies(fingerprint);
+  // AR-145: Pass raw for cross-field anomaly detection
+  const anomalyResult = detectAllAnomalies(fingerprint, raw);
   flags.push(...anomalyResult.suggestedFlags);
 
   // FINGERPRINT_MISMATCH flag when significant drift is detected
