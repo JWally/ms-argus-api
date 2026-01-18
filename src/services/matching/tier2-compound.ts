@@ -34,7 +34,6 @@ export interface Tier2CompoundDeps {
  */
 export async function tier2CompoundMatchWithTimeout(
   deps: Tier2CompoundDeps,
-  tenantId: string,
   fingerprint: Fingerprint,
 ): Promise<{ result: MatchResult | null; timedOut: boolean }> {
   const timeoutMs = deps.tier2TimeoutMs;
@@ -44,7 +43,7 @@ export async function tier2CompoundMatchWithTimeout(
   const TIMEOUT_SENTINEL = Symbol("timeout");
 
   const raceResult = await Promise.race([
-    tier2CompoundMatch(deps, tenantId, fingerprint, {
+    tier2CompoundMatch(deps, fingerprint, {
       abortSignal: abortController.signal,
     }).then((r) => ({
       value: r,
@@ -73,11 +72,10 @@ export async function tier2CompoundMatchWithTimeout(
  */
 export async function tier2CompoundMatch(
   deps: Tier2CompoundDeps,
-  tenantId: string,
   fingerprint: Fingerprint,
   options?: { abortSignal?: AbortSignal },
 ): Promise<MatchResult | null> {
-  const bucketInfos = buildBucketKeysWithTypesHelper(tenantId, fingerprint);
+  const bucketInfos = buildBucketKeysWithTypesHelper(fingerprint);
   if (bucketInfos.length === 0) return null;
 
   // Query all buckets in parallel using adjacency list pattern
@@ -137,7 +135,7 @@ export async function tier2CompoundMatch(
 
   // Require at least 2 bucket matches for confidence
   if (bestDeviceId && bestScore >= 2) {
-    const profile = await loadProfile(deps, tenantId, bestDeviceId);
+    const profile = await loadProfile(deps, bestDeviceId);
 
     // AR-56: Calculate base confidence
     let confidence = Math.min(0.6 + bestScore * 0.1, 0.85);
@@ -301,14 +299,12 @@ function scoreDeviceCandidatesWithEvidence(
  */
 export async function loadProfile(
   deps: Tier2CompoundDeps,
-  tenantId: string,
   deviceId: string,
 ): Promise<{ risk_score: number; flags: string[] } | null> {
   const result = await deps.dynamodb.send(
     new GetItemCommand({
       TableName: deps.profilesTable,
       Key: {
-        tenant_id: { S: tenantId },
         device_id: { S: deviceId },
       },
       ProjectionExpression: "risk_score, flags",

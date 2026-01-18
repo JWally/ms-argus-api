@@ -116,16 +116,12 @@ describe("ProfileService", () => {
     it("should return null when profile not found", async () => {
       dynamoMock.on(GetItemCommand).resolves({ Item: undefined });
 
-      const result = await service.loadExistingProfile(
-        "tenant1",
-        "dev_unknown",
-      );
+      const result = await service.loadExistingProfile("dev_unknown");
       expect(result).toBeNull();
     });
 
     it("should return profile when found", async () => {
       const profile: DeviceProfile = {
-        tenant_id: "tenant1",
         device_id: "dev_123",
         stable_hash: "stable123",
         canvas_hash: "canvas456",
@@ -142,7 +138,7 @@ describe("ProfileService", () => {
         Item: marshall(profile),
       });
 
-      const result = await service.loadExistingProfile("tenant1", "dev_123");
+      const result = await service.loadExistingProfile("dev_123");
 
       expect(result).not.toBeNull();
       expect(result?.device_id).toBe("dev_123");
@@ -153,7 +149,6 @@ describe("ProfileService", () => {
 
   describe("hasSignificantDrift", () => {
     const baseProfile: DeviceProfile = {
-      tenant_id: "tenant1",
       device_id: "dev_123",
       stable_hash: "stable123",
       canvas_hash: "canvas456",
@@ -237,7 +232,6 @@ describe("ProfileService", () => {
     it("should return empty array when no hashes present", () => {
       const fingerprint: Fingerprint = {};
       const entries = service.buildTier1IndexEntries(
-        "tenant1",
         "dev_123",
         fingerprint,
         ttl,
@@ -248,7 +242,6 @@ describe("ProfileService", () => {
     it("should build evercookie entry", () => {
       const fingerprint: Fingerprint = { evercookie_id: "cookie123" };
       const entries = service.buildTier1IndexEntries(
-        "tenant1",
         "dev_123",
         fingerprint,
         ttl,
@@ -256,7 +249,6 @@ describe("ProfileService", () => {
 
       expect(entries).toHaveLength(1);
       expect(entries[0]).toEqual({
-        tenant_id: "tenant1",
         hash_key: "evercookie#cookie123",
         device_id: "dev_123",
         ttl,
@@ -267,7 +259,6 @@ describe("ProfileService", () => {
     it("should build sigint_id entry", () => {
       const fingerprint: Fingerprint = { sigint_id: "abc123-def456-789" };
       const entries = service.buildTier1IndexEntries(
-        "tenant1",
         "dev_123",
         fingerprint,
         ttl,
@@ -275,7 +266,6 @@ describe("ProfileService", () => {
 
       expect(entries).toHaveLength(1);
       expect(entries[0]).toEqual({
-        tenant_id: "tenant1",
         hash_key: "sigint#abc123-def456-789",
         device_id: "dev_123",
         ttl,
@@ -287,7 +277,6 @@ describe("ProfileService", () => {
       const publicKey = "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE...base64...";
       const fingerprint: Fingerprint = { public_key: publicKey };
       const entries = service.buildTier1IndexEntries(
-        "tenant1",
         "dev_123",
         fingerprint,
         ttl,
@@ -295,7 +284,6 @@ describe("ProfileService", () => {
 
       expect(entries).toHaveLength(1);
       expect(entries[0]).toEqual({
-        tenant_id: "tenant1",
         hash_key: `pubkey#${publicKey}`,
         device_id: "dev_123",
         ttl,
@@ -305,7 +293,6 @@ describe("ProfileService", () => {
     it("should build stable_hash entry", () => {
       const fingerprint: Fingerprint = { stable_hash: "stable456" };
       const entries = service.buildTier1IndexEntries(
-        "tenant1",
         "dev_123",
         fingerprint,
         ttl,
@@ -327,7 +314,6 @@ describe("ProfileService", () => {
       };
 
       const entries = service.buildTier1IndexEntries(
-        "tenant1",
         "dev_123",
         fingerprint,
         ttl,
@@ -357,13 +343,7 @@ describe("ProfileService", () => {
         canvas_hash: "canvas456",
       };
 
-      await service.updateProfile(
-        "tenant1",
-        "dev_new",
-        fingerprint,
-        Date.now(),
-        null,
-      );
+      await service.updateProfile("dev_new", fingerprint, Date.now(), null);
 
       const calls = dynamoMock.commandCalls(PutItemCommand);
       expect(calls).toHaveLength(1);
@@ -373,7 +353,6 @@ describe("ProfileService", () => {
 
       // Verify the item has expected fields
       const item = putCall.args[0].input.Item;
-      expect(item?.tenant_id?.S).toBe("tenant1");
       expect(item?.device_id?.S).toBe("dev_new");
       expect(item?.stable_hash?.S).toBe("stable123");
       expect(item?.risk_score?.N).toBe("0.5"); // Default for new
@@ -384,7 +363,6 @@ describe("ProfileService", () => {
       dynamoMock.on(PutItemCommand).resolves({});
 
       const existingProfile: DeviceProfile = {
-        tenant_id: "tenant1",
         device_id: "dev_existing",
         risk_score: 0.8, // High risk (historical)
         flags: ["verified", "returning_user"], // Positive flags that should be preserved
@@ -396,7 +374,6 @@ describe("ProfileService", () => {
       };
 
       await service.updateProfile(
-        "tenant1",
         "dev_existing",
         {},
         Date.now(),
@@ -419,7 +396,6 @@ describe("ProfileService", () => {
       dynamoMock.on(PutItemCommand).resolves({});
 
       const existingProfile: DeviceProfile = {
-        tenant_id: "tenant1",
         device_id: "dev_123",
         risk_score: 0.3,
         flags: [],
@@ -430,13 +406,7 @@ describe("ProfileService", () => {
         ttl: 1705000000,
       };
 
-      await service.updateProfile(
-        "tenant1",
-        "dev_123",
-        {},
-        Date.now(),
-        existingProfile,
-      );
+      await service.updateProfile("dev_123", {}, Date.now(), existingProfile);
 
       const calls = dynamoMock.commandCalls(PutItemCommand);
       const item = calls[0].args[0].input.Item;
@@ -455,11 +425,7 @@ describe("ProfileService", () => {
         fuzzy_hash: "fuzzy",
       };
 
-      const count = await service.updateTier1Indexes(
-        "tenant1",
-        "dev_123",
-        fingerprint,
-      );
+      const count = await service.updateTier1Indexes("dev_123", fingerprint);
 
       expect(count).toBe(3);
 
@@ -473,7 +439,7 @@ describe("ProfileService", () => {
     });
 
     it("should return 0 when no indexes to write", async () => {
-      const count = await service.updateTier1Indexes("tenant1", "dev_123", {});
+      const count = await service.updateTier1Indexes("dev_123", {});
       expect(count).toBe(0);
 
       // Verify no BatchWriteItemCommand was called
@@ -491,7 +457,6 @@ describe("ProfileService", () => {
               {
                 PutRequest: {
                   Item: marshall({
-                    tenant_id: "tenant1",
                     hash_key: "stable#stable",
                     device_id: "dev_123",
                     ttl: 1705000000,
@@ -507,11 +472,7 @@ describe("ProfileService", () => {
         stable_hash: "stable",
       };
 
-      const count = await service.updateTier1Indexes(
-        "tenant1",
-        "dev_123",
-        fingerprint,
-      );
+      const count = await service.updateTier1Indexes("dev_123", fingerprint);
 
       expect(count).toBe(1);
 
@@ -530,11 +491,7 @@ describe("ProfileService", () => {
         ja4: "ja4hash",
       };
 
-      const count = await service.updateTier2Buckets(
-        "tenant1",
-        "dev_123",
-        fingerprint,
-      );
+      const count = await service.updateTier2Buckets("dev_123", fingerprint);
 
       expect(count).toBe(1);
 
@@ -566,11 +523,7 @@ describe("ProfileService", () => {
         canvas_hash: "canvas",
       };
 
-      const count = await service.updateTier2Buckets(
-        "tenant1",
-        "dev_123",
-        fingerprint,
-      );
+      const count = await service.updateTier2Buckets("dev_123", fingerprint);
 
       expect(count).toBe(2); // ip_ja4 and audio_canvas
 
@@ -596,7 +549,7 @@ describe("ProfileService", () => {
         ja4: "ja4hash",
       };
 
-      await service.updateTier2Buckets("tenant1", "dev_123", fingerprint);
+      await service.updateTier2Buckets("dev_123", fingerprint);
 
       const calls = dynamoMock
         .commandCalls(BatchWriteItemCommand)
@@ -628,7 +581,7 @@ describe("ProfileService", () => {
               {
                 PutRequest: {
                   Item: {
-                    bucket_key: { S: "tenant1#ip_ja4#10.0.0.1#ja4" },
+                    bucket_key: { S: "ip_ja4#10.0.0.1#ja4" },
                     device_id: { S: "dev_123" },
                     ttl: { N: "123456789" },
                   },
@@ -644,7 +597,7 @@ describe("ProfileService", () => {
         ja4: "ja4",
       };
 
-      await service.updateTier2Buckets("tenant1", "dev_123", fingerprint);
+      await service.updateTier2Buckets("dev_123", fingerprint);
 
       // Should have made 2 calls (initial + retry)
       const calls = dynamoMock
@@ -662,11 +615,7 @@ describe("ProfileService", () => {
         stable_hash: "abc",
       };
 
-      const count = await service.updateTier2Buckets(
-        "tenant1",
-        "dev_123",
-        fingerprint,
-      );
+      const count = await service.updateTier2Buckets("dev_123", fingerprint);
 
       expect(count).toBe(0);
       // No BatchWriteItem calls should be made
@@ -685,7 +634,7 @@ describe("ProfileService", () => {
         canvas_hash: "canvas",
       };
 
-      await service.updateTier2Buckets("tenant1", "dev_123", fingerprint);
+      await service.updateTier2Buckets("dev_123", fingerprint);
 
       // Should make UpdateItemCommand calls for cardinality (one per bucket)
       const updateCalls = dynamoMock.commandCalls(UpdateItemCommand);
@@ -711,7 +660,6 @@ describe("ProfileService", () => {
       mockCache._setGate("dev_gated");
 
       const payload: ProfileUpdatePayload = {
-        tenant_id: "tenant1",
         device_id: "dev_gated",
         fingerprint: { stable_hash: "abc" },
         timestamp: Date.now(),
@@ -728,7 +676,6 @@ describe("ProfileService", () => {
 
     it("should skip when no significant drift", async () => {
       const existingProfile: DeviceProfile = {
-        tenant_id: "tenant1",
         device_id: "dev_stable",
         stable_hash: "same_hash",
         canvas_hash: "same_canvas",
@@ -746,7 +693,6 @@ describe("ProfileService", () => {
       });
 
       const payload: ProfileUpdatePayload = {
-        tenant_id: "tenant1",
         device_id: "dev_stable",
         fingerprint: {
           stable_hash: "same_hash", // Same as existing
@@ -772,7 +718,6 @@ describe("ProfileService", () => {
       dynamoMock.on(BatchWriteItemCommand).resolves({}); // For Tier1 indexes
 
       const payload: ProfileUpdatePayload = {
-        tenant_id: "tenant1",
         device_id: "dev_new",
         fingerprint: {
           stable_hash: "new_stable",
@@ -796,7 +741,6 @@ describe("ProfileService", () => {
 
     it("should perform full update when drift detected", async () => {
       const existingProfile: DeviceProfile = {
-        tenant_id: "tenant1",
         device_id: "dev_drift",
         stable_hash: "old_hash", // Will change
         canvas_hash: "old_canvas",
@@ -817,7 +761,6 @@ describe("ProfileService", () => {
       dynamoMock.on(BatchWriteItemCommand).resolves({}); // For Tier1 indexes
 
       const payload: ProfileUpdatePayload = {
-        tenant_id: "tenant1",
         device_id: "dev_drift",
         fingerprint: {
           stable_hash: "new_hash", // Major drift!
@@ -928,7 +871,6 @@ describe("ProfileService", () => {
     it("should set FINGERPRINT_MISMATCH flag when drift detected", () => {
       const fingerprint: Fingerprint = {};
       const existingProfile: DeviceProfile = {
-        tenant_id: "t1",
         device_id: "d1",
         risk_score: 0.5,
         flags: [],
@@ -953,7 +895,6 @@ describe("ProfileService", () => {
       const fingerprint: Fingerprint = {};
       const oneHourAgo = Date.now() - 3600000;
       const existingProfile: DeviceProfile = {
-        tenant_id: "t1",
         device_id: "d1",
         risk_score: 0.5,
         flags: [],
@@ -977,7 +918,6 @@ describe("ProfileService", () => {
     it("should preserve positive flags from existing profile", () => {
       const fingerprint: Fingerprint = {};
       const existingProfile: DeviceProfile = {
-        tenant_id: "t1",
         device_id: "d1",
         risk_score: 0.3,
         flags: ["verified", "returning_user"],
@@ -1002,7 +942,6 @@ describe("ProfileService", () => {
     it("should not preserve negative flags from existing profile", () => {
       const fingerprint: Fingerprint = {};
       const existingProfile: DeviceProfile = {
-        tenant_id: "t1",
         device_id: "d1",
         risk_score: 0.8,
         flags: ["bot_detected", "suspicious_behavior"],
@@ -1030,7 +969,6 @@ describe("ProfileService", () => {
       };
       const oneHourAgo = Date.now() - 3600000;
       const existingProfile: DeviceProfile = {
-        tenant_id: "t1",
         device_id: "d1",
         risk_score: 0.5,
         flags: ["verified"],
@@ -1064,7 +1002,6 @@ describe("ProfileService", () => {
 
     it("should return base risk of 0.3 for returning device without flags", () => {
       const existingProfile: DeviceProfile = {
-        tenant_id: "t1",
         device_id: "d1",
         risk_score: 0.3,
         flags: [],
@@ -1138,7 +1075,6 @@ describe("ProfileService", () => {
 
     it("should blend with historical risk for returning devices", () => {
       const existingProfile: DeviceProfile = {
-        tenant_id: "t1",
         device_id: "d1",
         risk_score: 0.9, // High historical risk
         flags: [],
@@ -1157,7 +1093,6 @@ describe("ProfileService", () => {
 
     it("should apply flags before blending with historical risk", () => {
       const existingProfile: DeviceProfile = {
-        tenant_id: "t1",
         device_id: "d1",
         risk_score: 0.3,
         flags: [],

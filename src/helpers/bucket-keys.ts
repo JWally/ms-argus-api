@@ -19,7 +19,6 @@ export interface BucketKeyInfo {
  * Used for Tier 2 matching and evidence tracking
  */
 export function buildBucketKeysWithTypes(
-  tenantId: string,
   fingerprint: Fingerprint,
 ): BucketKeyInfo[] {
   const buckets: BucketKeyInfo[] = [];
@@ -27,7 +26,7 @@ export function buildBucketKeysWithTypes(
   // IP + JA4 (network identity)
   if (fingerprint.ip_address && fingerprint.ja4) {
     buckets.push({
-      key: `${tenantId}#ip_ja4#${fingerprint.ip_address}#${fingerprint.ja4}`,
+      key: `ip_ja4#${fingerprint.ip_address}#${fingerprint.ja4}`,
       evidenceCode: "IP_JA4_BUCKET",
     });
   }
@@ -39,7 +38,7 @@ export function buildBucketKeysWithTypes(
     fingerprint.timezone
   ) {
     buckets.push({
-      key: `${tenantId}#gpu_screen_tz#${fingerprint.gpu_renderer}#${fingerprint.screen_dims}#${fingerprint.timezone}`,
+      key: `gpu_screen_tz#${fingerprint.gpu_renderer}#${fingerprint.screen_dims}#${fingerprint.timezone}`,
       evidenceCode: "GPU_SCREEN_TZ_BUCKET",
     });
   }
@@ -47,7 +46,7 @@ export function buildBucketKeysWithTypes(
   // Audio + Canvas (rendering identity)
   if (fingerprint.audio_hash && fingerprint.canvas_hash) {
     buckets.push({
-      key: `${tenantId}#audio_canvas#${fingerprint.audio_hash}#${fingerprint.canvas_hash}`,
+      key: `audio_canvas#${fingerprint.audio_hash}#${fingerprint.canvas_hash}`,
       evidenceCode: "AUDIO_CANVAS_BUCKET",
     });
   }
@@ -60,7 +59,7 @@ export function buildBucketKeysWithTypes(
   // Maths + WindowFeatures (FPU + browser engine signals)
   if (fingerprint.maths_hash && fingerprint.window_features_hash) {
     buckets.push({
-      key: `${tenantId}#maths_window#${fingerprint.maths_hash}#${fingerprint.window_features_hash}`,
+      key: `maths_window#${fingerprint.maths_hash}#${fingerprint.window_features_hash}`,
       evidenceCode: "MATHS_WINDOW_BUCKET",
     });
   }
@@ -68,7 +67,7 @@ export function buildBucketKeysWithTypes(
   // HtmlElement + CSS (DOM/CSS capabilities)
   if (fingerprint.html_element_hash && fingerprint.css_hash) {
     buckets.push({
-      key: `${tenantId}#html_css#${fingerprint.html_element_hash}#${fingerprint.css_hash}`,
+      key: `html_css#${fingerprint.html_element_hash}#${fingerprint.css_hash}`,
       evidenceCode: "HTML_CSS_BUCKET",
     });
   }
@@ -80,7 +79,7 @@ export function buildBucketKeysWithTypes(
     fingerprint.svg_hash
   ) {
     buckets.push({
-      key: `${tenantId}#webgl_struct#${fingerprint.webgl_hash}#${fingerprint.webgl_extensions_count}#${fingerprint.svg_hash}`,
+      key: `webgl_struct#${fingerprint.webgl_hash}#${fingerprint.webgl_extensions_count}#${fingerprint.svg_hash}`,
       evidenceCode: "WEBGL_STRUCT_BUCKET",
     });
   }
@@ -92,13 +91,8 @@ export function buildBucketKeysWithTypes(
  * Build compound bucket keys for Tier 2 matching
  * Returns just the key strings without evidence codes
  */
-export function buildBucketKeys(
-  tenantId: string,
-  fingerprint: Fingerprint,
-): string[] {
-  return buildBucketKeysWithTypes(tenantId, fingerprint).map(
-    (info) => info.key,
-  );
+export function buildBucketKeys(fingerprint: Fingerprint): string[] {
+  return buildBucketKeysWithTypes(fingerprint).map((info) => info.key);
 }
 
 /**
@@ -112,10 +106,7 @@ export const buildTier2BucketKeys = buildBucketKeys;
  * Combines IP + User-Agent hash + Screen dimensions
  * Returns null if required signals are missing
  */
-export function buildSessionAnchorKey(
-  tenantId: string,
-  fingerprint: Fingerprint,
-): string | null {
+export function buildSessionAnchorKey(fingerprint: Fingerprint): string | null {
   if (
     !fingerprint.ip_address ||
     !fingerprint.user_agent ||
@@ -125,7 +116,7 @@ export function buildSessionAnchorKey(
   }
 
   const uaHash = fnv1a(fingerprint.user_agent);
-  return `${tenantId}#session_anchor#${fingerprint.ip_address}#${uaHash}#${fingerprint.screen_dims}`;
+  return `session_anchor#${fingerprint.ip_address}#${uaHash}#${fingerprint.screen_dims}`;
 }
 
 /**
@@ -133,14 +124,11 @@ export function buildSessionAnchorKey(
  * Does NOT include screen_dims - catches dock/undock screen changes
  * Returns null if required signals are missing
  */
-export function buildIpUaAnchorKey(
-  tenantId: string,
-  fingerprint: Fingerprint,
-): string | null {
+export function buildIpUaAnchorKey(fingerprint: Fingerprint): string | null {
   if (!fingerprint.ip_address || !fingerprint.user_agent) {
     return null;
   }
 
   const uaHash = fnv1a(fingerprint.user_agent);
-  return `${tenantId}#ip_ua_anchor#${fingerprint.ip_address}#${uaHash}`;
+  return `ip_ua_anchor#${fingerprint.ip_address}#${uaHash}`;
 }

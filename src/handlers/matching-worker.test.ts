@@ -1,27 +1,22 @@
 // src/handlers/matching-worker.test.ts
 // AR-52: Updated to use DynamoDB session cache instead of Redis
-// AR-123: Added tests for NEW_DEVICE_RATE metric and tenant_id dimension
+// AR-123: Added tests for NEW_DEVICE_RATE metric
 // AR-148: Added mock for anomaly detection
 import { describe, it, expect, beforeEach, vi } from "vitest";
 
 // AR-123: Mock Powertools Metrics to verify metric emission
 // Must use vi.hoisted to create mock functions before vi.mock runs
-const {
-  mockAddMetric,
-  mockAddDimension,
-  mockPublishStoredMetrics,
-  mockDetectAllAnomalies,
-} = vi.hoisted(() => ({
-  mockAddMetric: vi.fn(),
-  mockAddDimension: vi.fn(),
-  mockPublishStoredMetrics: vi.fn(),
-  // AR-148: Mock anomaly detection
-  mockDetectAllAnomalies: vi.fn().mockReturnValue({
-    signals: [],
-    aggregateScore: 0,
-    suggestedFlags: [],
-  }),
-}));
+const { mockAddMetric, mockPublishStoredMetrics, mockDetectAllAnomalies } =
+  vi.hoisted(() => ({
+    mockAddMetric: vi.fn(),
+    mockPublishStoredMetrics: vi.fn(),
+    // AR-148: Mock anomaly detection
+    mockDetectAllAnomalies: vi.fn().mockReturnValue({
+      signals: [],
+      aggregateScore: 0,
+      suggestedFlags: [],
+    }),
+  }));
 
 // AR-148: Mock anomaly detection to avoid errors in tests
 vi.mock("../services/profile/anomaly", () => ({
@@ -31,7 +26,6 @@ vi.mock("../services/profile/anomaly", () => ({
 vi.mock("@aws-lambda-powertools/metrics", () => ({
   Metrics: vi.fn().mockImplementation(() => ({
     addMetric: mockAddMetric,
-    addDimension: mockAddDimension,
     publishStoredMetrics: mockPublishStoredMetrics,
   })),
   MetricUnit: {
@@ -92,7 +86,6 @@ describe("matching-worker handler", () => {
     vi.clearAllMocks();
     // AR-123: Reset metric mocks
     mockAddMetric.mockClear();
-    mockAddDimension.mockClear();
     mockPublishStoredMetrics.mockClear();
   });
 
@@ -122,7 +115,6 @@ describe("matching-worker handler", () => {
 
   const createFingerprintPayload = (overrides = {}) => ({
     session_id: "test-session-123",
-    tenant_id: "tenant-abc",
     fingerprint: {
       stable_hash: "hash-abc123",
       fuzzy_hash: "fuzzy-def456",
@@ -144,7 +136,6 @@ describe("matching-worker handler", () => {
       // Mock Tier 1 index lookup - found existing device
       dynamoMock.on(GetItemCommand).resolves({
         Item: marshall({
-          tenant_id: "tenant-abc",
           hash_value: "hash-abc123",
           device_id: "existing-device-123",
         }),
@@ -170,7 +161,6 @@ describe("matching-worker handler", () => {
 
       dynamoMock.on(GetItemCommand).resolves({
         Item: marshall({
-          tenant_id: "tenant-abc",
           hash_value: "hash-abc123",
           device_id: "device-123",
         }),
@@ -284,7 +274,6 @@ describe("matching-worker handler", () => {
         if (key?.hash_key?.S?.includes("cookie-success")) {
           return {
             Item: marshall({
-              tenant_id: "tenant-abc",
               hash_key: "evercookie#cookie-success",
               device_id: "device-123",
             }),
@@ -348,7 +337,6 @@ describe("matching-worker handler", () => {
       // Mock evercookie lookup success
       dynamoMock.on(GetItemCommand).resolves({
         Item: marshall({
-          tenant_id: "tenant-abc",
           hash_value: "evercookie-abc123",
           device_id: "evercookie-device-123",
         }),
@@ -397,7 +385,6 @@ describe("matching-worker handler", () => {
       // Mock Tier 1 match for regular message
       dynamoMock.on(GetItemCommand).resolves({
         Item: marshall({
-          tenant_id: "tenant-abc",
           hash_value: "hash-abc123",
           device_id: "existing-device-123",
         }),
@@ -443,37 +430,12 @@ describe("matching-worker handler", () => {
       expect(mockAddMetric).toHaveBeenCalledWith("NewDevice", "Count", 1);
     });
 
-    it("should include tenant_id dimension for all metrics", async () => {
-      const payload = createFingerprintPayload({
-        tenant_id: "test-tenant-xyz",
-        fingerprint: {
-          stable_hash: "brand-new-hash",
-          fuzzy_hash: "brand-new-fuzzy",
-        },
-      });
-
-      // Mock no match found (new device)
-      dynamoMock.on(GetItemCommand).resolves({});
-      dynamoMock.on(QueryCommand).resolves({ Items: [] });
-      sqsMock.on(SendMessageCommand).resolves({ MessageId: "msg-1" });
-
-      const event = createSQSEvent([createSQSRecord(payload)]);
-      await handler(event, mockContext, () => {});
-
-      // Verify tenant_id dimension was added
-      expect(mockAddDimension).toHaveBeenCalledWith(
-        "tenant_id",
-        "test-tenant-xyz",
-      );
-    });
-
     it("should NOT emit NEW_DEVICE_RATE when is_new_device=false", async () => {
       const payload = createFingerprintPayload();
 
       // Mock Tier 1 match (existing device)
       dynamoMock.on(GetItemCommand).resolves({
         Item: marshall({
-          tenant_id: "tenant-abc",
           hash_value: "hash-abc123",
           device_id: "existing-device-123",
         }),

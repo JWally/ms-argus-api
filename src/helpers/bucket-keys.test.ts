@@ -1,5 +1,6 @@
 // src/helpers/bucket-keys.test.ts
 // AR-117: Tests for shared bucket key utilities
+// AR-134: Tenant removed from all bucket key functions
 import { describe, it, expect } from "vitest";
 import {
   buildBucketKeys,
@@ -14,7 +15,7 @@ import type { Fingerprint } from "../types/fingerprint";
 describe("buildBucketKeys", () => {
   it("should return empty array when no compound signals available", () => {
     const fingerprint: Fingerprint = {};
-    const keys = buildBucketKeys("tenant1", fingerprint);
+    const keys = buildBucketKeys(fingerprint);
     expect(keys).toEqual([]);
   });
 
@@ -24,9 +25,9 @@ describe("buildBucketKeys", () => {
       ja4: "t13d1516h2_8daaf6152771_02713d6af862",
     };
 
-    const keys = buildBucketKeys("tenant1", fingerprint);
+    const keys = buildBucketKeys(fingerprint);
     expect(keys).toContain(
-      "tenant1#ip_ja4#192.168.1.1#t13d1516h2_8daaf6152771_02713d6af862",
+      "ip_ja4#192.168.1.1#t13d1516h2_8daaf6152771_02713d6af862",
     );
   });
 
@@ -37,7 +38,7 @@ describe("buildBucketKeys", () => {
       timezone: "America/New_York",
     };
 
-    const keys = buildBucketKeys("tenant1", fingerprint);
+    const keys = buildBucketKeys(fingerprint);
     expect(keys).toHaveLength(1);
     expect(keys[0]).toContain("gpu_screen_tz");
     expect(keys[0]).toContain("1920x1080");
@@ -49,8 +50,8 @@ describe("buildBucketKeys", () => {
       canvas_hash: "canvas456",
     };
 
-    const keys = buildBucketKeys("tenant1", fingerprint);
-    expect(keys).toContain("tenant1#audio_canvas#audio123#canvas456");
+    const keys = buildBucketKeys(fingerprint);
+    expect(keys).toContain("audio_canvas#audio123#canvas456");
   });
 
   it("should build all bucket keys when all signals present", () => {
@@ -64,7 +65,7 @@ describe("buildBucketKeys", () => {
       canvas_hash: "canvas",
     };
 
-    const keys = buildBucketKeys("tenant1", fingerprint);
+    const keys = buildBucketKeys(fingerprint);
     expect(keys).toHaveLength(3);
   });
 
@@ -75,10 +76,8 @@ describe("buildBucketKeys", () => {
       window_features_hash: "winfeatures456def",
     };
 
-    const keys = buildBucketKeys("tenant1", fingerprint);
-    expect(keys).toContain(
-      "tenant1#maths_window#maths123abc#winfeatures456def",
-    );
+    const keys = buildBucketKeys(fingerprint);
+    expect(keys).toContain("maths_window#maths123abc#winfeatures456def");
   });
 
   it("should build html_css bucket key", () => {
@@ -87,8 +86,8 @@ describe("buildBucketKeys", () => {
       css_hash: "css012jkl",
     };
 
-    const keys = buildBucketKeys("tenant1", fingerprint);
-    expect(keys).toContain("tenant1#html_css#html789ghi#css012jkl");
+    const keys = buildBucketKeys(fingerprint);
+    expect(keys).toContain("html_css#html789ghi#css012jkl");
   });
 
   it("should build webgl_struct bucket key", () => {
@@ -98,8 +97,8 @@ describe("buildBucketKeys", () => {
       svg_hash: "svg678pqr",
     };
 
-    const keys = buildBucketKeys("tenant1", fingerprint);
-    expect(keys).toContain("tenant1#webgl_struct#webgl345mno#65#svg678pqr");
+    const keys = buildBucketKeys(fingerprint);
+    expect(keys).toContain("webgl_struct#webgl345mno#65#svg678pqr");
   });
 
   it("should build all 6 bucket types when all signals present", () => {
@@ -122,7 +121,7 @@ describe("buildBucketKeys", () => {
       svg_hash: "svg678",
     };
 
-    const keys = buildBucketKeys("tenant1", fingerprint);
+    const keys = buildBucketKeys(fingerprint);
     expect(keys).toHaveLength(6);
     expect(keys.filter((k) => k.includes("ip_ja4"))).toHaveLength(1);
     expect(keys.filter((k) => k.includes("gpu_screen_tz"))).toHaveLength(1);
@@ -142,15 +141,15 @@ describe("buildTier2BucketKeys (alias)", () => {
       canvas_hash: "canvas456",
     };
 
-    const keys1 = buildBucketKeys("tenant1", fingerprint);
-    const keys2 = buildTier2BucketKeys("tenant1", fingerprint);
+    const keys1 = buildBucketKeys(fingerprint);
+    const keys2 = buildTier2BucketKeys(fingerprint);
 
     expect(keys1).toEqual(keys2);
   });
 
   it("should return empty array when no compound signals", () => {
     const fingerprint: Fingerprint = {};
-    const keys = buildTier2BucketKeys("tenant1", fingerprint);
+    const keys = buildTier2BucketKeys(fingerprint);
     expect(keys).toEqual([]);
   });
 });
@@ -174,7 +173,7 @@ describe("buildBucketKeysWithTypes", () => {
       svg_hash: "svg678",
     };
 
-    const results = buildBucketKeysWithTypes("tenant1", fingerprint);
+    const results = buildBucketKeysWithTypes(fingerprint);
     expect(results).toHaveLength(6);
 
     const evidenceCodes = results.map((r) => r.evidenceCode);
@@ -192,7 +191,7 @@ describe("buildBucketKeysWithTypes", () => {
       ja4: "ja4hash",
     };
 
-    const results = buildBucketKeysWithTypes("tenant1", fingerprint);
+    const results = buildBucketKeysWithTypes(fingerprint);
     expect(results).toHaveLength(1);
     expect(results[0].evidenceCode).toBe("IP_JA4_BUCKET");
     expect(results[0].key).toContain("ip_ja4");
@@ -205,7 +204,7 @@ describe("buildBucketKeysWithTypes", () => {
       timezone: "UTC",
     };
 
-    const results = buildBucketKeysWithTypes("tenant1", fingerprint);
+    const results = buildBucketKeysWithTypes(fingerprint);
     expect(results).toHaveLength(1);
     expect(results[0].evidenceCode).toBe("GPU_SCREEN_TZ_BUCKET");
   });
@@ -216,7 +215,7 @@ describe("buildBucketKeysWithTypes", () => {
       canvas_hash: "canvas",
     };
 
-    const results = buildBucketKeysWithTypes("tenant1", fingerprint);
+    const results = buildBucketKeysWithTypes(fingerprint);
     expect(results).toHaveLength(1);
     expect(results[0].evidenceCode).toBe("AUDIO_CANVAS_BUCKET");
   });
@@ -225,19 +224,19 @@ describe("buildBucketKeysWithTypes", () => {
 describe("partial signals", () => {
   it("should not build ip_ja4 bucket when only ip_address present", () => {
     const fingerprint: Fingerprint = { ip_address: "10.0.0.1" };
-    const keys = buildBucketKeys("tenant1", fingerprint);
+    const keys = buildBucketKeys(fingerprint);
     expect(keys).toHaveLength(0);
   });
 
   it("should not build ip_ja4 bucket when only ja4 present", () => {
     const fingerprint: Fingerprint = { ja4: "ja4hash" };
-    const keys = buildBucketKeys("tenant1", fingerprint);
+    const keys = buildBucketKeys(fingerprint);
     expect(keys).toHaveLength(0);
   });
 
   it("should not build gpu_screen_tz bucket when only gpu_renderer present", () => {
     const fingerprint: Fingerprint = { gpu_renderer: "GPU" };
-    const keys = buildBucketKeys("tenant1", fingerprint);
+    const keys = buildBucketKeys(fingerprint);
     expect(keys).toHaveLength(0);
   });
 
@@ -246,25 +245,25 @@ describe("partial signals", () => {
       gpu_renderer: "GPU",
       screen_dims: "1080x720",
     };
-    const keys = buildBucketKeys("tenant1", fingerprint);
+    const keys = buildBucketKeys(fingerprint);
     expect(keys).toHaveLength(0);
   });
 
   it("should not build audio_canvas bucket when only audio_hash present", () => {
     const fingerprint: Fingerprint = { audio_hash: "audio123" };
-    const keys = buildBucketKeys("tenant1", fingerprint);
+    const keys = buildBucketKeys(fingerprint);
     expect(keys).toHaveLength(0);
   });
 
   it("should not build audio_canvas bucket when only canvas_hash present", () => {
     const fingerprint: Fingerprint = { canvas_hash: "canvas456" };
-    const keys = buildBucketKeys("tenant1", fingerprint);
+    const keys = buildBucketKeys(fingerprint);
     expect(keys).toHaveLength(0);
   });
 
   it("should not build maths_window bucket when only maths_hash present", () => {
     const fingerprint: Fingerprint = { maths_hash: "maths123" };
-    const keys = buildBucketKeys("tenant1", fingerprint);
+    const keys = buildBucketKeys(fingerprint);
     expect(keys).toHaveLength(0);
   });
 
@@ -273,7 +272,7 @@ describe("partial signals", () => {
       webgl_hash: "webgl345",
       svg_hash: "svg678",
     };
-    const keys = buildBucketKeys("tenant1", fingerprint);
+    const keys = buildBucketKeys(fingerprint);
     expect(keys).toHaveLength(0);
   });
 
@@ -283,7 +282,7 @@ describe("partial signals", () => {
       webgl_extensions_count: 0,
       svg_hash: "svg678",
     };
-    const keys = buildBucketKeys("tenant1", fingerprint);
+    const keys = buildBucketKeys(fingerprint);
     expect(keys).toHaveLength(1);
     expect(keys[0]).toContain("webgl_struct");
     expect(keys[0]).toContain("#0#");
@@ -296,7 +295,7 @@ describe("buildSessionAnchorKey", () => {
       user_agent: "Mozilla/5.0 Chrome/120",
       screen_dims: "1920x1080",
     };
-    const key = buildSessionAnchorKey("tenant1", fingerprint);
+    const key = buildSessionAnchorKey(fingerprint);
     expect(key).toBeNull();
   });
 
@@ -305,7 +304,7 @@ describe("buildSessionAnchorKey", () => {
       ip_address: "192.168.1.1",
       screen_dims: "1920x1080",
     };
-    const key = buildSessionAnchorKey("tenant1", fingerprint);
+    const key = buildSessionAnchorKey(fingerprint);
     expect(key).toBeNull();
   });
 
@@ -314,30 +313,30 @@ describe("buildSessionAnchorKey", () => {
       ip_address: "192.168.1.1",
       user_agent: "Mozilla/5.0 Chrome/120",
     };
-    const key = buildSessionAnchorKey("tenant1", fingerprint);
+    const key = buildSessionAnchorKey(fingerprint);
     expect(key).toBeNull();
   });
 
   it("should return null when all required signals missing", () => {
     const fingerprint: Fingerprint = {};
-    const key = buildSessionAnchorKey("tenant1", fingerprint);
+    const key = buildSessionAnchorKey(fingerprint);
     expect(key).toBeNull();
   });
 
-  it("should build correct key format: tenant#session_anchor#ip#uaHash#screen", () => {
+  it("should build correct key format: session_anchor#ip#uaHash#screen", () => {
     const fingerprint: Fingerprint = {
       ip_address: "192.168.1.100",
       user_agent: "Mozilla/5.0 (Windows NT 10.0) Chrome/120.0.0.0",
       screen_dims: "1920x1080",
     };
-    const key = buildSessionAnchorKey("tenant1", fingerprint);
+    const key = buildSessionAnchorKey(fingerprint);
 
     expect(key).not.toBeNull();
-    expect(key).toContain("tenant1#session_anchor#");
+    expect(key).toContain("session_anchor#");
     expect(key).toContain("192.168.1.100");
     expect(key).toContain("1920x1080");
-    // Should have 5 parts: tenant, type, ip, uaHash, screen
-    expect(key!.split("#")).toHaveLength(5);
+    // Should have 4 parts: type, ip, uaHash, screen
+    expect(key!.split("#")).toHaveLength(4);
   });
 
   it("should hash user_agent with fnv1a, not include raw string", () => {
@@ -347,7 +346,7 @@ describe("buildSessionAnchorKey", () => {
       user_agent: userAgent,
       screen_dims: "1080x720",
     };
-    const key = buildSessionAnchorKey("tenant1", fingerprint);
+    const key = buildSessionAnchorKey(fingerprint);
 
     expect(key).not.toBeNull();
     // Should NOT contain the raw user agent string
@@ -364,23 +363,10 @@ describe("buildSessionAnchorKey", () => {
       screen_dims: "1920x1080",
     };
 
-    const key1 = buildSessionAnchorKey("tenant1", fingerprint);
-    const key2 = buildSessionAnchorKey("tenant1", fingerprint);
+    const key1 = buildSessionAnchorKey(fingerprint);
+    const key2 = buildSessionAnchorKey(fingerprint);
 
     expect(key1).toBe(key2);
-  });
-
-  it("should produce different keys for different tenants", () => {
-    const fingerprint: Fingerprint = {
-      ip_address: "192.168.1.100",
-      user_agent: "Mozilla/5.0 Chrome/120",
-      screen_dims: "1920x1080",
-    };
-
-    const key1 = buildSessionAnchorKey("tenant1", fingerprint);
-    const key2 = buildSessionAnchorKey("tenant2", fingerprint);
-
-    expect(key1).not.toBe(key2);
   });
 
   it("should handle empty string signals as falsy", () => {
@@ -389,7 +375,7 @@ describe("buildSessionAnchorKey", () => {
       user_agent: "Mozilla/5.0",
       screen_dims: "1920x1080",
     };
-    const key = buildSessionAnchorKey("tenant1", fingerprint);
+    const key = buildSessionAnchorKey(fingerprint);
     expect(key).toBeNull();
   });
 });
@@ -399,7 +385,7 @@ describe("buildIpUaAnchorKey", () => {
     const fingerprint: Fingerprint = {
       user_agent: "Mozilla/5.0 Chrome/120",
     };
-    const key = buildIpUaAnchorKey("tenant1", fingerprint);
+    const key = buildIpUaAnchorKey(fingerprint);
     expect(key).toBeNull();
   });
 
@@ -407,28 +393,28 @@ describe("buildIpUaAnchorKey", () => {
     const fingerprint: Fingerprint = {
       ip_address: "192.168.1.1",
     };
-    const key = buildIpUaAnchorKey("tenant1", fingerprint);
+    const key = buildIpUaAnchorKey(fingerprint);
     expect(key).toBeNull();
   });
 
   it("should return null when both required signals missing", () => {
     const fingerprint: Fingerprint = {};
-    const key = buildIpUaAnchorKey("tenant1", fingerprint);
+    const key = buildIpUaAnchorKey(fingerprint);
     expect(key).toBeNull();
   });
 
-  it("should build correct key format: tenant#ip_ua_anchor#ip#uaHash", () => {
+  it("should build correct key format: ip_ua_anchor#ip#uaHash", () => {
     const fingerprint: Fingerprint = {
       ip_address: "192.168.1.100",
       user_agent: "Mozilla/5.0 (Windows NT 10.0) Chrome/120.0.0.0",
     };
-    const key = buildIpUaAnchorKey("tenant1", fingerprint);
+    const key = buildIpUaAnchorKey(fingerprint);
 
     expect(key).not.toBeNull();
-    expect(key).toContain("tenant1#ip_ua_anchor#");
+    expect(key).toContain("ip_ua_anchor#");
     expect(key).toContain("192.168.1.100");
-    // Should have 4 parts: tenant, type, ip, uaHash
-    expect(key!.split("#")).toHaveLength(4);
+    // Should have 3 parts: type, ip, uaHash
+    expect(key!.split("#")).toHaveLength(3);
   });
 
   it("should NOT include screen_dims in key (by design)", () => {
@@ -437,13 +423,13 @@ describe("buildIpUaAnchorKey", () => {
       user_agent: "Mozilla/5.0 Chrome/120",
       screen_dims: "1920x1080",
     };
-    const key = buildIpUaAnchorKey("tenant1", fingerprint);
+    const key = buildIpUaAnchorKey(fingerprint);
 
     expect(key).not.toBeNull();
     // Should NOT contain screen dims
     expect(key).not.toContain("1920x1080");
-    // Should only have 4 parts (no screen)
-    expect(key!.split("#")).toHaveLength(4);
+    // Should only have 3 parts (no screen)
+    expect(key!.split("#")).toHaveLength(3);
   });
 
   it("should hash user_agent with fnv1a, not include raw string", () => {
@@ -453,7 +439,7 @@ describe("buildIpUaAnchorKey", () => {
       ip_address: "10.0.0.1",
       user_agent: userAgent,
     };
-    const key = buildIpUaAnchorKey("tenant1", fingerprint);
+    const key = buildIpUaAnchorKey(fingerprint);
 
     expect(key).not.toBeNull();
     // Should NOT contain the raw user agent string
@@ -469,22 +455,10 @@ describe("buildIpUaAnchorKey", () => {
       user_agent: "Mozilla/5.0 Firefox/120",
     };
 
-    const key1 = buildIpUaAnchorKey("tenant1", fingerprint);
-    const key2 = buildIpUaAnchorKey("tenant1", fingerprint);
+    const key1 = buildIpUaAnchorKey(fingerprint);
+    const key2 = buildIpUaAnchorKey(fingerprint);
 
     expect(key1).toBe(key2);
-  });
-
-  it("should produce different keys for different tenants", () => {
-    const fingerprint: Fingerprint = {
-      ip_address: "192.168.1.100",
-      user_agent: "Mozilla/5.0 Firefox/120",
-    };
-
-    const key1 = buildIpUaAnchorKey("tenant1", fingerprint);
-    const key2 = buildIpUaAnchorKey("tenant2", fingerprint);
-
-    expect(key1).not.toBe(key2);
   });
 
   it("should handle empty string signals as falsy", () => {
@@ -492,7 +466,7 @@ describe("buildIpUaAnchorKey", () => {
       ip_address: "192.168.1.100",
       user_agent: "",
     };
-    const key = buildIpUaAnchorKey("tenant1", fingerprint);
+    const key = buildIpUaAnchorKey(fingerprint);
     expect(key).toBeNull();
   });
 });
@@ -505,8 +479,8 @@ describe("parity: session anchor vs ip_ua anchor", () => {
       screen_dims: "1920x1080",
     };
 
-    const sessionKey = buildSessionAnchorKey("tenant1", fingerprint);
-    const ipUaKey = buildIpUaAnchorKey("tenant1", fingerprint);
+    const sessionKey = buildSessionAnchorKey(fingerprint);
+    const ipUaKey = buildIpUaAnchorKey(fingerprint);
 
     expect(sessionKey).not.toBeNull();
     expect(ipUaKey).not.toBeNull();
@@ -515,9 +489,9 @@ describe("parity: session anchor vs ip_ua anchor", () => {
     const sessionParts = sessionKey!.split("#");
     const ipUaParts = ipUaKey!.split("#");
 
-    // UA hash is at index 3 in both
-    const sessionUaHash = sessionParts[3];
-    const ipUaHash = ipUaParts[3];
+    // UA hash is at index 2 in both (after removing tenant)
+    const sessionUaHash = sessionParts[2];
+    const ipUaHash = ipUaParts[2];
 
     expect(sessionUaHash).toBe(ipUaHash);
   });
@@ -529,8 +503,8 @@ describe("parity: session anchor vs ip_ua anchor", () => {
       screen_dims: "2560x1440",
     };
 
-    const sessionKey = buildSessionAnchorKey("tenant1", fingerprint);
-    const ipUaKey = buildIpUaAnchorKey("tenant1", fingerprint);
+    const sessionKey = buildSessionAnchorKey(fingerprint);
+    const ipUaKey = buildIpUaAnchorKey(fingerprint);
 
     expect(sessionKey).toContain("2560x1440");
     expect(ipUaKey).not.toContain("2560x1440");
@@ -543,10 +517,10 @@ describe("edge cases", () => {
       ip_address: "192.168.1.1",
       ja4: "ja4#with#hashes",
     };
-    const keys = buildBucketKeys("tenant1", fingerprint);
+    const keys = buildBucketKeys(fingerprint);
     expect(keys).toHaveLength(1);
     // Key will contain the hash characters as-is
-    expect(keys[0]).toBe("tenant1#ip_ja4#192.168.1.1#ja4#with#hashes");
+    expect(keys[0]).toBe("ip_ja4#192.168.1.1#ja4#with#hashes");
   });
 
   it("should handle unicode in GPU renderer", () => {
@@ -555,7 +529,7 @@ describe("edge cases", () => {
       screen_dims: "1920x1080",
       timezone: "Europe/Paris",
     };
-    const keys = buildBucketKeys("tenant1", fingerprint);
+    const keys = buildBucketKeys(fingerprint);
     expect(keys).toHaveLength(1);
     expect(keys[0]).toContain("\u2122");
   });
@@ -568,7 +542,7 @@ describe("edge cases", () => {
       screen_dims: "1920x1080",
     };
 
-    const key = buildSessionAnchorKey("tenant1", fingerprint);
+    const key = buildSessionAnchorKey(fingerprint);
     expect(key).not.toBeNull();
     // Key should be reasonably sized due to hashing
     expect(key!.length).toBeLessThan(200);

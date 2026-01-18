@@ -78,7 +78,6 @@ describe("profile-updater handler", () => {
   });
 
   const createProfileUpdatePayload = (overrides = {}) => ({
-    tenant_id: "tenant-abc",
     device_id: "device-123",
     fingerprint: {
       stable_hash: "hash-abc123",
@@ -139,7 +138,6 @@ describe("profile-updater handler", () => {
       // Mock existing profile with correct DeviceProfile shape
       dynamoMock.on(GetItemCommand).resolves({
         Item: marshall({
-          tenant_id: "tenant-abc",
           device_id: "device-123",
           stable_hash: "old-hash",
           first_seen_at: Date.now() - 86400000, // 1 day ago
@@ -203,7 +201,6 @@ describe("profile-updater handler", () => {
       // Mock existing profile with same fingerprint (correct DeviceProfile shape)
       dynamoMock.on(GetItemCommand).resolves({
         Item: marshall({
-          tenant_id: "tenant-abc",
           device_id: "device-123",
           stable_hash: "hash-abc123",
           fuzzy_hash: "fuzzy-def456",
@@ -236,7 +233,6 @@ describe("profile-updater handler", () => {
       // Mock existing profile with different fingerprint (correct DeviceProfile shape)
       dynamoMock.on(GetItemCommand).resolves({
         Item: marshall({
-          tenant_id: "tenant-abc",
           device_id: "device-123",
           stable_hash: "old-hash",
           first_seen_at: Date.now() - 86400000,

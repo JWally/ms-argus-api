@@ -19,14 +19,12 @@ export interface Tier05IdentityDeps {
  */
 export async function tier05PublicKeyLookup(
   deps: Tier05IdentityDeps,
-  tenantId: string,
   publicKey: string,
 ): Promise<MatchResult | null> {
   const result = await deps.dynamodb.send(
     new GetItemCommand({
       TableName: deps.tier1IndexTable,
       Key: {
-        tenant_id: { S: tenantId },
         hash_key: { S: `pubkey#${publicKey}` },
       },
     }),
@@ -53,14 +51,12 @@ export async function tier05PublicKeyLookup(
  */
 export async function tier05CookieLookup(
   deps: Tier05IdentityDeps,
-  tenantId: string,
   evercookieId: string,
 ): Promise<MatchResult | null> {
   const result = await deps.dynamodb.send(
     new GetItemCommand({
       TableName: deps.tier1IndexTable,
       Key: {
-        tenant_id: { S: tenantId },
         hash_key: { S: `evercookie#${evercookieId}` },
       },
     }),
@@ -88,14 +84,12 @@ export async function tier05CookieLookup(
  */
 export async function tier05SigintIdLookup(
   deps: Tier05IdentityDeps,
-  tenantId: string,
   sigintId: string,
 ): Promise<MatchResult | null> {
   const result = await deps.dynamodb.send(
     new GetItemCommand({
       TableName: deps.tier1IndexTable,
       Key: {
-        tenant_id: { S: tenantId },
         hash_key: { S: `sigint#${sigintId}` },
       },
     }),

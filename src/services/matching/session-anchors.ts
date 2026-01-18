@@ -30,11 +30,8 @@ export interface SessionAnchorDeps {
  * AR-82: Build session anchor bucket key for ephemeral matching
  * AR-117: Delegates to shared bucket-keys helper
  */
-export function buildSessionAnchorKey(
-  tenantId: string,
-  fingerprint: Fingerprint,
-): string | null {
-  return buildSessionAnchorKeyHelper(tenantId, fingerprint);
+export function buildSessionAnchorKey(fingerprint: Fingerprint): string | null {
+  return buildSessionAnchorKeyHelper(fingerprint);
 }
 
 /**
@@ -44,10 +41,9 @@ export function buildSessionAnchorKey(
  */
 export async function sessionAnchorLookup(
   deps: SessionAnchorDeps,
-  tenantId: string,
   fingerprint: Fingerprint,
 ): Promise<MatchResult | null> {
-  const bucketKey = buildSessionAnchorKey(tenantId, fingerprint);
+  const bucketKey = buildSessionAnchorKey(fingerprint);
   if (!bucketKey) {
     return null;
   }
@@ -88,7 +84,7 @@ export async function sessionAnchorLookup(
 
     // Check if within 10-minute validity window
     if (createdAt && now - createdAt <= validityWindowMs) {
-      const profile = await loadProfile(deps, tenantId, deviceId);
+      const profile = await loadProfile(deps, deviceId);
       return {
         device_id: deviceId,
         confidence: 0.65, // Lower confidence than multi-bucket tier2 matches
@@ -108,11 +104,8 @@ export async function sessionAnchorLookup(
  * AR-94: Build IP+UA-only anchor bucket key for ephemeral matching
  * AR-117: Delegates to shared bucket-keys helper
  */
-export function buildIpUaAnchorKey(
-  tenantId: string,
-  fingerprint: Fingerprint,
-): string | null {
-  return buildIpUaAnchorKeyHelper(tenantId, fingerprint);
+export function buildIpUaAnchorKey(fingerprint: Fingerprint): string | null {
+  return buildIpUaAnchorKeyHelper(fingerprint);
 }
 
 /**
@@ -122,10 +115,9 @@ export function buildIpUaAnchorKey(
  */
 export async function ipUaAnchorLookup(
   deps: SessionAnchorDeps,
-  tenantId: string,
   fingerprint: Fingerprint,
 ): Promise<MatchResult | null> {
-  const bucketKey = buildIpUaAnchorKey(tenantId, fingerprint);
+  const bucketKey = buildIpUaAnchorKey(fingerprint);
   if (!bucketKey) {
     return null;
   }
@@ -166,7 +158,7 @@ export async function ipUaAnchorLookup(
 
     // Check if within 3-minute validity window
     if (createdAt && now - createdAt <= validityWindowMs) {
-      const profile = await loadProfile(deps, tenantId, deviceId);
+      const profile = await loadProfile(deps, deviceId);
       return {
         device_id: deviceId,
         confidence: 0.6, // Lower than session anchor (less specific)
@@ -187,14 +179,12 @@ export async function ipUaAnchorLookup(
  */
 async function loadProfile(
   deps: SessionAnchorDeps,
-  tenantId: string,
   deviceId: string,
 ): Promise<{ risk_score: number; flags: string[] } | null> {
   const result = await deps.dynamodb.send(
     new GetItemCommand({
       TableName: deps.profilesTable,
       Key: {
-        tenant_id: { S: tenantId },
         device_id: { S: deviceId },
       },
       ProjectionExpression: "risk_score, flags",

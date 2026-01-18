@@ -18,14 +18,12 @@ export interface Tier1HashDeps {
  */
 export async function tier1HashMatch(
   deps: Tier1HashDeps,
-  tenantId: string,
   fingerprint: Fingerprint,
 ): Promise<MatchResult | null> {
   // Try stable hash first (higher confidence)
   if (fingerprint.stable_hash) {
     const result = await lookupTier1Index(
       deps,
-      tenantId,
       `stable#${fingerprint.stable_hash}`,
     );
     if (result) {
@@ -45,7 +43,6 @@ export async function tier1HashMatch(
   if (fingerprint.fuzzy_hash) {
     const result = await lookupTier1Index(
       deps,
-      tenantId,
       `fuzzy#${fingerprint.fuzzy_hash}`,
     );
     if (result) {
@@ -69,7 +66,6 @@ export async function tier1HashMatch(
  */
 async function lookupTier1Index(
   deps: Tier1HashDeps,
-  tenantId: string,
   hashKey: string,
 ): Promise<{
   device_id: string;
@@ -80,7 +76,6 @@ async function lookupTier1Index(
     new GetItemCommand({
       TableName: deps.tier1IndexTable,
       Key: {
-        tenant_id: { S: tenantId },
         hash_key: { S: hashKey },
       },
     }),

@@ -23,7 +23,6 @@ import {
  * Type for Tier 1 index entry
  */
 export interface Tier1IndexEntry {
-  tenant_id: string;
   hash_key: string;
   device_id: string;
   ttl: number;
@@ -58,7 +57,6 @@ function sleep(ms: number): Promise<void> {
  * Build Tier 1 index entries for a fingerprint
  */
 export function buildTier1IndexEntries(
-  tenantId: string,
   deviceId: string,
   fingerprint: Fingerprint,
   ttl: number,
@@ -67,7 +65,6 @@ export function buildTier1IndexEntries(
 
   if (fingerprint.evercookie_id) {
     entries.push({
-      tenant_id: tenantId,
       hash_key: `evercookie#${fingerprint.evercookie_id}`,
       device_id: deviceId,
       ttl,
@@ -77,7 +74,6 @@ export function buildTier1IndexEntries(
   // AR-81: Third-party cookie from sigint CloudFront edge
   if (fingerprint.sigint_id) {
     entries.push({
-      tenant_id: tenantId,
       hash_key: `sigint#${fingerprint.sigint_id}`,
       device_id: deviceId,
       ttl,
@@ -87,7 +83,6 @@ export function buildTier1IndexEntries(
   // AR-64: ECDSA public key for cryptographic device identity
   if (fingerprint.public_key) {
     entries.push({
-      tenant_id: tenantId,
       hash_key: `pubkey#${fingerprint.public_key}`,
       device_id: deviceId,
       ttl,
@@ -96,7 +91,6 @@ export function buildTier1IndexEntries(
 
   if (fingerprint.stable_hash) {
     entries.push({
-      tenant_id: tenantId,
       hash_key: `stable#${fingerprint.stable_hash}`,
       device_id: deviceId,
       ttl,
@@ -105,7 +99,6 @@ export function buildTier1IndexEntries(
 
   if (fingerprint.fuzzy_hash) {
     entries.push({
-      tenant_id: tenantId,
       hash_key: `fuzzy#${fingerprint.fuzzy_hash}`,
       device_id: deviceId,
       ttl,
@@ -168,11 +161,8 @@ export async function batchWriteTier1Indexes(
  * Build Tier 2 bucket keys for compound matching
  * AR-117: Delegates to shared bucket-keys helper
  */
-export function buildTier2BucketKeys(
-  tenantId: string,
-  fingerprint: Fingerprint,
-): string[] {
-  return buildTier2BucketKeysHelper(tenantId, fingerprint);
+export function buildTier2BucketKeys(fingerprint: Fingerprint): string[] {
+  return buildTier2BucketKeysHelper(fingerprint);
 }
 
 /**
@@ -264,11 +254,8 @@ export async function incrementBucketCardinalities(
  * AR-82: Build session anchor bucket key for ephemeral short-window matching
  * AR-117: Delegates to shared bucket-keys helper
  */
-export function buildSessionAnchorKey(
-  tenantId: string,
-  fingerprint: Fingerprint,
-): string | null {
-  return buildSessionAnchorKeyHelper(tenantId, fingerprint);
+export function buildSessionAnchorKey(fingerprint: Fingerprint): string | null {
+  return buildSessionAnchorKeyHelper(fingerprint);
 }
 
 /**
@@ -301,11 +288,8 @@ export async function writeSessionAnchorBucket(
  * AR-94: Build IP+UA-only anchor bucket key for ephemeral matching
  * AR-117: Delegates to shared bucket-keys helper
  */
-export function buildIpUaAnchorKey(
-  tenantId: string,
-  fingerprint: Fingerprint,
-): string | null {
-  return buildIpUaAnchorKeyHelper(tenantId, fingerprint);
+export function buildIpUaAnchorKey(fingerprint: Fingerprint): string | null {
+  return buildIpUaAnchorKeyHelper(fingerprint);
 }
 
 /**

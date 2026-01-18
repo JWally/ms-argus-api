@@ -105,7 +105,7 @@ async function processRecord(
 ): Promise<void> {
   const startTime = Date.now();
   const rawPayload: ProfileUpdatePayload = JSON.parse(record.body);
-  const { tenant_id, device_id } = rawPayload;
+  const { device_id } = rawPayload;
 
   // AR-73: Normalize fingerprint from web library nested format to flat API format
   // AR-81: Also extracts sigint data (third-party cookie, JA3/JA4, TCP probe)
@@ -119,7 +119,7 @@ async function processRecord(
     raw_fingerprint: rawPayload.fingerprint,
   };
 
-  logger.info("Processing profile update", { tenant_id, device_id });
+  logger.info("Processing profile update", { device_id });
 
   const result = await service.processProfileUpdate(payload);
 
@@ -150,7 +150,6 @@ async function processRecord(
   const duration = Date.now() - startTime;
   metrics.addMetric("ProfileUpdateDuration", MetricUnit.Milliseconds, duration);
   logger.info("Profile update complete", {
-    tenant_id,
     device_id,
     duration,
     tier1Writes: result.tier1Writes,

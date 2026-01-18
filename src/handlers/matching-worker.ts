@@ -135,17 +135,14 @@ async function processRecord(
 
   const startTime = Date.now();
   const payload: FingerprintPayload = JSON.parse(record.body);
-  const { session_id, tenant_id } = payload;
-
-  // AR-123: Add tenant_id dimension for all metrics in this request
-  metrics.addDimension("tenant_id", tenant_id);
+  const { session_id } = payload;
 
   // AR-73: Normalize fingerprint from web library nested format to flat API format
   // This extracts fields like canvas_hash, gpu_renderer, screen_dims from nested objects
   // AR-81: Also extracts sigint data (third-party cookie, JA3/JA4, TCP probe)
   const fingerprint = normalizeFingerprint(payload.fingerprint, payload.sigint);
 
-  logger.info("Processing fingerprint", { session_id, tenant_id });
+  logger.info("Processing fingerprint", { session_id });
 
   // Generate idempotency key for dedup
   const idempotencyKey = generateIdempotencyKey(session_id, fingerprint);
@@ -165,10 +162,7 @@ async function processRecord(
   let matchResult;
   let tier2TimedOut = false;
   try {
-    const matchResponse = await service.runTieredMatching(
-      tenant_id,
-      fingerprint,
-    );
+    const matchResponse = await service.runTieredMatching(fingerprint);
     matchResult = matchResponse.result;
     tier2TimedOut = matchResponse.tier2TimedOut;
     recordTierMetric(matchResult.match_tier, matchResult.is_new_device);
@@ -176,7 +170,7 @@ async function processRecord(
     // Track Tier2 timeouts for monitoring "fail open" scenarios
     if (tier2TimedOut) {
       metrics.addMetric("Tier2Timeout", MetricUnit.Count, 1);
-      logger.warn("Tier2 matching timed out", { session_id, tenant_id });
+      logger.warn("Tier2 matching timed out", { session_id });
     }
   } catch (error) {
     // On matching failure, write degraded status
@@ -212,7 +206,6 @@ async function processRecord(
 
   // Queue profile update (pass is_new_device for flag computation)
   await service.queueProfileUpdate(
-    tenant_id,
     matchResult.device_id,
     payload,
     matchResult.is_new_device,
@@ -224,7 +217,6 @@ async function processRecord(
   // AR-57: Emit observation to Firehose (non-blocking)
   await emitObservation({
     sessionId: session_id,
-    tenantId: tenant_id,
     matchResult,
     tier2TimedOut,
     durationMs: duration,
@@ -267,7 +259,6 @@ function recordTierMetric(tier: number, isNewDevice: boolean): void {
  */
 async function emitObservation(params: {
   sessionId: string;
-  tenantId: string;
   matchResult: MatchResult;
   tier2TimedOut: boolean;
   durationMs: number;
@@ -279,7 +270,6 @@ async function emitObservation(params: {
 
   const observation = {
     session_id: params.sessionId,
-    tenant_id: params.tenantId,
     device_id: params.matchResult.device_id,
     match_tier: params.matchResult.match_tier,
     is_new_device: params.matchResult.is_new_device,

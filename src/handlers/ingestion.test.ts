@@ -109,7 +109,6 @@ describe("ingestion handler", () => {
   // Helper to create valid fingerprint payload
   const createValidPayload = (sessionId = "test-session-123") => ({
     session_id: sessionId,
-    tenant_id: "demo",
     fingerprint: {
       hashes: { stable: "abc123", fuzzy: "def456" },
       loose: { screen: { width: 1920, height: 1080 } },
@@ -182,7 +181,6 @@ describe("ingestion handler", () => {
       // Create a payload that would exceed 64KB uncompressed
       const largeData = {
         session_id: "large-binary-payload-session",
-        tenant_id: "demo",
         fingerprint: {
           hashes: { stable: "abc", fuzzy: "def" },
           loose: {
@@ -260,7 +258,6 @@ describe("ingestion handler", () => {
     it("should preserve sigint data in binary gzipped payload", async () => {
       const payload = {
         session_id: "sigint-binary-test-session",
-        tenant_id: "demo",
         fingerprint: { hashes: { stable: "abc" } },
         sigint: {
           tls: { ja4: "t13d1516h2_8daaf6152771_b0da82dd1658" },
@@ -522,48 +519,6 @@ describe("ingestion handler", () => {
       const result = asResult(await handler(event, mockContext));
 
       expect(result.statusCode).toBe(413);
-    });
-  });
-
-  // AR-124: Non-production (STAGE not set or not "prod") allows default tenant fallback
-  describe("tenant isolation non-production fallback (AR-124)", () => {
-    it("should allow default tenant fallback when STAGE is not set (dev/test)", async () => {
-      // STAGE is not set in test environment, so default fallback should work
-      const payload = createValidPayload("dev-fallback-test-session");
-      const event = createApiEvent(JSON.stringify(payload));
-      // No x-tenant-id header, no x-api-key header
-
-      const result = asResult(await handler(event, mockContext));
-
-      // Should succeed (204) - dev allows default fallback
-      expect(result.statusCode).toBe(204);
-
-      // Verify SQS was called with "default" tenant
-      const sqsCalls = sqsMock.commandCalls(SendMessageCommand);
-      expect(sqsCalls.length).toBe(1);
-      const sentBody = JSON.parse(sqsCalls[0].args[0].input.MessageBody!);
-      expect(sentBody.tenant_id).toBe("default");
-    });
-
-    it("should use x-tenant-id header when provided in non-prod", async () => {
-      const payload = createValidPayload("explicit-tenant-test-session");
-      const event: APIGatewayProxyEventV2 = {
-        ...createApiEvent(JSON.stringify(payload)),
-        headers: {
-          ...createApiEvent(JSON.stringify(payload)).headers,
-          "x-tenant-id": "explicit-tenant",
-        },
-      };
-
-      const result = asResult(await handler(event, mockContext));
-
-      expect(result.statusCode).toBe(204);
-
-      // Verify SQS was called with explicit tenant
-      const sqsCalls = sqsMock.commandCalls(SendMessageCommand);
-      expect(sqsCalls.length).toBe(1);
-      const sentBody = JSON.parse(sqsCalls[0].args[0].input.MessageBody!);
-      expect(sentBody.tenant_id).toBe("explicit-tenant");
     });
   });
 

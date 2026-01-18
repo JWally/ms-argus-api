@@ -16,7 +16,6 @@ import * as logs from "aws-cdk-lib/aws-logs";
 import * as cloudwatch from "aws-cdk-lib/aws-cloudwatch";
 import * as sns from "aws-cdk-lib/aws-sns";
 import * as actions from "aws-cdk-lib/aws-cloudwatch-actions";
-import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
 import { Duration, RemovalPolicy } from "aws-cdk-lib";
 
 interface HttpApiConstructProps {
@@ -25,8 +24,6 @@ interface HttpApiConstructProps {
   matchingQueue: sqs.IQueue;
   sessionCacheTable: dynamodb.ITable;
   alarmsTopic: sns.ITopic;
-  /** AR-131: API keys secret for tenant authentication */
-  apiKeysSecret: secretsmanager.ISecret;
   /** AR-139: S3 bucket for payload archiving */
   payloadArchiveBucket: s3.IBucket;
 }
@@ -60,7 +57,6 @@ export class HttpApiConstruct extends Construct {
       matchingQueue,
       sessionCacheTable,
       alarmsTopic,
-      apiKeysSecret,
       payloadArchiveBucket,
     } = props;
 
@@ -87,8 +83,6 @@ export class HttpApiConstruct extends Construct {
         logGroup,
         environment: {
           SQS_QUEUE_URL: matchingQueue.queueUrl,
-          STAGE: stage, // AR-124: For tenant isolation guard
-          API_KEYS_SECRET_ARN: apiKeysSecret.secretArn, // AR-131: API keys from Secrets Manager
           // AR-139: Payload archiving configuration
           PAYLOAD_ARCHIVE_BUCKET: payloadArchiveBucket.bucketName,
           PAYLOAD_ARCHIVE_SAMPLE_RATE: stage.startsWith("dev") ? "1.0" : "0",
@@ -111,9 +105,6 @@ export class HttpApiConstruct extends Construct {
 
     // Grant SQS permissions
     matchingQueue.grantSendMessages(this.ingestionFunction);
-
-    // AR-131: Grant Lambda permission to read API keys secret
-    apiKeysSecret.grantRead(this.ingestionFunction);
 
     // AR-139: Grant Lambda permission to write to payload archive bucket
     payloadArchiveBucket.grantWrite(this.ingestionFunction);
@@ -171,12 +162,7 @@ export class HttpApiConstruct extends Construct {
           apigatewayv2.CorsHttpMethod.OPTIONS,
         ],
         // AR-91: Added Content-Encoding for binary gzip payloads
-        allowHeaders: [
-          "Content-Type",
-          "Content-Encoding",
-          "X-Tenant-ID",
-          "X-API-Key",
-        ],
+        allowHeaders: ["Content-Type", "Content-Encoding"],
         maxAge: Duration.hours(24),
       },
     });

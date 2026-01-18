@@ -8,7 +8,6 @@ import type { SigintData } from "./matching";
  * Profile update payload from matching worker (via SQS)
  */
 export interface ProfileUpdatePayload {
-  tenant_id: string;
   device_id: string;
   fingerprint: Fingerprint;
   /** AR-145: Raw fingerprint for cross-field anomaly detection */
@@ -25,7 +24,6 @@ export interface ProfileUpdatePayload {
  * Device profile stored in DynamoDB
  */
 export interface DeviceProfile {
-  tenant_id: string;
   device_id: string;
   stable_hash?: string;
   fuzzy_hash?: string;

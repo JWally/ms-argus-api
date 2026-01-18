@@ -79,15 +79,11 @@ export class ProfileService {
   /**
    * Load existing device profile from DynamoDB
    */
-  async loadExistingProfile(
-    tenantId: string,
-    deviceId: string,
-  ): Promise<DeviceProfile | null> {
+  async loadExistingProfile(deviceId: string): Promise<DeviceProfile | null> {
     const result = await this.deps.dynamodb.send(
       new GetItemCommand({
         TableName: this.deps.config.profilesTable,
         Key: {
-          tenant_id: { S: tenantId },
           device_id: { S: deviceId },
         },
       }),
@@ -149,7 +145,6 @@ export class ProfileService {
    * AR-145: Added rawFingerprint for cross-field anomaly detection
    */
   async updateProfile(
-    tenantId: string,
     deviceId: string,
     fingerprint: Fingerprint,
     timestamp: number,
@@ -180,7 +175,6 @@ export class ProfileService {
     );
 
     const profileData: Record<string, unknown> = {
-      tenant_id: tenantId,
       device_id: deviceId,
       ...fingerprint,
       first_seen_at: existingProfile?.first_seen_at ?? now,
@@ -214,7 +208,6 @@ export class ProfileService {
    * AR-120: Delegates to index-writers module
    */
   async updateTier1Indexes(
-    tenantId: string,
     deviceId: string,
     fingerprint: Fingerprint,
   ): Promise<number> {
@@ -223,7 +216,6 @@ export class ProfileService {
 
     // Build index entries
     const indexEntries = this.buildTier1IndexEntries(
-      tenantId,
       deviceId,
       fingerprint,
       ttl,
@@ -242,12 +234,11 @@ export class ProfileService {
    * AR-120: Delegates to index-writers module
    */
   buildTier1IndexEntries(
-    tenantId: string,
     deviceId: string,
     fingerprint: Fingerprint,
     ttl: number,
   ): Tier1IndexEntry[] {
-    return buildTier1IndexEntries(tenantId, deviceId, fingerprint, ttl);
+    return buildTier1IndexEntries(deviceId, fingerprint, ttl);
   }
 
   /**
@@ -258,14 +249,13 @@ export class ProfileService {
    * AR-120: Delegates to index-writers module
    */
   async updateTier2Buckets(
-    tenantId: string,
     deviceId: string,
     fingerprint: Fingerprint,
   ): Promise<number> {
     const ttlSeconds = this.deps.config.tier2BucketTtlDays * 24 * 60 * 60;
     const ttl = Math.floor(Date.now() / 1000) + ttlSeconds;
 
-    const bucketKeys = this.buildTier2BucketKeys(tenantId, fingerprint);
+    const bucketKeys = this.buildTier2BucketKeys(fingerprint);
     if (bucketKeys.length === 0) {
       return 0;
     }
@@ -291,8 +281,8 @@ export class ProfileService {
    * AR-117: Delegates to shared bucket-keys helper
    * AR-120: Delegates to index-writers module
    */
-  buildTier2BucketKeys(tenantId: string, fingerprint: Fingerprint): string[] {
-    return buildTier2BucketKeys(tenantId, fingerprint);
+  buildTier2BucketKeys(fingerprint: Fingerprint): string[] {
+    return buildTier2BucketKeys(fingerprint);
   }
 
   /**
@@ -300,11 +290,8 @@ export class ProfileService {
    * AR-117: Delegates to shared bucket-keys helper
    * AR-120: Delegates to index-writers module
    */
-  buildSessionAnchorKey(
-    tenantId: string,
-    fingerprint: Fingerprint,
-  ): string | null {
-    return buildSessionAnchorKey(tenantId, fingerprint);
+  buildSessionAnchorKey(fingerprint: Fingerprint): string | null {
+    return buildSessionAnchorKey(fingerprint);
   }
 
   /**
@@ -314,11 +301,10 @@ export class ProfileService {
    * AR-120: Delegates to index-writers module
    */
   async updateSessionAnchorBucket(
-    tenantId: string,
     deviceId: string,
     fingerprint: Fingerprint,
   ): Promise<boolean> {
-    const bucketKey = this.buildSessionAnchorKey(tenantId, fingerprint);
+    const bucketKey = this.buildSessionAnchorKey(fingerprint);
     if (!bucketKey) {
       return false;
     }
@@ -332,11 +318,8 @@ export class ProfileService {
    * AR-117: Delegates to shared bucket-keys helper
    * AR-120: Delegates to index-writers module
    */
-  buildIpUaAnchorKey(
-    tenantId: string,
-    fingerprint: Fingerprint,
-  ): string | null {
-    return buildIpUaAnchorKey(tenantId, fingerprint);
+  buildIpUaAnchorKey(fingerprint: Fingerprint): string | null {
+    return buildIpUaAnchorKey(fingerprint);
   }
 
   /**
@@ -346,11 +329,10 @@ export class ProfileService {
    * AR-120: Delegates to index-writers module
    */
   async updateIpUaAnchorBucket(
-    tenantId: string,
     deviceId: string,
     fingerprint: Fingerprint,
   ): Promise<boolean> {
-    const bucketKey = this.buildIpUaAnchorKey(tenantId, fingerprint);
+    const bucketKey = this.buildIpUaAnchorKey(fingerprint);
     if (!bucketKey) {
       return false;
     }
@@ -370,7 +352,6 @@ export class ProfileService {
     tier2Writes?: number;
   }> {
     const {
-      tenant_id,
       device_id,
       fingerprint,
       raw_fingerprint,
@@ -386,10 +367,7 @@ export class ProfileService {
     }
 
     // Load existing profile
-    const existingProfile = await this.loadExistingProfile(
-      tenant_id,
-      device_id,
-    );
+    const existingProfile = await this.loadExistingProfile(device_id);
 
     // Check for drift
     const hasDrift =
@@ -398,8 +376,8 @@ export class ProfileService {
 
     // AR-94: Always update anchor buckets (they're time-sensitive)
     // These must be refreshed on every request regardless of drift
-    await this.updateSessionAnchorBucket(tenant_id, device_id, fingerprint);
-    await this.updateIpUaAnchorBucket(tenant_id, device_id, fingerprint);
+    await this.updateSessionAnchorBucket(device_id, fingerprint);
+    await this.updateIpUaAnchorBucket(device_id, fingerprint);
 
     if (existingProfile && !hasDrift) {
       // No significant drift - skip profile/tier writes but anchors were updated
@@ -409,7 +387,6 @@ export class ProfileService {
     // Perform updates (with flag computation)
     // AR-145: Pass raw_fingerprint for cross-field anomaly detection
     await this.updateProfile(
-      tenant_id,
       device_id,
       fingerprint,
       timestamp,
@@ -418,16 +395,8 @@ export class ProfileService {
       hasDrift,
       raw_fingerprint,
     );
-    const tier1Writes = await this.updateTier1Indexes(
-      tenant_id,
-      device_id,
-      fingerprint,
-    );
-    const tier2Writes = await this.updateTier2Buckets(
-      tenant_id,
-      device_id,
-      fingerprint,
-    );
+    const tier1Writes = await this.updateTier1Indexes(device_id, fingerprint);
+    const tier2Writes = await this.updateTier2Buckets(device_id, fingerprint);
 
     // Note: anchor buckets already updated above (before drift check)
 
