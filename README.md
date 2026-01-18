@@ -113,6 +113,34 @@ Processes fingerprints from SQS and performs device matching:
 
 **Output**: Writes result to SessionCache and queues profile update.
 
+### Anomaly Detection (`src/services/profile/anomaly/`)
+
+Server-side fraud detection that runs during matching to identify spoofing attempts:
+
+**Detection Types:**
+
+| Detector    | Code                   | Description                                |
+| ----------- | ---------------------- | ------------------------------------------ |
+| Quick Wins  | `NAVIGATOR_LIES`       | Browser API tampering detected by client   |
+| Quick Wins  | `HEADLESS_DETECTED`    | Headless browser indicators                |
+| Quick Wins  | `HIGH_PROXY_SCORE`     | Likely proxy usage (score > 0.7)           |
+| Quick Wins  | `HIGH_VPN_SCORE`       | Likely VPN usage                           |
+| Cross-Field | `WORKER_MISMATCH`      | Navigator vs Worker scope mismatches       |
+| Network     | `IP_TIMEZONE_MISMATCH` | IP geolocation timezone vs client timezone |
+
+**Multi-Worker Environment Detection:**
+
+Compares attributes across all JavaScript execution contexts:
+
+- Navigator (main thread)
+- Dedicated Workers (`new Worker()`)
+- Shared Workers (`new SharedWorker()`)
+- Service Workers
+
+Spoofers who modify the main thread navigator but forget to patch worker contexts are detected.
+
+**Output**: Anomaly signals are included in the session response and contribute to `risk_score`.
+
 ### Profile Updater (`src/handlers/profile-updater.ts`)
 
 Maintains device profiles and search indexes:
@@ -215,7 +243,19 @@ Retrieve match results for a session.
   "match_tier": "STABLE_HASH",
   "risk_score": 15,
   "flags": ["CANVAS_BLOCKED"],
-  "evidence_codes": ["STABLE_HASH_MATCH"]
+  "evidence_codes": ["STABLE_HASH_MATCH"],
+  "anomalies": [
+    {
+      "type": "CROSS_FIELD",
+      "code": "NAVIGATOR_LIES",
+      "severity": 0.7,
+      "evidence": {
+        "expected": "0 lies",
+        "actual": "2 lies detected",
+        "fields": ["lie_count"]
+      }
+    }
+  ]
 }
 ```
 
@@ -246,7 +286,7 @@ npm install
 ### Run Tests
 
 ```bash
-# Unit tests (517+ tests)
+# Unit tests (590+ tests)
 npm test
 
 # Unit tests with coverage

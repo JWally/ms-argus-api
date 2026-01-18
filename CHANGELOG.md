@@ -8,12 +8,23 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- AR-148: Expose anomaly detection results in session response
+- AR-145: Cross-field anomaly detection (Navigator vs Worker scope mismatches)
+- AR-144: Network anomaly detection (timezone mismatch)
+- AR-143: Multi-worker environment detection (dedicated, shared, service workers)
+- AR-142: Quick win anomaly detectors (lies, headless, proxy/VPN)
+- AR-141: Anomaly detection foundation (types, signal aggregation, risk weights)
 - AR-98: Use TIER2_STATS_SK constant consistently
 - AR-97: Tenant ID in deduplication cache key (prevents cross-tenant collisions)
 - AR-96: Middy middleware for session-get (auto metrics publishing on all paths)
 - AR-95: Anchor lookup recency sorting (returns most recent device, not alphabetically first)
 - AR-94: IP+UA-only anchor bucket for short-window matching
 - AR-82: Session anchor bucket (IP + UA hash + screen, 5-min TTL)
+
+### Removed
+
+- FTL (faster-than-light) network detection - broken with CloudFront edge locations
+- Math engine fingerprint detection - opaque markers with no documentation
 
 ### Fixed
 
