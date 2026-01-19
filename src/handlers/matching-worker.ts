@@ -134,7 +134,21 @@ async function processRecord(
   }
 
   const startTime = Date.now();
-  const payload: FingerprintPayload = JSON.parse(record.body);
+
+  // AR-156: Handle malformed JSON payloads - don't retry poison messages
+  let payload: FingerprintPayload;
+  try {
+    payload = JSON.parse(record.body);
+  } catch (parseError) {
+    logger.error("Malformed JSON payload - skipping message", {
+      error: parseError,
+      messageId: record.messageId,
+      bodyPreview: record.body.slice(0, 200), // Truncate for logging
+    });
+    metrics.addMetric("MalformedPayload", MetricUnit.Count, 1);
+    return; // Don't retry - mark as processed
+  }
+
   const { session_id } = payload;
 
   // AR-73: Normalize fingerprint from web library nested format to flat API format

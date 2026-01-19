@@ -298,7 +298,8 @@ describe("matching-worker handler", () => {
       expect(result!.batchItemFailures[0].itemIdentifier).toBe("fail-msg");
     });
 
-    it("should handle invalid JSON in record body", async () => {
+    // AR-156: Updated - invalid JSON should NOT retry (poison message handling)
+    it("should handle invalid JSON in record body without retrying", async () => {
       const event = createSQSEvent([
         {
           ...createSQSRecord({}, "invalid-msg"),
@@ -308,8 +309,14 @@ describe("matching-worker handler", () => {
 
       const result = await handler(event, mockContext, () => {});
 
-      expect(result!.batchItemFailures).toHaveLength(1);
-      expect(result!.batchItemFailures[0].itemIdentifier).toBe("invalid-msg");
+      // Should NOT be in batch failures (don't retry poison messages)
+      expect(result!.batchItemFailures).toHaveLength(0);
+      // Should emit MalformedPayload metric
+      expect(mockAddMetric).toHaveBeenCalledWith(
+        "MalformedPayload",
+        "Count",
+        1,
+      );
     });
 
     it("should write degraded status on matching failure", async () => {
