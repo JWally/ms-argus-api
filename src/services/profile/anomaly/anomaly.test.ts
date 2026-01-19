@@ -1,7 +1,27 @@
 // src/services/profile/anomaly/anomaly.test.ts
 // AR-141: Tests for anomaly detection foundation
+// AR-158: Updated to mock Powertools logger/metrics instead of console.error
 
 import { describe, it, expect, vi } from "vitest";
+
+// AR-158: Mock Powertools - must use vi.hoisted to create mocks before vi.mock runs
+const { mockLoggerError, mockAddMetric } = vi.hoisted(() => ({
+  mockLoggerError: vi.fn(),
+  mockAddMetric: vi.fn(),
+}));
+
+vi.mock("@aws-lambda-powertools/logger", () => ({
+  Logger: vi.fn().mockImplementation(() => ({
+    error: mockLoggerError,
+  })),
+}));
+
+vi.mock("@aws-lambda-powertools/metrics", () => ({
+  Metrics: vi.fn().mockImplementation(() => ({
+    addMetric: mockAddMetric,
+  })),
+  MetricUnit: { Count: "Count" },
+}));
 import { AnomalyCodes, AnomalySignal, createSignal } from "./types";
 import {
   detectAllAnomalies,
@@ -89,9 +109,9 @@ describe("Anomaly Detection Foundation", () => {
     });
 
     it("should catch detector errors and continue", () => {
-      const consoleErrorSpy = vi
-        .spyOn(console, "error")
-        .mockImplementation(() => {});
+      // AR-158: Clear mocks before test
+      mockLoggerError.mockClear();
+      mockAddMetric.mockClear();
 
       // Register a detector that throws
       const throwingDetector = (): AnomalySignal[] => {
@@ -104,10 +124,13 @@ describe("Anomaly Detection Foundation", () => {
       // Should not throw
       expect(() => detectAllAnomalies(fingerprint)).not.toThrow();
 
-      // Should log the error
-      expect(consoleErrorSpy).toHaveBeenCalled();
-
-      consoleErrorSpy.mockRestore();
+      // AR-158: Should log via Powertools logger and emit metric
+      expect(mockLoggerError).toHaveBeenCalled();
+      expect(mockAddMetric).toHaveBeenCalledWith(
+        "AnomalyDetectorError",
+        "Count",
+        1,
+      );
     });
 
     it("should aggregate scores from signals", () => {
