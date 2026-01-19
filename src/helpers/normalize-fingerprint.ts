@@ -92,6 +92,11 @@ function toValidScore(val: unknown): number | undefined {
  * AR-77: Fixed field names to match actual ms-argus-web library output
  */
 interface WebFingerprintResult {
+  // AR-64: Cryptographic device identity
+  cryptoId?: {
+    publicKey?: string;
+    date?: string;
+  };
   loose?: {
     // AR-77: canvas2d (not canvas)
     canvas2d?: { $hash?: string; [key: string]: unknown };
@@ -186,8 +191,22 @@ export function normalizeFingerprint(
     typeof raw.stable_hash === "string" ||
     typeof raw.fuzzy_hash === "string"
   ) {
-    // Start with the flat fingerprint but allow sigint to override
-    const result = { ...(raw as Fingerprint) };
+    // AR-XXX: Strip nested objects that might contain large numbers (e.g., loose.maths)
+    // Only keep primitive fields (string, number, boolean, null, undefined)
+    // This prevents DynamoDB marshalling errors from numbers > MAX_SAFE_INTEGER
+    const result: Fingerprint = {};
+    for (const [key, value] of Object.entries(raw)) {
+      if (
+        value === null ||
+        value === undefined ||
+        typeof value === "string" ||
+        typeof value === "number" ||
+        typeof value === "boolean"
+      ) {
+        (result as Record<string, unknown>)[key] = value;
+      }
+      // Skip objects and arrays (nested structures with potentially huge numbers)
+    }
 
     // Apply sigint overrides even for flat fingerprints
     if (sigint) {
@@ -385,6 +404,18 @@ export function normalizeFingerprint(
     const isPrivate = toBoolean(bot.isPrivate);
     if (isPrivate !== undefined) {
       normalized.is_private_browsing = isPrivate;
+    }
+  }
+
+  // AR-64: Extract cryptographic identity from nested cryptoId object
+  if (
+    webFp.cryptoId &&
+    typeof webFp.cryptoId === "object" &&
+    !Array.isArray(webFp.cryptoId)
+  ) {
+    const publicKey = sanitizeString(webFp.cryptoId.publicKey);
+    if (publicKey) {
+      normalized.public_key = publicKey;
     }
   }
 
