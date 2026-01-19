@@ -12,6 +12,7 @@ import {
   UpdateItemCommand,
 } from "@aws-sdk/client-dynamodb";
 import { TIER2_STATS_SK } from "../helpers/constants";
+import { validateRequiredEnvVars } from "../helpers/env-validation";
 
 /**
  * Environment configuration for the Cardinality Recalc Lambda
@@ -27,14 +28,7 @@ interface CardinalityRecalcEnvConfig {
  * Throws an error if required variables are missing.
  */
 function getCardinalityRecalcEnv(): CardinalityRecalcEnvConfig {
-  const required = ["TIER2_BUCKETS_TABLE"] as const;
-
-  const missing = required.filter((key) => !process.env[key]);
-  if (missing.length > 0) {
-    throw new Error(
-      `Missing required environment variables: ${missing.join(", ")}`,
-    );
-  }
+  validateRequiredEnvVars(["TIER2_BUCKETS_TABLE"]);
 
   return {
     TIER2_BUCKETS_TABLE: process.env.TIER2_BUCKETS_TABLE!,

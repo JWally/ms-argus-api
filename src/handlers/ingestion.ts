@@ -18,14 +18,15 @@ import httpHeaderNormalizer from "@middy/http-header-normalizer";
 import warmup from "@middy/warmup";
 import { onWarmup } from "../helpers/middy-helpers";
 import { HttpError, createError } from "../helpers/http-error";
+import { validateRequiredEnvVars } from "../helpers/env-validation";
 import { createGunzip } from "zlib";
 import { pipeline } from "stream/promises";
 import { Readable } from "stream";
 
 // ==================== CONFIGURATION ====================
 
-const SQS_QUEUE_URL = process.env.SQS_QUEUE_URL;
-if (!SQS_QUEUE_URL) throw new Error("Missing required env var: SQS_QUEUE_URL");
+validateRequiredEnvVars(["SQS_QUEUE_URL"]);
+const SQS_QUEUE_URL = process.env.SQS_QUEUE_URL!;
 
 // AR-139: Payload archiving configuration
 const PAYLOAD_ARCHIVE_BUCKET = process.env.PAYLOAD_ARCHIVE_BUCKET;
