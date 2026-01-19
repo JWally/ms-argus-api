@@ -10,6 +10,7 @@ import { injectLambdaContext } from "@aws-lambda-powertools/logger/middleware";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import middy from "@middy/core";
 import { DynamoCacheService } from "../services/cache/dynamo-cache";
+import { HttpError } from "../helpers/http-error";
 
 // ==================== CONFIGURATION ====================
 
@@ -59,20 +60,6 @@ const CORS_HEADERS = {
   "Access-Control-Allow-Headers": "Content-Type",
   "Access-Control-Max-Age": "86400",
 };
-
-// ==================== CUSTOM ERROR CLASS ====================
-
-// Custom HttpError class for ESM bundling compatibility
-class HttpError extends Error {
-  statusCode: number;
-  expose: boolean;
-  constructor(statusCode: number, message: string) {
-    super(message);
-    this.name = "HttpError";
-    this.statusCode = statusCode;
-    this.expose = statusCode < 500;
-  }
-}
 
 // ==================== MIDDLEWARE ====================
 

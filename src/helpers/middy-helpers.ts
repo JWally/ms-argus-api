@@ -6,18 +6,7 @@ import { LRUCache } from "lru-cache";
 import { Logger } from "@aws-lambda-powertools/logger";
 import { DEDUPE_CACHE_MAX_ENTRIES, DEDUPE_CACHE_TTL_MS } from "./constants";
 import { fnv1a } from "./hash";
-
-// Custom HttpError class to replace http-errors module (ESM bundling compatible)
-class HttpError extends Error {
-  statusCode: number;
-  expose: boolean;
-  constructor(statusCode: number, message: string) {
-    super(message);
-    this.name = "HttpError";
-    this.statusCode = statusCode;
-    this.expose = statusCode < 500;
-  }
-}
+import { HttpError } from "./http-error";
 
 // Re-export fnv1a for backward compatibility (AR-32)
 export { fnv1a };
