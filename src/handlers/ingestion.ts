@@ -17,23 +17,10 @@ import middy from "@middy/core";
 import httpHeaderNormalizer from "@middy/http-header-normalizer";
 import warmup from "@middy/warmup";
 import { onWarmup } from "../helpers/middy-helpers";
+import { HttpError, createError } from "../helpers/http-error";
 import { createGunzip } from "zlib";
 import { pipeline } from "stream/promises";
 import { Readable } from "stream";
-
-// Custom HttpError class to replace http-errors module (ESM bundling compatible)
-class HttpError extends Error {
-  statusCode: number;
-  expose: boolean;
-  constructor(statusCode: number, message: string) {
-    super(message);
-    this.name = "HttpError";
-    this.statusCode = statusCode;
-    this.expose = statusCode < 500; // Only expose client errors
-  }
-}
-const createError = (statusCode: number, message: string) =>
-  new HttpError(statusCode, message);
 
 // ==================== CONFIGURATION ====================
 
