@@ -1,6 +1,7 @@
 // src/handlers/cardinality-recalc.ts
 // AR-130: Daily Lambda to recalculate Tier2 bucket cardinalities
 // Fixes drift from TTL-expired devices (ADD only increments, never decrements)
+// AR-159: Refactored to process buckets in pages rather than collecting all keys first
 import { ScheduledHandler } from "aws-lambda";
 import { Logger } from "@aws-lambda-powertools/logger";
 import { Metrics, MetricUnit } from "@aws-lambda-powertools/metrics";
@@ -74,14 +75,18 @@ interface BucketResult {
 }
 
 /**
- * Get all unique bucket_key values from Tier2Buckets table
- * Uses Scan with projection to minimize data transfer
+ * AR-159: Async generator to scan bucket_key values page by page
+ * Yields unique bucket keys from each page, processing as we go
+ * This reduces peak memory usage compared to collecting all keys first
  */
-async function getAllBucketKeys(tableName: string): Promise<Set<string>> {
-  const bucketKeys = new Set<string>();
+async function* scanBucketKeysPages(
+  tableName: string,
+): AsyncGenerator<Set<string>, void, undefined> {
   let lastEvaluatedKey: Record<string, unknown> | undefined;
+  let pageNumber = 0;
 
   do {
+    pageNumber++;
     const response = await dynamodb.send(
       new ScanCommand({
         TableName: tableName,
@@ -92,18 +97,26 @@ async function getAllBucketKeys(tableName: string): Promise<Set<string>> {
       }),
     );
 
+    // Extract unique bucket keys from this page
+    const pageKeys = new Set<string>();
     for (const item of response.Items || []) {
       if (item.bucket_key?.S) {
-        bucketKeys.add(item.bucket_key.S);
+        pageKeys.add(item.bucket_key.S);
       }
     }
+
+    logger.debug("Scanned bucket keys page", {
+      pageNumber,
+      keysInPage: pageKeys.size,
+      hasMorePages: !!response.LastEvaluatedKey,
+    });
+
+    yield pageKeys;
 
     lastEvaluatedKey = response.LastEvaluatedKey as
       | Record<string, unknown>
       | undefined;
   } while (lastEvaluatedKey);
-
-  return bucketKeys;
 }
 
 /**
@@ -276,38 +289,58 @@ export const handler: ScheduledHandler = async (event): Promise<void> => {
   let errors = 0;
 
   try {
-    // Get all unique bucket keys
-    const bucketKeys = await getAllBucketKeys(tableName);
-    logger.info("Found buckets to process", { count: bucketKeys.size });
+    // AR-159: Track processed buckets to handle duplicates across scan pages
+    // (A bucket_key can appear multiple times in the scan if it has many device entries)
+    const processedBuckets = new Set<string>();
+    let pagesProcessed = 0;
 
-    // Process each bucket
-    for (const bucketKey of bucketKeys) {
-      try {
-        const result = await processBucket(tableName, bucketKey, ttl);
-        bucketsProcessed++;
+    // AR-159: Process bucket keys page by page to reduce memory usage
+    for await (const pageKeys of scanBucketKeysPages(tableName)) {
+      pagesProcessed++;
 
-        if (result.driftCorrected) {
-          bucketsWithDrift++;
-          const drift = Math.abs(
-            result.previousCardinality - result.actualCardinality,
-          );
-          totalDriftMagnitude += drift;
-
-          logger.info("Corrected bucket cardinality drift", {
-            bucketKey,
-            previousCardinality: result.previousCardinality,
-            actualCardinality: result.actualCardinality,
-            drift,
-          });
+      // Process each bucket in this page
+      for (const bucketKey of pageKeys) {
+        // Skip if already processed in a previous page
+        if (processedBuckets.has(bucketKey)) {
+          continue;
         }
-      } catch (error) {
-        errors++;
-        logger.error("Failed to process bucket", {
-          bucketKey,
-          error,
-        });
-        // Continue processing other buckets
+        processedBuckets.add(bucketKey);
+
+        try {
+          const result = await processBucket(tableName, bucketKey, ttl);
+          bucketsProcessed++;
+
+          if (result.driftCorrected) {
+            bucketsWithDrift++;
+            const drift = Math.abs(
+              result.previousCardinality - result.actualCardinality,
+            );
+            totalDriftMagnitude += drift;
+
+            logger.info("Corrected bucket cardinality drift", {
+              bucketKey,
+              previousCardinality: result.previousCardinality,
+              actualCardinality: result.actualCardinality,
+              drift,
+            });
+          }
+        } catch (error) {
+          errors++;
+          logger.error("Failed to process bucket", {
+            bucketKey,
+            error,
+          });
+          // Continue processing other buckets
+        }
       }
+
+      // Log progress after each page
+      logger.info("Completed processing page", {
+        page: pagesProcessed,
+        totalBucketsProcessed: bucketsProcessed,
+        bucketsWithDrift,
+        errors,
+      });
     }
 
     // Emit metrics
@@ -319,6 +352,8 @@ export const handler: ScheduledHandler = async (event): Promise<void> => {
       totalDriftMagnitude,
     );
     metrics.addMetric("ProcessingErrors", MetricUnit.Count, errors);
+    // AR-159: Track pagination metrics
+    metrics.addMetric("PagesProcessed", MetricUnit.Count, pagesProcessed);
 
     const duration = Date.now() - startTime;
     metrics.addMetric("RecalcDuration", MetricUnit.Milliseconds, duration);
@@ -328,6 +363,7 @@ export const handler: ScheduledHandler = async (event): Promise<void> => {
       bucketsWithDrift,
       totalDriftMagnitude,
       errors,
+      pagesProcessed,
       durationMs: duration,
     });
   } finally {
