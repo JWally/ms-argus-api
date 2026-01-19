@@ -97,7 +97,9 @@ Processes fingerprints from SQS and performs device matching:
 | Tier | Method         | Confidence | Description                          |
 | ---- | -------------- | ---------- | ------------------------------------ |
 | T0   | Session Cache  | N/A        | Session already processed (DynamoDB) |
+| T0.5 | Public Key     | 0.99       | ECDSA P-256 cryptographic identity   |
 | T0.5 | Evercookie     | 0.99       | Hard-to-clear browser storage        |
+| T0.5 | Sigint ID      | 0.99       | Third-party cookie from edge         |
 | T1   | Stable Hash    | 0.95       | Multiple stable signals combined     |
 | T1   | Fuzzy Hash     | 0.85       | Similar signals, less strict         |
 | T1   | JA4 Hash       | 0.80       | TLS fingerprint                      |
