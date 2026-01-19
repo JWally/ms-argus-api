@@ -1,5 +1,7 @@
 // src/services/profile/index-writers.ts
 // AR-120: Extracted index writing logic from profile-service.ts
+// AR-150: Added tier-gated identity association
+
 import {
   DynamoDBClient,
   BatchWriteItemCommand,
@@ -18,6 +20,37 @@ import {
   buildSessionAnchorKey as buildSessionAnchorKeyHelper,
   buildIpUaAnchorKey as buildIpUaAnchorKeyHelper,
 } from "../../helpers/bucket-keys";
+
+/**
+ * AR-150: Evidence codes that permit identity association
+ *
+ * Only these match types should create identity indexes (pubkey#, evercookie#, sigint#).
+ * Tier 2 unbounded matches (IP_JA4_BUCKET, GPU_SCREEN_TZ_BUCKET, etc.) are excluded
+ * to prevent viral spreading of device_ids across unrelated users.
+ *
+ * Includes:
+ * - Tier 0.5: Identity matches (PUBLIC_KEY_MATCH, EVERCOOKIE_MATCH, SIGINT_ID_MATCH)
+ * - Tier 1: Hash matches (STABLE_HASH_MATCH, FUZZY_HASH_MATCH)
+ * - Time-bounded anchors: SESSION_ANCHOR_BUCKET (10min), IP_UA_ANCHOR_BUCKET (3min)
+ * - NEW_DEVICE: First time seeing this device, must create indexes for future lookups
+ *
+ * Excludes:
+ * - Tier 2 unbounded: IP_JA4_BUCKET, GPU_SCREEN_TZ_BUCKET, AUDIO_CANVAS_BUCKET, etc.
+ */
+export const ASSOCIATION_ALLOWED_EVIDENCE: readonly string[] = [
+  // Tier 0.5: Identity matches (highest confidence)
+  "PUBLIC_KEY_MATCH",
+  "EVERCOOKIE_MATCH",
+  "SIGINT_ID_MATCH",
+  // Tier 1: Hash matches (high confidence)
+  "STABLE_HASH_MATCH",
+  "FUZZY_HASH_MATCH",
+  // Time-bounded anchors (medium-high confidence, decay quickly)
+  "SESSION_ANCHOR_BUCKET",
+  "IP_UA_ANCHOR_BUCKET",
+  // New device: Must create indexes for future lookups to work
+  "NEW_DEVICE",
+] as const;
 
 /**
  * Type for Tier 1 index entry
@@ -108,6 +141,78 @@ export function buildTier1IndexEntries(
   // AR-115: Removed standalone ja4# indexing - JA4 alone is not unique enough
   // for direct matching (many devices share the same JA4). JA4 is still used
   // in Tier2 compound buckets (ip_ja4) where it's combined with other signals.
+
+  return entries;
+}
+
+/**
+ * AR-150: Build identity index entries only (pubkey#, evercookie#, sigint#)
+ * These are the indexes that link crypto-id/evercookie to device_id.
+ * Only write these for high-confidence matches to prevent viral spreading.
+ */
+export function buildIdentityIndexEntries(
+  deviceId: string,
+  fingerprint: Fingerprint,
+  ttl: number,
+): Tier1IndexEntry[] {
+  const entries: Tier1IndexEntry[] = [];
+
+  if (fingerprint.evercookie_id) {
+    entries.push({
+      hash_key: `evercookie#${fingerprint.evercookie_id}`,
+      device_id: deviceId,
+      ttl,
+    });
+  }
+
+  // AR-81: Third-party cookie from sigint CloudFront edge
+  if (fingerprint.sigint_id) {
+    entries.push({
+      hash_key: `sigint#${fingerprint.sigint_id}`,
+      device_id: deviceId,
+      ttl,
+    });
+  }
+
+  // AR-64: ECDSA public key for cryptographic device identity
+  if (fingerprint.public_key) {
+    entries.push({
+      hash_key: `pubkey#${fingerprint.public_key}`,
+      device_id: deviceId,
+      ttl,
+    });
+  }
+
+  return entries;
+}
+
+/**
+ * AR-150: Build hash index entries only (stable#, fuzzy#)
+ * These indexes enable fingerprint-based lookups.
+ * Always written regardless of match tier.
+ */
+export function buildHashIndexEntries(
+  deviceId: string,
+  fingerprint: Fingerprint,
+  ttl: number,
+): Tier1IndexEntry[] {
+  const entries: Tier1IndexEntry[] = [];
+
+  if (fingerprint.stable_hash) {
+    entries.push({
+      hash_key: `stable#${fingerprint.stable_hash}`,
+      device_id: deviceId,
+      ttl,
+    });
+  }
+
+  if (fingerprint.fuzzy_hash) {
+    entries.push({
+      hash_key: `fuzzy#${fingerprint.fuzzy_hash}`,
+      device_id: deviceId,
+      ttl,
+    });
+  }
 
   return entries;
 }

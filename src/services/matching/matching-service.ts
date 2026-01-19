@@ -320,6 +320,7 @@ export class MatchingService {
     deviceId: string,
     payload: FingerprintPayload,
     isNewDevice: boolean = false,
+    matchResult?: MatchResult,
   ): Promise<void> {
     await this.deps.sqs.send(
       new SendMessageCommand({
@@ -332,6 +333,11 @@ export class MatchingService {
           tls_blob: payload.tls_blob,
           timestamp: payload.timestamp,
           is_new_device: isNewDevice,
+          // AR-149: Include match context for tier-gated identity association
+          ...(matchResult && {
+            match_tier: matchResult.match_tier,
+            evidence_codes: matchResult.evidence_codes,
+          }),
         }),
       }),
     );

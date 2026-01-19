@@ -288,6 +288,61 @@ describe("normalizeFingerprint", () => {
       expect(result.public_key).toBe("MFkw...");
     });
 
+    // AR-64: Cryptographic identity from nested cryptoId object
+    it("should extract public_key from cryptoId.publicKey", () => {
+      const input = {
+        cryptoId: {
+          publicKey:
+            "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEInVpk2CpwYd5NgQGpMXERU3jHsBQO9+RdTpQhKCVeqvgCj9qQzKvm2lwzkr+EIFZIp0akCqz/cSX9v3lPVOsTA==",
+          date: "2026-01-18T13:18:50.390Z",
+        },
+        hashes: {
+          stable: "some_stable_hash",
+        },
+      };
+      const result = normalizeFingerprint(input);
+      expect(result.public_key).toBe(
+        "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEInVpk2CpwYd5NgQGpMXERU3jHsBQO9+RdTpQhKCVeqvgCj9qQzKvm2lwzkr+EIFZIp0akCqz/cSX9v3lPVOsTA==",
+      );
+    });
+
+    // AR-64: Test exact client payload structure from ms-argus-web telemetry
+    it("should extract public_key from real client payload structure", () => {
+      // This mimics the exact structure sent by ms-argus-web/src/telemetry/index.ts
+      const input = {
+        loose: {
+          canvas2d: { $hash: "canvas_hash_123" },
+          canvasWebgl: {
+            $hash: "webgl_hash_456",
+            gpu: { compressedGPU: "Intel GPU" },
+          },
+          screen: { width: 1920, height: 1080 },
+          timezone: { location: "America/New_York" },
+          navigator: { hardwareConcurrency: 8, deviceMemory: 16 },
+        },
+        stable_hash: "stable123",
+        fuzzy_hash: "fuzzy456",
+        canvas_hash: "canvas_hash_123",
+        webgl_hash: "webgl_hash_456",
+        evercookie_id: "evercookie-uuid",
+        public_key:
+          "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEWeG/nskZu3vwviTestKey==",
+        user_agent: "Mozilla/5.0 Test Browser",
+        gpu_renderer: "Intel GPU",
+        screen_dims: "1920x1080",
+        timezone: "America/New_York",
+      };
+      const result = normalizeFingerprint(input);
+
+      // Verify public_key is passed through correctly
+      expect(result.public_key).toBe(
+        "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEWeG/nskZu3vwviTestKey==",
+      );
+      // Verify other fields are also extracted
+      expect(result.evercookie_id).toBe("evercookie-uuid");
+      expect(result.stable_hash).toBe("stable123");
+    });
+
     // AR-81: Third-party cookie from sigint service
     it("should pass through sigint_id", () => {
       const input = { sigint_id: "sigint-uuid-456" };
@@ -1196,6 +1251,82 @@ describe("normalizeFingerprint", () => {
         // Should not find $hash at wrong level
         expect(result.canvas_hash).toBeUndefined();
       });
+    });
+  });
+
+  // AR-XXX: Strip nested objects from hybrid payloads to prevent DynamoDB marshalling errors
+  describe("strips nested objects from hybrid payloads", () => {
+    it("should strip nested loose object when flat hashes are present", () => {
+      // Real client payloads can have BOTH flat fields AND nested objects
+      // The nested objects (like loose.maths) can contain numbers > MAX_SAFE_INTEGER
+      // which cause DynamoDB marshalling errors
+      const hybridPayload = {
+        stable_hash: "stable123",
+        fuzzy_hash: "fuzzy456",
+        public_key: "MFkwTest==",
+        hardware_concurrency: 8,
+        is_headless: false,
+        // Nested loose object with potentially huge numbers in maths
+        loose: {
+          maths: {
+            $hash: "maths_hash",
+            data: {
+              "cosh(492*Math.LOG2E)": 9.199870313877772e307, // > MAX_SAFE_INTEGER
+            },
+          },
+          navigator: { hardwareConcurrency: 8 },
+        },
+      };
+
+      const result = normalizeFingerprint(hybridPayload);
+
+      // Should preserve flat fields
+      expect(result.stable_hash).toBe("stable123");
+      expect(result.fuzzy_hash).toBe("fuzzy456");
+      expect(result.public_key).toBe("MFkwTest==");
+      expect(result.hardware_concurrency).toBe(8);
+      expect(result.is_headless).toBe(false);
+
+      // Should NOT include nested loose object (which has huge numbers)
+      expect((result as Record<string, unknown>).loose).toBeUndefined();
+    });
+
+    it("should strip nested botSignals object when flat hashes are present", () => {
+      const hybridPayload = {
+        stable_hash: "stable123",
+        is_headless: true,
+        lie_count: 3,
+        // Nested botSignals should be stripped
+        botSignals: {
+          isHeadless: true,
+          stealthSignals: { webdriver: true },
+        },
+      };
+
+      const result = normalizeFingerprint(hybridPayload);
+
+      // Should preserve flat fields
+      expect(result.stable_hash).toBe("stable123");
+      expect(result.is_headless).toBe(true);
+      expect(result.lie_count).toBe(3);
+
+      // Should NOT include nested botSignals object
+      expect((result as Record<string, unknown>).botSignals).toBeUndefined();
+    });
+
+    it("should strip arrays from hybrid payloads", () => {
+      const hybridPayload = {
+        stable_hash: "stable123",
+        // Arrays should be stripped
+        someArray: [1, 2, 3],
+        anotherArray: ["a", "b", "c"],
+      };
+
+      const result = normalizeFingerprint(hybridPayload);
+
+      expect(result.stable_hash).toBe("stable123");
+      expect((result as Record<string, unknown>).someArray).toBeUndefined();
+      expect((result as Record<string, unknown>).anotherArray).toBeUndefined();
     });
   });
 });
