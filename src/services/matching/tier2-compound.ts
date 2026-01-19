@@ -1,5 +1,6 @@
 // src/services/matching/tier2-compound.ts
 // AR-119: Extracted from matching-service.ts - Compound bucket matching (Tier 2)
+// AR-153: Added structured logging and metrics for cardinality fetch failures
 import {
   DynamoDBClient,
   GetItemCommand,
@@ -8,6 +9,8 @@ import {
   BatchGetItemCommand,
 } from "@aws-sdk/client-dynamodb";
 import { unmarshall } from "@aws-sdk/util-dynamodb";
+import { Logger } from "@aws-lambda-powertools/logger";
+import { Metrics, MetricUnit } from "@aws-lambda-powertools/metrics";
 import {
   TIER2_BUCKET_LIMIT,
   TIER2_HIGH_CARDINALITY_THRESHOLD,
@@ -16,6 +19,14 @@ import {
 } from "../../helpers/constants";
 import { buildBucketKeysWithTypes as buildBucketKeysWithTypesHelper } from "../../helpers/bucket-keys";
 import { EvidenceCode, Fingerprint, MatchResult } from "./types";
+
+// AR-153: Structured logging for visibility into cardinality fetch failures
+const logger = new Logger({
+  serviceName: process.env.POWERTOOLS_SERVICE_NAME || "argus-tier2-compound",
+});
+const metrics = new Metrics({
+  namespace: process.env.POWERTOOLS_METRICS_NAMESPACE || "Argus",
+});
 
 /**
  * Dependencies for tier 2 compound operations
@@ -211,8 +222,17 @@ async function fetchBucketCardinalities(
     if (error instanceof Error && error.name === "AbortError") {
       return cardinalities;
     }
-    // Log error but don't fail matching - cardinality check is optional
-    console.warn("Failed to fetch bucket cardinalities:", error);
+    // AR-153: Log error and emit metric but don't fail matching - cardinality check is optional
+    // This fails open silently which affects fraud penalty scoring
+    logger.warn(
+      "Failed to fetch bucket cardinalities - fraud penalty scoring disabled",
+      {
+        error,
+        bucketCount: bucketKeys.length,
+      },
+    );
+    metrics.addMetric("Tier2CardinalityFetchFailed", MetricUnit.Count, 1);
+    metrics.publishStoredMetrics();
   }
 
   return cardinalities;
