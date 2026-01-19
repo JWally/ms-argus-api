@@ -1254,7 +1254,7 @@ describe("normalizeFingerprint", () => {
     });
   });
 
-  // AR-XXX: Strip nested objects from hybrid payloads to prevent DynamoDB marshalling errors
+  // AR-146: Strip nested objects from hybrid payloads to prevent DynamoDB marshalling errors
   describe("strips nested objects from hybrid payloads", () => {
     it("should strip nested loose object when flat hashes are present", () => {
       // Real client payloads can have BOTH flat fields AND nested objects

@@ -2,7 +2,7 @@
 // AR-52: Lambda ingestion handler replacing Go/ECS service
 // AR-71: Reverted to async (SQS) for scalability at 30B RPY
 // AR-90: Simplified to binary gzip (application/octet-stream)
-// AR-XX: Refactored to use middy middleware for cleaner code
+// AR-96: Refactored to use middy middleware for cleaner code
 // AR-131: API keys from Secrets Manager instead of env var
 
 import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from "aws-lambda";
