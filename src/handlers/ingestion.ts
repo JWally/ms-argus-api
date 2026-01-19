@@ -176,6 +176,8 @@ const binaryGzipBodyParser =
           metrics.addMetric("PayloadTooLarge", MetricUnit.Count, 1);
           throw createError(413, "Request entity too large");
         }
+        // AR-171: Track JSON payload format for adoption monitoring
+        metrics.addMetric("JsonPayloadReceived", MetricUnit.Count, 1);
         return;
       }
 
