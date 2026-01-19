@@ -1,6 +1,25 @@
 // src/handlers/profile-updater.test.ts
 // AR-52: Updated to use DynamoDB session cache instead of Redis
+// AR-156: Added Metrics mock for MalformedPayload test
 import { describe, it, expect, beforeEach, vi } from "vitest";
+
+// AR-156: Mock Powertools Metrics to verify metric emission
+// Must use vi.hoisted to create mock functions before vi.mock runs
+const { mockAddMetric, mockPublishStoredMetrics } = vi.hoisted(() => ({
+  mockAddMetric: vi.fn(),
+  mockPublishStoredMetrics: vi.fn(),
+}));
+
+vi.mock("@aws-lambda-powertools/metrics", () => ({
+  Metrics: vi.fn().mockImplementation(() => ({
+    addMetric: mockAddMetric,
+    publishStoredMetrics: mockPublishStoredMetrics,
+  })),
+  MetricUnit: {
+    Count: "Count",
+    Milliseconds: "Milliseconds",
+  },
+}));
 
 // Set environment variables BEFORE any module imports using vi.hoisted
 // This ensures env validation passes during module load
@@ -337,7 +356,8 @@ describe("profile-updater handler", () => {
       expect(result!.batchItemFailures[0].itemIdentifier).toBe("fail-msg");
     });
 
-    it("should handle invalid JSON in record body", async () => {
+    // AR-156: Updated - invalid JSON should NOT retry (poison message handling)
+    it("should handle invalid JSON in record body without retrying", async () => {
       const event = createSQSEvent([
         {
           ...createSQSRecord({}, "invalid-msg"),
@@ -347,8 +367,14 @@ describe("profile-updater handler", () => {
 
       const result = await handler(event, mockContext, () => {});
 
-      expect(result!.batchItemFailures).toHaveLength(1);
-      expect(result!.batchItemFailures[0].itemIdentifier).toBe("invalid-msg");
+      // Should NOT be in batch failures (don't retry poison messages)
+      expect(result!.batchItemFailures).toHaveLength(0);
+      // Should emit MalformedPayload metric
+      expect(mockAddMetric).toHaveBeenCalledWith(
+        "MalformedPayload",
+        "Count",
+        1,
+      );
     });
 
     it("should handle PutItem failure gracefully", async () => {
