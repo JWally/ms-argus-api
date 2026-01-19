@@ -55,7 +55,9 @@ function createMockCacheService() {
             existing.status !== "complete"
           ) {
             sessions.set(sessionId, value);
+            return true; // AR-170: Write succeeded
           }
+          return false; // AR-170: Write skipped (higher confidence exists)
         },
       ),
     tryAcquireMutationGate: vi.fn().mockResolvedValue(true),

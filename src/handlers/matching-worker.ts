@@ -189,7 +189,14 @@ async function processRecord(
   } catch (error) {
     // On matching failure, write degraded status
     logger.error("Matching failed", { error, session_id });
-    await service.writeDegradedResult(session_id, idempotencyKey);
+    const degradedWritten = await service.writeDegradedResult(
+      session_id,
+      idempotencyKey,
+    );
+    // AR-170: Track conditional write outcomes for operational visibility
+    if (!degradedWritten) {
+      metrics.addMetric("SessionCacheWriteSkipped", MetricUnit.Count, 1);
+    }
     throw error;
   }
 
@@ -211,12 +218,20 @@ async function processRecord(
   }));
 
   // Write result to DynamoDB session cache (now with anomalies)
-  await service.writeMatchResult(
+  const cacheWritten = await service.writeMatchResult(
     session_id,
     matchResult,
     idempotencyKey,
     anomalies,
   );
+  // AR-170: Track conditional write outcomes for operational visibility
+  if (!cacheWritten) {
+    metrics.addMetric("SessionCacheWriteSkipped", MetricUnit.Count, 1);
+    logger.info("Session cache write skipped (higher confidence exists)", {
+      session_id,
+      confidence: matchResult.confidence,
+    });
+  }
 
   // Queue profile update (pass is_new_device for flag computation)
   // AR-149: Pass matchResult for tier-gated identity association

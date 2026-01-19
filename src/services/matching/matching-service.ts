@@ -294,12 +294,17 @@ export class MatchingService {
     };
   }
 
+  /**
+   * Write match result to session cache
+   * AR-170: Returns boolean indicating if write succeeded
+   * @returns true if written, false if skipped (higher confidence exists)
+   */
   async writeMatchResult(
     sessionId: string,
     result: MatchResult,
     idempotencyKey: string,
     anomalies?: SessionAnomalySignal[],
-  ): Promise<void> {
+  ): Promise<boolean> {
     return tier0WriteMatchResult(
       this.tier0Deps,
       sessionId,
@@ -309,10 +314,15 @@ export class MatchingService {
     );
   }
 
+  /**
+   * Write degraded status to session cache
+   * AR-170: Returns boolean indicating if write succeeded
+   * @returns true if written, false if skipped (higher confidence exists)
+   */
   async writeDegradedResult(
     sessionId: string,
     idempotencyKey: string,
-  ): Promise<void> {
+  ): Promise<boolean> {
     return tier0WriteDegradedResult(this.tier0Deps, sessionId, idempotencyKey);
   }
 

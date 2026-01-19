@@ -68,11 +68,13 @@ export class DynamoCacheService {
   /**
    * Write session result to cache
    * Uses conditional write to only update if confidence is higher
+   *
+   * @returns true if written, false if skipped (existing has higher confidence)
    */
   async writeSessionCache(
     sessionId: string,
     value: SessionCacheValue,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const key = `session:${sessionId}`;
     const ttl = Math.floor(Date.now() / 1000) + this.config.sessionTtlSeconds;
 
@@ -95,11 +97,12 @@ export class DynamoCacheService {
           ExpressionAttributeValues: marshall({ ":conf": value.confidence }),
         }),
       );
+      return true;
     } catch (error) {
       // ConditionalCheckFailedException means existing value has higher confidence
-      // This is expected behavior, not an error
+      // This is expected behavior, not an error - return false to indicate write was skipped
       if (error instanceof ConditionalCheckFailedException) {
-        return;
+        return false;
       }
       throw error;
     }
