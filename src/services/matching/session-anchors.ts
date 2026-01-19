@@ -1,11 +1,9 @@
 // src/services/matching/session-anchors.ts
 // AR-119: Extracted from matching-service.ts - Session anchor lookups
-import {
-  DynamoDBClient,
-  QueryCommand,
-  GetItemCommand,
-} from "@aws-sdk/client-dynamodb";
+// AR-157: Use shared loadProfile from profile-loader module
+import { DynamoDBClient, QueryCommand } from "@aws-sdk/client-dynamodb";
 import { unmarshall } from "@aws-sdk/util-dynamodb";
+import { loadProfile } from "./profile-loader";
 import {
   SESSION_ANCHOR_VALIDITY_SECONDS,
   IP_UA_ANCHOR_VALIDITY_SECONDS,
@@ -171,32 +169,5 @@ export async function ipUaAnchorLookup(
     }
   }
 
-  return null;
-}
-
-/**
- * Load device profile from DynamoDB
- */
-async function loadProfile(
-  deps: SessionAnchorDeps,
-  deviceId: string,
-): Promise<{ risk_score: number; flags: string[] } | null> {
-  const result = await deps.dynamodb.send(
-    new GetItemCommand({
-      TableName: deps.profilesTable,
-      Key: {
-        device_id: { S: deviceId },
-      },
-      ProjectionExpression: "risk_score, flags",
-    }),
-  );
-
-  if (result.Item) {
-    const item = unmarshall(result.Item);
-    return {
-      risk_score: item.risk_score,
-      flags: item.flags ?? [],
-    };
-  }
   return null;
 }

@@ -1,14 +1,17 @@
 // src/services/matching/tier2-compound.ts
 // AR-119: Extracted from matching-service.ts - Compound bucket matching (Tier 2)
 // AR-153: Added structured logging and metrics for cardinality fetch failures
+// AR-157: Moved loadProfile to shared profile-loader module
 import {
   DynamoDBClient,
-  GetItemCommand,
   QueryCommand,
   QueryCommandOutput,
   BatchGetItemCommand,
 } from "@aws-sdk/client-dynamodb";
 import { unmarshall } from "@aws-sdk/util-dynamodb";
+// AR-157: Import for local use and re-export from shared module
+import { loadProfile } from "./profile-loader";
+export { loadProfile, type ProfileData } from "./profile-loader";
 import { Logger } from "@aws-lambda-powertools/logger";
 import { Metrics, MetricUnit } from "@aws-lambda-powertools/metrics";
 import {
@@ -312,31 +315,4 @@ function scoreDeviceCandidatesWithEvidence(
   }
 
   return resultMap;
-}
-
-/**
- * Load device profile from DynamoDB
- */
-export async function loadProfile(
-  deps: Tier2CompoundDeps,
-  deviceId: string,
-): Promise<{ risk_score: number; flags: string[] } | null> {
-  const result = await deps.dynamodb.send(
-    new GetItemCommand({
-      TableName: deps.profilesTable,
-      Key: {
-        device_id: { S: deviceId },
-      },
-      ProjectionExpression: "risk_score, flags",
-    }),
-  );
-
-  if (result.Item) {
-    const item = unmarshall(result.Item);
-    return {
-      risk_score: item.risk_score,
-      flags: item.flags ?? [],
-    };
-  }
-  return null;
 }

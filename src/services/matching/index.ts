@@ -26,11 +26,17 @@ export {
 // Tier 1: Hash matching (stable, fuzzy)
 export { tier1HashMatch, type Tier1HashDeps } from "./tier1-hash";
 
+// AR-157: Shared profile loading
+export {
+  loadProfile,
+  type ProfileLoaderDeps,
+  type ProfileData,
+} from "./profile-loader";
+
 // Tier 2: Compound bucket matching with cardinality
 export {
   tier2CompoundMatch,
   tier2CompoundMatchWithTimeout,
-  loadProfile,
   type Tier2CompoundDeps,
 } from "./tier2-compound";
 
