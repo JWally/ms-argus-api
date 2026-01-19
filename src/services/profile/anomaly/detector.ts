@@ -1,11 +1,22 @@
 // src/services/profile/anomaly/detector.ts
 // AR-141: Simple detector orchestrator - no registry class, just an array of functions
+// AR-158: Replaced console.error with Powertools structured logging and metrics
 
+import { Logger } from "@aws-lambda-powertools/logger";
+import { Metrics, MetricUnit } from "@aws-lambda-powertools/metrics";
 import { Fingerprint } from "../../../types";
 import { AnomalySignal, AnomalyResult } from "./types";
 import { detectQuickWinAnomalies } from "./quick-wins";
 import { detectCrossFieldAnomalies } from "./cross-field";
 import { detectNetworkAnomalies } from "./network";
+
+// AR-158: Structured logging for anomaly detection
+const logger = new Logger({
+  serviceName: process.env.POWERTOOLS_SERVICE_NAME || "argus-anomaly-detector",
+});
+const metrics = new Metrics({
+  namespace: process.env.POWERTOOLS_METRICS_NAMESPACE || "Argus",
+});
 
 /**
  * Sigint data structure for network anomaly detection
@@ -59,7 +70,12 @@ export function detectAllAnomalies(
       signals.push(...detector(fingerprint, raw, sigint));
     } catch (error) {
       // Log but don't fail - detector errors shouldn't block matching
-      console.error("Anomaly detector failed:", error);
+      // AR-158: Use structured logging and emit metric for monitoring
+      logger.error("Anomaly detector failed", {
+        error,
+        detectorName: detector.name,
+      });
+      metrics.addMetric("AnomalyDetectorError", MetricUnit.Count, 1);
     }
   }
 
