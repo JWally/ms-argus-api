@@ -191,7 +191,7 @@ export function normalizeFingerprint(
     typeof raw.stable_hash === "string" ||
     typeof raw.fuzzy_hash === "string"
   ) {
-    // AR-XXX: Strip nested objects that might contain large numbers (e.g., loose.maths)
+    // AR-146: Strip nested objects that might contain large numbers (e.g., loose.maths)
     // Only keep primitive fields (string, number, boolean, null, undefined)
     // This prevents DynamoDB marshalling errors from numbers > MAX_SAFE_INTEGER
     const result: Fingerprint = {};
