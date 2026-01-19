@@ -123,6 +123,8 @@ export class ArgusApiStack extends cdk.Stack {
     // AR-67: Added session retrieval endpoint
     // AR-71: Reverted to async (SQS) for scalability
     // AR-139: Payload archiving
+    // AR-160: Pass stage config for Lambda memory tuning
+    const stageConfig = getStageConfig(stage);
     const httpApi = new HttpApiConstruct(this, "HttpApi", {
       stackName,
       stage,
@@ -130,6 +132,7 @@ export class ArgusApiStack extends cdk.Stack {
       sessionCacheTable: dynamodb.sessionCacheTable,
       alarmsTopic,
       payloadArchiveBucket: analytics.payloadArchiveBucket,
+      config: stageConfig,
     });
 
     // Worker Lambdas (no VPC - access DynamoDB/SQS via IAM)

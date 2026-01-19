@@ -1,6 +1,18 @@
 // lib/config/stage-config.ts
 // AR-43: Centralized stage-specific configuration
+// AR-160: Added Lambda power tuning configurations for all functions
 // This provides a single source of truth for environment-specific values
+//
+// Lambda Power Tuning Notes:
+// To optimize Lambda memory settings, use AWS Lambda Power Tuning:
+// https://github.com/alexcasalboni/aws-lambda-power-tuning
+//
+// Deploy via SAR:
+// aws serverlessrepo create-cloud-formation-template \
+//   --application-id arn:aws:serverlessrepo:us-east-1:451282441545:applications/aws-lambda-power-tuning
+//
+// Memory settings below are initial estimates. Run Power Tuning against
+// real workloads to find optimal cost/performance balance for each function.
 
 import { Duration } from "aws-cdk-lib";
 
@@ -10,16 +22,26 @@ import { Duration } from "aws-cdk-lib";
  */
 export interface StageConfig {
   // Lambda configuration
+  // AR-160: All Lambda memory settings centralized for power tuning
   lambda: {
     matching: {
-      memorySize: number;
+      memorySize: number; // SQS consumer - tier matching (CPU-bound with hashing)
       timeout: Duration;
       reservedConcurrency: number;
     };
     profile: {
-      memorySize: number;
+      memorySize: number; // SQS consumer - profile updates (I/O-bound)
       timeout: Duration;
       reservedConcurrency: number;
+    };
+    ingestion: {
+      memorySize: number; // API handler - fingerprint ingestion (I/O-bound, minimal CPU)
+    };
+    sessionGet: {
+      memorySize: number; // API handler - session retrieval (simple read, minimal CPU)
+    };
+    cardinalityRecalc: {
+      memorySize: number; // Scheduled - batch processing (scan/query heavy)
     };
     provisionedConcurrency: number;
   };
@@ -114,6 +136,8 @@ export interface StageConfig {
 const devConfig: StageConfig = {
   lambda: {
     matching: {
+      // AR-160: Higher memory in dev for faster iteration during debugging
+      // Production should use power tuning results; dev optimizes for cold start speed
       memorySize: 1024,
       timeout: Duration.seconds(20),
       reservedConcurrency: 25,
@@ -122,6 +146,15 @@ const devConfig: StageConfig = {
       memorySize: 128,
       timeout: Duration.seconds(15),
       reservedConcurrency: 25,
+    },
+    ingestion: {
+      memorySize: 256, // Minimal processing - just validation and SQS publish
+    },
+    sessionGet: {
+      memorySize: 256, // Simple DynamoDB read
+    },
+    cardinalityRecalc: {
+      memorySize: 256, // Scan-heavy but not CPU-intensive
     },
     provisionedConcurrency: 0, // No warm instances in dev
   },
@@ -210,6 +243,8 @@ const devConfig: StageConfig = {
 const prodConfig: StageConfig = {
   lambda: {
     matching: {
+      // AR-160: Recommend running power tuning with production workload
+      // Current setting is cost-optimized; may need increase for latency SLAs
       memorySize: 512,
       timeout: Duration.seconds(45),
       reservedConcurrency: 1000,
@@ -218,6 +253,15 @@ const prodConfig: StageConfig = {
       memorySize: 256,
       timeout: Duration.seconds(30),
       reservedConcurrency: 500,
+    },
+    ingestion: {
+      memorySize: 256, // Minimal processing - just validation and SQS publish
+    },
+    sessionGet: {
+      memorySize: 256, // Simple DynamoDB read
+    },
+    cardinalityRecalc: {
+      memorySize: 512, // Higher in prod for faster batch processing
     },
     provisionedConcurrency: 2, // Keep 2 warm in prod
   },

@@ -1,6 +1,7 @@
 // lib/constructs/workers.ts
 // AR-52: Simplified - removed VPC/Redis, uses DynamoDB for all caching
 // AR-130: Added cardinality recalculation Lambda with daily EventBridge rule
+// AR-160: Centralized Lambda memory settings in stage config
 import * as path from "path";
 import { Construct } from "constructs";
 import * as lambda from "aws-cdk-lib/aws-lambda-nodejs";
@@ -225,7 +226,8 @@ export class WorkersConstruct extends Construct {
         ...commonConfig,
         entry: path.join(__dirname, "../../src/handlers/cardinality-recalc.ts"),
         functionName: `${stackName}-cardinality-recalc`,
-        memorySize: 256, // Low memory - simple scan/update operations
+        // AR-160: Use configurable memory from stage config
+        memorySize: config.lambda.cardinalityRecalc.memorySize,
         timeout: Duration.minutes(15), // Max Lambda timeout for large tables
         environment: {
           AWS_NODEJS_CONNECTION_REUSE_ENABLED: "1",

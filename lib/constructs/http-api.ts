@@ -1,6 +1,7 @@
 // lib/constructs/http-api.ts
 // AR-52: HTTP API Gateway + Lambda for fingerprint ingestion
 // AR-67: Added session retrieval endpoint
+// AR-160: Added configurable Lambda memory settings
 // Replaces ALB + ECS Fargate (Go) - ~90% cost reduction
 
 import * as path from "path";
@@ -17,6 +18,7 @@ import * as cloudwatch from "aws-cdk-lib/aws-cloudwatch";
 import * as sns from "aws-cdk-lib/aws-sns";
 import * as actions from "aws-cdk-lib/aws-cloudwatch-actions";
 import { Duration, RemovalPolicy } from "aws-cdk-lib";
+import { StageConfig } from "../config/stage-config";
 
 interface HttpApiConstructProps {
   stackName: string;
@@ -26,6 +28,8 @@ interface HttpApiConstructProps {
   alarmsTopic: sns.ITopic;
   /** AR-139: S3 bucket for payload archiving */
   payloadArchiveBucket: s3.IBucket;
+  /** AR-160: Stage-specific configuration for Lambda memory tuning */
+  config: StageConfig;
 }
 
 /**
@@ -58,6 +62,7 @@ export class HttpApiConstruct extends Construct {
       sessionCacheTable,
       alarmsTopic,
       payloadArchiveBucket,
+      config,
     } = props;
 
     // CloudWatch log group for Lambda
@@ -78,7 +83,8 @@ export class HttpApiConstruct extends Construct {
         architecture: lambda.Architecture.ARM_64,
         handler: "handler",
         entry: path.join(__dirname, "../../src/handlers/ingestion.ts"),
-        memorySize: 256,
+        // AR-160: Use configurable memory from stage config
+        memorySize: config.lambda.ingestion.memorySize,
         timeout: Duration.seconds(10),
         logGroup,
         environment: {
@@ -125,7 +131,8 @@ export class HttpApiConstruct extends Construct {
         architecture: lambda.Architecture.ARM_64,
         handler: "handler",
         entry: path.join(__dirname, "../../src/handlers/session-get.ts"),
-        memorySize: 256,
+        // AR-160: Use configurable memory from stage config
+        memorySize: config.lambda.sessionGet.memorySize,
         timeout: Duration.seconds(10),
         logGroup: sessionGetLogGroup,
         environment: {
