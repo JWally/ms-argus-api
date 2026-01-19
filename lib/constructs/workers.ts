@@ -271,6 +271,10 @@ export class WorkersConstruct extends Construct {
     // Affects fraud penalty scoring when cardinality data unavailable
     this.createTier2CardinalityFetchAlarm(stackName, alarmsTopic);
 
+    // AR-154: Alarm for Firehose observation emit errors
+    // Data loss in analytics pipeline when Firehose writes fail
+    this.createObservationEmitErrorAlarm(stackName, alarmsTopic);
+
     // Alarms
     const matchingWorkerAlarms = this.createWorkerAlarms(
       this.matchingWorker,
@@ -537,6 +541,32 @@ export class WorkersConstruct extends Construct {
         treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
       },
     );
+    alarm.addAlarmAction(new actions.SnsAction(alarmsTopic));
+  }
+
+  /**
+   * AR-154: Create alarm for Firehose observation emit errors
+   * Alerts when observation data fails to write to Firehose (data loss)
+   */
+  private createObservationEmitErrorAlarm(
+    stackName: string,
+    alarmsTopic: sns.ITopic,
+  ): void {
+    const alarm = new cloudwatch.Alarm(this, "ObservationEmitErrorAlarm", {
+      alarmName: `${stackName}-observation-emit-error`,
+      alarmDescription:
+        "Firehose observation writes failing - analytics data loss",
+      metric: new cloudwatch.Metric({
+        namespace: stackName,
+        metricName: "ObservationEmitError",
+        statistic: "Sum",
+        period: Duration.minutes(5),
+      }),
+      threshold: 0,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+      evaluationPeriods: 2, // 10 minutes sustained
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    });
     alarm.addAlarmAction(new actions.SnsAction(alarmsTopic));
   }
 }
