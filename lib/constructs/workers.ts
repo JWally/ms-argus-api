@@ -5,10 +5,9 @@
 import * as path from "path";
 import { Construct } from "constructs";
 import * as lambda from "aws-cdk-lib/aws-lambda-nodejs";
-import { Runtime, Tracing, Architecture, Alias } from "aws-cdk-lib/aws-lambda";
+import { Alias } from "aws-cdk-lib/aws-lambda";
 import * as lambdaEventSources from "aws-cdk-lib/aws-lambda-event-sources";
 import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
-import { OutputFormat } from "aws-cdk-lib/aws-lambda-nodejs";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as cloudwatch from "aws-cdk-lib/aws-cloudwatch";
 import * as codedeploy from "aws-cdk-lib/aws-codedeploy";
@@ -20,6 +19,7 @@ import * as targets from "aws-cdk-lib/aws-events-targets";
 import { Duration } from "aws-cdk-lib";
 import * as actions from "aws-cdk-lib/aws-cloudwatch-actions";
 import { getStageConfig } from "../config";
+import { createBaseLambdaConfig, createWorkerEnv } from "./lambda-config";
 
 interface WorkersConstructProps {
   stackName: string;
@@ -79,23 +79,12 @@ export class WorkersConstruct extends Construct {
       `${stage}/${projectName}`,
     );
 
+    // AR-167: Use shared Lambda configuration
     // Common Lambda configuration - AR-52: No VPC needed
-    const commonConfig = {
-      runtime: Runtime.NODEJS_20_X,
-      architecture: Architecture.ARM_64,
-      bundling: {
-        minify: true,
-        sourceMap: true,
-        target: "node20",
-        keepNames: true,
-        format: OutputFormat.ESM,
-        mainFields: ["module", "main"],
-        environment: { NODE_ENV: "production" },
-        // AR-52: No longer need ioredis - using DynamoDB for caching
-      },
-      tracing: Tracing.ACTIVE,
-      // AR-52: No VPC - workers access DynamoDB/SQS via IAM
-    };
+    const commonConfig = createBaseLambdaConfig({
+      tracing: true,
+      keepNames: true,
+    });
 
     // IAM Logging Policy
     const loggingPolicy = new iam.PolicyStatement({
@@ -121,11 +110,7 @@ export class WorkersConstruct extends Construct {
       timeout: config.lambda.matching.timeout,
       reservedConcurrentExecutions: config.lambda.matching.reservedConcurrency,
       environment: {
-        AWS_NODEJS_CONNECTION_REUSE_ENABLED: "1",
-        ENVIRONMENT: stage,
-        POWERTOOLS_SERVICE_NAME: `${stackName}-matching`,
-        POWERTOOLS_METRICS_NAMESPACE: stackName,
-        LOG_LEVEL: "INFO",
+        ...createWorkerEnv(stage, stackName, `${stackName}-matching`),
         SECRET_KEY_ARN: secret.secretArn,
         // AR-52: DynamoDB session cache replaces Redis
         SESSION_CACHE_TABLE: sessionCacheTable.tableName,
@@ -179,11 +164,7 @@ export class WorkersConstruct extends Construct {
       timeout: config.lambda.profile.timeout,
       reservedConcurrentExecutions: config.lambda.profile.reservedConcurrency,
       environment: {
-        AWS_NODEJS_CONNECTION_REUSE_ENABLED: "1",
-        ENVIRONMENT: stage,
-        POWERTOOLS_SERVICE_NAME: `${stackName}-profile-updater`,
-        POWERTOOLS_METRICS_NAMESPACE: stackName,
-        LOG_LEVEL: "INFO",
+        ...createWorkerEnv(stage, stackName, `${stackName}-profile-updater`),
         SECRET_KEY_ARN: secret.secretArn,
         // AR-52: DynamoDB session cache replaces Redis
         SESSION_CACHE_TABLE: sessionCacheTable.tableName,
@@ -230,11 +211,11 @@ export class WorkersConstruct extends Construct {
         memorySize: config.lambda.cardinalityRecalc.memorySize,
         timeout: Duration.minutes(15), // Max Lambda timeout for large tables
         environment: {
-          AWS_NODEJS_CONNECTION_REUSE_ENABLED: "1",
-          ENVIRONMENT: stage,
-          POWERTOOLS_SERVICE_NAME: `${stackName}-cardinality-recalc`,
-          POWERTOOLS_METRICS_NAMESPACE: stackName,
-          LOG_LEVEL: "INFO",
+          ...createWorkerEnv(
+            stage,
+            stackName,
+            `${stackName}-cardinality-recalc`,
+          ),
           TIER2_BUCKETS_TABLE: tier2BucketsTable.tableName,
         },
       },

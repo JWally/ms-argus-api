@@ -19,6 +19,7 @@ import * as sns from "aws-cdk-lib/aws-sns";
 import * as actions from "aws-cdk-lib/aws-cloudwatch-actions";
 import { Duration, RemovalPolicy } from "aws-cdk-lib";
 import { StageConfig } from "../config/stage-config";
+import { createBaseLambdaConfig, createPowertoolsEnv } from "./lambda-config";
 
 interface HttpApiConstructProps {
   stackName: string;
@@ -74,13 +75,13 @@ export class HttpApiConstruct extends Construct {
 
     // Lambda function for ingestion
     // AR-71: Reverted to async (SQS) for scalability at 30B RPY
+    // AR-167: Use shared Lambda configuration
     this.ingestionFunction = new lambdaNode.NodejsFunction(
       this,
       "IngestionFunction",
       {
+        ...createBaseLambdaConfig(),
         functionName: `${stackName}-ingestion`,
-        runtime: lambda.Runtime.NODEJS_20_X,
-        architecture: lambda.Architecture.ARM_64,
         handler: "handler",
         entry: path.join(__dirname, "../../src/handlers/ingestion.ts"),
         // AR-160: Use configurable memory from stage config
@@ -88,23 +89,11 @@ export class HttpApiConstruct extends Construct {
         timeout: Duration.seconds(10),
         logGroup,
         environment: {
+          ...createPowertoolsEnv("argus-ingestion", `argus-${stage}`),
           SQS_QUEUE_URL: matchingQueue.queueUrl,
           // AR-139: Payload archiving configuration
           PAYLOAD_ARCHIVE_BUCKET: payloadArchiveBucket.bucketName,
           PAYLOAD_ARCHIVE_SAMPLE_RATE: stage.startsWith("dev") ? "1.0" : "0",
-          POWERTOOLS_SERVICE_NAME: "argus-ingestion",
-          POWERTOOLS_METRICS_NAMESPACE: `argus-${stage}`,
-          NODE_OPTIONS: "--enable-source-maps",
-        },
-        bundling: {
-          minify: true,
-          sourceMap: true,
-          target: "node20",
-          format: lambdaNode.OutputFormat.ESM,
-          mainFields: ["module", "main"],
-          esbuildArgs: {
-            "--tree-shaking": "true",
-          },
         },
       },
     );
@@ -122,13 +111,13 @@ export class HttpApiConstruct extends Construct {
       removalPolicy: RemovalPolicy.DESTROY,
     });
 
+    // AR-167: Use shared Lambda configuration
     this.sessionGetFunction = new lambdaNode.NodejsFunction(
       this,
       "SessionGetFunction",
       {
+        ...createBaseLambdaConfig(),
         functionName: `${stackName}-session-get`,
-        runtime: lambda.Runtime.NODEJS_20_X,
-        architecture: lambda.Architecture.ARM_64,
         handler: "handler",
         entry: path.join(__dirname, "../../src/handlers/session-get.ts"),
         // AR-160: Use configurable memory from stage config
@@ -136,20 +125,8 @@ export class HttpApiConstruct extends Construct {
         timeout: Duration.seconds(10),
         logGroup: sessionGetLogGroup,
         environment: {
+          ...createPowertoolsEnv("argus-session-get", `argus-${stage}`),
           SESSION_CACHE_TABLE: sessionCacheTable.tableName,
-          POWERTOOLS_SERVICE_NAME: "argus-session-get",
-          POWERTOOLS_METRICS_NAMESPACE: `argus-${stage}`,
-          NODE_OPTIONS: "--enable-source-maps",
-        },
-        bundling: {
-          minify: true,
-          sourceMap: true,
-          target: "node20",
-          format: lambdaNode.OutputFormat.ESM,
-          mainFields: ["module", "main"],
-          esbuildArgs: {
-            "--tree-shaking": "true",
-          },
         },
       },
     );
