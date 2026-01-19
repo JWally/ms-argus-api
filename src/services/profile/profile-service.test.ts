@@ -482,6 +482,170 @@ describe("ProfileService", () => {
     });
   });
 
+  // AR-150: Tests for tier-gated identity association
+  describe("updateTier1IndexesWithEvidence", () => {
+    it("should write all indexes when evidence is PUBLIC_KEY_MATCH (Tier 0.5)", async () => {
+      dynamoMock.on(BatchWriteItemCommand).resolves({});
+
+      const fingerprint: Fingerprint = {
+        public_key: "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE...",
+        evercookie_id: "cookie123",
+        stable_hash: "stable123",
+        fuzzy_hash: "fuzzy456",
+      };
+
+      const count = await service.updateTier1IndexesWithEvidence(
+        "dev_123",
+        fingerprint,
+        ["PUBLIC_KEY_MATCH"],
+      );
+
+      // Should write all 4 indexes (pubkey, evercookie, stable, fuzzy)
+      expect(count).toBe(4);
+    });
+
+    it("should write all indexes when evidence is STABLE_HASH_MATCH (Tier 1)", async () => {
+      dynamoMock.on(BatchWriteItemCommand).resolves({});
+
+      const fingerprint: Fingerprint = {
+        public_key: "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE...",
+        stable_hash: "stable123",
+        fuzzy_hash: "fuzzy456",
+      };
+
+      const count = await service.updateTier1IndexesWithEvidence(
+        "dev_123",
+        fingerprint,
+        ["STABLE_HASH_MATCH"],
+      );
+
+      // Should write all 3 indexes (pubkey, stable, fuzzy)
+      expect(count).toBe(3);
+    });
+
+    it("should write all indexes when evidence is SESSION_ANCHOR_BUCKET", async () => {
+      dynamoMock.on(BatchWriteItemCommand).resolves({});
+
+      const fingerprint: Fingerprint = {
+        evercookie_id: "cookie123",
+        stable_hash: "stable123",
+      };
+
+      const count = await service.updateTier1IndexesWithEvidence(
+        "dev_123",
+        fingerprint,
+        ["SESSION_ANCHOR_BUCKET"],
+      );
+
+      // Should write all 2 indexes (evercookie, stable)
+      expect(count).toBe(2);
+    });
+
+    it("should only write hash indexes when evidence is IP_JA4_BUCKET (Tier 2 unbounded)", async () => {
+      dynamoMock.on(BatchWriteItemCommand).resolves({});
+
+      const fingerprint: Fingerprint = {
+        public_key: "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE...",
+        evercookie_id: "cookie123",
+        sigint_id: "sigint-uuid-123",
+        stable_hash: "stable123",
+        fuzzy_hash: "fuzzy456",
+      };
+
+      const count = await service.updateTier1IndexesWithEvidence(
+        "dev_123",
+        fingerprint,
+        ["IP_JA4_BUCKET"],
+      );
+
+      // Should only write 2 indexes (stable, fuzzy) - NO identity indexes
+      expect(count).toBe(2);
+
+      // Verify only hash indexes were written
+      const calls = dynamoMock.commandCalls(BatchWriteItemCommand);
+      expect(calls).toHaveLength(1);
+      const items =
+        calls[0].args[0].input.RequestItems?.[testConfig.tier1IndexTable];
+      const hashKeys = items?.map((item) => item.PutRequest?.Item?.hash_key?.S);
+      expect(hashKeys).toContain("stable#stable123");
+      expect(hashKeys).toContain("fuzzy#fuzzy456");
+      expect(hashKeys).not.toContain(expect.stringContaining("pubkey#"));
+      expect(hashKeys).not.toContain(expect.stringContaining("evercookie#"));
+      expect(hashKeys).not.toContain(expect.stringContaining("sigint#"));
+    });
+
+    it("should only write hash indexes when evidence is GPU_SCREEN_TZ_BUCKET", async () => {
+      dynamoMock.on(BatchWriteItemCommand).resolves({});
+
+      const fingerprint: Fingerprint = {
+        public_key: "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE...",
+        stable_hash: "stable123",
+      };
+
+      const count = await service.updateTier1IndexesWithEvidence(
+        "dev_123",
+        fingerprint,
+        ["GPU_SCREEN_TZ_BUCKET"],
+      );
+
+      // Should only write 1 hash index - no identity index
+      expect(count).toBe(1);
+    });
+
+    it("should write all indexes when evidence_codes is undefined (backward compat)", async () => {
+      dynamoMock.on(BatchWriteItemCommand).resolves({});
+
+      const fingerprint: Fingerprint = {
+        public_key: "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE...",
+        stable_hash: "stable123",
+      };
+
+      const count = await service.updateTier1IndexesWithEvidence(
+        "dev_123",
+        fingerprint,
+        undefined, // No evidence codes
+      );
+
+      // Should write all 2 indexes for backward compatibility
+      expect(count).toBe(2);
+    });
+
+    it("should write all indexes when evidence_codes is empty array", async () => {
+      dynamoMock.on(BatchWriteItemCommand).resolves({});
+
+      const fingerprint: Fingerprint = {
+        public_key: "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE...",
+        stable_hash: "stable123",
+      };
+
+      const count = await service.updateTier1IndexesWithEvidence(
+        "dev_123",
+        fingerprint,
+        [], // Empty evidence codes
+      );
+
+      // Should write all indexes for backward compatibility
+      expect(count).toBe(2);
+    });
+
+    it("should return 0 when only identity fields present but evidence is Tier 2", async () => {
+      const fingerprint: Fingerprint = {
+        public_key: "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE...",
+        evercookie_id: "cookie123",
+        // No hash fields
+      };
+
+      const count = await service.updateTier1IndexesWithEvidence(
+        "dev_123",
+        fingerprint,
+        ["IP_JA4_BUCKET"],
+      );
+
+      // Should write 0 indexes - no hash fields, identity blocked
+      expect(count).toBe(0);
+    });
+  });
+
   describe("updateTier2Buckets", () => {
     it("should use BatchWriteItem for reliability (AR-40)", async () => {
       dynamoMock.on(BatchWriteItemCommand).resolves({});

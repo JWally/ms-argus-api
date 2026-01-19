@@ -17,6 +17,8 @@ import {
 } from "./flag-computation";
 import {
   buildTier1IndexEntries,
+  buildIdentityIndexEntries,
+  buildHashIndexEntries,
   batchWriteTier1Indexes,
   buildTier2BucketKeys,
   batchWriteTier2Buckets,
@@ -27,6 +29,7 @@ import {
   writeIpUaAnchorBucket,
   Tier1IndexEntry,
   IndexWriterDeps,
+  ASSOCIATION_ALLOWED_EVIDENCE,
 } from "./index-writers";
 
 /**
@@ -242,6 +245,47 @@ export class ProfileService {
   }
 
   /**
+   * AR-150: Update Tier 1 indexes with tier-gated identity association
+   *
+   * Hash indexes (stable#, fuzzy#) are always written.
+   * Identity indexes (pubkey#, evercookie#, sigint#) are only written when
+   * evidence_codes contains at least one code in ASSOCIATION_ALLOWED_EVIDENCE.
+   *
+   * This prevents viral spreading of device_ids from low-confidence Tier 2 matches.
+   */
+  async updateTier1IndexesWithEvidence(
+    deviceId: string,
+    fingerprint: Fingerprint,
+    evidenceCodes?: string[],
+  ): Promise<number> {
+    const ttlSeconds = this.deps.config.profileTtlDays * 24 * 60 * 60;
+    const ttl = Math.floor(Date.now() / 1000) + ttlSeconds;
+
+    // Always write hash indexes (stable#, fuzzy#)
+    const hashEntries = buildHashIndexEntries(deviceId, fingerprint, ttl);
+
+    // Only write identity indexes for high-confidence matches
+    // Backward compat: if no evidence codes, write all indexes
+    const shouldWriteIdentity =
+      !evidenceCodes ||
+      evidenceCodes.length === 0 ||
+      evidenceCodes.some((code) => ASSOCIATION_ALLOWED_EVIDENCE.includes(code));
+
+    const identityEntries = shouldWriteIdentity
+      ? buildIdentityIndexEntries(deviceId, fingerprint, ttl)
+      : [];
+
+    const allEntries = [...hashEntries, ...identityEntries];
+
+    if (allEntries.length === 0) {
+      return 0;
+    }
+
+    await batchWriteTier1Indexes(this.indexWriterDeps, allEntries);
+    return allEntries.length;
+  }
+
+  /**
    * Update Tier 2 buckets (compound filter matching)
    * Uses shorter TTL (7 days) to prevent bucket accumulation (AR-39)
    * Uses BatchWriteItem with retry logic for reliability (AR-40)
@@ -357,6 +401,8 @@ export class ProfileService {
       raw_fingerprint,
       timestamp,
       is_new_device = false,
+      // AR-149/AR-150: Match context for tier-gated identity association
+      evidence_codes,
     } = payload;
 
     // Atomically acquire mutation gate (AR-27: fixes TOCTOU race condition)
@@ -395,7 +441,12 @@ export class ProfileService {
       hasDrift,
       raw_fingerprint,
     );
-    const tier1Writes = await this.updateTier1Indexes(device_id, fingerprint);
+    // AR-150: Use tier-gated identity association
+    const tier1Writes = await this.updateTier1IndexesWithEvidence(
+      device_id,
+      fingerprint,
+      evidence_codes,
+    );
     const tier2Writes = await this.updateTier2Buckets(device_id, fingerprint);
 
     // Note: anchor buckets already updated above (before drift check)
