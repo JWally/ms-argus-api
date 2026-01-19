@@ -24,6 +24,9 @@ export async function checkCache(
 /**
  * Write match result to session cache (AR-52: DynamoDB replaces Redis)
  * AR-148: Added optional anomalies parameter for server-side detection results
+ * AR-170: Returns boolean indicating if write succeeded or was skipped
+ *
+ * @returns true if written, false if skipped (existing value has higher confidence)
  */
 export async function writeMatchResult(
   deps: Tier0CacheDeps,
@@ -31,7 +34,7 @@ export async function writeMatchResult(
   result: MatchResult,
   idempotencyKey: string,
   anomalies?: SessionAnomalySignal[],
-): Promise<void> {
+): Promise<boolean> {
   const value: SessionCacheValue = {
     status: "complete",
     device_id: result.device_id,
@@ -47,17 +50,20 @@ export async function writeMatchResult(
   };
 
   // DynamoCacheService handles conditional write (only updates if confidence is higher)
-  await deps.cache.writeSessionCache(sessionId, value);
+  return deps.cache.writeSessionCache(sessionId, value);
 }
 
 /**
  * Write degraded status to cache when matching fails (AR-52: DynamoDB replaces Redis)
+ * AR-170: Returns boolean indicating if write succeeded or was skipped
+ *
+ * @returns true if written, false if skipped (existing value has higher confidence)
  */
 export async function writeDegradedResult(
   deps: Tier0CacheDeps,
   sessionId: string,
   idempotencyKey: string,
-): Promise<void> {
+): Promise<boolean> {
   const value: SessionCacheValue = {
     status: "degraded",
     device_id: "",
@@ -71,5 +77,5 @@ export async function writeDegradedResult(
     updated_at: Date.now(),
   };
 
-  await deps.cache.writeSessionCache(sessionId, value);
+  return deps.cache.writeSessionCache(sessionId, value);
 }

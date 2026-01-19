@@ -36,7 +36,7 @@ function createMockCacheService() {
   const gates = new Set<string>();
   return {
     checkSessionCache: vi.fn().mockResolvedValue(null),
-    writeSessionCache: vi.fn().mockResolvedValue(undefined),
+    writeSessionCache: vi.fn().mockResolvedValue(true), // AR-170: Returns boolean
     tryAcquireMutationGate: vi
       .fn()
       .mockImplementation(async (deviceId: string) => {
