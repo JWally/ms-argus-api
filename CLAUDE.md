@@ -79,7 +79,7 @@ curl -s -X POST -u "jira@wolcott.io:$JIRA_TOKEN" \
 ```bash
 npm run format       # Prettier
 npm run lint:test    # ESLint (warnings OK, errors fail)
-npm test             # Vitest unit tests (517+)
+npm test             # Vitest unit tests (593+)
 ```
 
 ### Deployment
@@ -149,6 +149,7 @@ EventBridge (daily) → Lambda (Cardinality Recalc) → DynamoDB (Tier2Buckets)
 
 AR-52: Replaced Go/ECS ingestion with HTTP API + Lambda. Replaced Redis cache with DynamoDB session cache.
 AR-130: Added daily cardinality recalculation Lambda to fix bucket stats drift.
+AR-149/AR-150: Tier-gated identity association - prevents viral spreading of device_ids from low-confidence Tier 2 matches.
 
 ### Key Files
 
@@ -172,7 +173,7 @@ AR-130: Added daily cardinality recalculation Lambda to fix bucket stats drift.
 
 Before merging ANY PR:
 
-- [ ] Unit tests pass (`npm test` - all 517+)
+- [ ] Unit tests pass (`npm test` - all 593+)
 - [ ] Lint passes (warnings OK)
 - [ ] Deployed to dev (`cdk deploy ms-argus-api-dev-jw`)
 - [ ] Integration tests pass (`cd ms-argus-automation && npm test`)

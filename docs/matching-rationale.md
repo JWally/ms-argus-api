@@ -8,9 +8,10 @@ This document explains the rationale behind the tiered matching strategy used in
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│ Tier 0.5: Evercookie Match (confidence: 0.99)                       │
-│ ├─ evercookie_id - Super-persistent cookie                          │
-│ └─ Evidence: EVERCOOKIE_MATCH                                       │
+│ Tier 0.5: Identity Match (confidence: 0.99)                         │
+│ ├─ evercookie_id - Super-persistent cookie (EVERCOOKIE_MATCH)       │
+│ ├─ public_key - ECDSA P-256 crypto identity (PUBLIC_KEY_MATCH)      │
+│ └─ sigint_id - Third-party cookie from edge (SIGINT_ID_MATCH)       │
 ├─────────────────────────────────────────────────────────────────────┤
 │ Tier 1: Hash Match (confidence: 0.85-0.95)                          │
 │ ├─ stable_hash - Hardware fingerprint (conf: 0.95)                  │
@@ -28,7 +29,11 @@ This document explains the rationale behind the tiered matching strategy used in
 
 ## Signal Selection Rationale
 
-### Tier 0.5: Evercookie
+### Tier 0.5: Identity Signals
+
+Tier 0.5 uses persistent identity signals that provide near-certain device identification.
+
+#### Evercookie
 
 **Signal**: `evercookie_id`
 
@@ -42,6 +47,36 @@ This document explains the rationale behind the tiered matching strategy used in
 | Privacy Impact | Low       | Blocks: Brave (partial), Tor (full)                |
 
 **Why 0.99 confidence**: Evercookies are intentionally persistent and unique. False positives are essentially impossible since each evercookie_id is a generated UUID tied to a specific device visit.
+
+#### Public Key (AR-64)
+
+**Signal**: `public_key` (ECDSA P-256, Base64 SPKI format)
+
+**Rationale**: Cryptographic device identity generated client-side using Web Crypto API. The private key is stored in IndexedDB and never leaves the device. The public key serves as a verifiable identity anchor.
+
+| Metric         | Value     | Notes                                               |
+| -------------- | --------- | --------------------------------------------------- |
+| Confidence     | 0.99      | Cryptographically unique                            |
+| Stability      | Very High | Survives until IndexedDB cleared or browser profile |
+| Collision Rate | ~0%       | P-256 curve provides 128-bit security               |
+| Privacy Impact | Medium    | Blocks: Tor (no IndexedDB), strict privacy browsers |
+
+**Why 0.99 confidence**: Each public key is cryptographically unique. The only false positive scenario would require key extraction from the device, which is practically impossible.
+
+#### Sigint ID (AR-81)
+
+**Signal**: `sigint_id` (third-party cookie from CloudFront edge)
+
+**Rationale**: Third-party cookie set at the edge layer, providing a server-controlled identity signal. More persistent than first-party cookies in some browsers.
+
+| Metric         | Value | Notes                                       |
+| -------------- | ----- | ------------------------------------------- |
+| Confidence     | 0.99  | Server-controlled unique identifier         |
+| Stability      | High  | Third-party cookie policies vary by browser |
+| Collision Rate | ~0%   | UUID generated server-side                  |
+| Privacy Impact | High  | Blocks: Safari ITP, Firefox ETP, Brave      |
+
+**Why 0.99 confidence**: Server-generated UUIDs are unique. Cross-device tracking is the intended behavior for fraud detection.
 
 ### Tier 1: Strong Hash Match
 
@@ -222,6 +257,61 @@ Legend: ✅ Works | ⚠️ Degraded/Randomized | ❌ Blocked
 3. **Lower Tier 2 cap in high-cardinality scenarios**: If average bucket cardinality exceeds 500, consider lowering the confidence cap from 0.85 to 0.75.
 
 4. **Add signal quality flags**: Track when signals are likely randomized (e.g., Brave's audio randomization) and downweight those buckets.
+
+## Tier-Gated Identity Association (AR-149/AR-150)
+
+### Problem: Viral Spreading of Device IDs
+
+When a device matches via a low-confidence Tier 2 bucket (e.g., IP+JA4), creating identity associations (pubkey#, evercookie#, sigint#) can cause "viral spreading":
+
+1. User A visits site, matches via IP+JA4 bucket → gets device_id_123
+2. User A's crypto-id is associated with device_id_123
+3. User B (different person, same IP+JA4) visits → matches device_id_123 via IP+JA4
+4. User B's crypto-id is now associated with device_id_123
+5. User B later visits from different IP → matches via crypto-id → still gets device_id_123
+
+This causes unrelated users to share device IDs, polluting the identity graph.
+
+### Solution: Tier-Gated Index Writing
+
+Identity indexes are only written for high-confidence matches:
+
+| Evidence Code         | Creates Identity Indexes? | Rationale                          |
+| --------------------- | ------------------------- | ---------------------------------- |
+| PUBLIC_KEY_MATCH      | ✅ Yes                    | Cryptographic identity (Tier 0.5)  |
+| EVERCOOKIE_MATCH      | ✅ Yes                    | Persistent storage (Tier 0.5)      |
+| SIGINT_ID_MATCH       | ✅ Yes                    | Server cookie (Tier 0.5)           |
+| STABLE_HASH_MATCH     | ✅ Yes                    | Hardware fingerprint (Tier 1)      |
+| FUZZY_HASH_MATCH      | ✅ Yes                    | Similar fingerprint (Tier 1)       |
+| SESSION_ANCHOR_BUCKET | ✅ Yes                    | Time-bounded (10 min TTL)          |
+| IP_UA_ANCHOR_BUCKET   | ✅ Yes                    | Time-bounded (3 min TTL)           |
+| NEW_DEVICE            | ✅ Yes                    | First time - must create indexes   |
+| IP_JA4_BUCKET         | ❌ No                     | Unbounded, high collision risk     |
+| GPU_SCREEN_TZ_BUCKET  | ❌ No                     | Unbounded, moderate collision risk |
+| AUDIO_CANVAS_BUCKET   | ❌ No                     | Unbounded, can be spoofed together |
+| MATHS_WINDOW_BUCKET   | ❌ No                     | Unbounded                          |
+| HTML_CSS_BUCKET       | ❌ No                     | Unbounded                          |
+| WEBGL_STRUCT_BUCKET   | ❌ No                     | Unbounded                          |
+
+**Hash indexes** (stable#, fuzzy#) are always written regardless of match tier, enabling future fingerprint-based lookups.
+
+### Implementation
+
+```typescript
+// In profile-service.ts
+const shouldWriteIdentity =
+  !evidenceCodes ||
+  evidenceCodes.length === 0 ||
+  evidenceCodes.some((code) => ASSOCIATION_ALLOWED_EVIDENCE.includes(code));
+
+// Identity indexes: pubkey#, evercookie#, sigint#
+const identityEntries = shouldWriteIdentity
+  ? buildIdentityIndexEntries(deviceId, fingerprint, ttl)
+  : [];
+
+// Hash indexes: stable#, fuzzy# - always written
+const hashEntries = buildHashIndexEntries(deviceId, fingerprint, ttl);
+```
 
 ## Future Improvements
 
