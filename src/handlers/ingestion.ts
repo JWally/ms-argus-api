@@ -19,7 +19,8 @@ import warmup from "@middy/warmup";
 import { onWarmup } from "../helpers/middy-helpers";
 import { HttpError, createError } from "../helpers/http-error";
 import { validateRequiredEnvVars } from "../helpers/env-validation";
-import { corsMiddleware, buildCorsHeaders } from "../helpers/cors-middleware";
+import { corsMiddleware } from "../helpers/cors-middleware";
+import { jsonErrorHandler } from "../helpers/error-middleware";
 import { createGunzip } from "zlib";
 import { pipeline } from "stream/promises";
 import { Readable } from "stream";
@@ -59,7 +60,6 @@ const CORS_CONFIG = {
   methods: "POST, OPTIONS",
   headers: "Content-Type, Content-Encoding",
 };
-const CORS_HEADERS = buildCorsHeaders(CORS_CONFIG);
 
 // ==================== AR-139: PAYLOAD ARCHIVING ====================
 
@@ -234,45 +234,6 @@ const binaryGzipBodyParser =
     },
   });
 
-/**
- * Custom error handler that returns JSON responses with CORS headers
- */
-const jsonErrorHandler = (): middy.MiddlewareObj<
-  APIGatewayProxyEventV2,
-  APIGatewayProxyResultV2
-> => ({
-  onError: (request) => {
-    const { error, event } = request;
-    const origin = event.headers?.["origin"];
-
-    // Get status code from http-errors or default to 500
-    const statusCode =
-      error && typeof error === "object" && "statusCode" in error
-        ? (error as { statusCode: number }).statusCode
-        : 500;
-
-    const message =
-      error instanceof Error ? error.message : "Internal server error";
-
-    logger.warn("Request error", { error, statusCode });
-
-    // Build response with CORS headers
-    const headers: Record<string, string> = {
-      "Content-Type": "application/json",
-    };
-    if (origin) {
-      headers["Access-Control-Allow-Origin"] = origin;
-      Object.assign(headers, CORS_HEADERS);
-    }
-
-    request.response = {
-      statusCode,
-      headers,
-      body: JSON.stringify({ error: message }),
-    };
-  },
-});
-
 // ==================== CORE HANDLER ====================
 
 const baseHandler = async (
@@ -368,4 +329,4 @@ export const handler = middy(baseHandler)
   .use(httpHeaderNormalizer()) // Normalizes header casing
   .use(binaryGzipBodyParser()) // Handles gzip decompression
   .use(corsMiddleware(CORS_CONFIG)) // AR-164: Shared CORS middleware
-  .use(jsonErrorHandler()); // Returns JSON error responses (must be last)
+  .use(jsonErrorHandler({ logger, exposeErrors: "all" })); // AR-166: Shared error handler (must be last)

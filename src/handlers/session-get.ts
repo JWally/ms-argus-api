@@ -13,6 +13,7 @@ import { DynamoCacheService } from "../services/cache/dynamo-cache";
 import { HttpError } from "../helpers/http-error";
 import { validateRequiredEnvVars } from "../helpers/env-validation";
 import { corsMiddleware } from "../helpers/cors-middleware";
+import { jsonErrorHandler } from "../helpers/error-middleware";
 
 // ==================== CONFIGURATION ====================
 
@@ -49,37 +50,6 @@ const cacheService = new DynamoCacheService(dynamodb, {
   tableName: envConfig.SESSION_CACHE_TABLE,
   sessionTtlSeconds: 3600, // Not used for reads
   mutationGateTtlSeconds: 60, // Not used for reads
-});
-
-// ==================== MIDDLEWARE ====================
-
-/**
- * Custom error handler that returns JSON responses
- */
-const jsonErrorHandler = (): middy.MiddlewareObj<
-  APIGatewayProxyEventV2,
-  APIGatewayProxyResultV2
-> => ({
-  onError: (request) => {
-    const error = request.error;
-    const statusCode =
-      error && typeof error === "object" && "statusCode" in error
-        ? (error as { statusCode: number }).statusCode
-        : 500;
-
-    const message =
-      statusCode < 500 && error instanceof Error
-        ? error.message
-        : "Service temporarily unavailable";
-
-    logger.warn("Request error", { error, statusCode });
-
-    request.response = {
-      statusCode,
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ error: message }),
-    };
-  },
 });
 
 // ==================== BASE HANDLER ====================
@@ -169,4 +139,4 @@ export const handler = middy(baseHandler)
   .use(injectLambdaContext(logger))
   .use(logMetrics(metrics)) // AR-96: Auto-publishes metrics on success AND error
   .use(corsMiddleware({ methods: "GET, OPTIONS", headers: "Content-Type" }))
-  .use(jsonErrorHandler()); // Returns JSON error responses (must be last)
+  .use(jsonErrorHandler({ logger })); // AR-166: Shared error handler (must be last)
