@@ -57,24 +57,9 @@ export interface StageConfig {
     };
   };
 
-  // ECS configuration
-  ecs: {
-    cpu: number;
-    memoryMiB: number;
-    desiredCount: number;
-    minCapacity: number;
-    maxCapacity: number;
-    cpuScalingThreshold: number;
-    requestsPerTarget: number;
-  };
-
-  // Redis configuration
-  redis: {
-    nodeType: string;
-    numNodes: number;
-    multiAz: boolean;
-    snapshotRetentionDays: number;
-  };
+  // AR-161: Removed dead ECS and Redis configuration
+  // These were kept for historical reference but are no longer used
+  // since moving to Lambda + DynamoDB architecture (AR-52)
 
   // CloudWatch alarm thresholds
   alarms: {
@@ -88,23 +73,13 @@ export interface StageConfig {
       backlogThreshold: number;
       messageAgeSeconds: number;
     };
-    redis: {
-      memoryWarningPercent: number;
-      memoryCriticalPercent: number;
-      cpuThreshold: number;
-      evictionsThreshold: number;
-    };
+    // AR-161: Removed dead redis and ecs alarm thresholds
     dynamodb: {
       throttleThreshold: number;
       errorThreshold: number;
     };
     // AR-123: New device rate anomaly detection
     newDeviceAnomalyStdDev: number;
-    ecs: {
-      cpuThreshold: number;
-      latencyThresholdMs: number;
-      errorThreshold: number;
-    };
   };
 
   // WAF configuration
@@ -170,22 +145,7 @@ const devConfig: StageConfig = {
     },
   },
 
-  ecs: {
-    cpu: 256,
-    memoryMiB: 512, // Fargate minimum for 256 CPU
-    desiredCount: 1,
-    minCapacity: 1,
-    maxCapacity: 2,
-    cpuScalingThreshold: 80,
-    requestsPerTarget: 10000,
-  },
-
-  redis: {
-    nodeType: "cache.t4g.small",
-    numNodes: 1,
-    multiAz: false,
-    snapshotRetentionDays: 1,
-  },
+  // AR-161: Removed dead ECS and Redis configuration
 
   alarms: {
     lambda: {
@@ -198,23 +158,12 @@ const devConfig: StageConfig = {
       backlogThreshold: 1000,
       messageAgeSeconds: 60,
     },
-    redis: {
-      memoryWarningPercent: 70,
-      memoryCriticalPercent: 80,
-      cpuThreshold: 60,
-      evictionsThreshold: 10,
-    },
     dynamodb: {
       throttleThreshold: 2,
       errorThreshold: 1,
     },
     // AR-123: Anomaly detection for new device rate (fraud indicator)
     newDeviceAnomalyStdDev: 2,
-    ecs: {
-      cpuThreshold: 75,
-      latencyThresholdMs: 50,
-      errorThreshold: 5,
-    },
   },
 
   waf: {
@@ -277,22 +226,7 @@ const prodConfig: StageConfig = {
     },
   },
 
-  ecs: {
-    cpu: 256,
-    memoryMiB: 512,
-    desiredCount: 2,
-    minCapacity: 2,
-    maxCapacity: 10,
-    cpuScalingThreshold: 70,
-    requestsPerTarget: 5000,
-  },
-
-  redis: {
-    nodeType: "cache.r6g.medium",
-    numNodes: 2,
-    multiAz: true,
-    snapshotRetentionDays: 7,
-  },
+  // AR-161: Removed dead ECS and Redis configuration
 
   alarms: {
     lambda: {
@@ -305,23 +239,12 @@ const prodConfig: StageConfig = {
       backlogThreshold: 10000,
       messageAgeSeconds: 300,
     },
-    redis: {
-      memoryWarningPercent: 70,
-      memoryCriticalPercent: 80,
-      cpuThreshold: 80,
-      evictionsThreshold: 100,
-    },
     dynamodb: {
       throttleThreshold: 10,
       errorThreshold: 5,
     },
     // AR-123: Anomaly detection for new device rate (fraud indicator)
     newDeviceAnomalyStdDev: 2,
-    ecs: {
-      cpuThreshold: 85,
-      latencyThresholdMs: 10,
-      errorThreshold: 10,
-    },
   },
 
   waf: {
