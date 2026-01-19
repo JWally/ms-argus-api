@@ -230,12 +230,15 @@ async function processRecord(
   const duration = Date.now() - startTime;
   metrics.addMetric("MatchingDuration", MetricUnit.Milliseconds, duration);
 
-  // AR-57: Emit observation to Firehose (non-blocking)
-  await emitObservation({
+  // AR-57: Emit observation to Firehose (fire-and-forget)
+  // AR-172: Removed await to prevent Firehose throttling from blocking matching
+  emitObservation({
     sessionId: session_id,
     matchResult,
     tier2TimedOut,
     durationMs: duration,
+  }).catch(() => {
+    // Error already logged in emitObservation
   });
 
   logger.info("Matching complete", {
@@ -271,7 +274,9 @@ function recordTierMetric(tier: number, isNewDevice: boolean): void {
 
 /**
  * AR-57: Emit match observation to Firehose for analytics
- * Non-blocking - failures are logged but don't affect matching flow
+ * AR-172: Called without await (fire-and-forget) to prevent Firehose
+ * throttling from blocking the matching flow. Errors are logged but
+ * do not affect the response to the client.
  */
 async function emitObservation(params: {
   sessionId: string;
