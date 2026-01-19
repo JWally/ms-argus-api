@@ -11,6 +11,7 @@ import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import middy from "@middy/core";
 import { DynamoCacheService } from "../services/cache/dynamo-cache";
 import { HttpError } from "../helpers/http-error";
+import { validateRequiredEnvVars } from "../helpers/env-validation";
 
 // ==================== CONFIGURATION ====================
 
@@ -21,11 +22,7 @@ interface SessionGetEnvConfig {
 }
 
 function getEnvConfig(): SessionGetEnvConfig {
-  const required = ["SESSION_CACHE_TABLE"];
-  const missing = required.filter((key) => !process.env[key]);
-  if (missing.length > 0) {
-    throw new Error(`Missing required env vars: ${missing.join(", ")}`);
-  }
+  validateRequiredEnvVars(["SESSION_CACHE_TABLE"]);
 
   return {
     SESSION_CACHE_TABLE: process.env.SESSION_CACHE_TABLE!,
