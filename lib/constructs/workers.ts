@@ -263,6 +263,10 @@ export class WorkersConstruct extends Construct {
       new targets.LambdaFunction(this.cardinalityRecalc),
     );
 
+    // AR-152: Alarm for cardinality recalc partial failures
+    // Silent failures in fraud-critical path - need immediate visibility
+    this.createCardinalityRecalcAlarm(stackName, alarmsTopic);
+
     // Alarms
     const matchingWorkerAlarms = this.createWorkerAlarms(
       this.matchingWorker,
@@ -465,5 +469,39 @@ export class WorkersConstruct extends Construct {
 
     // Ensure alarm depends on the anomaly detector
     anomalyAlarm.addDependency(anomalyDetector);
+  }
+
+  /**
+   * AR-152: Create alarm for cardinality recalc partial failures
+   * Alerts when ProcessingErrors > 0 to catch silent failures in fraud-critical path
+   */
+  private createCardinalityRecalcAlarm(
+    stackName: string,
+    alarmsTopic: sns.ITopic,
+  ): void {
+    const alarm = new cloudwatch.Alarm(
+      this,
+      "CardinalityRecalcPartialFailure",
+      {
+        alarmName: `${stackName}-cardinality-recalc-partial-failure`,
+        alarmDescription:
+          "Cardinality recalc had processing errors - fraud scoring may be affected",
+        metric: new cloudwatch.Metric({
+          namespace: stackName,
+          metricName: "ProcessingErrors",
+          dimensionsMap: {
+            service: `${stackName}-cardinality-recalc`,
+          },
+          statistic: "Sum",
+          period: Duration.hours(1), // Check hourly since it runs daily at 3 AM
+        }),
+        threshold: 0,
+        comparisonOperator:
+          cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+        evaluationPeriods: 1,
+        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      },
+    );
+    alarm.addAlarmAction(new actions.SnsAction(alarmsTopic));
   }
 }
