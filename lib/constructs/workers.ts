@@ -267,6 +267,10 @@ export class WorkersConstruct extends Construct {
     // Silent failures in fraud-critical path - need immediate visibility
     this.createCardinalityRecalcAlarm(stackName, alarmsTopic);
 
+    // AR-153: Alarm for Tier2 cardinality fetch failures
+    // Affects fraud penalty scoring when cardinality data unavailable
+    this.createTier2CardinalityFetchAlarm(stackName, alarmsTopic);
+
     // Alarms
     const matchingWorkerAlarms = this.createWorkerAlarms(
       this.matchingWorker,
@@ -499,6 +503,37 @@ export class WorkersConstruct extends Construct {
         comparisonOperator:
           cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
         evaluationPeriods: 1,
+        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      },
+    );
+    alarm.addAlarmAction(new actions.SnsAction(alarmsTopic));
+  }
+
+  /**
+   * AR-153: Create alarm for Tier2 cardinality fetch failures
+   * Alerts when cardinality fetch fails, affecting fraud penalty scoring
+   */
+  private createTier2CardinalityFetchAlarm(
+    stackName: string,
+    alarmsTopic: sns.ITopic,
+  ): void {
+    const alarm = new cloudwatch.Alarm(
+      this,
+      "Tier2CardinalityFetchFailedAlarm",
+      {
+        alarmName: `${stackName}-tier2-cardinality-fetch-failed`,
+        alarmDescription:
+          "Tier2 cardinality fetch failed - fraud penalty scoring disabled",
+        metric: new cloudwatch.Metric({
+          namespace: stackName,
+          metricName: "Tier2CardinalityFetchFailed",
+          statistic: "Sum",
+          period: Duration.minutes(5),
+        }),
+        threshold: 0,
+        comparisonOperator:
+          cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+        evaluationPeriods: 2, // 10 minutes sustained
         treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
       },
     );
