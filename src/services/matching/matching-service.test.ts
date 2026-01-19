@@ -1143,6 +1143,110 @@ describe("MatchingService", () => {
       expect(messageBody.device_id).toBe("dev_123");
       expect(messageBody.fingerprint).toEqual({ stable_hash: "abc" });
     });
+
+    // AR-149: Tests for match context passing
+    it("should include match_tier and evidence_codes when matchResult is provided", async () => {
+      sqsMock.on(SendMessageCommand).resolves({ MessageId: "msg123" });
+
+      const payload = {
+        session_id: "session123",
+        fingerprint: { stable_hash: "abc" },
+        tcp_blob: "encrypted",
+        tls_blob: "encrypted",
+        headers: {},
+        timestamp: Date.now(),
+      };
+
+      const matchResult = {
+        device_id: "dev_123",
+        confidence: 0.95,
+        match_tier: 0.5,
+        is_new_device: false,
+        risk_score: 0.1,
+        flags: [],
+        evidence_codes: ["PUBLIC_KEY_MATCH"] as EvidenceCode[],
+      };
+
+      await service.queueProfileUpdate("dev_123", payload, false, matchResult);
+
+      const calls = sqsMock.calls();
+      expect(calls).toHaveLength(1);
+
+      const call = calls[0];
+      const input = call.args[0].input as {
+        QueueUrl: string;
+        MessageBody: string;
+      };
+      const messageBody = JSON.parse(input.MessageBody);
+
+      expect(messageBody.match_tier).toBe(0.5);
+      expect(messageBody.evidence_codes).toEqual(["PUBLIC_KEY_MATCH"]);
+    });
+
+    it("should include multiple evidence codes when present", async () => {
+      sqsMock.on(SendMessageCommand).resolves({ MessageId: "msg123" });
+
+      const payload = {
+        session_id: "session123",
+        fingerprint: { stable_hash: "abc" },
+        headers: {},
+        timestamp: Date.now(),
+      };
+
+      const matchResult = {
+        device_id: "dev_123",
+        confidence: 0.9,
+        match_tier: 2,
+        is_new_device: false,
+        risk_score: 0.3,
+        flags: [],
+        evidence_codes: [
+          "IP_JA4_BUCKET",
+          "GPU_SCREEN_TZ_BUCKET",
+          "AUDIO_CANVAS_BUCKET",
+        ] as EvidenceCode[],
+      };
+
+      await service.queueProfileUpdate("dev_123", payload, false, matchResult);
+
+      const calls = sqsMock.calls();
+      const input = calls[0].args[0].input as {
+        QueueUrl: string;
+        MessageBody: string;
+      };
+      const messageBody = JSON.parse(input.MessageBody);
+
+      expect(messageBody.match_tier).toBe(2);
+      expect(messageBody.evidence_codes).toHaveLength(3);
+      expect(messageBody.evidence_codes).toContain("IP_JA4_BUCKET");
+    });
+
+    it("should work without matchResult for backward compatibility", async () => {
+      sqsMock.on(SendMessageCommand).resolves({ MessageId: "msg123" });
+
+      const payload = {
+        session_id: "session123",
+        fingerprint: { stable_hash: "abc" },
+        headers: {},
+        timestamp: Date.now(),
+      };
+
+      // Call without matchResult (old signature)
+      await service.queueProfileUpdate("dev_123", payload);
+
+      const calls = sqsMock.calls();
+      expect(calls).toHaveLength(1);
+
+      const input = calls[0].args[0].input as {
+        QueueUrl: string;
+        MessageBody: string;
+      };
+      const messageBody = JSON.parse(input.MessageBody);
+
+      expect(messageBody.device_id).toBe("dev_123");
+      expect(messageBody.match_tier).toBeUndefined();
+      expect(messageBody.evidence_codes).toBeUndefined();
+    });
   });
 });
 

@@ -205,10 +205,12 @@ async function processRecord(
   );
 
   // Queue profile update (pass is_new_device for flag computation)
+  // AR-149: Pass matchResult for tier-gated identity association
   await service.queueProfileUpdate(
     matchResult.device_id,
     payload,
     matchResult.is_new_device,
+    matchResult,
   );
 
   const duration = Date.now() - startTime;

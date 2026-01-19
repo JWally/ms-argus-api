@@ -18,6 +18,10 @@ export interface ProfileUpdatePayload {
   tls_blob?: string;
   timestamp: number;
   is_new_device?: boolean;
+  /** AR-149: Match tier for tier-gated identity association */
+  match_tier?: number;
+  /** AR-149: Evidence codes indicating how the match was made */
+  evidence_codes?: string[];
 }
 
 /**
