@@ -19,6 +19,7 @@ import warmup from "@middy/warmup";
 import { onWarmup } from "../helpers/middy-helpers";
 import { HttpError, createError } from "../helpers/http-error";
 import { validateRequiredEnvVars } from "../helpers/env-validation";
+import { corsMiddleware, buildCorsHeaders } from "../helpers/cors-middleware";
 import { createGunzip } from "zlib";
 import { pipeline } from "stream/promises";
 import { Readable } from "stream";
@@ -53,12 +54,12 @@ const MAX_DECOMPRESSED_BYTES = parseInt(
   10,
 ); // 2MB default (was 512KB)
 
-// CORS headers (reflect origin for backward compatibility)
-const CORS_HEADERS = {
-  "Access-Control-Allow-Methods": "POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, Content-Encoding",
-  "Access-Control-Max-Age": "86400",
+// AR-164: CORS configuration for this handler
+const CORS_CONFIG = {
+  methods: "POST, OPTIONS",
+  headers: "Content-Type, Content-Encoding",
 };
+const CORS_HEADERS = buildCorsHeaders(CORS_CONFIG);
 
 // ==================== AR-139: PAYLOAD ARCHIVING ====================
 
@@ -272,26 +273,6 @@ const jsonErrorHandler = (): middy.MiddlewareObj<
   },
 });
 
-/**
- * Adds CORS headers to successful responses
- */
-const corsHeaders = (): middy.MiddlewareObj<
-  APIGatewayProxyEventV2,
-  APIGatewayProxyResultV2
-> => ({
-  after: (request) => {
-    const origin = request.event.headers?.["origin"];
-    if (!origin || !request.response) return;
-
-    const response = request.response as APIGatewayProxyResultV2 & {
-      headers?: Record<string, string>;
-    };
-    response.headers = response.headers ?? {};
-    response.headers["Access-Control-Allow-Origin"] = origin;
-    Object.assign(response.headers, CORS_HEADERS);
-  },
-});
-
 // ==================== CORE HANDLER ====================
 
 const baseHandler = async (
@@ -386,5 +367,5 @@ export const handler = middy(baseHandler)
   .use(logMetrics(metrics)) // Auto-publishes metrics on success AND error
   .use(httpHeaderNormalizer()) // Normalizes header casing
   .use(binaryGzipBodyParser()) // Handles gzip decompression
-  .use(corsHeaders()) // Adds CORS headers to responses
+  .use(corsMiddleware(CORS_CONFIG)) // AR-164: Shared CORS middleware
   .use(jsonErrorHandler()); // Returns JSON error responses (must be last)

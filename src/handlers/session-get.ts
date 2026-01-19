@@ -12,6 +12,7 @@ import middy from "@middy/core";
 import { DynamoCacheService } from "../services/cache/dynamo-cache";
 import { HttpError } from "../helpers/http-error";
 import { validateRequiredEnvVars } from "../helpers/env-validation";
+import { corsMiddleware } from "../helpers/cors-middleware";
 
 // ==================== CONFIGURATION ====================
 
@@ -50,52 +51,7 @@ const cacheService = new DynamoCacheService(dynamodb, {
   mutationGateTtlSeconds: 60, // Not used for reads
 });
 
-// ==================== CORS ====================
-
-const CORS_HEADERS = {
-  "Access-Control-Allow-Methods": "GET, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type",
-  "Access-Control-Max-Age": "86400",
-};
-
 // ==================== MIDDLEWARE ====================
-
-/**
- * Adds CORS headers to all responses
- */
-const corsHeaders = (): middy.MiddlewareObj<
-  APIGatewayProxyEventV2,
-  APIGatewayProxyResultV2
-> => ({
-  after: (request) => {
-    const origin = request.event.headers["origin"];
-    if (!origin) return;
-
-    request.response = request.response ?? { statusCode: 200 };
-    const response = request.response as APIGatewayProxyResultV2 & {
-      headers?: Record<string, string>;
-    };
-    response.headers = {
-      ...response.headers,
-      "Access-Control-Allow-Origin": origin,
-      ...CORS_HEADERS,
-    };
-  },
-  onError: (request) => {
-    const origin = request.event.headers["origin"];
-    if (!origin) return;
-
-    request.response = request.response ?? { statusCode: 500 };
-    const response = request.response as APIGatewayProxyResultV2 & {
-      headers?: Record<string, string>;
-    };
-    response.headers = {
-      ...response.headers,
-      "Access-Control-Allow-Origin": origin,
-      ...CORS_HEADERS,
-    };
-  },
-});
 
 /**
  * Custom error handler that returns JSON responses
@@ -212,5 +168,5 @@ const baseHandler = async (
 export const handler = middy(baseHandler)
   .use(injectLambdaContext(logger))
   .use(logMetrics(metrics)) // AR-96: Auto-publishes metrics on success AND error
-  .use(corsHeaders()) // Adds CORS headers to responses
+  .use(corsMiddleware({ methods: "GET, OPTIONS", headers: "Content-Type" }))
   .use(jsonErrorHandler()); // Returns JSON error responses (must be last)
