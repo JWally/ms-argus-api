@@ -148,6 +148,7 @@ describe("AR-150: Tier-gated identity association", () => {
       expect(entries[0]).toEqual({
         hash_key: "fuzzy#fuzzy456",
         device_id: "dev_123",
+        fuzzy_hash: "fuzzy456", // AR-XXX: Now included for drift detection
         ttl,
       });
     });
@@ -192,6 +193,60 @@ describe("AR-150: Tier-gated identity association", () => {
       expect(hashKeys).toContain("sigint#sigint-uuid-123");
       expect(hashKeys).toContain("stable#stable123");
       expect(hashKeys).toContain("fuzzy#fuzzy456");
+    });
+  });
+
+  describe("AR-XXX: fuzzy_hash in index entries for drift detection", () => {
+    it("should include fuzzy_hash in buildTier1IndexEntries", () => {
+      const fingerprint: Fingerprint = {
+        evercookie_id: "cookie123",
+        stable_hash: "stable123",
+        fuzzy_hash: "0123456789abcdef",
+      };
+      const entries = buildTier1IndexEntries("dev_123", fingerprint, ttl);
+
+      // All entries should include the fuzzy_hash
+      expect(entries).toHaveLength(3);
+      entries.forEach((entry) => {
+        expect(entry.fuzzy_hash).toBe("0123456789abcdef");
+      });
+    });
+
+    it("should include fuzzy_hash in buildIdentityIndexEntries", () => {
+      const fingerprint: Fingerprint = {
+        evercookie_id: "cookie123",
+        public_key: "pubkey123",
+        fuzzy_hash: "fedcba9876543210",
+      };
+      const entries = buildIdentityIndexEntries("dev_123", fingerprint, ttl);
+
+      expect(entries).toHaveLength(2);
+      entries.forEach((entry) => {
+        expect(entry.fuzzy_hash).toBe("fedcba9876543210");
+      });
+    });
+
+    it("should include fuzzy_hash in buildHashIndexEntries", () => {
+      const fingerprint: Fingerprint = {
+        stable_hash: "stable123",
+        fuzzy_hash: "abcd1234efgh5678",
+      };
+      const entries = buildHashIndexEntries("dev_123", fingerprint, ttl);
+
+      expect(entries).toHaveLength(2);
+      entries.forEach((entry) => {
+        expect(entry.fuzzy_hash).toBe("abcd1234efgh5678");
+      });
+    });
+
+    it("should include undefined fuzzy_hash when not present", () => {
+      const fingerprint: Fingerprint = {
+        stable_hash: "stable123",
+      };
+      const entries = buildHashIndexEntries("dev_123", fingerprint, ttl);
+
+      expect(entries).toHaveLength(1);
+      expect(entries[0].fuzzy_hash).toBeUndefined();
     });
   });
 });

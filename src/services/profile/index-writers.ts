@@ -60,10 +60,13 @@ export const ASSOCIATION_ALLOWED_EVIDENCE: readonly string[] = [
 
 /**
  * Type for Tier 1 index entry
+ * AR-XXX: Added fuzzy_hash for drift detection at match time
  */
 export interface Tier1IndexEntry {
   hash_key: string;
   device_id: string;
+  /** AR-XXX: Device's fuzzy_hash at time of index write, for drift comparison */
+  fuzzy_hash?: string;
   ttl: number;
 }
 
@@ -94,6 +97,7 @@ function sleep(ms: number): Promise<void> {
 
 /**
  * Build Tier 1 index entries for a fingerprint
+ * AR-XXX: Added fuzzy_hash to all entries for drift detection at match time
  */
 export function buildTier1IndexEntries(
   deviceId: string,
@@ -101,11 +105,14 @@ export function buildTier1IndexEntries(
   ttl: number,
 ): Tier1IndexEntry[] {
   const entries: Tier1IndexEntry[] = [];
+  // AR-XXX: Include fuzzy_hash in all entries for drift comparison at match time
+  const fuzzyHash = fingerprint.fuzzy_hash;
 
   if (fingerprint.evercookie_id) {
     entries.push({
       hash_key: `evercookie#${fingerprint.evercookie_id}`,
       device_id: deviceId,
+      fuzzy_hash: fuzzyHash,
       ttl,
     });
   }
@@ -115,6 +122,7 @@ export function buildTier1IndexEntries(
     entries.push({
       hash_key: `sigint#${fingerprint.sigint_id}`,
       device_id: deviceId,
+      fuzzy_hash: fuzzyHash,
       ttl,
     });
   }
@@ -124,6 +132,7 @@ export function buildTier1IndexEntries(
     entries.push({
       hash_key: `pubkey#${fingerprint.public_key}`,
       device_id: deviceId,
+      fuzzy_hash: fuzzyHash,
       ttl,
     });
   }
@@ -132,6 +141,7 @@ export function buildTier1IndexEntries(
     entries.push({
       hash_key: `stable#${fingerprint.stable_hash}`,
       device_id: deviceId,
+      fuzzy_hash: fuzzyHash,
       ttl,
     });
   }
@@ -140,6 +150,7 @@ export function buildTier1IndexEntries(
     entries.push({
       hash_key: `fuzzy#${fingerprint.fuzzy_hash}`,
       device_id: deviceId,
+      fuzzy_hash: fuzzyHash,
       ttl,
     });
   }
@@ -155,6 +166,7 @@ export function buildTier1IndexEntries(
  * AR-150: Build identity index entries only (pubkey#, evercookie#, sigint#)
  * These are the indexes that link crypto-id/evercookie to device_id.
  * Only write these for high-confidence matches to prevent viral spreading.
+ * AR-XXX: Added fuzzy_hash for drift detection at match time
  */
 export function buildIdentityIndexEntries(
   deviceId: string,
@@ -162,11 +174,14 @@ export function buildIdentityIndexEntries(
   ttl: number,
 ): Tier1IndexEntry[] {
   const entries: Tier1IndexEntry[] = [];
+  // AR-XXX: Include fuzzy_hash for drift comparison at match time
+  const fuzzyHash = fingerprint.fuzzy_hash;
 
   if (fingerprint.evercookie_id) {
     entries.push({
       hash_key: `evercookie#${fingerprint.evercookie_id}`,
       device_id: deviceId,
+      fuzzy_hash: fuzzyHash,
       ttl,
     });
   }
@@ -176,6 +191,7 @@ export function buildIdentityIndexEntries(
     entries.push({
       hash_key: `sigint#${fingerprint.sigint_id}`,
       device_id: deviceId,
+      fuzzy_hash: fuzzyHash,
       ttl,
     });
   }
@@ -185,6 +201,7 @@ export function buildIdentityIndexEntries(
     entries.push({
       hash_key: `pubkey#${fingerprint.public_key}`,
       device_id: deviceId,
+      fuzzy_hash: fuzzyHash,
       ttl,
     });
   }
@@ -196,6 +213,7 @@ export function buildIdentityIndexEntries(
  * AR-150: Build hash index entries only (stable#, fuzzy#)
  * These indexes enable fingerprint-based lookups.
  * Always written regardless of match tier.
+ * AR-XXX: Added fuzzy_hash for drift detection at match time
  */
 export function buildHashIndexEntries(
   deviceId: string,
@@ -203,11 +221,14 @@ export function buildHashIndexEntries(
   ttl: number,
 ): Tier1IndexEntry[] {
   const entries: Tier1IndexEntry[] = [];
+  // AR-XXX: Include fuzzy_hash for drift comparison at match time
+  const fuzzyHash = fingerprint.fuzzy_hash;
 
   if (fingerprint.stable_hash) {
     entries.push({
       hash_key: `stable#${fingerprint.stable_hash}`,
       device_id: deviceId,
+      fuzzy_hash: fuzzyHash,
       ttl,
     });
   }
@@ -216,6 +237,7 @@ export function buildHashIndexEntries(
     entries.push({
       hash_key: `fuzzy#${fingerprint.fuzzy_hash}`,
       device_id: deviceId,
+      fuzzy_hash: fuzzyHash,
       ttl,
     });
   }
@@ -225,6 +247,7 @@ export function buildHashIndexEntries(
 
 /**
  * Batch write Tier 1 index entries with retry logic for unprocessed items
+ * AR-XXX: Uses removeUndefinedValues to handle optional fuzzy_hash
  */
 export async function batchWriteTier1Indexes(
   deps: IndexWriterDeps,
@@ -234,7 +257,7 @@ export async function batchWriteTier1Indexes(
   const tableName = deps.tier1IndexTable;
   let unprocessedItems: WriteRequest[] = entries.map((entry) => ({
     PutRequest: {
-      Item: marshall(entry),
+      Item: marshall(entry, { removeUndefinedValues: true }),
     },
   }));
 

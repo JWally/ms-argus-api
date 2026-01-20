@@ -137,11 +137,15 @@ export class MatchingService {
   async runTieredMatching(
     fingerprint: Fingerprint,
   ): Promise<{ result: MatchResult; tier2TimedOut: boolean }> {
+    // AR-XXX: Pass fuzzy_hash to tier05 lookups for drift detection
+    const incomingFuzzyHash = fingerprint.fuzzy_hash;
+
     // Tier 0.5: Cryptographic identity lookup (highest confidence)
     if (fingerprint.public_key) {
       const result = await tier05PublicKeyLookup(
         this.tier05Deps,
         fingerprint.public_key,
+        incomingFuzzyHash,
       );
       if (result) {
         return {
@@ -156,6 +160,7 @@ export class MatchingService {
       const result = await tier05CookieLookup(
         this.tier05Deps,
         fingerprint.evercookie_id,
+        incomingFuzzyHash,
       );
       if (result) {
         return {
@@ -170,6 +175,7 @@ export class MatchingService {
       const result = await tier05SigintIdLookup(
         this.tier05Deps,
         fingerprint.sigint_id,
+        incomingFuzzyHash,
       );
       if (result) {
         return {
@@ -237,16 +243,26 @@ export class MatchingService {
   }
 
   // Delegate methods to tier modules for backward compatibility
-  async tier05PublicKeyLookup(publicKey: string): Promise<MatchResult | null> {
-    return tier05PublicKeyLookup(this.tier05Deps, publicKey);
+  // AR-XXX: Added optional incomingFuzzyHash for drift detection
+  async tier05PublicKeyLookup(
+    publicKey: string,
+    incomingFuzzyHash?: string,
+  ): Promise<MatchResult | null> {
+    return tier05PublicKeyLookup(this.tier05Deps, publicKey, incomingFuzzyHash);
   }
 
-  async tier05CookieLookup(evercookieId: string): Promise<MatchResult | null> {
-    return tier05CookieLookup(this.tier05Deps, evercookieId);
+  async tier05CookieLookup(
+    evercookieId: string,
+    incomingFuzzyHash?: string,
+  ): Promise<MatchResult | null> {
+    return tier05CookieLookup(this.tier05Deps, evercookieId, incomingFuzzyHash);
   }
 
-  async tier05SigintIdLookup(sigintId: string): Promise<MatchResult | null> {
-    return tier05SigintIdLookup(this.tier05Deps, sigintId);
+  async tier05SigintIdLookup(
+    sigintId: string,
+    incomingFuzzyHash?: string,
+  ): Promise<MatchResult | null> {
+    return tier05SigintIdLookup(this.tier05Deps, sigintId, incomingFuzzyHash);
   }
 
   async tier1HashMatch(fingerprint: Fingerprint): Promise<MatchResult | null> {

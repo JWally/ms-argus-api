@@ -18,6 +18,8 @@ export {
   SessionAnomalySignal,
   // AR-XXX: SimHash details
   SimHashDetails,
+  // AR-XXX: Fuzzy match info for drift detection
+  FuzzyMatchInfo,
 } from "../../types";
 
 export type { EvidenceCode as EvidenceCodeType } from "../../types";

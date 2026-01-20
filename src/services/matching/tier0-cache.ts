@@ -47,6 +47,7 @@ export async function writeMatchResult(
     evidence_codes: result.evidence_codes, // AR-54
     anomalies: anomalies?.length ? anomalies : undefined, // AR-148: Only include if signals detected
     simhash_details: result.simhash_details, // AR-XXX: Include SimHash match details
+    fuzzy_match_info: result.fuzzy_match_info, // AR-XXX: Include fuzzy hash drift info
     updated_at: Date.now(),
   };
 

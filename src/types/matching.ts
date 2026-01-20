@@ -59,6 +59,7 @@ export interface SessionCacheValue {
   evidence_codes: EvidenceCode[]; // AR-54: Which signals contributed to match
   anomalies?: SessionAnomalySignal[]; // AR-148: Server-side anomaly detection results
   simhash_details?: SimHashDetails; // AR-XXX: Details when matched via SimHash LSH
+  fuzzy_match_info?: FuzzyMatchInfo; // AR-XXX: Fuzzy hash drift info for all tiers
   updated_at: number;
 }
 
@@ -135,6 +136,22 @@ export interface SimHashDetails {
 }
 
 /**
+ * AR-XXX: Fuzzy hash comparison info for all match tiers
+ * Shows how much the incoming fingerprint has drifted from the stored profile.
+ * Computed at Tier 0.5, 1, and 1.5 where we have the stored fuzzy_hash available.
+ */
+export interface FuzzyMatchInfo {
+  /** The incoming fingerprint's fuzzy_hash */
+  incoming_hash: string;
+  /** The matched device's stored fuzzy_hash */
+  stored_hash: string;
+  /** Number of bits different (0-64), -1 if comparison not possible */
+  hamming_distance: number;
+  /** Similarity score (1 - distance/64), range 0-1 */
+  similarity: number;
+}
+
+/**
  * Result of device matching
  */
 export interface MatchResult {
@@ -146,16 +163,20 @@ export interface MatchResult {
   flags: string[];
   evidence_codes: EvidenceCode[]; // AR-54: Which signals contributed to match
   simhash_details?: SimHashDetails; // AR-XXX: Details when matched via SimHash LSH
+  fuzzy_match_info?: FuzzyMatchInfo; // AR-XXX: Fuzzy hash drift info for all tiers
 }
 
 /**
  * Tier 1 index entry
+ * AR-XXX: Added fuzzy_hash for drift detection at match time
  */
 export interface Tier1IndexEntry {
   hash_key: string;
   device_id: string;
   risk_score?: number;
   flags?: string[];
+  /** AR-XXX: Device's fuzzy_hash at time of index write, for drift comparison */
+  fuzzy_hash?: string;
   ttl: number;
 }
 
