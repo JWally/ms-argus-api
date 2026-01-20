@@ -33,6 +33,7 @@ import {
   Tier05IdentityDeps,
 } from "./tier05-identity";
 import { tier1HashMatch, Tier1HashDeps } from "./tier1-hash";
+import { tier15SimHashMatch, Tier15SimHashDeps } from "./tier15-simhash";
 import {
   tier2CompoundMatchWithTimeout,
   loadProfile,
@@ -74,6 +75,7 @@ export interface MatchingServiceDeps {
  * - Tier 0: DynamoDB session cache hit
  * - Tier 0.5: Evercookie/cookie lookup, public key, sigint
  * - Tier 1: Strong hash match (stable_hash, fuzzy_hash)
+ * - Tier 1.5: SimHash LSH match (fuzzy_hash drift detection) - AR-XXX
  * - Tier 2: Compound filter match (ip+ja4, gpu+screen+tz, etc)
  * - New Device: Create new device_id
  */
@@ -81,6 +83,7 @@ export class MatchingService {
   private tier0Deps: Tier0CacheDeps;
   private tier05Deps: Tier05IdentityDeps;
   private tier1Deps: Tier1HashDeps;
+  private tier15Deps: Tier15SimHashDeps;
   private tier2Deps: Tier2CompoundDeps;
   private anchorDeps: SessionAnchorDeps;
 
@@ -94,6 +97,11 @@ export class MatchingService {
     this.tier1Deps = {
       dynamodb: deps.dynamodb,
       tier1IndexTable: deps.config.tier1IndexTable,
+    };
+    // AR-XXX: Tier 1.5 SimHash LSH uses tier2BucketsTable for band storage
+    this.tier15Deps = {
+      dynamodb: deps.dynamodb,
+      tier2BucketsTable: deps.config.tier2BucketsTable,
     };
     this.tier2Deps = {
       dynamodb: deps.dynamodb,
@@ -180,6 +188,16 @@ export class MatchingService {
       };
     }
 
+    // Tier 1.5: SimHash LSH match (same-browser drift detection) - AR-XXX
+    // Uses fuzzy_hash with locality-sensitive hashing for efficient similarity search
+    const tier15Result = await tier15SimHashMatch(this.tier15Deps, fingerprint);
+    if (tier15Result) {
+      return {
+        result: this.applyPrivacyPenalty(tier15Result, fingerprint),
+        tier2TimedOut: false,
+      };
+    }
+
     // Tier 2: Compound filter match (with timeout)
     const { result: tier2Result, timedOut } =
       await tier2CompoundMatchWithTimeout(this.tier2Deps, fingerprint);
@@ -233,6 +251,13 @@ export class MatchingService {
 
   async tier1HashMatch(fingerprint: Fingerprint): Promise<MatchResult | null> {
     return tier1HashMatch(this.tier1Deps, fingerprint);
+  }
+
+  /** AR-XXX: SimHash LSH match for same-browser drift detection */
+  async tier15SimHashMatch(
+    fingerprint: Fingerprint,
+  ): Promise<MatchResult | null> {
+    return tier15SimHashMatch(this.tier15Deps, fingerprint);
   }
 
   async tier2CompoundMatchWithTimeout(

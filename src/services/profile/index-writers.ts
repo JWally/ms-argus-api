@@ -1,6 +1,7 @@
 // src/services/profile/index-writers.ts
 // AR-120: Extracted index writing logic from profile-service.ts
 // AR-150: Added tier-gated identity association
+// AR-XXX: Added SimHash LSH band entry writing for Tier 1.5
 
 import {
   DynamoDBClient,
@@ -14,11 +15,14 @@ import { Fingerprint } from "./types";
 import {
   TIER2_STATS_SK,
   SESSION_ANCHOR_CLEANUP_TTL_SECONDS,
+  SIMHASH_CONFIG,
 } from "../../helpers/constants";
 import {
   buildTier2BucketKeys as buildTier2BucketKeysHelper,
   buildSessionAnchorKey as buildSessionAnchorKeyHelper,
   buildIpUaAnchorKey as buildIpUaAnchorKeyHelper,
+  buildSimHashBandKeys,
+  buildSimHashBandSK,
 } from "../../helpers/bucket-keys";
 
 /**
@@ -45,6 +49,8 @@ export const ASSOCIATION_ALLOWED_EVIDENCE: readonly string[] = [
   // Tier 1: Hash matches (high confidence)
   "STABLE_HASH_MATCH",
   "FUZZY_HASH_MATCH",
+  // Tier 1.5: SimHash LSH match (high confidence - drift detection)
+  "SIMHASH_MATCH",
   // Time-bounded anchors (medium-high confidence, decay quickly)
   "SESSION_ANCHOR_BUCKET",
   "IP_UA_ANCHOR_BUCKET",
@@ -421,4 +427,108 @@ export async function writeIpUaAnchorBucket(
       },
     }),
   );
+}
+
+// ==================== SIMHASH LSH BAND ENTRIES (Tier 1.5) ====================
+
+/**
+ * AR-XXX: Type for SimHash LSH band entry
+ * Stored in tier2BucketsTable with special PK format
+ *
+ * Schema:
+ * - PK (bucket_key): SIMHASH_BAND#<band_index>#<band_value_hex>
+ * - SK (device_id): t#<inverted_timestamp>#<device_id> (recency-ordered)
+ * - fuzzy_hash: Full 64-bit hash for inline Hamming scoring
+ * - last_seen: Unix timestamp for recency gate
+ * - ttl: DynamoDB TTL for auto-expiration
+ */
+export interface SimHashBandEntry {
+  bucket_key: string; // PK: SIMHASH_BAND#0#a1b2
+  device_id: string; // SK: t#<inverted_ts>#dev_xxx (recency-ordered)
+  fuzzy_hash: string; // Full hash for Hamming distance scoring
+  last_seen: number; // Unix timestamp in seconds
+  ttl: number; // TTL for DynamoDB expiration
+}
+
+/**
+ * AR-XXX: Build SimHash LSH band entries for a fingerprint
+ * Creates 4 band entries (one per band) with inline hash for scoring
+ *
+ * @param deviceId - The device ID
+ * @param fingerprint - Fingerprint containing fuzzy_hash
+ * @param timestamp - Unix timestamp in seconds (defaults to now)
+ * @returns Array of 4 band entries, or empty array if fuzzy_hash is missing/invalid
+ */
+export function buildSimHashBandEntries(
+  deviceId: string,
+  fingerprint: Fingerprint,
+  timestamp: number = Math.floor(Date.now() / 1000),
+): SimHashBandEntry[] {
+  const bandKeys = buildSimHashBandKeys(fingerprint.fuzzy_hash);
+  if (!bandKeys) return [];
+
+  const ttl = timestamp + SIMHASH_CONFIG.BAND_TTL_DAYS * 86400;
+  const sk = buildSimHashBandSK(deviceId, timestamp);
+
+  return bandKeys.map((band) => ({
+    bucket_key: band.pk,
+    device_id: sk,
+    fuzzy_hash: fingerprint.fuzzy_hash!,
+    last_seen: timestamp,
+    ttl,
+  }));
+}
+
+/**
+ * AR-XXX: Batch write SimHash LSH band entries with retry logic
+ * Uses tier2BucketsTable with special PK format for band entries
+ */
+export async function batchWriteSimHashBands(
+  deps: IndexWriterDeps,
+  entries: SimHashBandEntry[],
+  maxRetries: number = 3,
+): Promise<void> {
+  if (entries.length === 0) return;
+
+  const tableName = deps.tier2BucketsTable;
+  let unprocessedItems: WriteRequest[] = entries.map((entry) => ({
+    PutRequest: {
+      Item: {
+        bucket_key: { S: entry.bucket_key },
+        device_id: { S: entry.device_id },
+        fuzzy_hash: { S: entry.fuzzy_hash },
+        last_seen: { N: String(entry.last_seen) },
+        ttl: { N: String(entry.ttl) },
+      },
+    },
+  }));
+
+  let attempt = 0;
+
+  while (unprocessedItems.length > 0 && attempt < maxRetries) {
+    const result = await deps.dynamodb.send(
+      new BatchWriteItemCommand({
+        RequestItems: {
+          [tableName]: unprocessedItems,
+        },
+      }),
+    );
+
+    // Check for unprocessed items (can happen during throttling)
+    const remaining = result.UnprocessedItems?.[tableName];
+    if (remaining && remaining.length > 0) {
+      unprocessedItems = remaining;
+      attempt++;
+      // Exponential backoff: 100ms, 200ms, 400ms
+      await sleep(Math.pow(2, attempt) * 100);
+    } else {
+      unprocessedItems = [];
+    }
+  }
+
+  if (unprocessedItems.length > 0) {
+    throw new Error(
+      `Failed to write ${unprocessedItems.length} SimHash band items after ${maxRetries} retries`,
+    );
+  }
 }

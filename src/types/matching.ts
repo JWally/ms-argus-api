@@ -14,6 +14,8 @@ export type EvidenceCode =
   | "PUBLIC_KEY_MATCH" // T0.5: Matched on ECDSA public key (AR-64)
   | "STABLE_HASH_MATCH" // T1: Matched on stable fingerprint hash
   | "FUZZY_HASH_MATCH" // T1: Matched on fuzzy fingerprint hash
+  // AR-XXX: SimHash LSH for same-browser drift detection (Tier 1.5)
+  | "SIMHASH_MATCH" // T1.5: Matched via SimHash LSH (fuzzy_hash Hamming distance)
   | "IP_JA4_BUCKET" // T2: Matched in IP+JA4 bucket
   | "GPU_SCREEN_TZ_BUCKET" // T2: Matched in GPU+Screen+Timezone bucket
   | "AUDIO_CANVAS_BUCKET" // T2: Matched in Audio+Canvas bucket
@@ -56,6 +58,7 @@ export interface SessionCacheValue {
   flags: string[];
   evidence_codes: EvidenceCode[]; // AR-54: Which signals contributed to match
   anomalies?: SessionAnomalySignal[]; // AR-148: Server-side anomaly detection results
+  simhash_details?: SimHashDetails; // AR-XXX: Details when matched via SimHash LSH
   updated_at: number;
 }
 
@@ -115,6 +118,23 @@ export interface FingerprintPayload {
 }
 
 /**
+ * AR-XXX: SimHash match details for debugging and analytics
+ * Exposed when a match is made via Tier 1.5 SimHash LSH
+ */
+export interface SimHashDetails {
+  /** The incoming fingerprint's fuzzy_hash */
+  incoming_hash: string;
+  /** The matched device's fuzzy_hash */
+  matched_hash: string;
+  /** Number of bits different (0-64) */
+  hamming_distance: number;
+  /** Similarity score (1 - distance/64), range 0-1 */
+  similarity: number;
+  /** Number of LSH bands that matched (2-4) */
+  bands_matched: number;
+}
+
+/**
  * Result of device matching
  */
 export interface MatchResult {
@@ -125,6 +145,7 @@ export interface MatchResult {
   risk_score: number;
   flags: string[];
   evidence_codes: EvidenceCode[]; // AR-54: Which signals contributed to match
+  simhash_details?: SimHashDetails; // AR-XXX: Details when matched via SimHash LSH
 }
 
 /**

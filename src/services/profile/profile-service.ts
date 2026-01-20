@@ -27,10 +27,14 @@ import {
   writeSessionAnchorBucket,
   buildIpUaAnchorKey,
   writeIpUaAnchorBucket,
+  // AR-XXX: SimHash LSH band entry functions
+  buildSimHashBandEntries,
+  batchWriteSimHashBands,
   Tier1IndexEntry,
   IndexWriterDeps,
   ASSOCIATION_ALLOWED_EVIDENCE,
 } from "./index-writers";
+import { getSimHashFlags } from "../../helpers/constants";
 
 /**
  * Configuration for the profile service
@@ -386,14 +390,47 @@ export class ProfileService {
   }
 
   /**
+   * AR-XXX: Update SimHash LSH band entries for Tier 1.5 matching
+   * Writes 4 band entries (one per band) with inline hash for efficient scoring
+   * Only writes if SimHash tier is enabled via feature flag
+   * AR-120: Delegates to index-writers module
+   */
+  async updateSimHashBands(
+    deviceId: string,
+    fingerprint: Fingerprint,
+  ): Promise<number> {
+    // Check if SimHash is enabled before writing bands
+    const flags = getSimHashFlags();
+    if (!flags.ENABLED) {
+      return 0;
+    }
+
+    const timestamp = Math.floor(Date.now() / 1000);
+    const bandEntries = buildSimHashBandEntries(
+      deviceId,
+      fingerprint,
+      timestamp,
+    );
+
+    if (bandEntries.length === 0) {
+      return 0;
+    }
+
+    await batchWriteSimHashBands(this.indexWriterDeps, bandEntries);
+    return bandEntries.length;
+  }
+
+  /**
    * Process a complete profile update (orchestration method)
    * Returns object indicating what was done
+   * AR-XXX: Added simhashBandWrites for Tier 1.5 SimHash LSH
    */
   async processProfileUpdate(payload: ProfileUpdatePayload): Promise<{
     skipped: boolean;
     reason?: "mutation_gate" | "no_drift";
     tier1Writes?: number;
     tier2Writes?: number;
+    simhashBandWrites?: number;
   }> {
     const {
       device_id,
@@ -449,12 +486,20 @@ export class ProfileService {
     );
     const tier2Writes = await this.updateTier2Buckets(device_id, fingerprint);
 
+    // AR-XXX: Update SimHash LSH band entries for Tier 1.5 matching
+    // Only writes if SIMHASH_ENABLED=true
+    const simhashBandWrites = await this.updateSimHashBands(
+      device_id,
+      fingerprint,
+    );
+
     // Note: anchor buckets already updated above (before drift check)
 
     return {
       skipped: false,
       tier1Writes,
       tier2Writes,
+      simhashBandWrites,
     };
   }
 }

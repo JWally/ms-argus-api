@@ -159,3 +159,56 @@ export const POWERTOOLS_METRICS_NAMESPACE: string | undefined =
   process.env.POWERTOOLS_METRICS_NAMESPACE;
 export const POWERTOOLS_SERVICE_NAME: string | undefined =
   process.env.POWERTOOLS_SERVICE_NAME;
+
+// ==================== SIMHASH LSH CONSTANTS (Tier 1.5) ====================
+// AR-XXX: SimHash Locality-Sensitive Hashing for same-browser drift detection
+// Uses fuzzy_hash field which is already computed in production
+
+/**
+ * SimHash LSH Configuration
+ * Splits 64-bit fuzzy_hash into bands for locality-sensitive lookup
+ */
+export const SIMHASH_CONFIG = {
+  /** Number of band partitions for LSH */
+  NUM_BANDS: 4,
+  /** Bits per band (4 bands x 16 bits = 64 bits total) */
+  BITS_PER_BAND: 16,
+  /** Max Hamming distance bits to accept a match */
+  HAMMING_THRESHOLD: 4,
+  /** Require this many bands to match for candidacy */
+  MIN_BANDS_MATCH: 2,
+  /** Band entry TTL in days */
+  BAND_TTL_DAYS: 90,
+  /** Per-band query LIMIT to prevent hot-band explosion */
+  PER_BAND_LIMIT: 100,
+  /** Max candidates to score after band aggregation */
+  MAX_CANDIDATES: 100,
+  /** Last-seen recency window in days for loose Hamming threshold (>1 bit) */
+  RECENCY_WINDOW_DAYS: 30,
+} as const;
+
+/**
+ * SimHash Feature Flags - runtime configuration via environment variables
+ * Provides kill switch, shadow mode, and gradual rollout controls
+ */
+export const getSimHashFlags = () => ({
+  /** Master enable/disable (kill switch) */
+  ENABLED: process.env.SIMHASH_ENABLED === "true",
+  /** Shadow mode - compute and log but don't use result for matching */
+  SHADOW_MODE: process.env.SIMHASH_SHADOW === "true",
+  /** Percentage rollout (0-100) for gradual enablement */
+  ROLLOUT_PERCENT: parseInt(process.env.SIMHASH_ROLLOUT || "100", 10),
+  /** Automatic bypass if tier query exceeds this latency (ms) */
+  LATENCY_BYPASS_MS: parseInt(process.env.SIMHASH_LATENCY_BYPASS || "150", 10),
+  /** Override Hamming threshold from env (for tuning without redeploy) */
+  HAMMING_THRESHOLD: parseInt(
+    process.env.SIMHASH_HAMMING_THRESHOLD ||
+      String(SIMHASH_CONFIG.HAMMING_THRESHOLD),
+    10,
+  ),
+  /** Override max candidates from env */
+  MAX_CANDIDATES: parseInt(
+    process.env.SIMHASH_MAX_CANDIDATES || String(SIMHASH_CONFIG.MAX_CANDIDATES),
+    10,
+  ),
+});

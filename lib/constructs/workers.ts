@@ -120,6 +120,9 @@ export class WorkersConstruct extends Construct {
         PROFILE_QUEUE_URL: profileQueue.queueUrl,
         // AR-57: Firehose for match observations
         OBSERVATIONS_STREAM_NAME: observationsDeliveryStreamName,
+        // AR-XXX: SimHash LSH Tier 1.5 - same-browser drift detection
+        SIMHASH_ENABLED: "true",
+        SIMHASH_SHADOW: "false", // Set to "true" to log without affecting matching
       },
     });
 
@@ -171,6 +174,8 @@ export class WorkersConstruct extends Construct {
         PROFILES_TABLE: profilesTable.tableName,
         TIER1_INDEX_TABLE: tier1IndexTable.tableName,
         TIER2_BUCKETS_TABLE: tier2BucketsTable.tableName,
+        // AR-XXX: SimHash LSH Tier 1.5 - writes band entries when enabled
+        SIMHASH_ENABLED: "true",
       },
     });
 
@@ -282,6 +287,10 @@ export class WorkersConstruct extends Construct {
       config.alarms.newDeviceAnomalyStdDev,
     );
 
+    // AR-XXX: SimHash LSH Tier 1.5 alarms
+    // Monitor performance and quality of same-browser drift matching
+    this.createSimHashAlarms(stackName, alarmsTopic);
+
     // =====================================
     // CANARY DEPLOYMENTS (AR-24)
     // =====================================
@@ -295,11 +304,18 @@ export class WorkersConstruct extends Construct {
       version: this.profileUpdater.currentVersion,
     });
 
+    // Deployment strategy: Canary for prod (safety), AllAtOnce for dev/qa/uat (speed)
+    // Canary: 10% traffic for 5 minutes, then 100% if no alarms
+    // AllAtOnce: Immediate 100% deployment for fast iteration
+    const deploymentConfig =
+      stage === "prod"
+        ? codedeploy.LambdaDeploymentConfig.CANARY_10PERCENT_5MINUTES
+        : codedeploy.LambdaDeploymentConfig.ALL_AT_ONCE;
+
     // CodeDeploy deployment groups for canary releases
     new codedeploy.LambdaDeploymentGroup(this, "MatchingWorkerDeployment", {
       alias: this.matchingWorkerAlias,
-      deploymentConfig:
-        codedeploy.LambdaDeploymentConfig.CANARY_10PERCENT_5MINUTES,
+      deploymentConfig,
       alarms: [
         matchingWorkerAlarms.errorAlarm,
         matchingWorkerAlarms.durationAlarm,
@@ -313,8 +329,7 @@ export class WorkersConstruct extends Construct {
 
     new codedeploy.LambdaDeploymentGroup(this, "ProfileUpdaterDeployment", {
       alias: this.profileUpdaterAlias,
-      deploymentConfig:
-        codedeploy.LambdaDeploymentConfig.CANARY_10PERCENT_5MINUTES,
+      deploymentConfig,
       alarms: [
         profileUpdaterAlarms.errorAlarm,
         profileUpdaterAlarms.durationAlarm,
@@ -551,5 +566,99 @@ export class WorkersConstruct extends Construct {
       treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
     });
     alarm.addAlarmAction(new actions.SnsAction(alarmsTopic));
+  }
+
+  /**
+   * AR-XXX: Create alarms for SimHash LSH Tier 1.5 matching
+   * Monitors performance and quality of same-browser drift detection
+   */
+  private createSimHashAlarms(
+    stackName: string,
+    alarmsTopic: sns.ITopic,
+  ): void {
+    const namespace = "Argus";
+
+    // 1. SimHash Latency High - P99 > 100ms over 5 min
+    // Indicates DynamoDB band query performance issues
+    const latencyAlarm = new cloudwatch.Alarm(this, "SimHashLatencyHigh", {
+      alarmName: `${stackName}-simhash-latency-high`,
+      alarmDescription:
+        "SimHash P99 latency > 100ms - check DynamoDB throttling or band distribution",
+      metric: new cloudwatch.Metric({
+        namespace,
+        metricName: "SimHash.BandQueryLatencyMs",
+        statistic: "p99",
+        period: Duration.minutes(5),
+      }),
+      threshold: 100,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+      evaluationPeriods: 1,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    });
+    latencyAlarm.addAlarmAction(new actions.SnsAction(alarmsTopic));
+
+    // 2. Candidate Explosion - Avg > 50 candidates over 5 min
+    // Indicates hot bands or need to add more bands
+    const candidateAlarm = new cloudwatch.Alarm(
+      this,
+      "SimHashCandidateExplosion",
+      {
+        alarmName: `${stackName}-simhash-candidate-explosion`,
+        alarmDescription:
+          "SimHash avg candidates > 50 - consider adding bands or tightening thresholds",
+        metric: new cloudwatch.Metric({
+          namespace,
+          metricName: "SimHash.CandidatesPerQuery",
+          statistic: "Average",
+          period: Duration.minutes(5),
+        }),
+        threshold: 50,
+        comparisonOperator:
+          cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+        evaluationPeriods: 1,
+        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      },
+    );
+    candidateAlarm.addAlarmAction(new actions.SnsAction(alarmsTopic));
+
+    // 3. Bypass Rate High - > 5% of requests bypassed over 15 min
+    // Indicates consistent latency issues causing automatic bypass
+    // Use math expression: bypass / (bypass + hits) > 0.05
+    const bypassAlarm = new cloudwatch.Alarm(this, "SimHashBypassRateHigh", {
+      alarmName: `${stackName}-simhash-bypass-rate-high`,
+      alarmDescription:
+        "SimHash bypass rate > 5% - tier is slow and failing open too often",
+      metric: new cloudwatch.Metric({
+        namespace,
+        metricName: "SimHash.LatencyBypass",
+        statistic: "Sum",
+        period: Duration.minutes(15),
+      }),
+      // Alert if more than 50 bypasses in 15 minutes
+      // (more pragmatic than percentage for initial deployment)
+      threshold: 50,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+      evaluationPeriods: 1,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    });
+    bypassAlarm.addAlarmAction(new actions.SnsAction(alarmsTopic));
+
+    // 4. SimHash Error Rate - any errors indicate bugs
+    const errorAlarm = new cloudwatch.Alarm(this, "SimHashError", {
+      alarmName: `${stackName}-simhash-error`,
+      alarmDescription:
+        "SimHash tier throwing errors - failing open but needs investigation",
+      metric: new cloudwatch.Metric({
+        namespace,
+        metricName: "SimHash.Error",
+        statistic: "Sum",
+        period: Duration.minutes(5),
+      }),
+      threshold: 0,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+      evaluationPeriods: 2,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    });
+    errorAlarm.addAlarmAction(new actions.SnsAction(alarmsTopic));
   }
 }

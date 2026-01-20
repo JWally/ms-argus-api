@@ -16,6 +16,8 @@ export {
   EvidenceCode,
   // AR-148: Anomaly signals
   SessionAnomalySignal,
+  // AR-XXX: SimHash details
+  SimHashDetails,
 } from "../../types";
 
 export type { EvidenceCode as EvidenceCodeType } from "../../types";

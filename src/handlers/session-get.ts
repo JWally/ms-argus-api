@@ -116,6 +116,7 @@ const baseHandler = async (
 
   // Return relevant fields (exclude internal fields like idempotency_key)
   // AR-148: Include anomalies if present (server-side anomaly detection results)
+  // AR-XXX: Include simhash_details if present (SimHash LSH match details)
   return {
     statusCode: 200,
     headers: { "Content-Type": "application/json" },
@@ -129,6 +130,7 @@ const baseHandler = async (
       flags: session.flags,
       evidence_codes: session.evidence_codes,
       anomalies: session.anomalies, // AR-148: Server-side anomaly detection results
+      simhash_details: session.simhash_details, // AR-XXX: SimHash LSH match details
     }),
   };
 };
