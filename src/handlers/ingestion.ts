@@ -4,6 +4,7 @@
 // AR-90: Simplified to binary gzip (application/octet-stream)
 // AR-96: Refactored to use middy middleware for cleaner code
 // AR-131: API keys from Secrets Manager instead of env var
+// AR-XXX: V3 payload schema with middy validator
 
 import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from "aws-lambda";
 import { Logger } from "@aws-lambda-powertools/logger";
@@ -15,6 +16,8 @@ import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 import { gzipSync } from "zlib";
 import middy from "@middy/core";
 import httpHeaderNormalizer from "@middy/http-header-normalizer";
+import validator from "@middy/validator";
+import { transpileSchema } from "@middy/validator/transpile";
 import warmup from "@middy/warmup";
 import { onWarmup } from "../helpers/middy-helpers";
 import { HttpError, createError } from "../helpers/http-error";
@@ -24,7 +27,11 @@ import { jsonErrorHandler } from "../helpers/error-middleware";
 import { createGunzip } from "zlib";
 import { pipeline } from "stream/promises";
 import { Readable } from "stream";
-import { isV1Payload, isV2Payload } from "../helpers/normalize-payload-v2";
+import {
+  payloadJsonSchema,
+  getSessionId,
+  type ArgusPayload,
+} from "../helpers/payload-schema";
 
 // ==================== CONFIGURATION ====================
 
@@ -57,10 +64,9 @@ const MAX_DECOMPRESSED_BYTES = parseInt(
 ); // 2MB default (was 512KB)
 
 // AR-164: CORS configuration for this handler
-// AR-188: Added X-Argus-Schema-Version for v2 payload versioning
 const CORS_CONFIG = {
   methods: "POST, OPTIONS",
-  headers: "Content-Type, Content-Encoding, X-Argus-Schema-Version",
+  headers: "Content-Type, Content-Encoding",
 };
 
 // ==================== AR-139: PAYLOAD ARCHIVING ====================
@@ -238,10 +244,44 @@ const binaryGzipBodyParser =
     },
   });
 
+/**
+ * JSON body parser middleware that parses JSON and attaches to event.body
+ * Runs after gzip decompression
+ */
+const jsonBodyParser = (): middy.MiddlewareObj<APIGatewayProxyEventV2> => ({
+  before: async (request) => {
+    const { event } = request;
+    const method = event.requestContext.http.method;
+
+    // Skip for non-POST requests (OPTIONS, GET, etc. don't have bodies to parse)
+    if (method !== "POST") {
+      return;
+    }
+
+    // Skip for non-collect endpoints
+    if (event.rawPath !== "/v1/collect") {
+      return;
+    }
+
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (event as any).parsedBody = JSON.parse(event.body ?? "{}");
+    } catch {
+      metrics.addMetric("InvalidJson", MetricUnit.Count, 1);
+      throw createError(400, "Invalid JSON payload");
+    }
+  },
+});
+
 // ==================== CORE HANDLER ====================
 
+// Extend the event type to include parsedBody
+interface ExtendedEvent extends APIGatewayProxyEventV2 {
+  parsedBody?: ArgusPayload;
+}
+
 const baseHandler = async (
-  event: APIGatewayProxyEventV2,
+  event: ExtendedEvent,
 ): Promise<APIGatewayProxyResultV2> => {
   const start = Date.now();
 
@@ -262,65 +302,20 @@ const baseHandler = async (
     throw createError(404, "Not found");
   }
 
-  // Parse JSON (body already decompressed by middleware if binary)
-  let payload: Record<string, unknown>;
-  try {
-    payload = JSON.parse(event.body ?? "{}");
-  } catch {
-    metrics.addMetric("InvalidJson", MetricUnit.Count, 1);
-    throw createError(400, "Invalid JSON payload");
-  }
-
-  // AR-184: Detect schema version and extract session_id accordingly
-  let sessionId: string | undefined;
-  let schemaVersion: "v1" | "v2" | "unknown";
-
-  if (isV2Payload(payload)) {
-    // V2 format: identifiers.session_id
-    schemaVersion = "v2";
-    const identifiers = payload.identifiers as
-      | { session_id?: string }
-      | undefined;
-    sessionId = identifiers?.session_id;
-    metrics.addMetric("SchemaVersionV2", MetricUnit.Count, 1);
-  } else if (isV1Payload(payload)) {
-    // V1 format: session_id at root
-    schemaVersion = "v1";
-    sessionId = payload.session_id as string | undefined;
-    metrics.addMetric("SchemaVersionV1", MetricUnit.Count, 1);
-  } else {
-    // Unknown format - try session_id at root for backwards compatibility
-    schemaVersion = "unknown";
-    sessionId = payload.session_id as string | undefined;
-    metrics.addMetric("SchemaVersionUnknown", MetricUnit.Count, 1);
-  }
-
-  // Validate required fields
-  if (!sessionId || typeof sessionId !== "string") {
-    metrics.addMetric("MissingSessionId", MetricUnit.Count, 1);
-    throw createError(400, "Missing required field: session_id");
-  }
+  // Payload is parsed and validated by middleware at this point
+  const payload = event.parsedBody as ArgusPayload;
+  const sessionId = getSessionId(payload);
 
   // Build SQS message payload - pass through the entire payload with metadata
-  // The matching worker will handle normalization
   const sqsPayload = {
-    // For v2, pass the full payload as-is
-    // For v1, maintain backwards compatibility
-    ...(schemaVersion === "v2"
-      ? payload
-      : {
-          session_id: sessionId,
-          fingerprint: payload.fingerprint,
-          sigint: payload.sigint,
-        }),
-    // Always include headers and metadata
+    ...payload,
+    // Include headers and metadata
     _headers: {
       "User-Agent": event.headers["user-agent"],
       "Accept-Language": event.headers["accept-language"],
       "X-Forwarded-For": event.headers["x-forwarded-for"],
     },
     _timestamp: Date.now(),
-    _schema_version: schemaVersion,
   };
 
   // Send to SQS
@@ -334,14 +329,13 @@ const baseHandler = async (
   } catch (err) {
     logger.error("SQS send failed", {
       error: err,
-      session_id: payload.session_id,
+      session_id: sessionId,
     });
     metrics.addMetric("SqsSendFailed", MetricUnit.Count, 1);
     throw createError(503, "Service temporarily unavailable");
   }
 
   // AR-139: Archive raw payload (async fire-and-forget, does not block response)
-  // Archive the original parsed payload for debugging/ML training
   archivePayload(sessionId, payload).catch(() => {
     // Error already logged in archivePayload
   });
@@ -365,5 +359,16 @@ export const handler = middy(baseHandler)
   .use(logMetrics(metrics)) // Auto-publishes metrics on success AND error
   .use(httpHeaderNormalizer()) // Normalizes header casing
   .use(binaryGzipBodyParser()) // Handles gzip decompression
+  .use(jsonBodyParser()) // Parse JSON body
+  .use(
+    validator({
+      eventSchema: transpileSchema({
+        type: "object",
+        properties: {
+          parsedBody: payloadJsonSchema,
+        },
+      }),
+    }),
+  )
   .use(corsMiddleware(CORS_CONFIG)) // AR-164: Shared CORS middleware
   .use(jsonErrorHandler({ logger, exposeErrors: "all" })); // AR-166: Shared error handler (must be last)

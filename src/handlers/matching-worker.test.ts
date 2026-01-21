@@ -114,21 +114,49 @@ describe("matching-worker handler", () => {
     Records: records,
   });
 
-  const createFingerprintPayload = (overrides = {}) => ({
-    session_id: "test-session-123",
-    fingerprint: {
-      stable_hash: "hash-abc123",
-      fuzzy_hash: "fuzzy-def456",
-      canvas_hash: "canvas-ghi789",
-      ip_address: "192.168.1.1",
-      ja4: "t13d1516h2_8daaf6152771",
-      gpu_renderer: "NVIDIA GeForce RTX 3080",
-      screen_dims: "1920x1080",
-      timezone: "America/New_York",
-    },
-    timestamp: Date.now(),
-    ...overrides,
-  });
+  // V3 payload format
+  const createFingerprintPayload = (
+    overrides: Record<string, unknown> = {},
+  ) => {
+    const sessionId = (overrides.session_id as string) || "test-session-123";
+    // Remove session_id from overrides if present (it goes in identifiers)
+    const { session_id: _, ...restOverrides } = overrides;
+    return {
+      identifiers: {
+        session_id: sessionId,
+        evercookie_id: "test-evercookie-123",
+      },
+      hashes: {
+        stable: "hash-abc123",
+        fuzzy: "fuzzy-def456",
+        canvas2d: "canvas-ghi789",
+        canvasWebgl: "webgl-xyz789",
+        offlineAudioContext: "audio-123",
+        maths: "maths-456",
+      },
+      device: {
+        workerScope: {
+          userAgent: "Mozilla/5.0 Test Browser",
+          hardwareConcurrency: 8,
+          deviceMemory: 8,
+          webglRenderer: "NVIDIA GeForce RTX 3080",
+          timezoneLocation: "America/New_York",
+        },
+        screen: {
+          width: 1920,
+          height: 1080,
+        },
+      },
+      sigint: {
+        tlsFingerprint: {
+          ip: "192.168.1.1",
+          ja4: "t13d1516h2_8daaf6152771",
+        },
+      },
+      _timestamp: Date.now(),
+      ...restOverrides,
+    };
+  };
 
   describe("successful processing", () => {
     it("should process a single record successfully with Tier 1 match", async () => {
@@ -180,15 +208,16 @@ describe("matching-worker handler", () => {
 
     it("should skip processing for cache hit (Tier 0)", async () => {
       const payload = createFingerprintPayload();
+      const sessionId = payload.identifiers.session_id;
 
       // AR-52: Pre-populate DynamoDB session cache with complete result
       dynamoMock.on(GetItemCommand).callsFake((input) => {
         const key = input.Key;
         // Return cached session for session cache lookups
-        if (key?.cache_key?.S === `session:${payload.session_id}`) {
+        if (key?.cache_key?.S === `session:${sessionId}`) {
           return {
             Item: marshall({
-              cache_key: `session:${payload.session_id}`,
+              cache_key: `session:${sessionId}`,
               value: {
                 status: "complete",
                 device_id: "cached-device-123",
@@ -218,9 +247,9 @@ describe("matching-worker handler", () => {
 
     it("should create new device when no match found", async () => {
       const payload = createFingerprintPayload({
-        fingerprint: {
-          stable_hash: "brand-new-hash",
-          fuzzy_hash: "brand-new-fuzzy",
+        hashes: {
+          stable: "brand-new-hash",
+          fuzzy: "brand-new-fuzzy",
         },
       });
 
@@ -256,11 +285,17 @@ describe("matching-worker handler", () => {
     it("should return failed items only for records that fail", async () => {
       const successPayload = createFingerprintPayload({
         session_id: "success-session",
-        fingerprint: { evercookie_id: "cookie-success" },
+        identifiers: {
+          session_id: "success-session",
+          evercookie_id: "cookie-success",
+        },
       });
       const failPayload = createFingerprintPayload({
         session_id: "fail-session",
-        fingerprint: { evercookie_id: "cookie-fail" },
+        identifiers: {
+          session_id: "fail-session",
+          evercookie_id: "cookie-fail",
+        },
       });
 
       // AR-52: The session cache check and tier1 lookups both use GetItemCommand
@@ -337,7 +372,8 @@ describe("matching-worker handler", () => {
   describe("tier matching metrics", () => {
     it("should process Tier 0.5 (evercookie) match", async () => {
       const payload = createFingerprintPayload({
-        fingerprint: {
+        identifiers: {
+          session_id: "test-session-123",
           evercookie_id: "evercookie-abc123",
         },
       });
@@ -418,9 +454,9 @@ describe("matching-worker handler", () => {
   describe("NEW_DEVICE_RATE metric emission", () => {
     it("should emit NEW_DEVICE_RATE metric when is_new_device=true", async () => {
       const payload = createFingerprintPayload({
-        fingerprint: {
-          stable_hash: "brand-new-hash",
-          fuzzy_hash: "brand-new-fuzzy",
+        hashes: {
+          stable: "brand-new-hash",
+          fuzzy: "brand-new-fuzzy",
         },
       });
 
@@ -439,9 +475,12 @@ describe("matching-worker handler", () => {
     });
 
     it("should NOT emit NEW_DEVICE_RATE when is_new_device=false", async () => {
-      const payload = createFingerprintPayload();
+      // Create payload without evercookie_id to test Tier1 matching (stable hash)
+      const payload = createFingerprintPayload({
+        identifiers: { session_id: "test-session-123" }, // No evercookie_id
+      });
 
-      // Mock Tier 1 match (existing device)
+      // Mock Tier 1 match (existing device via stable hash)
       dynamoMock.on(GetItemCommand).resolves({
         Item: marshall({
           hash_value: "hash-abc123",

@@ -4,6 +4,7 @@
 // AR-71: Added warmup detection for SQS pipeline warming
 // AR-73: Added fingerprint normalization for web library compatibility
 // AR-148: Added anomaly detection for session response
+// AR-XXX: V3 payload schema - simplified, no V1/V2 detection
 import {
   SQSHandler,
   SQSBatchResponse,
@@ -24,7 +25,6 @@ import {
   MatchResult,
 } from "../services/matching";
 import { DynamoCacheService } from "../services/cache";
-// Note: BloomFilter removed per AR-21 - adds complexity without sufficient value
 import { getMatchingWorkerEnv, MatchingWorkerEnvConfig } from "../config/env";
 import {
   SESSION_TTL_SECONDS,
@@ -32,28 +32,15 @@ import {
   TIER2_TIMEOUT_MS,
   MUTATION_GATE_TTL_SECONDS,
 } from "../helpers/constants";
-import { normalizeFingerprint } from "../helpers/normalize-fingerprint";
 import { detectAllAnomalies } from "../services/profile/anomaly";
 import type { SessionAnomalySignal, Fingerprint } from "../types";
 import { gzipSync } from "zlib";
+import type { ArgusPayload } from "../helpers/payload-schema";
 
-// AR-186: Payload from ingestion handler with schema version metadata
-interface SqsPayload {
-  // V1 format fields
-  session_id?: string;
-  fingerprint?: Record<string, unknown>;
-  sigint?: Record<string, unknown>;
-  // V2 format fields
-  identifiers?: { session_id?: string; [key: string]: unknown };
-  device?: { hashes?: Record<string, unknown>; [key: string]: unknown };
-  network?: Record<string, unknown>;
-  // Metadata from ingestion handler
+// V3 Payload from ingestion handler (ArgusPayload + metadata)
+interface SqsPayload extends ArgusPayload {
   _headers?: Record<string, string>;
   _timestamp?: number;
-  _schema_version?: "v1" | "v2" | "unknown";
-  // Legacy fields (backwards compatibility)
-  headers?: Record<string, string>;
-  timestamp?: number;
 }
 
 // Validate environment variables at module load (cold start)
@@ -141,6 +128,123 @@ function isWarmupMessage(body: string): boolean {
 }
 
 /**
+ * Extract flat fingerprint fields from V3 device section
+ * The device section contains nested objects per component (workerScope, navigator, etc.)
+ * We extract the relevant fields for matching into a flat Fingerprint object
+ */
+function extractFingerprint(payload: SqsPayload): Fingerprint {
+  const { hashes, device, sigint, identifiers } = payload;
+
+  // Start with core hashes
+  const fingerprint: Fingerprint = {
+    stable_hash: hashes.stable,
+    fuzzy_hash: hashes.fuzzy,
+  };
+
+  // Extract identifiers
+  if (identifiers.evercookie_id) {
+    fingerprint.evercookie_id = identifiers.evercookie_id;
+  }
+  if (identifiers.public_key) {
+    fingerprint.public_key = identifiers.public_key;
+  }
+
+  // Extract from workerScope component (browser/device info)
+  const workerScope = device.workerScope;
+  if (workerScope) {
+    if (typeof workerScope.userAgent === "string") {
+      fingerprint.user_agent = workerScope.userAgent;
+    }
+    if (typeof workerScope.hardwareConcurrency === "number") {
+      fingerprint.hardware_concurrency = workerScope.hardwareConcurrency;
+    }
+    if (typeof workerScope.deviceMemory === "number") {
+      fingerprint.device_memory = workerScope.deviceMemory;
+    }
+    if (typeof workerScope.webglRenderer === "string") {
+      fingerprint.gpu_renderer = workerScope.webglRenderer;
+    }
+    if (typeof workerScope.timezoneLocation === "string") {
+      fingerprint.timezone = workerScope.timezoneLocation;
+    }
+  }
+
+  // Extract from screen component
+  const screen = device.screen;
+  if (screen) {
+    const width = screen.width;
+    const height = screen.height;
+    if (typeof width === "number" && typeof height === "number") {
+      fingerprint.screen_dims = `${width}x${height}`;
+    }
+  }
+
+  // Extract canvas hash
+  if (hashes.canvas2d) {
+    fingerprint.canvas_hash = hashes.canvas2d;
+  }
+
+  // Extract webgl hash
+  if (hashes.canvasWebgl) {
+    fingerprint.webgl_hash = hashes.canvasWebgl;
+  }
+
+  // Extract audio hash
+  if (hashes.offlineAudioContext) {
+    fingerprint.audio_hash = hashes.offlineAudioContext;
+  }
+
+  // Extract maths hash (for structural anchors)
+  if (hashes.maths) {
+    fingerprint.maths_hash = hashes.maths;
+  }
+
+  // Extract from sigint (network intelligence)
+  if (sigint) {
+    if (sigint.tlsFingerprint) {
+      const tls = sigint.tlsFingerprint;
+      if (tls.ip) fingerprint.ip_address = tls.ip;
+      if (tls.ja3) fingerprint.ja3 = tls.ja3;
+      if (tls.ja4) fingerprint.ja4 = tls.ja4;
+      if (tls.id) fingerprint.sigint_id = tls.id;
+    }
+    if (sigint.tcpProbe) {
+      const tcp = sigint.tcpProbe;
+      if (typeof tcp.proxyScore === "number") {
+        fingerprint.proxy_score = tcp.proxyScore;
+      }
+      if (typeof tcp.vpnScore === "number") {
+        fingerprint.vpn_score = tcp.vpnScore;
+      }
+      if (typeof tcp.rttMs === "number") {
+        fingerprint.tcp_rtt_us = tcp.rttMs * 1000;
+      }
+    }
+    if (sigint.faviconCache?.id) {
+      // Use favicon cache ID as an additional identity signal
+      fingerprint.favicon_cache_id = sigint.faviconCache.id;
+    }
+  }
+
+  // Extract headless/bot detection signals
+  const headless = device.headless;
+  if (headless) {
+    if (typeof headless.isHeadless === "boolean") {
+      fingerprint.is_headless = headless.isHeadless;
+    }
+  }
+
+  const lies = device.lies;
+  if (lies) {
+    if (typeof lies.count === "number") {
+      fingerprint.lie_count = lies.count;
+    }
+  }
+
+  return fingerprint;
+}
+
+/**
  * Process a single SQS record
  */
 async function processRecord(
@@ -164,101 +268,33 @@ async function processRecord(
     logger.error("Malformed JSON payload - skipping message", {
       error: parseError,
       messageId: record.messageId,
-      bodyPreview: record.body.slice(0, 200), // Truncate for logging
+      bodyPreview: record.body.slice(0, 200),
     });
     metrics.addMetric("MalformedPayload", MetricUnit.Count, 1);
-    return; // Don't retry - mark as processed
+    return;
   }
 
-  // AR-186: Extract session_id and fingerprint based on schema version
-  let session_id: string;
-  let fingerprint: Fingerprint;
-  let payload: FingerprintPayload;
-
-  const schemaVersion = rawPayload._schema_version || "unknown";
-  metrics.addMetric(
-    schemaVersion === "v2" ? "MatchingV2Payload" : "MatchingV1Payload",
-    MetricUnit.Count,
-    1,
-  );
-
-  if (schemaVersion === "v2" && rawPayload.identifiers?.session_id) {
-    // V2 format: extract from identifiers and device sections
-    session_id = rawPayload.identifiers.session_id;
-
-    // Build flat fingerprint from v2 device section
-    // V2 has nested structure: device.hashes, device.browser, device.screen, device.hardware
-    const device = rawPayload.device || {};
-    const hashes = (device.hashes as Record<string, unknown>) || {};
-    const browser = (device.browser as Record<string, unknown>) || {};
-    const screen = (device.screen as Record<string, unknown>) || {};
-    const hardware = (device.hardware as Record<string, unknown>) || {};
-
-    fingerprint = {
-      stable_hash: hashes.stable as string,
-      fuzzy_hash: hashes.fuzzy as string,
-      canvas_hash: hashes.canvas as string,
-      webgl_hash: hashes.webgl as string,
-      audio_hash: hashes.audio as string,
-      // Browser info is nested under device.browser
-      user_agent: browser.user_agent as string,
-      // Hardware info is nested under device.hardware
-      gpu_renderer: hardware.gpu as string,
-      hardware_concurrency: hardware.concurrency as number,
-      device_memory: hardware.memory as number,
-      // Screen info is nested under device.screen
-      screen_dims:
-        screen.width && screen.height
-          ? `${screen.width}x${screen.height}`
-          : undefined,
-      // Timezone is directly on device
-      timezone: device.timezone as string,
-      // Extract identifiers
-      evercookie_id: rawPayload.identifiers.evercookie_id as string,
-      public_key: rawPayload.identifiers.public_key as string,
-    };
-
-    // Extract network data if present
-    const network = rawPayload.network || {};
-    if (network.ip) fingerprint.ip_address = network.ip as string;
-    if (network.ja3) fingerprint.ja3 = network.ja3 as string;
-    if (network.ja4) fingerprint.ja4 = network.ja4 as string;
-
-    // Build legacy payload format for downstream compatibility
-    payload = {
-      session_id,
-      fingerprint,
-      sigint: rawPayload.network as FingerprintPayload["sigint"],
-      headers: rawPayload._headers || {},
-      timestamp: rawPayload._timestamp || Date.now(),
-    };
-  } else {
-    // V1 format: use legacy structure
-    session_id = rawPayload.session_id!;
-    if (!session_id) {
-      logger.error("Missing session_id in payload", {
-        messageId: record.messageId,
-      });
-      metrics.addMetric("MissingSessionId", MetricUnit.Count, 1);
-      return;
-    }
-
-    // AR-73: Normalize fingerprint from web library nested format to flat API format
-    // This extracts fields like canvas_hash, gpu_renderer, screen_dims from nested objects
-    // AR-81: Also extracts sigint data (third-party cookie, JA3/JA4, TCP probe)
-    fingerprint = normalizeFingerprint(
-      rawPayload.fingerprint,
-      rawPayload.sigint as FingerprintPayload["sigint"],
-    );
-
-    payload = {
-      session_id,
-      fingerprint,
-      sigint: rawPayload.sigint as FingerprintPayload["sigint"],
-      headers: rawPayload._headers || rawPayload.headers || {},
-      timestamp: rawPayload._timestamp || rawPayload.timestamp || Date.now(),
-    };
+  // V3 format: extract session_id from identifiers
+  const session_id = rawPayload.identifiers?.session_id;
+  if (!session_id) {
+    logger.error("Missing session_id in payload", {
+      messageId: record.messageId,
+    });
+    metrics.addMetric("MissingSessionId", MetricUnit.Count, 1);
+    return;
   }
+
+  // Extract flat fingerprint from V3 payload
+  const fingerprint = extractFingerprint(rawPayload);
+
+  // Build legacy payload format for downstream compatibility
+  const payload: FingerprintPayload = {
+    session_id,
+    fingerprint,
+    sigint: rawPayload.sigint as FingerprintPayload["sigint"],
+    headers: rawPayload._headers || {},
+    timestamp: rawPayload._timestamp || Date.now(),
+  };
 
   logger.info("Processing fingerprint", { session_id });
 
@@ -297,7 +333,6 @@ async function processRecord(
       session_id,
       idempotencyKey,
     );
-    // AR-170: Track conditional write outcomes for operational visibility
     if (!degradedWritten) {
       metrics.addMetric("SessionCacheWriteSkipped", MetricUnit.Count, 1);
     }
@@ -305,14 +340,9 @@ async function processRecord(
   }
 
   // AR-148: Run anomaly detection on fingerprint
-  // Note: Network anomaly detection (timezone mismatch) requires geo.timezone from IP geolocation
-  // which isn't currently in the sigint payload. Pass undefined for now (graceful degradation).
-  // AR-186: Use raw fingerprint from original payload for cross-field checks
-  const rawFingerprint =
-    schemaVersion === "v2" ? rawPayload.device : rawPayload.fingerprint;
   const anomalyResult = detectAllAnomalies(
     fingerprint,
-    rawFingerprint, // Raw payload for cross-field checks
+    rawPayload.device, // Raw device data for cross-field checks
     undefined, // sigint - no geo.timezone available yet
   );
 
@@ -331,7 +361,6 @@ async function processRecord(
     idempotencyKey,
     anomalies,
   );
-  // AR-170: Track conditional write outcomes for operational visibility
   if (!cacheWritten) {
     metrics.addMetric("SessionCacheWriteSkipped", MetricUnit.Count, 1);
     logger.info("Session cache write skipped (higher confidence exists)", {
@@ -340,12 +369,16 @@ async function processRecord(
     });
   }
 
-  // AR-XXX: Write full payload to session payload table (gRPC stub)
-  // This enables the session-get endpoint to return the complete fingerprint data
-  await writeSessionPayload(session_id, payload, matchResult);
+  // Write full payload to session payload table
+  await writeSessionPayload(
+    session_id,
+    payload,
+    rawPayload,
+    matchResult,
+    anomalies,
+  );
 
-  // Queue profile update (pass is_new_device for flag computation)
-  // AR-149: Pass matchResult for tier-gated identity association
+  // Queue profile update
   await service.queueProfileUpdate(
     matchResult.device_id,
     payload,
@@ -357,7 +390,6 @@ async function processRecord(
   metrics.addMetric("MatchingDuration", MetricUnit.Milliseconds, duration);
 
   // AR-57: Emit observation to Firehose (fire-and-forget)
-  // AR-172: Removed await to prevent Firehose throttling from blocking matching
   emitObservation({
     sessionId: session_id,
     matchResult,
@@ -381,11 +413,7 @@ async function processRecord(
 function recordTierMetric(tier: number, isNewDevice: boolean): void {
   if (isNewDevice) {
     metrics.addMetric("NewDevice", MetricUnit.Count, 1);
-    // AR-123: NEW_DEVICE_RATE metric for anomaly detection (fraud indicator)
-    // This metric is monitored for sudden spikes that may indicate fraud attacks
     metrics.addMetric("NEW_DEVICE_RATE", MetricUnit.Count, 1);
-    // AR-121: Track device ID format for migration monitoring
-    // New devices always use ULID format now
     metrics.addMetric("DeviceIdFormat_ulid", MetricUnit.Count, 1);
   } else if (tier === 0.5) {
     metrics.addMetric("Tier05Hit", MetricUnit.Count, 1);
@@ -400,9 +428,6 @@ function recordTierMetric(tier: number, isNewDevice: boolean): void {
 
 /**
  * AR-57: Emit match observation to Firehose for analytics
- * AR-172: Called without await (fire-and-forget) to prevent Firehose
- * throttling from blocking the matching flow. Errors are logged but
- * do not affect the response to the client.
  */
 async function emitObservation(params: {
   sessionId: string;
@@ -410,7 +435,6 @@ async function emitObservation(params: {
   tier2TimedOut: boolean;
   durationMs: number;
 }): Promise<void> {
-  // Skip if analytics stream not configured
   if (!envConfig.OBSERVATIONS_STREAM_NAME) {
     return;
   }
@@ -435,7 +459,6 @@ async function emitObservation(params: {
       }),
     );
   } catch (error) {
-    // Log but don't throw - analytics should not block matching
     logger.warn("Failed to emit observation to Firehose", {
       error,
       sessionId: params.sessionId,
@@ -445,25 +468,63 @@ async function emitObservation(params: {
 }
 
 /**
- * AR-XXX: Write full fingerprint payload to session payload table
- * Enables session-get endpoint to return complete data for gRPC stub
- * Uses 30 minute TTL for automatic cleanup
- *
- * Stores payload as gzipped base64 string to:
- * - Avoid expensive marshall/unmarshall of deeply nested objects
- * - Reduce DynamoDB storage size
- * - Handle extreme numbers (e.g., math fingerprint values) without sanitization
+ * Write full fingerprint payload to session payload table
+ * Enables session-get endpoint to return complete data
+ * Uses gzipped base64 storage for efficiency
  */
 async function writeSessionPayload(
   sessionId: string,
   payload: FingerprintPayload,
-  _matchResult: MatchResult,
+  rawPayload: SqsPayload,
+  matchResult: MatchResult,
+  anomalies: SessionAnomalySignal[],
 ): Promise<void> {
   const ttl = Math.floor(Date.now() / 1000) + SESSION_PAYLOAD_TTL_SECONDS;
 
   try {
-    // Gzip and base64 encode the payload - skip expensive DynamoDB marshalling
-    const payloadJson = JSON.stringify(payload);
+    // Build identifiers section
+    const identifiers: Record<string, unknown> = {
+      session_id: sessionId,
+      device_id: matchResult.device_id,
+    };
+    if (rawPayload.identifiers.evercookie_id) {
+      identifiers.evercookie_id = rawPayload.identifiers.evercookie_id;
+    }
+    if (rawPayload.identifiers.public_key) {
+      identifiers.public_key = rawPayload.identifiers.public_key;
+    }
+
+    // Build analysis section
+    const analysis: Record<string, unknown> = {
+      status: "complete",
+      confidence: matchResult.confidence,
+      match_tier: matchResult.match_tier,
+      is_new_device: matchResult.is_new_device,
+      risk_score: matchResult.risk_score,
+      flags: matchResult.flags,
+      evidence_codes: matchResult.evidence_codes,
+    };
+    if (anomalies.length > 0) {
+      analysis.anomalies = anomalies;
+    }
+    if (matchResult.simhash_details) {
+      analysis.simhash_details = matchResult.simhash_details;
+    }
+    if (matchResult.fuzzy_match_info) {
+      analysis.fuzzy_match_info = matchResult.fuzzy_match_info;
+    }
+
+    // Build complete response payload matching V3 response schema
+    const fullData = {
+      identifiers,
+      analysis,
+      hashes: rawPayload.hashes,
+      device: rawPayload.device,
+      sigint: rawPayload.sigint,
+    };
+
+    // Gzip and base64 encode
+    const payloadJson = JSON.stringify(fullData);
     const gzipped = gzipSync(Buffer.from(payloadJson));
     const payloadGzipB64 = gzipped.toString("base64");
 
@@ -472,14 +533,13 @@ async function writeSessionPayload(
         TableName: envConfig.SESSION_PAYLOAD_TABLE,
         Item: {
           session_id: { S: sessionId },
-          payload_gzip_b64: { S: payloadGzipB64 }, // Gzipped payload as base64 string
+          payload_gzip_b64: { S: payloadGzipB64 },
           ttl: { N: String(ttl) },
           created_at: { S: new Date().toISOString() },
         },
       }),
     );
   } catch (error) {
-    // Log but don't throw - payload storage should not block matching
     logger.warn("Failed to write session payload", {
       error,
       sessionId,

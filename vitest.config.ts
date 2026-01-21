@@ -6,8 +6,10 @@ export default defineConfig({
     environment: "node",
     include: ["src/**/*.test.ts", "lib/**/*.test.ts", "tests/**/*.test.ts"],
     exclude: ["node_modules", "dist", "cdk.out", "cmd"],
-    deps: {
-      inline: ["@silverbucket/ajv-formats-draft2019"],
+    server: {
+      deps: {
+        inline: ["@silverbucket/ajv-formats-draft2019"],
+      },
     },
     coverage: {
       provider: "v8",

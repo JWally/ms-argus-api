@@ -20,6 +20,8 @@ export interface Fingerprint {
   // Cross-site persistent identifier - survives first-party cookie clearing
   // Set by id.argus.pw CloudFront function with SameSite=None
   sigint_id?: string;
+  // Favicon cache ID - persistent identifier stored via browser cache API
+  favicon_cache_id?: string;
   // AR-64: Cryptographic device identity (ECDSA P-256 public key, Base64 SPKI)
   // Near-perfect identifier - if present and matches, confidence 0.99
   public_key?: string;

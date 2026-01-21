@@ -13,6 +13,7 @@ vi.hoisted(() => {
 import { mockClient } from "aws-sdk-client-mock";
 import { DynamoDBClient, GetItemCommand } from "@aws-sdk/client-dynamodb";
 import { marshall } from "@aws-sdk/util-dynamodb";
+import { gzipSync } from "zlib";
 import {
   APIGatewayProxyEventV2,
   APIGatewayProxyStructuredResultV2,
@@ -98,18 +99,73 @@ describe("session-get handler", () => {
     updated_at: Date.now(),
   };
 
+  // V3 format payload stored in session payload table
+  const createMockV3Payload = (sessionId: string) => ({
+    identifiers: {
+      session_id: sessionId,
+      device_id: "device-abc123",
+      evercookie_id: "test-evercookie",
+    },
+    analysis: {
+      status: "complete",
+      confidence: 0.95,
+      match_tier: 1,
+      is_new_device: false,
+      risk_score: 0.2,
+      flags: ["returning_user"],
+      evidence_codes: ["STABLE_HASH_MATCH"],
+    },
+    hashes: {
+      stable: "hash-abc123",
+      fuzzy: "fuzzy-def456",
+    },
+    device: {
+      workerScope: {
+        userAgent: "Test Browser",
+      },
+    },
+    sigint: {
+      tlsFingerprint: {
+        ip: "192.168.1.1",
+      },
+    },
+  });
+
+  // Helper to create gzipped base64 payload
+  const createGzippedPayload = (payload: object): string => {
+    const json = JSON.stringify(payload);
+    const gzipped = gzipSync(Buffer.from(json));
+    return gzipped.toString("base64");
+  };
+
   describe("successful retrieval", () => {
     it("should retrieve a session successfully", async () => {
       const sessionId = "test-session-123";
       const ttl = Math.floor(Date.now() / 1000) + 3600; // 1 hour from now
+      const v3Payload = createMockV3Payload(sessionId);
 
-      dynamoMock.on(GetItemCommand).resolves({
-        Item: marshall({
-          cache_key: `session:${sessionId}`,
-          value: mockSessionCacheValue,
-          confidence: mockSessionCacheValue.confidence,
-          ttl,
-        }),
+      // Mock both DynamoDB calls: session cache and session payload
+      dynamoMock.on(GetItemCommand).callsFake((input) => {
+        const tableName = input.TableName;
+        if (tableName === "test-session-cache") {
+          return {
+            Item: marshall({
+              cache_key: `session:${sessionId}`,
+              value: mockSessionCacheValue,
+              confidence: mockSessionCacheValue.confidence,
+              ttl,
+            }),
+          };
+        } else if (tableName === "test-session-payload") {
+          return {
+            Item: marshall({
+              session_id: sessionId,
+              payload_gzip_b64: createGzippedPayload(v3Payload),
+              ttl,
+            }),
+          };
+        }
+        return {};
       });
 
       const event = createApiEvent(sessionId, "GET", "https://example.com");
@@ -121,7 +177,7 @@ describe("session-get handler", () => {
       );
 
       const body = JSON.parse(result.body ?? "");
-      // AR-185: Check v2 format response structure
+      // V3 format response structure
       // Identifiers section
       expect(body.identifiers.session_id).toBe(sessionId);
       expect(body.identifiers.device_id).toBe("device-abc123");
@@ -132,8 +188,11 @@ describe("session-get handler", () => {
       expect(body.analysis.risk_score).toBe(0.2);
       expect(body.analysis.flags).toEqual(["returning_user"]);
       expect(body.analysis.evidence_codes).toEqual(["STABLE_HASH_MATCH"]);
-      // Check X-Argus-Schema-Version header
-      expect(result.headers?.["X-Argus-Schema-Version"]).toBe("2.0.0");
+      // Hashes section (V3)
+      expect(body.hashes.stable).toBe("hash-abc123");
+      expect(body.hashes.fuzzy).toBe("fuzzy-def456");
+      // Device section
+      expect(body.device).toBeDefined();
       // Should NOT include internal fields
       expect(body.analysis.idempotency_key).toBeUndefined();
       expect(body.analysis.match_version).toBeUndefined();
