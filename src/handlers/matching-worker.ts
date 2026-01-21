@@ -13,7 +13,6 @@ import {
 import { Logger } from "@aws-lambda-powertools/logger";
 import { Metrics, MetricUnit } from "@aws-lambda-powertools/metrics";
 import { DynamoDBClient, PutItemCommand } from "@aws-sdk/client-dynamodb";
-import { marshall } from "@aws-sdk/util-dynamodb";
 import { SQSClient } from "@aws-sdk/client-sqs";
 import { FirehoseClient, PutRecordCommand } from "@aws-sdk/client-firehose";
 import {
@@ -188,24 +187,32 @@ async function processRecord(
     session_id = rawPayload.identifiers.session_id;
 
     // Build flat fingerprint from v2 device section
+    // V2 has nested structure: device.hashes, device.browser, device.screen, device.hardware
     const device = rawPayload.device || {};
     const hashes = (device.hashes as Record<string, unknown>) || {};
+    const browser = (device.browser as Record<string, unknown>) || {};
+    const screen = (device.screen as Record<string, unknown>) || {};
+    const hardware = (device.hardware as Record<string, unknown>) || {};
+
     fingerprint = {
       stable_hash: hashes.stable as string,
       fuzzy_hash: hashes.fuzzy as string,
       canvas_hash: hashes.canvas as string,
       webgl_hash: hashes.webgl as string,
       audio_hash: hashes.audio as string,
-      user_agent: device.user_agent as string,
-      gpu_renderer: device.gpu_renderer as string,
+      // Browser info is nested under device.browser
+      user_agent: browser.user_agent as string,
+      // Hardware info is nested under device.hardware
+      gpu_renderer: hardware.gpu as string,
+      hardware_concurrency: hardware.concurrency as number,
+      device_memory: hardware.memory as number,
+      // Screen info is nested under device.screen
       screen_dims:
-        device.screen_width && device.screen_height
-          ? `${device.screen_width}x${device.screen_height}`
+        screen.width && screen.height
+          ? `${screen.width}x${screen.height}`
           : undefined,
-      timezone: device.timezone_name as string,
-      hardware_concurrency: device.hardware_concurrency as number,
-      device_memory: device.device_memory as number,
-      is_headless: device.webdriver as boolean,
+      // Timezone is directly on device
+      timezone: device.timezone as string,
       // Extract identifiers
       evercookie_id: rawPayload.identifiers.evercookie_id as string,
       public_key: rawPayload.identifiers.public_key as string,
@@ -450,7 +457,7 @@ async function emitObservation(params: {
 async function writeSessionPayload(
   sessionId: string,
   payload: FingerprintPayload,
-  matchResult: MatchResult,
+  _matchResult: MatchResult,
 ): Promise<void> {
   const ttl = Math.floor(Date.now() / 1000) + SESSION_PAYLOAD_TTL_SECONDS;
 
