@@ -24,6 +24,7 @@ import { jsonErrorHandler } from "../helpers/error-middleware";
 import { createGunzip } from "zlib";
 import { pipeline } from "stream/promises";
 import { Readable } from "stream";
+import { isV1Payload, isV2Payload } from "../helpers/normalize-payload-v2";
 
 // ==================== CONFIGURATION ====================
 
@@ -56,9 +57,10 @@ const MAX_DECOMPRESSED_BYTES = parseInt(
 ); // 2MB default (was 512KB)
 
 // AR-164: CORS configuration for this handler
+// AR-188: Added X-Argus-Schema-Version for v2 payload versioning
 const CORS_CONFIG = {
   methods: "POST, OPTIONS",
-  headers: "Content-Type, Content-Encoding",
+  headers: "Content-Type, Content-Encoding, X-Argus-Schema-Version",
 };
 
 // ==================== AR-139: PAYLOAD ARCHIVING ====================
@@ -261,7 +263,7 @@ const baseHandler = async (
   }
 
   // Parse JSON (body already decompressed by middleware if binary)
-  let payload: { session_id?: string; fingerprint?: unknown; sigint?: unknown };
+  let payload: Record<string, unknown>;
   try {
     payload = JSON.parse(event.body ?? "{}");
   } catch {
@@ -269,23 +271,56 @@ const baseHandler = async (
     throw createError(400, "Invalid JSON payload");
   }
 
+  // AR-184: Detect schema version and extract session_id accordingly
+  let sessionId: string | undefined;
+  let schemaVersion: "v1" | "v2" | "unknown";
+
+  if (isV2Payload(payload)) {
+    // V2 format: identifiers.session_id
+    schemaVersion = "v2";
+    const identifiers = payload.identifiers as
+      | { session_id?: string }
+      | undefined;
+    sessionId = identifiers?.session_id;
+    metrics.addMetric("SchemaVersionV2", MetricUnit.Count, 1);
+  } else if (isV1Payload(payload)) {
+    // V1 format: session_id at root
+    schemaVersion = "v1";
+    sessionId = payload.session_id as string | undefined;
+    metrics.addMetric("SchemaVersionV1", MetricUnit.Count, 1);
+  } else {
+    // Unknown format - try session_id at root for backwards compatibility
+    schemaVersion = "unknown";
+    sessionId = payload.session_id as string | undefined;
+    metrics.addMetric("SchemaVersionUnknown", MetricUnit.Count, 1);
+  }
+
   // Validate required fields
-  if (!payload.session_id || typeof payload.session_id !== "string") {
+  if (!sessionId || typeof sessionId !== "string") {
     metrics.addMetric("MissingSessionId", MetricUnit.Count, 1);
     throw createError(400, "Missing required field: session_id");
   }
 
-  // Build SQS message payload
+  // Build SQS message payload - pass through the entire payload with metadata
+  // The matching worker will handle normalization
   const sqsPayload = {
-    session_id: payload.session_id,
-    fingerprint: payload.fingerprint,
-    sigint: payload.sigint,
-    headers: {
+    // For v2, pass the full payload as-is
+    // For v1, maintain backwards compatibility
+    ...(schemaVersion === "v2"
+      ? payload
+      : {
+          session_id: sessionId,
+          fingerprint: payload.fingerprint,
+          sigint: payload.sigint,
+        }),
+    // Always include headers and metadata
+    _headers: {
       "User-Agent": event.headers["user-agent"],
       "Accept-Language": event.headers["accept-language"],
       "X-Forwarded-For": event.headers["x-forwarded-for"],
     },
-    timestamp: Date.now(),
+    _timestamp: Date.now(),
+    _schema_version: schemaVersion,
   };
 
   // Send to SQS
@@ -307,7 +342,7 @@ const baseHandler = async (
 
   // AR-139: Archive raw payload (async fire-and-forget, does not block response)
   // Archive the original parsed payload for debugging/ML training
-  archivePayload(payload.session_id, payload).catch(() => {
+  archivePayload(sessionId, payload).catch(() => {
     // Error already logged in archivePayload
   });
 

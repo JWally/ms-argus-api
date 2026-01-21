@@ -26,6 +26,8 @@ interface HttpApiConstructProps {
   stage: string;
   matchingQueue: sqs.IQueue;
   sessionCacheTable: dynamodb.ITable;
+  /** AR-XXX: Full payload table for gRPC stub */
+  sessionPayloadTable: dynamodb.ITable;
   alarmsTopic: sns.ITopic;
   /** AR-139: S3 bucket for payload archiving */
   payloadArchiveBucket: s3.IBucket;
@@ -61,6 +63,7 @@ export class HttpApiConstruct extends Construct {
       stage,
       matchingQueue,
       sessionCacheTable,
+      sessionPayloadTable,
       alarmsTopic,
       payloadArchiveBucket,
       config,
@@ -127,12 +130,15 @@ export class HttpApiConstruct extends Construct {
         environment: {
           ...createPowertoolsEnv("argus-session-get", `argus-${stage}`),
           SESSION_CACHE_TABLE: sessionCacheTable.tableName,
+          // AR-XXX: Full payload table for gRPC stub
+          SESSION_PAYLOAD_TABLE: sessionPayloadTable.tableName,
         },
       },
     );
 
     // Grant DynamoDB read permissions
     sessionCacheTable.grantReadData(this.sessionGetFunction);
+    sessionPayloadTable.grantReadData(this.sessionGetFunction);
 
     // HTTP API Gateway
     this.api = new apigatewayv2.HttpApi(this, "HttpApi", {
@@ -146,7 +152,12 @@ export class HttpApiConstruct extends Construct {
           apigatewayv2.CorsHttpMethod.OPTIONS,
         ],
         // AR-91: Added Content-Encoding for binary gzip payloads
-        allowHeaders: ["Content-Type", "Content-Encoding"],
+        // AR-188: Added X-Argus-Schema-Version for v2 payload versioning
+        allowHeaders: [
+          "Content-Type",
+          "Content-Encoding",
+          "X-Argus-Schema-Version",
+        ],
         maxAge: Duration.hours(24),
       },
     });

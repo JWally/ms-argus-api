@@ -12,7 +12,8 @@ import {
 } from "aws-lambda";
 import { Logger } from "@aws-lambda-powertools/logger";
 import { Metrics, MetricUnit } from "@aws-lambda-powertools/metrics";
-import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
+import { DynamoDBClient, PutItemCommand } from "@aws-sdk/client-dynamodb";
+import { marshall } from "@aws-sdk/util-dynamodb";
 import { SQSClient } from "@aws-sdk/client-sqs";
 import { FirehoseClient, PutRecordCommand } from "@aws-sdk/client-firehose";
 import {
@@ -28,12 +29,33 @@ import { DynamoCacheService } from "../services/cache";
 import { getMatchingWorkerEnv, MatchingWorkerEnvConfig } from "../config/env";
 import {
   SESSION_TTL_SECONDS,
+  SESSION_PAYLOAD_TTL_SECONDS,
   TIER2_TIMEOUT_MS,
   MUTATION_GATE_TTL_SECONDS,
 } from "../helpers/constants";
 import { normalizeFingerprint } from "../helpers/normalize-fingerprint";
 import { detectAllAnomalies } from "../services/profile/anomaly";
-import type { SessionAnomalySignal } from "../types";
+import type { SessionAnomalySignal, Fingerprint } from "../types";
+import { gzipSync } from "zlib";
+
+// AR-186: Payload from ingestion handler with schema version metadata
+interface SqsPayload {
+  // V1 format fields
+  session_id?: string;
+  fingerprint?: Record<string, unknown>;
+  sigint?: Record<string, unknown>;
+  // V2 format fields
+  identifiers?: { session_id?: string; [key: string]: unknown };
+  device?: { hashes?: Record<string, unknown>; [key: string]: unknown };
+  network?: Record<string, unknown>;
+  // Metadata from ingestion handler
+  _headers?: Record<string, string>;
+  _timestamp?: number;
+  _schema_version?: "v1" | "v2" | "unknown";
+  // Legacy fields (backwards compatibility)
+  headers?: Record<string, string>;
+  timestamp?: number;
+}
 
 // Validate environment variables at module load (cold start)
 // Throws immediately if required env vars are missing
@@ -136,9 +158,9 @@ async function processRecord(
   const startTime = Date.now();
 
   // AR-156: Handle malformed JSON payloads - don't retry poison messages
-  let payload: FingerprintPayload;
+  let rawPayload: SqsPayload;
   try {
-    payload = JSON.parse(record.body);
+    rawPayload = JSON.parse(record.body);
   } catch (parseError) {
     logger.error("Malformed JSON payload - skipping message", {
       error: parseError,
@@ -149,12 +171,87 @@ async function processRecord(
     return; // Don't retry - mark as processed
   }
 
-  const { session_id } = payload;
+  // AR-186: Extract session_id and fingerprint based on schema version
+  let session_id: string;
+  let fingerprint: Fingerprint;
+  let payload: FingerprintPayload;
 
-  // AR-73: Normalize fingerprint from web library nested format to flat API format
-  // This extracts fields like canvas_hash, gpu_renderer, screen_dims from nested objects
-  // AR-81: Also extracts sigint data (third-party cookie, JA3/JA4, TCP probe)
-  const fingerprint = normalizeFingerprint(payload.fingerprint, payload.sigint);
+  const schemaVersion = rawPayload._schema_version || "unknown";
+  metrics.addMetric(
+    schemaVersion === "v2" ? "MatchingV2Payload" : "MatchingV1Payload",
+    MetricUnit.Count,
+    1,
+  );
+
+  if (schemaVersion === "v2" && rawPayload.identifiers?.session_id) {
+    // V2 format: extract from identifiers and device sections
+    session_id = rawPayload.identifiers.session_id;
+
+    // Build flat fingerprint from v2 device section
+    const device = rawPayload.device || {};
+    const hashes = (device.hashes as Record<string, unknown>) || {};
+    fingerprint = {
+      stable_hash: hashes.stable as string,
+      fuzzy_hash: hashes.fuzzy as string,
+      canvas_hash: hashes.canvas as string,
+      webgl_hash: hashes.webgl as string,
+      audio_hash: hashes.audio as string,
+      user_agent: device.user_agent as string,
+      gpu_renderer: device.gpu_renderer as string,
+      screen_dims:
+        device.screen_width && device.screen_height
+          ? `${device.screen_width}x${device.screen_height}`
+          : undefined,
+      timezone: device.timezone_name as string,
+      hardware_concurrency: device.hardware_concurrency as number,
+      device_memory: device.device_memory as number,
+      is_headless: device.webdriver as boolean,
+      // Extract identifiers
+      evercookie_id: rawPayload.identifiers.evercookie_id as string,
+      public_key: rawPayload.identifiers.public_key as string,
+    };
+
+    // Extract network data if present
+    const network = rawPayload.network || {};
+    if (network.ip) fingerprint.ip_address = network.ip as string;
+    if (network.ja3) fingerprint.ja3 = network.ja3 as string;
+    if (network.ja4) fingerprint.ja4 = network.ja4 as string;
+
+    // Build legacy payload format for downstream compatibility
+    payload = {
+      session_id,
+      fingerprint,
+      sigint: rawPayload.network as FingerprintPayload["sigint"],
+      headers: rawPayload._headers || {},
+      timestamp: rawPayload._timestamp || Date.now(),
+    };
+  } else {
+    // V1 format: use legacy structure
+    session_id = rawPayload.session_id!;
+    if (!session_id) {
+      logger.error("Missing session_id in payload", {
+        messageId: record.messageId,
+      });
+      metrics.addMetric("MissingSessionId", MetricUnit.Count, 1);
+      return;
+    }
+
+    // AR-73: Normalize fingerprint from web library nested format to flat API format
+    // This extracts fields like canvas_hash, gpu_renderer, screen_dims from nested objects
+    // AR-81: Also extracts sigint data (third-party cookie, JA3/JA4, TCP probe)
+    fingerprint = normalizeFingerprint(
+      rawPayload.fingerprint,
+      rawPayload.sigint as FingerprintPayload["sigint"],
+    );
+
+    payload = {
+      session_id,
+      fingerprint,
+      sigint: rawPayload.sigint as FingerprintPayload["sigint"],
+      headers: rawPayload._headers || rawPayload.headers || {},
+      timestamp: rawPayload._timestamp || rawPayload.timestamp || Date.now(),
+    };
+  }
 
   logger.info("Processing fingerprint", { session_id });
 
@@ -203,9 +300,12 @@ async function processRecord(
   // AR-148: Run anomaly detection on fingerprint
   // Note: Network anomaly detection (timezone mismatch) requires geo.timezone from IP geolocation
   // which isn't currently in the sigint payload. Pass undefined for now (graceful degradation).
+  // AR-186: Use raw fingerprint from original payload for cross-field checks
+  const rawFingerprint =
+    schemaVersion === "v2" ? rawPayload.device : rawPayload.fingerprint;
   const anomalyResult = detectAllAnomalies(
     fingerprint,
-    payload.fingerprint, // Raw payload for cross-field checks
+    rawFingerprint, // Raw payload for cross-field checks
     undefined, // sigint - no geo.timezone available yet
   );
 
@@ -232,6 +332,10 @@ async function processRecord(
       confidence: matchResult.confidence,
     });
   }
+
+  // AR-XXX: Write full payload to session payload table (gRPC stub)
+  // This enables the session-get endpoint to return the complete fingerprint data
+  await writeSessionPayload(session_id, payload, matchResult);
 
   // Queue profile update (pass is_new_device for flag computation)
   // AR-149: Pass matchResult for tier-gated identity association
@@ -330,5 +434,49 @@ async function emitObservation(params: {
       sessionId: params.sessionId,
     });
     metrics.addMetric("ObservationEmitError", MetricUnit.Count, 1);
+  }
+}
+
+/**
+ * AR-XXX: Write full fingerprint payload to session payload table
+ * Enables session-get endpoint to return complete data for gRPC stub
+ * Uses 30 minute TTL for automatic cleanup
+ *
+ * Stores payload as gzipped base64 string to:
+ * - Avoid expensive marshall/unmarshall of deeply nested objects
+ * - Reduce DynamoDB storage size
+ * - Handle extreme numbers (e.g., math fingerprint values) without sanitization
+ */
+async function writeSessionPayload(
+  sessionId: string,
+  payload: FingerprintPayload,
+  matchResult: MatchResult,
+): Promise<void> {
+  const ttl = Math.floor(Date.now() / 1000) + SESSION_PAYLOAD_TTL_SECONDS;
+
+  try {
+    // Gzip and base64 encode the payload - skip expensive DynamoDB marshalling
+    const payloadJson = JSON.stringify(payload);
+    const gzipped = gzipSync(Buffer.from(payloadJson));
+    const payloadGzipB64 = gzipped.toString("base64");
+
+    await dynamodb.send(
+      new PutItemCommand({
+        TableName: envConfig.SESSION_PAYLOAD_TABLE,
+        Item: {
+          session_id: { S: sessionId },
+          payload_gzip_b64: { S: payloadGzipB64 }, // Gzipped payload as base64 string
+          ttl: { N: String(ttl) },
+          created_at: { S: new Date().toISOString() },
+        },
+      }),
+    );
+  } catch (error) {
+    // Log but don't throw - payload storage should not block matching
+    logger.warn("Failed to write session payload", {
+      error,
+      sessionId,
+    });
+    metrics.addMetric("SessionPayloadWriteError", MetricUnit.Count, 1);
   }
 }
