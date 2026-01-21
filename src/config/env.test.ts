@@ -19,6 +19,7 @@ describe("Environment validation", () => {
   describe("getMatchingWorkerEnv", () => {
     const requiredVars = {
       SESSION_CACHE_TABLE: "session-cache-table",
+      SESSION_PAYLOAD_TABLE: "session-payload-table", // AR-XXX: Full payload storage
       PROFILES_TABLE: "profiles-table",
       TIER1_INDEX_TABLE: "tier1-index-table",
       TIER2_BUCKETS_TABLE: "tier2-buckets-table",
@@ -56,13 +57,14 @@ describe("Environment validation", () => {
     it("should throw error listing all missing required vars", () => {
       // Clear all required vars
       delete process.env.SESSION_CACHE_TABLE;
+      delete process.env.SESSION_PAYLOAD_TABLE;
       delete process.env.PROFILES_TABLE;
       delete process.env.TIER1_INDEX_TABLE;
       delete process.env.TIER2_BUCKETS_TABLE;
       delete process.env.PROFILE_QUEUE_URL;
 
       expect(() => getMatchingWorkerEnv()).toThrow(
-        "Missing required environment variables: SESSION_CACHE_TABLE, PROFILES_TABLE, TIER1_INDEX_TABLE, TIER2_BUCKETS_TABLE, PROFILE_QUEUE_URL",
+        "Missing required environment variables: SESSION_CACHE_TABLE, SESSION_PAYLOAD_TABLE, PROFILES_TABLE, TIER1_INDEX_TABLE, TIER2_BUCKETS_TABLE, PROFILE_QUEUE_URL",
       );
     });
 

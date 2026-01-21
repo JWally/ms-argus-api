@@ -40,6 +40,7 @@ vi.hoisted(() => {
   process.env.POWERTOOLS_SERVICE_NAME = "argus-matching-worker-test";
   process.env.POWERTOOLS_METRICS_NAMESPACE = "argus-test";
   process.env.SESSION_CACHE_TABLE = "test-session-cache";
+  process.env.SESSION_PAYLOAD_TABLE = "test-session-payload"; // AR-XXX: Full payload storage
   process.env.TIER1_INDEX_TABLE = "test-tier1-index";
   process.env.TIER2_BUCKETS_TABLE = "test-tier2-buckets";
   process.env.PROFILES_TABLE = "test-profiles";

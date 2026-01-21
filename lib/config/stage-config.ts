@@ -43,6 +43,11 @@ export interface StageConfig {
     cardinalityRecalc: {
       memorySize: number; // Scheduled - batch processing (scan/query heavy)
     };
+    vectorWorker: {
+      memorySize: number; // VPC Lambda - QDrant vector operations
+      timeout: Duration;
+      reservedConcurrency: number;
+    };
     provisionedConcurrency: number;
   };
 
@@ -131,6 +136,11 @@ const devConfig: StageConfig = {
     cardinalityRecalc: {
       memorySize: 256, // Scan-heavy but not CPU-intensive
     },
+    vectorWorker: {
+      memorySize: 512, // Network I/O to QDrant
+      timeout: Duration.seconds(30),
+      reservedConcurrency: 10, // Low concurrency in dev
+    },
     provisionedConcurrency: 0, // No warm instances in dev
   },
 
@@ -211,6 +221,11 @@ const prodConfig: StageConfig = {
     },
     cardinalityRecalc: {
       memorySize: 512, // Higher in prod for faster batch processing
+    },
+    vectorWorker: {
+      memorySize: 512, // Network I/O to QDrant
+      timeout: Duration.seconds(30),
+      reservedConcurrency: 100, // Higher concurrency in prod
     },
     provisionedConcurrency: 2, // Keep 2 warm in prod
   },

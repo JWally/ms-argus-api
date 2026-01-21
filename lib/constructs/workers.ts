@@ -32,6 +32,7 @@ interface WorkersConstructProps {
   tier1IndexTable: dynamodb.ITable;
   tier2BucketsTable: dynamodb.ITable;
   sessionCacheTable: dynamodb.ITable; // AR-52: Replaces Redis
+  sessionPayloadTable: dynamodb.ITable; // AR-XXX: Full payload for gRPC stub
   observationsDeliveryStreamName: string; // AR-57: Firehose for observations
 }
 
@@ -69,6 +70,7 @@ export class WorkersConstruct extends Construct {
       tier1IndexTable,
       tier2BucketsTable,
       sessionCacheTable,
+      sessionPayloadTable,
       observationsDeliveryStreamName,
     } = props;
 
@@ -114,6 +116,8 @@ export class WorkersConstruct extends Construct {
         SECRET_KEY_ARN: secret.secretArn,
         // AR-52: DynamoDB session cache replaces Redis
         SESSION_CACHE_TABLE: sessionCacheTable.tableName,
+        // AR-XXX: Full payload table for gRPC stub
+        SESSION_PAYLOAD_TABLE: sessionPayloadTable.tableName,
         PROFILES_TABLE: profilesTable.tableName,
         TIER1_INDEX_TABLE: tier1IndexTable.tableName,
         TIER2_BUCKETS_TABLE: tier2BucketsTable.tableName,
@@ -142,6 +146,7 @@ export class WorkersConstruct extends Construct {
     tier1IndexTable.grantReadData(this.matchingWorker);
     tier2BucketsTable.grantReadData(this.matchingWorker);
     sessionCacheTable.grantReadWriteData(this.matchingWorker); // AR-52
+    sessionPayloadTable.grantWriteData(this.matchingWorker); // AR-XXX: Full payload storage
     profileQueue.grantSendMessages(this.matchingWorker);
     matchingQueue.grantConsumeMessages(this.matchingWorker);
 

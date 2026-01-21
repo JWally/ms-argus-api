@@ -26,6 +26,7 @@ export class DynamoDbConstruct extends Construct {
   public readonly tier1IndexTable: dynamodb.Table;
   public readonly tier2BucketsTable: dynamodb.Table;
   public readonly sessionCacheTable: dynamodb.Table; // AR-52: Session cache (replaces Redis)
+  public readonly sessionPayloadTable: dynamodb.Table; // AR-XXX: Full payload for gRPC stub
 
   constructor(scope: Construct, id: string, props: DynamoDbConstructProps) {
     super(scope, id);
@@ -116,6 +117,22 @@ export class DynamoDbConstruct extends Construct {
       removalPolicy: RemovalPolicy.DESTROY, // Cache data is ephemeral
     });
 
+    // AR-XXX: Session payload table - stores full fingerprint payload for retrieval
+    // PK: session_id
+    // Short TTL (30 min) - stub for future gRPC endpoint
+    // Stores the complete payload for debugging and future real-time integrations
+    this.sessionPayloadTable = new dynamodb.Table(this, "SessionPayloadTable", {
+      tableName: `${stackName}-session-payload`,
+      partitionKey: { name: "session_id", type: dynamodb.AttributeType.STRING },
+      billingMode,
+      ...(dbConfig.useProvisionedCapacity && {
+        readCapacity: dbConfig.baseReadCapacity,
+        writeCapacity: dbConfig.baseWriteCapacity,
+      }),
+      timeToLiveAttribute: "ttl",
+      removalPolicy: RemovalPolicy.DESTROY, // Ephemeral data with short TTL
+    });
+
     // AR-133: Configure auto-scaling for provisioned capacity tables
     if (dbConfig.useProvisionedCapacity) {
       const maxCapacity = Math.ceil(
@@ -156,6 +173,14 @@ export class DynamoDbConstruct extends Construct {
         maxCapacity,
         targetUtilization,
       );
+      this.enableAutoScaling(
+        this.sessionPayloadTable,
+        "SessionPayload",
+        dbConfig.baseReadCapacity,
+        dbConfig.baseWriteCapacity,
+        maxCapacity,
+        targetUtilization,
+      );
     }
 
     // Alarms
@@ -163,6 +188,11 @@ export class DynamoDbConstruct extends Construct {
     this.createTableAlarms(this.tier1IndexTable, "Tier1Index", alarmsTopic);
     this.createTableAlarms(this.tier2BucketsTable, "Tier2Buckets", alarmsTopic);
     this.createTableAlarms(this.sessionCacheTable, "SessionCache", alarmsTopic);
+    this.createTableAlarms(
+      this.sessionPayloadTable,
+      "SessionPayload",
+      alarmsTopic,
+    );
   }
 
   /**

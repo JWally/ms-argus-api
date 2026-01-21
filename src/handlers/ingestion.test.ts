@@ -570,6 +570,116 @@ describe("ingestion handler", () => {
     });
   });
 
+  // AR-184: Schema version detection and metrics
+  describe("schema version detection (AR-184)", () => {
+    it("should accept v1 format payload (session_id at root, fingerprint object)", async () => {
+      const v1Payload = {
+        session_id: "v1-test-session",
+        fingerprint: {
+          stable_hash: "abc123",
+          fuzzy_hash: "def456",
+          canvas_hash: "canvas_hash",
+        },
+        sigint: {
+          tlsFingerprint: { ja4: "test_ja4" },
+        },
+      };
+      const event = createApiEvent(JSON.stringify(v1Payload));
+      const result = asResult(await handler(event, mockContext));
+
+      expect(result.statusCode).toBe(204);
+
+      // Verify SQS payload
+      const sqsCalls = sqsMock.commandCalls(SendMessageCommand);
+      expect(sqsCalls.length).toBe(1);
+      const sentBody = JSON.parse(sqsCalls[0].args[0].input.MessageBody!);
+      expect(sentBody.session_id).toBe("v1-test-session");
+    });
+
+    it("should accept v2 format payload (identifiers, device sections)", async () => {
+      const v2Payload = {
+        identifiers: {
+          session_id: "v2-test-session",
+          evercookie_id: "ec_123",
+        },
+        device: {
+          hashes: {
+            stable: "abc123",
+            fuzzy: "def456",
+          },
+          user_agent: "Mozilla/5.0",
+          platform: "Win32",
+          language: "en-US",
+          languages: ["en-US"],
+          screen_width: 1920,
+          screen_height: 1080,
+          color_depth: 24,
+          pixel_ratio: 1,
+          timezone_offset: -300,
+          timezone_name: "America/Chicago",
+          webdriver: false,
+          headless_signals: [],
+        },
+      };
+      const event = createApiEvent(JSON.stringify(v2Payload));
+      const result = asResult(await handler(event, mockContext));
+
+      expect(result.statusCode).toBe(204);
+
+      // Verify SQS payload preserves structure
+      const sqsCalls = sqsMock.commandCalls(SendMessageCommand);
+      expect(sqsCalls.length).toBe(1);
+      const sentBody = JSON.parse(sqsCalls[0].args[0].input.MessageBody!);
+      expect(sentBody.identifiers.session_id).toBe("v2-test-session");
+      expect(sentBody.device.hashes.stable).toBe("abc123");
+    });
+
+    it("should extract session_id from v2 identifiers.session_id", async () => {
+      const v2Payload = {
+        identifiers: {
+          session_id: "v2-extracted-session",
+        },
+        device: {
+          hashes: { stable: "a", fuzzy: "b" },
+          user_agent: "test",
+          platform: "test",
+          language: "en",
+          languages: ["en"],
+          screen_width: 1920,
+          screen_height: 1080,
+          color_depth: 24,
+          pixel_ratio: 1,
+          timezone_offset: 0,
+          timezone_name: "UTC",
+          webdriver: false,
+          headless_signals: [],
+        },
+      };
+      const event = createApiEvent(JSON.stringify(v2Payload));
+      const result = asResult(await handler(event, mockContext));
+
+      expect(result.statusCode).toBe(204);
+    });
+
+    it("should return 400 for v2 payload missing identifiers.session_id", async () => {
+      const invalidV2 = {
+        identifiers: {
+          // missing session_id
+          evercookie_id: "ec_123",
+        },
+        device: {
+          hashes: { stable: "a", fuzzy: "b" },
+        },
+      };
+      const event = createApiEvent(JSON.stringify(invalidV2));
+      const result = asResult(await handler(event, mockContext));
+
+      expect(result.statusCode).toBe(400);
+      const body = JSON.parse(result.body ?? "");
+      expect(body.error).toContain("session_id");
+    });
+  });
+
   // AR-139: Payload archiving tests
   describe("payload archiving (AR-139)", () => {
     it("should archive payload with correct Hive-partitioned S3 key format", async () => {

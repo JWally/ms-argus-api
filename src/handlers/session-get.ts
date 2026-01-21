@@ -7,7 +7,8 @@ import { Logger } from "@aws-lambda-powertools/logger";
 import { Metrics, MetricUnit } from "@aws-lambda-powertools/metrics";
 import { logMetrics } from "@aws-lambda-powertools/metrics/middleware";
 import { injectLambdaContext } from "@aws-lambda-powertools/logger/middleware";
-import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
+import { DynamoDBClient, GetItemCommand } from "@aws-sdk/client-dynamodb";
+import { gunzipSync } from "zlib";
 import middy from "@middy/core";
 import { DynamoCacheService } from "../services/cache/dynamo-cache";
 import { HttpError } from "../helpers/http-error";
@@ -19,15 +20,17 @@ import { jsonErrorHandler } from "../helpers/error-middleware";
 
 interface SessionGetEnvConfig {
   SESSION_CACHE_TABLE: string;
+  SESSION_PAYLOAD_TABLE: string; // AR-XXX: Full payload for gRPC stub
   POWERTOOLS_SERVICE_NAME: string;
   POWERTOOLS_METRICS_NAMESPACE: string;
 }
 
 function getEnvConfig(): SessionGetEnvConfig {
-  validateRequiredEnvVars(["SESSION_CACHE_TABLE"]);
+  validateRequiredEnvVars(["SESSION_CACHE_TABLE", "SESSION_PAYLOAD_TABLE"]);
 
   return {
     SESSION_CACHE_TABLE: process.env.SESSION_CACHE_TABLE!,
+    SESSION_PAYLOAD_TABLE: process.env.SESSION_PAYLOAD_TABLE!,
     POWERTOOLS_SERVICE_NAME:
       process.env.POWERTOOLS_SERVICE_NAME ?? "argus-session-get",
     POWERTOOLS_METRICS_NAMESPACE:
@@ -103,6 +106,37 @@ const baseHandler = async (
     throw new HttpError(404, "Session not found");
   }
 
+  // AR-XXX: Fetch full payload from session payload table (gRPC stub)
+  // Payload is stored as gzipped base64 to avoid expensive marshall/unmarshall
+  let fullPayload: Record<string, unknown> | undefined;
+  try {
+    const payloadResult = await dynamodb.send(
+      new GetItemCommand({
+        TableName: envConfig.SESSION_PAYLOAD_TABLE,
+        Key: {
+          session_id: { S: sessionId },
+        },
+      }),
+    );
+    if (payloadResult.Item?.payload_gzip_b64?.S) {
+      // Decompress gzipped payload
+      const gzipBuffer = Buffer.from(
+        payloadResult.Item.payload_gzip_b64.S,
+        "base64",
+      );
+      const jsonString = gunzipSync(gzipBuffer).toString("utf-8");
+      fullPayload = JSON.parse(jsonString);
+      metrics.addMetric("SessionPayloadFound", MetricUnit.Count, 1);
+    }
+  } catch (error) {
+    // Log but don't fail - payload is optional enhancement
+    logger.warn("Failed to fetch session payload", {
+      error,
+      session_id: sessionId,
+    });
+    metrics.addMetric("SessionPayloadFetchError", MetricUnit.Count, 1);
+  }
+
   // Success - return session data
   const duration = Date.now() - startTime;
   logger.info("Session retrieved", {
@@ -110,30 +144,74 @@ const baseHandler = async (
     status: session.status,
     device_id: session.device_id,
     duration_ms: duration,
+    has_payload: !!fullPayload,
   });
   metrics.addMetric("SessionRetrieved", MetricUnit.Count, 1);
   metrics.addMetric("SessionGetDuration", MetricUnit.Milliseconds, duration);
 
-  // Return relevant fields (exclude internal fields like idempotency_key)
-  // AR-148: Include anomalies if present (server-side anomaly detection results)
-  // AR-XXX: Include simhash_details if present (SimHash LSH match details)
-  // AR-XXX: Include fuzzy_match_info if present (fuzzy hash drift info)
+  // AR-185: Return v2 format response
+  // Build identifiers section
+  const identifiers: Record<string, unknown> = {
+    session_id: sessionId,
+  };
+  if (session.device_id) {
+    identifiers.device_id = session.device_id;
+  }
+  // Extract identifiers from payload if available
+  if (fullPayload?.fingerprint) {
+    const fp = fullPayload.fingerprint as Record<string, unknown>;
+    if (fp.evercookie_id) identifiers.evercookie_id = fp.evercookie_id;
+    if (fp.public_key) identifiers.public_key = fp.public_key;
+    if (fp.sigint_id) identifiers.sigint_id = fp.sigint_id;
+  }
+
+  // Build analysis section
+  const analysis: Record<string, unknown> = {
+    status: session.status,
+    confidence: session.confidence,
+    match_tier: session.match_tier,
+    risk_score: session.risk_score,
+    flags: session.flags || [],
+    evidence_codes: session.evidence_codes || [],
+  };
+  // Include optional analysis details
+  if (session.anomalies) analysis.anomalies = session.anomalies;
+  if (session.simhash_details)
+    analysis.simhash_details = session.simhash_details;
+  if (session.fuzzy_match_info)
+    analysis.fuzzy_match_info = session.fuzzy_match_info;
+
+  // Build v2 response
+  const v2Response: Record<string, unknown> = {
+    identifiers,
+    analysis,
+  };
+
+  // Include device and network from payload if available
+  if (fullPayload) {
+    // If payload is already v2 format
+    if (fullPayload.device) {
+      v2Response.device = fullPayload.device;
+    }
+    if (fullPayload.network) {
+      v2Response.network = fullPayload.network;
+    }
+    // If payload is v1 format, include raw fingerprint for now
+    if (fullPayload.fingerprint) {
+      v2Response.device = { raw: fullPayload.fingerprint };
+    }
+    if (fullPayload.sigint) {
+      v2Response.network = { raw: fullPayload.sigint };
+    }
+  }
+
   return {
     statusCode: 200,
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      session_id: sessionId,
-      status: session.status,
-      device_id: session.device_id,
-      confidence: session.confidence,
-      match_tier: session.match_tier,
-      risk_score: session.risk_score,
-      flags: session.flags,
-      evidence_codes: session.evidence_codes,
-      anomalies: session.anomalies, // AR-148: Server-side anomaly detection results
-      simhash_details: session.simhash_details, // AR-XXX: SimHash LSH match details
-      fuzzy_match_info: session.fuzzy_match_info, // AR-XXX: Fuzzy hash drift info
-    }),
+    headers: {
+      "Content-Type": "application/json",
+      "X-Argus-Schema-Version": "2.0.0",
+    },
+    body: JSON.stringify(v2Response),
   };
 };
 

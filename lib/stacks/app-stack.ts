@@ -17,6 +17,7 @@ import { HttpApiConstruct } from "../constructs/http-api";
 import { WorkersConstruct } from "../constructs/workers";
 import { CloudFrontWafConstruct } from "../constructs/cloudfront";
 import { AnalyticsConstruct } from "../constructs/analytics";
+import { VectorWorkerConstruct } from "../constructs/vector-worker";
 import { getStageConfig } from "../config";
 
 interface ArgusApiStackProps extends cdk.StackProps {
@@ -26,6 +27,12 @@ interface ArgusApiStackProps extends cdk.StackProps {
   stage: string;
   region: string;
   account: string;
+  /**
+   * Optional: Name of the ms-argus-vector environment to connect to.
+   * If provided, deploys a vector worker Lambda in the vector VPC.
+   * Typically matches the stage (e.g., 'dev', 'prod').
+   */
+  vectorEnvironment?: string;
 }
 
 /**
@@ -55,7 +62,14 @@ interface ArgusApiStackProps extends cdk.StackProps {
 export class ArgusApiStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props: ArgusApiStackProps) {
     super(scope, id, props);
-    const { environment, stackName, rootDomain, stage, region } = props;
+    const {
+      environment,
+      stackName,
+      rootDomain,
+      stage,
+      region,
+      vectorEnvironment,
+    } = props;
 
     // =========================================================================
     // DNS & CERTIFICATES
@@ -130,6 +144,7 @@ export class ArgusApiStack extends cdk.Stack {
       stage,
       matchingQueue: queues.matchingQueue,
       sessionCacheTable: dynamodb.sessionCacheTable,
+      sessionPayloadTable: dynamodb.sessionPayloadTable, // AR-XXX: Full payload for gRPC stub
       alarmsTopic,
       payloadArchiveBucket: analytics.payloadArchiveBucket,
       config: stageConfig,
@@ -147,9 +162,26 @@ export class ArgusApiStack extends cdk.Stack {
       tier1IndexTable: dynamodb.tier1IndexTable,
       tier2BucketsTable: dynamodb.tier2BucketsTable,
       sessionCacheTable: dynamodb.sessionCacheTable,
+      sessionPayloadTable: dynamodb.sessionPayloadTable, // AR-XXX: Full payload for gRPC stub
       observationsDeliveryStreamName:
         analytics.deliveryStream.deliveryStreamName!, // AR-57
     });
+
+    // =========================================================================
+    // VECTOR WORKER (Optional - for QDrant integration)
+    // =========================================================================
+    // Only deploy if vectorEnvironment is specified
+    // Runs in ms-argus-vector VPC to access internal ALB
+
+    let vectorWorker: VectorWorkerConstruct | undefined;
+    if (vectorEnvironment) {
+      vectorWorker = new VectorWorkerConstruct(this, "VectorWorker", {
+        stackName,
+        stage,
+        alarmsTopic,
+        vectorEnvironment,
+      });
+    }
 
     // =========================================================================
     // AR-71: WARMUP RULE - Keep SQS polling pipeline warm
@@ -280,5 +312,24 @@ export class ArgusApiStack extends cdk.Stack {
       value: analytics.payloadArchiveBucket.bucketName,
       description: "S3 bucket for payload archives",
     });
+
+    // Vector worker outputs (conditional)
+    if (vectorWorker) {
+      new cdk.CfnOutput(this, "VectorWorkerArn", {
+        value: vectorWorker.vectorWorker.functionArn,
+        description: "Vector worker Lambda ARN",
+      });
+
+      new cdk.CfnOutput(this, "VectorQueueUrl", {
+        value: vectorWorker.vectorQueue.queueUrl,
+        description: "SQS URL for vector operations queue",
+      });
+
+      new cdk.CfnOutput(this, "VectorQueueArn", {
+        value: vectorWorker.vectorQueue.queueArn,
+        description: "SQS ARN for vector operations queue",
+        exportName: `${stackName}-vector-queue-arn`,
+      });
+    }
   }
 }

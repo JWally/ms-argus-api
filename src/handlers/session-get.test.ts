@@ -7,6 +7,7 @@ vi.hoisted(() => {
   process.env.POWERTOOLS_SERVICE_NAME = "argus-session-get-test";
   process.env.POWERTOOLS_METRICS_NAMESPACE = "argus-test";
   process.env.SESSION_CACHE_TABLE = "test-session-cache";
+  process.env.SESSION_PAYLOAD_TABLE = "test-session-payload"; // AR-XXX: Full payload storage
 });
 
 import { mockClient } from "aws-sdk-client-mock";
@@ -120,17 +121,22 @@ describe("session-get handler", () => {
       );
 
       const body = JSON.parse(result.body ?? "");
-      expect(body.session_id).toBe(sessionId);
-      expect(body.status).toBe("complete");
-      expect(body.device_id).toBe("device-abc123");
-      expect(body.confidence).toBe(0.95);
-      expect(body.match_tier).toBe(1);
-      expect(body.risk_score).toBe(0.2);
-      expect(body.flags).toEqual(["returning_user"]);
-      expect(body.evidence_codes).toEqual(["STABLE_HASH_MATCH"]);
+      // AR-185: Check v2 format response structure
+      // Identifiers section
+      expect(body.identifiers.session_id).toBe(sessionId);
+      expect(body.identifiers.device_id).toBe("device-abc123");
+      // Analysis section
+      expect(body.analysis.status).toBe("complete");
+      expect(body.analysis.confidence).toBe(0.95);
+      expect(body.analysis.match_tier).toBe(1);
+      expect(body.analysis.risk_score).toBe(0.2);
+      expect(body.analysis.flags).toEqual(["returning_user"]);
+      expect(body.analysis.evidence_codes).toEqual(["STABLE_HASH_MATCH"]);
+      // Check X-Argus-Schema-Version header
+      expect(result.headers?.["X-Argus-Schema-Version"]).toBe("2.0.0");
       // Should NOT include internal fields
-      expect(body.idempotency_key).toBeUndefined();
-      expect(body.match_version).toBeUndefined();
+      expect(body.analysis.idempotency_key).toBeUndefined();
+      expect(body.analysis.match_version).toBeUndefined();
     });
 
     it("should handle pending session status", async () => {
@@ -152,7 +158,8 @@ describe("session-get handler", () => {
 
       expect(result.statusCode).toBe(200);
       const body = JSON.parse(result.body ?? "");
-      expect(body.status).toBe("pending");
+      // AR-185: v2 format - status is in analysis section
+      expect(body.analysis.status).toBe("pending");
     });
   });
 
