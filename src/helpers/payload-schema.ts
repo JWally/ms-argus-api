@@ -41,15 +41,42 @@ export interface SigintTlsFingerprint {
   ja4?: string | null;
 }
 
+// TCP Probe response - web client sends full TcpProbeResponse with nested rtt_fingerprint
 export interface SigintTcpProbe {
+  // Flat structure (legacy/simplified)
   rttMs?: number;
   proxyScore?: number;
   vpnScore?: number;
+  // Nested structure (actual web client payload)
+  tcp_info?: Record<string, number> | null;
+  rtt_fingerprint?: {
+    tcp_rtt_us?: number;
+    tls_handshake_us?: number;
+    http_first_byte_us?: number;
+    total_connection_us?: number;
+    snd_mss?: number;
+    pmtu?: number;
+    tls_to_tcp_ratio?: number;
+    total_to_tcp_ratio?: number;
+    proxy_score?: number;
+    vpn_score?: number;
+    proxy_signals?: string[];
+  } | null;
+  http2_fingerprint?: Record<string, unknown> | null;
+  client_hints?: Record<string, string> | null;
+  user_agent?: string;
+  client_ip?: string;
+  domain?: string;
 }
 
 export interface SigintStun {
+  // API schema naming (legacy)
   localIps?: string[];
   publicIp?: string | null;
+  // Web client naming
+  localIp?: string | null;
+  reflexiveIp?: string | null;
+  // Common fields
   natDetected?: boolean;
   stunServer?: string;
 }
@@ -135,7 +162,7 @@ export const payloadJsonSchema = {
       additionalProperties: true,
       properties: {
         tlsFingerprint: {
-          type: "object",
+          type: ["object", "null"],
           additionalProperties: true,
           properties: {
             id: { type: ["string", "null"] },
@@ -145,7 +172,7 @@ export const payloadJsonSchema = {
           },
         },
         tcpProbe: {
-          type: "object",
+          type: ["object", "null"],
           additionalProperties: true,
           properties: {
             rttMs: { type: "number" },
@@ -154,18 +181,18 @@ export const payloadJsonSchema = {
           },
         },
         stun: {
-          type: "object",
+          type: ["object", "null"],
           additionalProperties: true,
         },
         faviconCache: {
-          type: "object",
+          type: ["object", "null"],
           additionalProperties: true,
           properties: {
             id: { type: ["string", "null"] },
           },
         },
         timing: {
-          type: "object",
+          type: ["object", "null"],
           additionalProperties: true,
         },
         errors: {

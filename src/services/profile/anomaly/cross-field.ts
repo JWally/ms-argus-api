@@ -29,19 +29,17 @@ interface WorkerScopeData extends EnvironmentScope {
 }
 
 /**
- * Raw fingerprint payload structure (nested web library format)
- * Actual structure from ms-argus-web:
- * - loose.navigator: main thread navigator
- * - loose.workerScope.scopes.web: dedicated worker
- * - loose.workerScope.scopes.shared: shared worker (null if unavailable)
- * - loose.workerScope.scopes.service: service worker ("unavailable" if blocked)
+ * Device payload structure (V3 format from ms-argus-web)
+ * The device section is passed directly from matching-worker (rawPayload.device)
+ * Structure:
+ * - navigator: main thread navigator
+ * - workerScope.scopes.web: dedicated worker
+ * - workerScope.scopes.shared: shared worker (null if unavailable)
+ * - workerScope.scopes.service: service worker ("unavailable" if blocked)
  */
-interface RawLoosePayload {
-  loose?: {
-    navigator?: EnvironmentScope;
-    workerScope?: WorkerScopeData;
-    [key: string]: unknown;
-  };
+interface DevicePayload {
+  navigator?: EnvironmentScope;
+  workerScope?: WorkerScopeData;
   [key: string]: unknown;
 }
 
@@ -96,25 +94,25 @@ function truncate(value: unknown, maxLen: number = 50): string {
 }
 
 /**
- * Extract all available environment scopes from payload
- * Reads from the actual ms-argus-web payload structure:
- * - loose.navigator
- * - loose.workerScope.scopes.web (dedicated worker)
- * - loose.workerScope.scopes.shared (shared worker, null if unavailable)
- * - loose.workerScope.scopes.service (service worker, "unavailable" if blocked)
+ * Extract all available environment scopes from device payload
+ * Reads from the V3 device structure:
+ * - navigator (main thread)
+ * - workerScope.scopes.web (dedicated worker)
+ * - workerScope.scopes.shared (shared worker, null if unavailable)
+ * - workerScope.scopes.service (service worker, "unavailable" if blocked)
  */
 function extractEnvironments(
-  loose: NonNullable<RawLoosePayload["loose"]>,
+  device: DevicePayload,
 ): Map<EnvironmentName, EnvironmentScope> {
   const environments = new Map<EnvironmentName, EnvironmentScope>();
 
   // Navigator (main thread)
-  if (loose.navigator && typeof loose.navigator === "object") {
-    environments.set("navigator", loose.navigator);
+  if (device.navigator && typeof device.navigator === "object") {
+    environments.set("navigator", device.navigator);
   }
 
   // Worker scopes from workerScope.scopes
-  const scopes = loose.workerScope?.scopes;
+  const scopes = device.workerScope?.scopes;
   if (scopes) {
     // Dedicated Worker (web)
     if (scopes.web && typeof scopes.web === "object") {
@@ -136,14 +134,14 @@ function extractEnvironments(
   // Only use if no scopes were found and workerScope has comparable fields
   if (
     environments.size === 1 &&
-    loose.workerScope &&
-    typeof loose.workerScope === "object" &&
-    !loose.workerScope.scopes &&
-    (loose.workerScope.userAgent ||
-      loose.workerScope.platform ||
-      loose.workerScope.hardwareConcurrency)
+    device.workerScope &&
+    typeof device.workerScope === "object" &&
+    !device.workerScope.scopes &&
+    (device.workerScope.userAgent ||
+      device.workerScope.platform ||
+      device.workerScope.hardwareConcurrency)
   ) {
-    environments.set("workerScope", loose.workerScope);
+    environments.set("workerScope", device.workerScope);
   }
 
   return environments;
@@ -199,7 +197,7 @@ function compareEnvironments(
  * - Generic workerScope (legacy/fallback for older payloads)
  *
  * @param fingerprint - Normalized fingerprint (not used directly, but matches detector signature)
- * @param raw - Raw fingerprint payload with loose.navigator and worker scopes
+ * @param raw - Device payload from V3 format (rawPayload.device from matching-worker)
  * @returns Array of anomaly signals for detected mismatches
  */
 export function detectCrossFieldAnomalies(
@@ -213,15 +211,10 @@ export function detectCrossFieldAnomalies(
     return signals;
   }
 
-  const payload = raw as RawLoosePayload;
-
-  // Check for loose data structure
-  if (!payload.loose || typeof payload.loose !== "object") {
-    return signals;
-  }
+  const device = raw as DevicePayload;
 
   // Extract all available environments
-  const environments = extractEnvironments(payload.loose);
+  const environments = extractEnvironments(device);
 
   // Need at least 2 environments to compare
   if (environments.size < 2) {
