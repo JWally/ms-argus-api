@@ -209,35 +209,79 @@ function extractFingerprint(payload: SqsPayload): Fingerprint {
       if (tls.id) fingerprint.sigint_id = tls.id;
     }
     if (sigint.tcpProbe) {
-      const tcp = sigint.tcpProbe;
-      if (typeof tcp.proxyScore === "number") {
-        fingerprint.proxy_score = tcp.proxyScore;
-      }
-      if (typeof tcp.vpnScore === "number") {
-        fingerprint.vpn_score = tcp.vpnScore;
-      }
-      if (typeof tcp.rttMs === "number") {
-        fingerprint.tcp_rtt_us = tcp.rttMs * 1000;
+      const tcp = sigint.tcpProbe as Record<string, unknown>;
+      // Handle both flat structure (proxyScore) and nested structure (rtt_fingerprint.proxy_score)
+      const rttFp = tcp.rtt_fingerprint as Record<string, unknown> | undefined;
+      if (rttFp) {
+        // Web client sends nested rtt_fingerprint object
+        if (typeof rttFp.proxy_score === "number") {
+          fingerprint.proxy_score = rttFp.proxy_score;
+        }
+        if (typeof rttFp.vpn_score === "number") {
+          fingerprint.vpn_score = rttFp.vpn_score;
+        }
+        if (typeof rttFp.tcp_rtt_us === "number") {
+          fingerprint.tcp_rtt_us = rttFp.tcp_rtt_us;
+        }
+      } else {
+        // Fallback to flat structure for backwards compatibility
+        if (typeof tcp.proxyScore === "number") {
+          fingerprint.proxy_score = tcp.proxyScore;
+        }
+        if (typeof tcp.vpnScore === "number") {
+          fingerprint.vpn_score = tcp.vpnScore;
+        }
+        if (typeof tcp.rttMs === "number") {
+          fingerprint.tcp_rtt_us = (tcp.rttMs as number) * 1000;
+        }
       }
     }
     if (sigint.faviconCache?.id) {
       // Use favicon cache ID as an additional identity signal
       fingerprint.favicon_cache_id = sigint.faviconCache.id;
     }
-  }
-
-  // Extract headless/bot detection signals
-  const headless = device.headless;
-  if (headless) {
-    if (typeof headless.isHeadless === "boolean") {
-      fingerprint.is_headless = headless.isHeadless;
+    // Extract STUN data - handle both field naming conventions
+    const stun = sigint.stun as Record<string, unknown> | undefined;
+    if (stun) {
+      // Web sends reflexiveIp, API schema expects publicIp
+      const publicIp = stun.publicIp ?? stun.reflexiveIp;
+      if (typeof publicIp === "string") {
+        fingerprint.stun_public_ip = publicIp;
+      }
+      // Web sends localIp (string), API schema expects localIps (array)
+      const localIp =
+        stun.localIp ?? (stun.localIps as string[] | undefined)?.[0];
+      if (typeof localIp === "string") {
+        fingerprint.stun_local_ip = localIp;
+      }
     }
   }
 
-  const lies = device.lies;
+  // Extract headless/bot detection signals
+  const headless = device.headless as Record<string, unknown> | undefined;
+  if (headless) {
+    // Handle direct isHeadless boolean
+    if (typeof headless.isHeadless === "boolean") {
+      fingerprint.is_headless = headless.isHeadless;
+    } else {
+      // Web client sends headless.headless object with individual signals
+      // Compute isHeadless from the nested headless signals
+      const headlessSignals = headless.headless as
+        | Record<string, boolean>
+        | undefined;
+      if (headlessSignals) {
+        fingerprint.is_headless = Object.values(headlessSignals).some(Boolean);
+      }
+    }
+  }
+
+  const lies = device.lies as Record<string, unknown> | undefined;
   if (lies) {
+    // Handle both field names: count (API schema) and totalLies (web client)
     if (typeof lies.count === "number") {
       fingerprint.lie_count = lies.count;
+    } else if (typeof lies.totalLies === "number") {
+      fingerprint.lie_count = lies.totalLies;
     }
   }
 

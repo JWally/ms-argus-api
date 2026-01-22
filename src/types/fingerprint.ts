@@ -52,6 +52,9 @@ export interface Fingerprint {
   proxy_score?: number;
   // Probability of VPN usage (0-1)
   vpn_score?: number;
+  // STUN/WebRTC discovered IPs
+  stun_public_ip?: string;
+  stun_local_ip?: string;
 
   // AR-80: Structural fingerprint signals
   // These are stable "structural anchors" based on browser engine internals
