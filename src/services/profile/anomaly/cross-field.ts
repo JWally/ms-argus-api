@@ -1,6 +1,6 @@
 // src/services/profile/anomaly/cross-field.ts
 // AR-145: Cross-field anomaly detection (Navigator vs Worker scope mismatches)
-// Extended to support multiple worker environments (dedicated, shared, service)
+// AR-143: Updated to use actual ms-argus-web payload structure (workerScope.scopes)
 
 import { Fingerprint } from "../../../types";
 import { AnomalySignal, AnomalyCodes, createSignal } from "./types";
@@ -16,16 +16,30 @@ interface EnvironmentScope {
 }
 
 /**
+ * Worker scope structure from web library
+ * Contains scopes for different worker types
+ */
+interface WorkerScopeData extends EnvironmentScope {
+  scopes?: {
+    main?: EnvironmentScope; // Main thread (redundant with navigator)
+    web?: EnvironmentScope; // Dedicated Worker (new Worker())
+    shared?: EnvironmentScope | null; // Shared Worker (null if unavailable)
+    service?: EnvironmentScope | string; // Service Worker ("unavailable" if blocked)
+  };
+}
+
+/**
  * Raw fingerprint payload structure (nested web library format)
- * Supports multiple worker environment types
+ * Actual structure from ms-argus-web:
+ * - loose.navigator: main thread navigator
+ * - loose.workerScope.scopes.web: dedicated worker
+ * - loose.workerScope.scopes.shared: shared worker (null if unavailable)
+ * - loose.workerScope.scopes.service: service worker ("unavailable" if blocked)
  */
 interface RawLoosePayload {
   loose?: {
     navigator?: EnvironmentScope;
-    workerScope?: EnvironmentScope; // Generic/legacy worker scope
-    dedicatedWorker?: EnvironmentScope;
-    sharedWorker?: EnvironmentScope;
-    serviceWorker?: EnvironmentScope;
+    workerScope?: WorkerScopeData;
     [key: string]: unknown;
   };
   [key: string]: unknown;
@@ -83,27 +97,53 @@ function truncate(value: unknown, maxLen: number = 50): string {
 
 /**
  * Extract all available environment scopes from payload
+ * Reads from the actual ms-argus-web payload structure:
+ * - loose.navigator
+ * - loose.workerScope.scopes.web (dedicated worker)
+ * - loose.workerScope.scopes.shared (shared worker, null if unavailable)
+ * - loose.workerScope.scopes.service (service worker, "unavailable" if blocked)
  */
 function extractEnvironments(
   loose: NonNullable<RawLoosePayload["loose"]>,
 ): Map<EnvironmentName, EnvironmentScope> {
   const environments = new Map<EnvironmentName, EnvironmentScope>();
 
-  // Add each environment if present
+  // Navigator (main thread)
   if (loose.navigator && typeof loose.navigator === "object") {
     environments.set("navigator", loose.navigator);
   }
-  if (loose.workerScope && typeof loose.workerScope === "object") {
+
+  // Worker scopes from workerScope.scopes
+  const scopes = loose.workerScope?.scopes;
+  if (scopes) {
+    // Dedicated Worker (web)
+    if (scopes.web && typeof scopes.web === "object") {
+      environments.set("dedicatedWorker", scopes.web);
+    }
+
+    // Shared Worker (can be null if unavailable)
+    if (scopes.shared && typeof scopes.shared === "object") {
+      environments.set("sharedWorker", scopes.shared);
+    }
+
+    // Service Worker (can be "unavailable" string if blocked)
+    if (scopes.service && typeof scopes.service === "object") {
+      environments.set("serviceWorker", scopes.service);
+    }
+  }
+
+  // Also check legacy workerScope top-level (fallback for older payloads)
+  // Only use if no scopes were found and workerScope has comparable fields
+  if (
+    environments.size === 1 &&
+    loose.workerScope &&
+    typeof loose.workerScope === "object" &&
+    !loose.workerScope.scopes &&
+    (loose.workerScope.userAgent ||
+      loose.workerScope.platform ||
+      loose.workerScope.hardwareConcurrency)
+  ) {
     environments.set("workerScope", loose.workerScope);
-  }
-  if (loose.dedicatedWorker && typeof loose.dedicatedWorker === "object") {
-    environments.set("dedicatedWorker", loose.dedicatedWorker);
-  }
-  if (loose.sharedWorker && typeof loose.sharedWorker === "object") {
-    environments.set("sharedWorker", loose.sharedWorker);
-  }
-  if (loose.serviceWorker && typeof loose.serviceWorker === "object") {
-    environments.set("serviceWorker", loose.serviceWorker);
   }
 
   return environments;
@@ -153,10 +193,10 @@ function compareEnvironments(
  *
  * Checks consistency across:
  * - Navigator (main thread)
- * - Dedicated Workers (new Worker())
- * - Shared Workers (new SharedWorker())
- * - Service Workers
- * - Generic workerScope (legacy/fallback)
+ * - Dedicated Workers (workerScope.scopes.web)
+ * - Shared Workers (workerScope.scopes.shared)
+ * - Service Workers (workerScope.scopes.service)
+ * - Generic workerScope (legacy/fallback for older payloads)
  *
  * @param fingerprint - Normalized fingerprint (not used directly, but matches detector signature)
  * @param raw - Raw fingerprint payload with loose.navigator and worker scopes
