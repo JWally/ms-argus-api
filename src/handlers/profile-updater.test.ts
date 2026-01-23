@@ -39,6 +39,7 @@ import {
   PutItemCommand,
   UpdateItemCommand,
   BatchWriteItemCommand,
+  ConditionalCheckFailedException,
 } from "@aws-sdk/client-dynamodb";
 import { marshall } from "@aws-sdk/util-dynamodb";
 import { SQSEvent, SQSRecord, Context } from "aws-lambda";
@@ -211,19 +212,45 @@ describe("profile-updater handler", () => {
 
       expect(result!.batchItemFailures).toHaveLength(0);
     });
+
+    it("should skip update and emit MutationGateSkip metric when gate is active", async () => {
+      const payload = createProfileUpdatePayload();
+
+      // Gate acquisition PutItem throws ConditionalCheckFailedException
+      dynamoMock.on(PutItemCommand).rejects(
+        new ConditionalCheckFailedException({
+          message: "Condition not met",
+          $metadata: {},
+        }),
+      );
+
+      const event = createSQSEvent([createSQSRecord(payload)]);
+      const result = await handler(event, mockContext, () => {});
+
+      expect(result!.batchItemFailures).toHaveLength(0);
+      expect(mockAddMetric).toHaveBeenCalledWith(
+        "MutationGateSkip",
+        "Count",
+        1,
+      );
+    });
   });
 
   describe("drift detection", () => {
-    it("should skip update when fingerprint has no significant drift", async () => {
+    it("should skip update and emit NoDriftSkip metric when no drift", async () => {
       const payload = createProfileUpdatePayload();
 
-      // Mock existing profile with same fingerprint (correct DeviceProfile shape)
+      // Gate acquisition and anchor writes succeed
+      dynamoMock.on(PutItemCommand).resolves({});
+      // Mock existing profile with MATCHING fingerprint (all fields same as payload)
       dynamoMock.on(GetItemCommand).resolves({
         Item: marshall({
           device_id: "device-123",
           stable_hash: "hash-abc123",
           fuzzy_hash: "fuzzy-def456",
           canvas_hash: "canvas-ghi789",
+          gpu_renderer: "NVIDIA GeForce RTX 3080",
+          screen_dims: "1920x1080",
           first_seen_at: Date.now() - 86400000,
           last_seen_at: Date.now() - 60000,
           updated_at: Date.now() - 60000,
@@ -238,6 +265,7 @@ describe("profile-updater handler", () => {
       const result = await handler(event, mockContext, () => {});
 
       expect(result!.batchItemFailures).toHaveLength(0);
+      expect(mockAddMetric).toHaveBeenCalledWith("NoDriftSkip", "Count", 1);
     });
 
     it("should update when fingerprint has significant drift", async () => {

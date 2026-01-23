@@ -8,7 +8,7 @@ import { DEDUPE_CACHE_MAX_ENTRIES, DEDUPE_CACHE_TTL_MS } from "./constants";
 import { fnv1a } from "./hash";
 import { HttpError } from "./http-error";
 
-// Re-export fnv1a for backward compatibility (AR-32)
+// Re-export fnv1a for backward compatibility
 export { fnv1a };
 
 const logger = new Logger({ serviceName: "argus-warmup" });
@@ -48,7 +48,7 @@ export const _clearDeduplicateCache = (): void => {
 /**
  * Deduplicate middleware using LRU cache
  * Prevents duplicate requests from network retries
- * AR-135: Simplified - no longer includes tenant ID in key
+ * Simplified - no longer includes tenant ID in key
  */
 export const deduplicateMiddleware = (): MiddlewareObj<
   APIGatewayProxyEvent,

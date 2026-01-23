@@ -1,7 +1,6 @@
 // src/helpers/bucket-keys.ts
-// AR-117: Shared bucket key utilities for matching and profile services
+// Shared bucket key utilities for matching and profile services
 // Single source of truth for Tier 2 bucket key generation
-// AR-XXX: Added SimHash LSH band key generation for Tier 1.5
 
 import { fnv1a } from "./hash";
 import { SIMHASH_CONFIG } from "./constants";
@@ -53,7 +52,7 @@ export function buildBucketKeysWithTypes(
     });
   }
 
-  // AR-80: Structural tier2 buckets (stable browser engine anchors)
+  // Structural tier2 buckets (stable browser engine anchors)
   // These signals are based on browser internals that cannot be randomized
   // without breaking website functionality. Useful when canvas/audio are
   // blocked (e.g., Brave private browsing).
@@ -98,13 +97,7 @@ export function buildBucketKeys(fingerprint: Fingerprint): string[] {
 }
 
 /**
- * Alias for buildBucketKeys - used by profile-service
- * Maintains naming compatibility during refactor
- */
-export const buildTier2BucketKeys = buildBucketKeys;
-
-/**
- * AR-82: Build session anchor bucket key for ephemeral matching
+ * Build session anchor bucket key for ephemeral matching
  * Combines IP + User-Agent hash + Screen dimensions
  * Returns null if required signals are missing
  */
@@ -122,7 +115,7 @@ export function buildSessionAnchorKey(fingerprint: Fingerprint): string | null {
 }
 
 /**
- * AR-94: Build IP+UA-only anchor bucket key for ephemeral matching
+ * Build IP+UA-only anchor bucket key for ephemeral matching
  * Does NOT include screen_dims - catches dock/undock screen changes
  * Returns null if required signals are missing
  */
@@ -150,7 +143,7 @@ export interface SimHashBandKey {
 }
 
 /**
- * AR-XXX: Build SimHash LSH band keys from fuzzy_hash
+ * Build SimHash LSH band keys from fuzzy_hash
  * Splits 64-bit hash into 4 bands of 16 bits each for locality-sensitive lookup.
  *
  * Band partitioning allows similar hashes (small Hamming distance) to share
@@ -190,7 +183,7 @@ export function buildSimHashBandKeys(
 }
 
 /**
- * AR-XXX: Build sort key for SimHash band entry with recency ordering
+ * Build sort key for SimHash band entry with recency ordering
  * Format: t#<inverted_timestamp>#<device_id>
  *
  * Using inverted timestamp ensures that Query with LIMIT returns
@@ -211,7 +204,7 @@ export function buildSimHashBandSK(
 }
 
 /**
- * AR-XXX: Parse device ID from SimHash band sort key
+ * Parse device ID from SimHash band sort key
  * @param sk - Sort key in format t#<inverted_timestamp>#<device_id>
  * @returns Device ID or null if invalid format
  */
@@ -228,39 +221,4 @@ export function parseSimHashBandSK(sk: string): {
     deviceId: match[2],
     timestamp,
   };
-}
-
-/**
- * AR-XXX: Calculate Hamming distance between two 64-bit hex hashes
- * Counts the number of differing bits between two SimHash values.
- *
- * @param hash1 - First hash as hex string
- * @param hash2 - Second hash as hex string
- * @returns Number of differing bits (0-64), or -1 if invalid
- */
-export function hammingDistance(hash1: string, hash2: string): number {
-  // Normalize
-  const h1 = hash1.replace(/^0x/i, "").toLowerCase();
-  const h2 = hash2.replace(/^0x/i, "").toLowerCase();
-
-  if (!/^[0-9a-f]{16}$/.test(h1) || !/^[0-9a-f]{16}$/.test(h2)) {
-    return -1;
-  }
-
-  let distance = 0;
-
-  // Process 4 chars (16 bits) at a time to stay within JS safe integer range
-  for (let i = 0; i < 16; i += 4) {
-    const chunk1 = parseInt(h1.slice(i, i + 4), 16);
-    const chunk2 = parseInt(h2.slice(i, i + 4), 16);
-    const xor = chunk1 ^ chunk2;
-    // Count set bits (Brian Kernighan's algorithm)
-    let bits = xor;
-    while (bits) {
-      distance++;
-      bits &= bits - 1;
-    }
-  }
-
-  return distance;
 }

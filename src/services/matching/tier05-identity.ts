@@ -1,32 +1,8 @@
 // src/services/matching/tier05-identity.ts
-// AR-119: Extracted from matching-service.ts - Identity lookups (Tier 0.5)
-// AR-XXX: Added fuzzy_match_info for drift detection
 import { DynamoDBClient, GetItemCommand } from "@aws-sdk/client-dynamodb";
 import { unmarshall } from "@aws-sdk/util-dynamodb";
-import { hammingDistance } from "../../helpers/bucket-keys";
-import { EvidenceCode, FuzzyMatchInfo, MatchResult } from "./types";
-
-/**
- * AR-XXX: Compute fuzzy match info for drift detection
- * Computes Hamming distance between incoming and stored fuzzy_hash
- */
-function computeFuzzyMatchInfo(
-  incomingHash: string | undefined,
-  storedHash: string | undefined,
-): FuzzyMatchInfo | undefined {
-  if (!incomingHash || !storedHash) {
-    return undefined;
-  }
-
-  const distance = hammingDistance(incomingHash, storedHash);
-
-  return {
-    incoming_hash: incomingHash,
-    stored_hash: storedHash,
-    hamming_distance: distance,
-    similarity: distance >= 0 ? 1 - distance / 64 : 0,
-  };
-}
+import { computeFuzzyMatchInfo } from "../../helpers/hash";
+import { EvidenceCode, MatchResult } from "./types";
 
 /**
  * Dependencies for tier 0.5 identity operations
@@ -37,10 +13,10 @@ export interface Tier05IdentityDeps {
 }
 
 /**
- * Tier 0.5: Lookup by ECDSA public key (AR-64)
+ * Tier 0.5: Lookup by ECDSA public key
  * Near-perfect confidence - cryptographic identity stored in IndexedDB
  * Private key is non-extractable, so public key proves device possession
- * AR-XXX: Now includes fuzzy_match_info for drift detection
+ * Now includes fuzzy_match_info for drift detection
  */
 export async function tier05PublicKeyLookup(
   deps: Tier05IdentityDeps,
@@ -66,7 +42,7 @@ export async function tier05PublicKeyLookup(
       risk_score: item.risk_score ?? 0.3,
       flags: item.flags ?? [],
       evidence_codes: ["PUBLIC_KEY_MATCH"] as EvidenceCode[],
-      // AR-XXX: Compute drift from stored fuzzy_hash
+      // Compute drift from stored fuzzy_hash
       fuzzy_match_info: computeFuzzyMatchInfo(
         incomingFuzzyHash,
         item.fuzzy_hash,
@@ -79,7 +55,7 @@ export async function tier05PublicKeyLookup(
 /**
  * Tier 0.5: Lookup by evercookie ID
  * Highest confidence - evercookie is hard to clear
- * AR-XXX: Now includes fuzzy_match_info for drift detection
+ * Now includes fuzzy_match_info for drift detection
  */
 export async function tier05CookieLookup(
   deps: Tier05IdentityDeps,
@@ -105,7 +81,7 @@ export async function tier05CookieLookup(
       risk_score: item.risk_score ?? 0.3,
       flags: item.flags ?? [],
       evidence_codes: ["EVERCOOKIE_MATCH"] as EvidenceCode[],
-      // AR-XXX: Compute drift from stored fuzzy_hash
+      // Compute drift from stored fuzzy_hash
       fuzzy_match_info: computeFuzzyMatchInfo(
         incomingFuzzyHash,
         item.fuzzy_hash,
@@ -116,10 +92,10 @@ export async function tier05CookieLookup(
 }
 
 /**
- * Tier 0.5: Lookup by third-party cookie from sigint (AR-81)
+ * Tier 0.5: Lookup by third-party cookie from sigint
  * High confidence - cross-site cookie from CloudFront edge service
  * Survives first-party cookie clearing, provides cross-site identity
- * AR-XXX: Now includes fuzzy_match_info for drift detection
+ * Now includes fuzzy_match_info for drift detection
  */
 export async function tier05SigintIdLookup(
   deps: Tier05IdentityDeps,
@@ -145,7 +121,7 @@ export async function tier05SigintIdLookup(
       risk_score: item.risk_score ?? 0.3,
       flags: item.flags ?? [],
       evidence_codes: ["SIGINT_ID_MATCH"] as EvidenceCode[],
-      // AR-XXX: Compute drift from stored fuzzy_hash
+      // Compute drift from stored fuzzy_hash
       fuzzy_match_info: computeFuzzyMatchInfo(
         incomingFuzzyHash,
         item.fuzzy_hash,

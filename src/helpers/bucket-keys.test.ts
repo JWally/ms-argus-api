@@ -5,7 +5,6 @@ import { describe, it, expect } from "vitest";
 import {
   buildBucketKeys,
   buildBucketKeysWithTypes,
-  buildTier2BucketKeys,
   buildSessionAnchorKey,
   buildIpUaAnchorKey,
 } from "./bucket-keys";
@@ -132,25 +131,11 @@ describe("buildBucketKeys", () => {
   });
 });
 
-describe("buildTier2BucketKeys (alias)", () => {
-  it("should be identical to buildBucketKeys", () => {
-    const fingerprint: Fingerprint = {
-      ip_address: "192.168.1.100",
-      ja4: "t13d1516h2_abc123",
-      audio_hash: "audio123",
-      canvas_hash: "canvas456",
-    };
-
-    const keys1 = buildBucketKeys(fingerprint);
-    const keys2 = buildTier2BucketKeys(fingerprint);
-
-    expect(keys1).toEqual(keys2);
-  });
-
-  it("should return empty array when no compound signals", () => {
-    const fingerprint: Fingerprint = {};
-    const keys = buildTier2BucketKeys(fingerprint);
-    expect(keys).toEqual([]);
+// AR-210: buildTier2BucketKeys alias removed - only buildBucketKeys exists
+describe("buildTier2BucketKeys alias removed", () => {
+  it("should not export buildTier2BucketKeys", async () => {
+    const bucketKeys = await import("./bucket-keys");
+    expect("buildTier2BucketKeys" in bucketKeys).toBe(false);
   });
 });
 

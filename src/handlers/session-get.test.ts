@@ -335,6 +335,75 @@ describe("session-get handler", () => {
     });
   });
 
+  describe("session payload edge cases", () => {
+    it("should still return 200 when payload fetch throws", async () => {
+      const sessionId = "payload-fetch-error";
+      const ttl = Math.floor(Date.now() / 1000) + 3600;
+
+      // First call (session cache) succeeds, second call (payload table) throws
+      dynamoMock.on(GetItemCommand).callsFake((input) => {
+        if (input.TableName === "test-session-cache") {
+          return {
+            Item: marshall({
+              cache_key: `session:${sessionId}`,
+              value: mockSessionCacheValue,
+              confidence: mockSessionCacheValue.confidence,
+              ttl,
+            }),
+          };
+        }
+        // Payload table throws
+        throw new Error("Payload table unavailable");
+      });
+
+      const event = createApiEvent(sessionId, "GET", "https://example.com");
+      const result = asResult(await handler(event, mockContext));
+
+      // Should succeed with cache-only data (minimal response)
+      expect(result.statusCode).toBe(200);
+      const body = JSON.parse(result.body ?? "");
+      expect(body.analysis.status).toBe("complete");
+      expect(body.identifiers.device_id).toBe("device-abc123");
+    });
+
+    it("should still return 200 when payload fails validation", async () => {
+      const sessionId = "payload-validation-error";
+      const ttl = Math.floor(Date.now() / 1000) + 3600;
+
+      // Invalid payload structure (missing required fields for validateSessionResponse)
+      const invalidPayload = { foo: "bar" };
+
+      dynamoMock.on(GetItemCommand).callsFake((input) => {
+        if (input.TableName === "test-session-cache") {
+          return {
+            Item: marshall({
+              cache_key: `session:${sessionId}`,
+              value: mockSessionCacheValue,
+              confidence: mockSessionCacheValue.confidence,
+              ttl,
+            }),
+          };
+        }
+        // Payload table returns invalid payload
+        return {
+          Item: marshall({
+            session_id: sessionId,
+            payload_gzip_b64: createGzippedPayload(invalidPayload),
+            ttl,
+          }),
+        };
+      });
+
+      const event = createApiEvent(sessionId, "GET", "https://example.com");
+      const result = asResult(await handler(event, mockContext));
+
+      // Should succeed with cache-only data (validation failure is non-fatal)
+      expect(result.statusCode).toBe(200);
+      const body = JSON.parse(result.body ?? "");
+      expect(body.analysis.status).toBe("complete");
+    });
+  });
+
   describe("CORS headers", () => {
     it("should include CORS headers when origin is provided", async () => {
       dynamoMock.on(GetItemCommand).resolves({});

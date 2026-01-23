@@ -27,7 +27,6 @@ import {
   writeSessionAnchorBucket,
   buildIpUaAnchorKey,
   writeIpUaAnchorBucket,
-  // AR-XXX: SimHash LSH band entry functions
   buildSimHashBandEntries,
   batchWriteSimHashBands,
   Tier1IndexEntry,

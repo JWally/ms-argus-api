@@ -1,7 +1,11 @@
 // src/config/env.test.ts
 // AR-52: Updated to use SESSION_CACHE_TABLE instead of REDIS_ENDPOINT
 import { describe, it, expect, beforeEach, afterAll } from "vitest";
-import { getMatchingWorkerEnv, getProfileUpdaterEnv } from "./env";
+import {
+  getMatchingWorkerEnv,
+  getProfileUpdaterEnv,
+  getVectorWorkerEnv,
+} from "./env";
 
 describe("Environment validation", () => {
   const originalEnv = process.env;
@@ -116,6 +120,46 @@ describe("Environment validation", () => {
 
       // Should not throw - PROFILE_QUEUE_URL is not required for ProfileUpdater
       expect(() => getProfileUpdaterEnv()).not.toThrow();
+    });
+  });
+
+  describe("getVectorWorkerEnv", () => {
+    const requiredVars = {
+      QDRANT_URL: "http://qdrant:6333",
+      QDRANT_SECRET_ARN:
+        "arn:aws:secretsmanager:us-east-1:123456789:secret:qdrant",
+    };
+
+    it("should return validated config when all required vars are present", () => {
+      Object.assign(process.env, requiredVars);
+
+      const config = getVectorWorkerEnv();
+
+      expect(config.QDRANT_URL).toBe("http://qdrant:6333");
+      expect(config.QDRANT_SECRET_ARN).toBe(requiredVars.QDRANT_SECRET_ARN);
+      expect(config.POWERTOOLS_SERVICE_NAME).toBe("argus-vector-worker");
+      expect(config.POWERTOOLS_METRICS_NAMESPACE).toBe("Argus");
+    });
+
+    it("should throw error listing missing required vars", () => {
+      delete process.env.QDRANT_URL;
+      delete process.env.QDRANT_SECRET_ARN;
+
+      expect(() => getVectorWorkerEnv()).toThrow(
+        "Missing required environment variables: QDRANT_URL, QDRANT_SECRET_ARN",
+      );
+    });
+
+    it("should use custom Powertools config when provided", () => {
+      Object.assign(process.env, requiredVars, {
+        POWERTOOLS_SERVICE_NAME: "custom-vector",
+        POWERTOOLS_METRICS_NAMESPACE: "CustomNS",
+      });
+
+      const config = getVectorWorkerEnv();
+
+      expect(config.POWERTOOLS_SERVICE_NAME).toBe("custom-vector");
+      expect(config.POWERTOOLS_METRICS_NAMESPACE).toBe("CustomNS");
     });
   });
 });

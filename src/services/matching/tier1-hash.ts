@@ -1,15 +1,8 @@
 // src/services/matching/tier1-hash.ts
-// AR-119: Extracted from matching-service.ts - Hash matching (Tier 1)
-// AR-XXX: Added fuzzy_match_info for drift detection
 import { DynamoDBClient, GetItemCommand } from "@aws-sdk/client-dynamodb";
 import { unmarshall } from "@aws-sdk/util-dynamodb";
-import { hammingDistance } from "../../helpers/bucket-keys";
-import {
-  EvidenceCode,
-  Fingerprint,
-  FuzzyMatchInfo,
-  MatchResult,
-} from "./types";
+import { computeFuzzyMatchInfo } from "../../helpers/hash";
+import { EvidenceCode, Fingerprint, MatchResult } from "./types";
 
 /**
  * Dependencies for tier 1 hash operations
@@ -22,7 +15,7 @@ export interface Tier1HashDeps {
 /**
  * Tier 1: Match by stable or fuzzy hash
  * High confidence - these hashes are computed from multiple signals
- * AR-XXX: Now includes fuzzy_match_info for drift detection
+ * Now includes fuzzy_match_info for drift detection
  */
 export async function tier1HashMatch(
   deps: Tier1HashDeps,
@@ -43,7 +36,7 @@ export async function tier1HashMatch(
         risk_score: result.risk_score ?? 0.3,
         flags: result.flags ?? [],
         evidence_codes: ["STABLE_HASH_MATCH"] as EvidenceCode[],
-        // AR-XXX: Compute drift from stored fuzzy_hash
+        // Compute drift from stored fuzzy_hash
         fuzzy_match_info: computeFuzzyMatchInfo(
           fingerprint.fuzzy_hash,
           result.fuzzy_hash,
@@ -67,7 +60,7 @@ export async function tier1HashMatch(
         risk_score: result.risk_score ?? 0.3,
         flags: result.flags ?? [],
         evidence_codes: ["FUZZY_HASH_MATCH"] as EvidenceCode[],
-        // AR-XXX: Compute drift from stored fuzzy_hash
+        // Compute drift from stored fuzzy_hash
         fuzzy_match_info: computeFuzzyMatchInfo(
           fingerprint.fuzzy_hash,
           result.fuzzy_hash,
@@ -81,7 +74,7 @@ export async function tier1HashMatch(
 
 /**
  * Lookup a single entry in the Tier 1 index
- * AR-XXX: Added fuzzy_hash for drift detection
+ * Added fuzzy_hash for drift detection
  */
 async function lookupTier1Index(
   deps: Tier1HashDeps,
@@ -111,26 +104,4 @@ async function lookupTier1Index(
     };
   }
   return null;
-}
-
-/**
- * AR-XXX: Compute fuzzy match info for drift detection
- * Computes Hamming distance between incoming and stored fuzzy_hash
- */
-function computeFuzzyMatchInfo(
-  incomingHash: string | undefined,
-  storedHash: string | undefined,
-): FuzzyMatchInfo | undefined {
-  if (!incomingHash || !storedHash) {
-    return undefined;
-  }
-
-  const distance = hammingDistance(incomingHash, storedHash);
-
-  return {
-    incoming_hash: incomingHash,
-    stored_hash: storedHash,
-    hamming_distance: distance,
-    similarity: distance >= 0 ? 1 - distance / 64 : 0,
-  };
 }

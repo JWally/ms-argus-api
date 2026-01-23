@@ -1,6 +1,4 @@
 // src/services/matching/matching-service.ts
-// AR-119: Refactored to orchestration only - delegates to tier modules
-// AR-121: Replaced UUID with ULID for time-sortable device IDs
 import { ulid } from "ulid";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { SQSClient, SendMessageCommand } from "@aws-sdk/client-sqs";
@@ -75,7 +73,7 @@ export interface MatchingServiceDeps {
  * - Tier 0: DynamoDB session cache hit
  * - Tier 0.5: Evercookie/cookie lookup, public key, sigint
  * - Tier 1: Strong hash match (stable_hash, fuzzy_hash)
- * - Tier 1.5: SimHash LSH match (fuzzy_hash drift detection) - AR-XXX
+ * - Tier 1.5: SimHash LSH match (fuzzy_hash drift detection)
  * - Tier 2: Compound filter match (ip+ja4, gpu+screen+tz, etc)
  * - New Device: Create new device_id
  */
@@ -98,7 +96,7 @@ export class MatchingService {
       dynamodb: deps.dynamodb,
       tier1IndexTable: deps.config.tier1IndexTable,
     };
-    // AR-XXX: Tier 1.5 SimHash LSH uses tier2BucketsTable for band storage
+    // Tier 1.5 SimHash LSH uses tier2BucketsTable for band storage
     this.tier15Deps = {
       dynamodb: deps.dynamodb,
       tier2BucketsTable: deps.config.tier2BucketsTable,
@@ -121,7 +119,7 @@ export class MatchingService {
     return tier0CheckCache(this.tier0Deps, sessionId);
   }
 
-  /** AR-65: Apply confidence penalty for privacy browser detection */
+  /** Apply confidence penalty for privacy browser detection */
   applyPrivacyPenalty(
     result: MatchResult,
     fingerprint: Fingerprint,
@@ -137,7 +135,7 @@ export class MatchingService {
   async runTieredMatching(
     fingerprint: Fingerprint,
   ): Promise<{ result: MatchResult; tier2TimedOut: boolean }> {
-    // AR-XXX: Pass fuzzy_hash to tier05 lookups for drift detection
+    // Pass fuzzy_hash to tier05 lookups for drift detection
     const incomingFuzzyHash = fingerprint.fuzzy_hash;
 
     // Tier 0.5: Cryptographic identity lookup (highest confidence)
@@ -194,7 +192,7 @@ export class MatchingService {
       };
     }
 
-    // Tier 1.5: SimHash LSH match (same-browser drift detection) - AR-XXX
+    // Tier 1.5: SimHash LSH match (same-browser drift detection)
     // Uses fuzzy_hash with locality-sensitive hashing for efficient similarity search
     const tier15Result = await tier15SimHashMatch(this.tier15Deps, fingerprint);
     if (tier15Result) {
@@ -243,7 +241,7 @@ export class MatchingService {
   }
 
   // Delegate methods to tier modules for backward compatibility
-  // AR-XXX: Added optional incomingFuzzyHash for drift detection
+  // Added optional incomingFuzzyHash for drift detection
   async tier05PublicKeyLookup(
     publicKey: string,
     incomingFuzzyHash?: string,
@@ -269,7 +267,7 @@ export class MatchingService {
     return tier1HashMatch(this.tier1Deps, fingerprint);
   }
 
-  /** AR-XXX: SimHash LSH match for same-browser drift detection */
+  /** SimHash LSH match for same-browser drift detection */
   async tier15SimHashMatch(
     fingerprint: Fingerprint,
   ): Promise<MatchResult | null> {
@@ -322,8 +320,8 @@ export class MatchingService {
   }
 
   createNewDevice(): MatchResult {
-    // AR-121: Use ULID for time-sortable device IDs
-    const deviceId = `dev_${generateULID()}`;
+    // Use ULID for time-sortable device IDs
+    const deviceId = `dev_${ulid()}`;
     return {
       device_id: deviceId,
       confidence: 0,
@@ -337,7 +335,7 @@ export class MatchingService {
 
   /**
    * Write match result to session cache
-   * AR-170: Returns boolean indicating if write succeeded
+   * Returns boolean indicating if write succeeded
    * @returns true if written, false if skipped (higher confidence exists)
    */
   async writeMatchResult(
@@ -357,7 +355,7 @@ export class MatchingService {
 
   /**
    * Write degraded status to session cache
-   * AR-170: Returns boolean indicating if write succeeded
+   * Returns boolean indicating if write succeeded
    * @returns true if written, false if skipped (higher confidence exists)
    */
   async writeDegradedResult(
@@ -384,7 +382,7 @@ export class MatchingService {
           tls_blob: payload.tls_blob,
           timestamp: payload.timestamp,
           is_new_device: isNewDevice,
-          // AR-149: Include match context for tier-gated identity association
+          // Include match context for tier-gated identity association
           ...(matchResult && {
             match_tier: matchResult.match_tier,
             evidence_codes: matchResult.evidence_codes,
@@ -402,13 +400,4 @@ export function generateIdempotencyKey(
 ): string {
   const input = `${sessionId}:${fingerprint.stable_hash ?? ""}:${fingerprint.canvas_hash ?? ""}`;
   return fnv1a(input);
-}
-
-/**
- * AR-121: Generate a ULID (Universally Unique Lexicographically Sortable Identifier)
- * ULIDs encode timestamp in first 10 characters, making them time-sortable
- * Format: 26 alphanumeric characters (Crockford's Base32)
- */
-export function generateULID(): string {
-  return ulid();
 }

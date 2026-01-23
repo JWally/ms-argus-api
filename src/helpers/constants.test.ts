@@ -1,123 +1,115 @@
 // src/helpers/constants.test.ts
+// AR-210: Tests verify remaining constants after dead code removal
 import { describe, it, expect } from "vitest";
 import {
-  DEFAULT_HEADERS,
-  ALLOWED_HEADERS,
-  ALLOWED_ORIGINS,
-  MIDDY_CORS_CONFIG,
-  WARMUP_EVENT,
+  SESSION_TTL_SECONDS,
+  TIER2_TIMEOUT_MS,
+  PROFILE_TTL_DAYS,
+  SIMHASH_CONFIG,
+  getSimHashFlags,
   AWS_SECRETS_REQUIRED_KEYS,
   ERROR_STRINGS,
+  FNV1A_OFFSET_BASIS,
+  FNV1A_PRIME,
+  KEY_CACHE_DURATION,
+  API_KEYS_CACHE_TTL,
+  SESSION_PAYLOAD_TTL_SECONDS,
+  TIER2_BUCKET_LIMIT,
+  TIER2_HIGH_CARDINALITY_THRESHOLD,
+  TIER2_CARDINALITY_PENALTY,
+  TIER2_STATS_SK,
+  PRIVACY_BROWSER_PENALTY,
+  PRIVATE_BROWSING_PENALTY,
+  TIER2_BUCKET_TTL_DAYS,
+  SESSION_ANCHOR_VALIDITY_SECONDS,
+  SESSION_ANCHOR_CLEANUP_TTL_SECONDS,
+  IP_UA_ANCHOR_VALIDITY_SECONDS,
+  MUTATION_GATE_TTL_SECONDS,
+  DEDUPE_CACHE_MAX_ENTRIES,
+  DEDUPE_CACHE_TTL_MS,
 } from "./constants";
 
-describe("DEFAULT_HEADERS", () => {
-  it("should contain all required security headers", () => {
-    expect(DEFAULT_HEADERS).toHaveProperty("Content-Security-Policy");
-    expect(DEFAULT_HEADERS).toHaveProperty("Strict-Transport-Security");
-    expect(DEFAULT_HEADERS).toHaveProperty("X-Content-Type-Options");
-    expect(DEFAULT_HEADERS).toHaveProperty("X-Frame-Options");
-    expect(DEFAULT_HEADERS).toHaveProperty("X-XSS-Protection");
-  });
-
-  it("should have correct X-Frame-Options value", () => {
-    expect(DEFAULT_HEADERS["X-Frame-Options"]).toBe("DENY");
-  });
-
-  it("should have HSTS with includeSubDomains", () => {
-    expect(DEFAULT_HEADERS["Strict-Transport-Security"]).toContain(
-      "includeSubDomains",
-    );
-  });
-
-  it("should have nosniff for content type", () => {
-    expect(DEFAULT_HEADERS["X-Content-Type-Options"]).toBe("nosniff");
+describe("SESSION_TTL_SECONDS", () => {
+  it("should be 900 seconds (15 minutes)", () => {
+    expect(SESSION_TTL_SECONDS).toBe(900);
   });
 });
 
-describe("ALLOWED_HEADERS", () => {
-  it("should include Content-Type", () => {
-    expect(ALLOWED_HEADERS).toContain("Content-Type");
-  });
-
-  it("should include Authorization", () => {
-    expect(ALLOWED_HEADERS).toContain("Authorization");
-  });
-
-  it("should include Accept headers", () => {
-    expect(ALLOWED_HEADERS).toContain("Accept");
-    expect(ALLOWED_HEADERS).toContain("Accept-Language");
-  });
-
-  it("should include AWS-specific headers", () => {
-    expect(ALLOWED_HEADERS).toContain("X-Amz-Date");
-    expect(ALLOWED_HEADERS).toContain("X-Amz-Security-Token");
-  });
-
-  it("should be an array of strings", () => {
-    expect(Array.isArray(ALLOWED_HEADERS)).toBe(true);
-    ALLOWED_HEADERS.forEach((header) => {
-      expect(typeof header).toBe("string");
-    });
+describe("TIER2_TIMEOUT_MS", () => {
+  it("should be 500ms", () => {
+    expect(TIER2_TIMEOUT_MS).toBe(500);
   });
 });
 
-describe("ALLOWED_ORIGINS", () => {
-  it("should be an array of origin strings", () => {
-    expect(Array.isArray(ALLOWED_ORIGINS)).toBe(true);
-    expect(ALLOWED_ORIGINS.length).toBeGreaterThan(0);
-  });
-
-  it("should contain only HTTPS origins", () => {
-    ALLOWED_ORIGINS.forEach((origin) => {
-      expect(origin).toMatch(/^https:\/\//);
-    });
-  });
-
-  it("should not contain wildcard origin", () => {
-    expect(ALLOWED_ORIGINS).not.toContain("*");
+describe("PROFILE_TTL_DAYS", () => {
+  it("should be 60 days", () => {
+    expect(PROFILE_TTL_DAYS).toBe(60);
   });
 });
 
-describe("MIDDY_CORS_CONFIG", () => {
-  it("should allow credentials", () => {
-    expect(MIDDY_CORS_CONFIG.credentials).toBe(true);
+describe("SIMHASH_CONFIG", () => {
+  it("should have correct structure with all required fields", () => {
+    expect(SIMHASH_CONFIG).toHaveProperty("NUM_BANDS");
+    expect(SIMHASH_CONFIG).toHaveProperty("BITS_PER_BAND");
+    expect(SIMHASH_CONFIG).toHaveProperty("HAMMING_THRESHOLD");
+    expect(SIMHASH_CONFIG).toHaveProperty("MIN_BANDS_MATCH");
+    expect(SIMHASH_CONFIG).toHaveProperty("BAND_TTL_DAYS");
+    expect(SIMHASH_CONFIG).toHaveProperty("PER_BAND_LIMIT");
+    expect(SIMHASH_CONFIG).toHaveProperty("MAX_CANDIDATES");
+    expect(SIMHASH_CONFIG).toHaveProperty("RECENCY_WINDOW_DAYS");
   });
 
-  it("should use origins array (not wildcard origin)", () => {
-    // Security: Using origins array instead of origin: "*"
-    // The CORS spec forbids origin: "*" with credentials: true
-    expect(MIDDY_CORS_CONFIG.origins).toBeDefined();
-    expect(Array.isArray(MIDDY_CORS_CONFIG.origins)).toBe(true);
-    expect(MIDDY_CORS_CONFIG.origin).toBeUndefined();
+  it("should have NUM_BANDS = 4", () => {
+    expect(SIMHASH_CONFIG.NUM_BANDS).toBe(4);
   });
 
-  it("should not use wildcard origin with credentials", () => {
-    // Security check: This combination is forbidden by CORS spec
-    const hasWildcard = MIDDY_CORS_CONFIG.origins?.includes("*");
-    expect(hasWildcard).toBeFalsy();
+  it("should have BITS_PER_BAND = 16", () => {
+    expect(SIMHASH_CONFIG.BITS_PER_BAND).toBe(16);
   });
 
-  it("should only allow POST and OPTIONS methods", () => {
-    expect(MIDDY_CORS_CONFIG.methods).toContain("POST");
-    expect(MIDDY_CORS_CONFIG.methods).toContain("OPTIONS");
-    expect(MIDDY_CORS_CONFIG.methods).not.toContain("GET");
-    expect(MIDDY_CORS_CONFIG.methods).not.toContain("DELETE");
+  it("should have HAMMING_THRESHOLD = 4", () => {
+    expect(SIMHASH_CONFIG.HAMMING_THRESHOLD).toBe(4);
   });
 
-  it("should have headers as comma-separated string", () => {
-    expect(typeof MIDDY_CORS_CONFIG.headers).toBe("string");
-    expect(MIDDY_CORS_CONFIG.headers).toContain("Content-Type");
+  it("should satisfy NUM_BANDS * BITS_PER_BAND = 64 (total hash bits)", () => {
+    expect(SIMHASH_CONFIG.NUM_BANDS * SIMHASH_CONFIG.BITS_PER_BAND).toBe(64);
   });
 });
 
-describe("WARMUP_EVENT", () => {
-  it("should have correct source", () => {
-    expect(WARMUP_EVENT.source).toBe("serverless-plugin-warmup");
+describe("getSimHashFlags", () => {
+  it("should return expected shape with all flag fields", () => {
+    const flags = getSimHashFlags();
+    expect(flags).toHaveProperty("ENABLED");
+    expect(flags).toHaveProperty("SHADOW_MODE");
+    expect(flags).toHaveProperty("ROLLOUT_PERCENT");
+    expect(flags).toHaveProperty("LATENCY_BYPASS_MS");
+    expect(flags).toHaveProperty("HAMMING_THRESHOLD");
+    expect(flags).toHaveProperty("MAX_CANDIDATES");
   });
 
-  it("should have event with warmup type", () => {
-    expect(WARMUP_EVENT.event.source).toBe("warmup");
-    expect(WARMUP_EVENT.event.type).toBe("keepalive");
+  it("should return boolean for ENABLED", () => {
+    const flags = getSimHashFlags();
+    expect(typeof flags.ENABLED).toBe("boolean");
+  });
+
+  it("should return boolean for SHADOW_MODE", () => {
+    const flags = getSimHashFlags();
+    expect(typeof flags.SHADOW_MODE).toBe("boolean");
+  });
+
+  it("should return number for ROLLOUT_PERCENT", () => {
+    const flags = getSimHashFlags();
+    expect(typeof flags.ROLLOUT_PERCENT).toBe("number");
+  });
+
+  it("should default ROLLOUT_PERCENT to 100 when env not set", () => {
+    const flags = getSimHashFlags();
+    expect(flags.ROLLOUT_PERCENT).toBe(100);
+  });
+
+  it("should default LATENCY_BYPASS_MS to 150 when env not set", () => {
+    const flags = getSimHashFlags();
+    expect(flags.LATENCY_BYPASS_MS).toBe(150);
   });
 });
 
@@ -147,5 +139,128 @@ describe("ERROR_STRINGS", () => {
   it("should have descriptive error messages", () => {
     expect(ERROR_STRINGS.SECRETS_MANAGER_FAILED).toContain("Secrets Manager");
     expect(ERROR_STRINGS.CANNOT_PARSE_JSON).toContain("JSON");
+  });
+});
+
+describe("remaining constants have correct values", () => {
+  it("FNV1A_OFFSET_BASIS should be the standard value", () => {
+    expect(FNV1A_OFFSET_BASIS).toBe(2166136261);
+  });
+
+  it("FNV1A_PRIME should be the standard value", () => {
+    expect(FNV1A_PRIME).toBe(16777619);
+  });
+
+  it("KEY_CACHE_DURATION should be 15 minutes in ms", () => {
+    expect(KEY_CACHE_DURATION).toBe(900000);
+  });
+
+  it("API_KEYS_CACHE_TTL should be 5 minutes in ms", () => {
+    expect(API_KEYS_CACHE_TTL).toBe(300000);
+  });
+
+  it("SESSION_PAYLOAD_TTL_SECONDS should be 1800", () => {
+    expect(SESSION_PAYLOAD_TTL_SECONDS).toBe(1800);
+  });
+
+  it("TIER2_BUCKET_LIMIT should be 1000", () => {
+    expect(TIER2_BUCKET_LIMIT).toBe(1000);
+  });
+
+  it("TIER2_HIGH_CARDINALITY_THRESHOLD should be 500", () => {
+    expect(TIER2_HIGH_CARDINALITY_THRESHOLD).toBe(500);
+  });
+
+  it("TIER2_CARDINALITY_PENALTY should be 0.3", () => {
+    expect(TIER2_CARDINALITY_PENALTY).toBe(0.3);
+  });
+
+  it("TIER2_STATS_SK should be _stats", () => {
+    expect(TIER2_STATS_SK).toBe("_stats");
+  });
+
+  it("PRIVACY_BROWSER_PENALTY should be 0.15", () => {
+    expect(PRIVACY_BROWSER_PENALTY).toBe(0.15);
+  });
+
+  it("PRIVATE_BROWSING_PENALTY should be 0.1", () => {
+    expect(PRIVATE_BROWSING_PENALTY).toBe(0.1);
+  });
+
+  it("TIER2_BUCKET_TTL_DAYS should be 7", () => {
+    expect(TIER2_BUCKET_TTL_DAYS).toBe(7);
+  });
+
+  it("SESSION_ANCHOR_VALIDITY_SECONDS should be 600", () => {
+    expect(SESSION_ANCHOR_VALIDITY_SECONDS).toBe(600);
+  });
+
+  it("SESSION_ANCHOR_CLEANUP_TTL_SECONDS should be 3600", () => {
+    expect(SESSION_ANCHOR_CLEANUP_TTL_SECONDS).toBe(3600);
+  });
+
+  it("IP_UA_ANCHOR_VALIDITY_SECONDS should be 180", () => {
+    expect(IP_UA_ANCHOR_VALIDITY_SECONDS).toBe(180);
+  });
+
+  it("MUTATION_GATE_TTL_SECONDS should be 3600", () => {
+    expect(MUTATION_GATE_TTL_SECONDS).toBe(3600);
+  });
+
+  it("DEDUPE_CACHE_MAX_ENTRIES should be 30000", () => {
+    expect(DEDUPE_CACHE_MAX_ENTRIES).toBe(30000);
+  });
+
+  it("DEDUPE_CACHE_TTL_MS should be 30000", () => {
+    expect(DEDUPE_CACHE_TTL_MS).toBe(30000);
+  });
+});
+
+// AR-210: Verify deleted exports are NOT available
+// These should fail after DEV-BOT removes them from constants.ts
+describe("removed exports should not exist", () => {
+  it("should not export SECURITY_KEY_NAME", async () => {
+    const constants = await import("./constants");
+    expect("SECURITY_KEY_NAME" in constants).toBe(false);
+  });
+
+  it("should not export DEFAULT_HEADERS", async () => {
+    const constants = await import("./constants");
+    expect("DEFAULT_HEADERS" in constants).toBe(false);
+  });
+
+  it("should not export ALLOWED_HEADERS", async () => {
+    const constants = await import("./constants");
+    expect("ALLOWED_HEADERS" in constants).toBe(false);
+  });
+
+  it("should not export ALLOWED_ORIGINS", async () => {
+    const constants = await import("./constants");
+    expect("ALLOWED_ORIGINS" in constants).toBe(false);
+  });
+
+  it("should not export MIDDY_CORS_CONFIG", async () => {
+    const constants = await import("./constants");
+    expect("MIDDY_CORS_CONFIG" in constants).toBe(false);
+  });
+
+  it("should not export WARMUP_EVENT", async () => {
+    const constants = await import("./constants");
+    expect("WARMUP_EVENT" in constants).toBe(false);
+  });
+
+  it("should not export SECRET_KEY_ARN", async () => {
+    const constants = await import("./constants");
+    expect("SECRET_KEY_ARN" in constants).toBe(false);
+  });
+
+  it("should not export POWERTOOLS_METRICS_NAMESPACE", async () => {
+    const constants = await import("./constants");
+    expect("POWERTOOLS_METRICS_NAMESPACE" in constants).toBe(false);
+  });
+
+  it("should not export POWERTOOLS_SERVICE_NAME", async () => {
+    const constants = await import("./constants");
+    expect("POWERTOOLS_SERVICE_NAME" in constants).toBe(false);
   });
 });

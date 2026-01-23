@@ -1,7 +1,6 @@
 // src/handlers/cardinality-recalc.ts
-// AR-130: Daily Lambda to recalculate Tier2 bucket cardinalities
+// Daily Lambda to recalculate Tier2 bucket cardinalities
 // Fixes drift from TTL-expired devices (ADD only increments, never decrements)
-// AR-159: Refactored to process buckets in pages rather than collecting all keys first
 import { ScheduledHandler } from "aws-lambda";
 import { Logger } from "@aws-lambda-powertools/logger";
 import { Metrics, MetricUnit } from "@aws-lambda-powertools/metrics";
@@ -13,6 +12,7 @@ import {
 } from "@aws-sdk/client-dynamodb";
 import { TIER2_STATS_SK } from "../helpers/constants";
 import { validateRequiredEnvVars } from "../helpers/env-validation";
+import { sleep } from "../helpers/sleep";
 
 /**
  * Environment configuration for the Cardinality Recalc Lambda
@@ -50,13 +50,6 @@ const metrics = new Metrics({
 
 // AWS SDK client (reused across invocations)
 const dynamodb = new DynamoDBClient({});
-
-/**
- * Sleep utility for backoff
- */
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 /**
  * Result of processing a single bucket
@@ -283,12 +276,12 @@ export const handler: ScheduledHandler = async (event): Promise<void> => {
   let errors = 0;
 
   try {
-    // AR-159: Track processed buckets to handle duplicates across scan pages
+    // Track processed buckets to handle duplicates across scan pages
     // (A bucket_key can appear multiple times in the scan if it has many device entries)
     const processedBuckets = new Set<string>();
     let pagesProcessed = 0;
 
-    // AR-159: Process bucket keys page by page to reduce memory usage
+    // Process bucket keys page by page to reduce memory usage
     for await (const pageKeys of scanBucketKeysPages(tableName)) {
       pagesProcessed++;
 
@@ -346,7 +339,7 @@ export const handler: ScheduledHandler = async (event): Promise<void> => {
       totalDriftMagnitude,
     );
     metrics.addMetric("ProcessingErrors", MetricUnit.Count, errors);
-    // AR-159: Track pagination metrics
+    // Track pagination metrics
     metrics.addMetric("PagesProcessed", MetricUnit.Count, pagesProcessed);
 
     const duration = Date.now() - startTime;

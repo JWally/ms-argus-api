@@ -17,20 +17,8 @@ import { ERROR_STRINGS } from "../helpers/constants";
 
 const secretsManagerMock = mockClient(SecretsManagerClient);
 
-// Mock the constants module to control SECRET_KEY_ARN
 const mockSecretArn =
   "arn:aws:secretsmanager:us-east-1:123456789:secret:argus-keys";
-let mockSecretKeyArn: string | undefined = mockSecretArn;
-
-vi.mock("../helpers/constants", async () => {
-  const actual = await vi.importActual("../helpers/constants");
-  return {
-    ...actual,
-    get SECRET_KEY_ARN() {
-      return mockSecretKeyArn;
-    },
-  };
-});
 
 // Import after mocking
 import {
@@ -44,7 +32,7 @@ describe("getAwsSecrets", () => {
     // Reset mocks and cache before each test
     secretsManagerMock.reset();
     clearCache();
-    mockSecretKeyArn = mockSecretArn;
+    process.env.SECRET_KEY_ARN = mockSecretArn;
   });
 
   afterEach(() => {
@@ -153,7 +141,7 @@ describe("getAwsSecrets", () => {
 
   describe("error handling", () => {
     it("should throw error when SECRET_KEY_ARN is not set", async () => {
-      mockSecretKeyArn = undefined;
+      delete process.env.SECRET_KEY_ARN;
 
       await expect(getAwsSecrets()).rejects.toThrow(
         ERROR_STRINGS.KEY_ARN_NOT_SET,

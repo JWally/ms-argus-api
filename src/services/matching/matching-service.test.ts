@@ -15,7 +15,6 @@ import {
   MatchingServiceConfig,
   MatchingServiceDeps,
   generateIdempotencyKey,
-  generateULID,
 } from "./matching-service";
 import { EvidenceCode, Fingerprint, SessionCacheValue } from "./types";
 import { DynamoCacheService } from "../cache";
@@ -990,6 +989,42 @@ describe("MatchingService", () => {
       expect(result.is_new_device).toBe(true);
       expect(tier2TimedOut).toBe(true);
     });
+
+    it("should match via ipUaAnchor when session anchor misses", async () => {
+      const now = Date.now();
+
+      // No tier 0.5/1 matches
+      dynamoMock.on(GetItemCommand).resolves({ Item: undefined });
+
+      // Query: tier2 returns empty, ipUaAnchor returns valid entry
+      dynamoMock.on(QueryCommand).callsFake((input) => {
+        const exprValues = input.ExpressionAttributeValues;
+        const bucketKey = exprValues?.[":bk"]?.S ?? "";
+        if (bucketKey.startsWith("ip_ua_anchor#")) {
+          return {
+            Items: [
+              marshall({
+                bucket_key: bucketKey,
+                device_id: "dev_ip_ua",
+                created_at: now - 30 * 1000, // 30 seconds ago
+              }),
+            ],
+          };
+        }
+        return { Items: [] };
+      });
+
+      // Fingerprint with ip+ua but NO screen_dims (session anchor returns null)
+      const fingerprint: Fingerprint = {
+        ip_address: "10.0.0.1",
+        user_agent: "Mozilla/5.0 Chrome/120",
+      };
+
+      const { result } = await service.runTieredMatching(fingerprint);
+
+      expect(result.device_id).toBe("dev_ip_ua");
+      expect(result.evidence_codes).toContain("IP_UA_ANCHOR_BUCKET");
+    });
   });
 
   describe("writeMatchResult", () => {
@@ -1287,52 +1322,52 @@ describe("generateIdempotencyKey", () => {
   });
 });
 
-// AR-121: Tests updated for ULID format
-describe("generateULID", () => {
-  it("should generate valid ULID format (26 chars, Crockford Base32)", () => {
-    const ulid = generateULID();
-    // ULID: 26 characters, Crockford's Base32 (0-9, A-Z excluding I, L, O, U)
-    expect(ulid).toMatch(/^[0-9A-HJKMNP-TV-Z]{26}$/);
+// AR-210: generateULID wrapper removed - ulid() inlined in createNewDevice
+describe("generateULID wrapper removed", () => {
+  it("should not export generateULID from matching-service", async () => {
+    const matchingService = await import("./matching-service");
+    expect("generateULID" in matchingService).toBe(false);
   });
 
-  it("should generate unique ULIDs", () => {
-    const ulids = new Set<string>();
-    for (let i = 0; i < 1000; i++) {
-      ulids.add(generateULID());
-    }
-    expect(ulids.size).toBe(1000);
+  it("createNewDevice should still generate valid dev_ prefixed ULID IDs", () => {
+    const dynamodb = new DynamoDBClient({});
+    const sqsClient = new SQSClient({});
+    const mockCache = createMockCacheService();
+
+    const deps: MatchingServiceDeps = {
+      dynamodb,
+      sqs: sqsClient,
+      cache: mockCache,
+      config: testConfig,
+    };
+    const svc = new MatchingService(deps);
+    const result = svc.createNewDevice();
+
+    // ULID format: dev_ + 26 chars Crockford's Base32
+    expect(result.device_id).toMatch(/^dev_[0-9A-HJKMNP-TV-Z]{26}$/);
+    expect(result.is_new_device).toBe(true);
+    expect(result.confidence).toBe(0);
+    expect(result.match_tier).toBe(-1);
   });
 
-  it("should produce no collisions in 100K generated ULIDs", () => {
-    const ulids = new Set<string>();
-    const count = 100_000;
-    for (let i = 0; i < count; i++) {
-      const ulid = generateULID();
-      expect(ulids.has(ulid)).toBe(false);
-      ulids.add(ulid);
+  it("createNewDevice should produce unique IDs without generateULID wrapper", () => {
+    const dynamodb = new DynamoDBClient({});
+    const sqsClient = new SQSClient({});
+    const mockCache = createMockCacheService();
+
+    const deps: MatchingServiceDeps = {
+      dynamodb,
+      sqs: sqsClient,
+      cache: mockCache,
+      config: testConfig,
+    };
+    const svc = new MatchingService(deps);
+
+    const ids = new Set<string>();
+    for (let i = 0; i < 100; i++) {
+      ids.add(svc.createNewDevice().device_id);
     }
-    expect(ulids.size).toBe(count);
-  }, 30000); // 30 second timeout for 100K iterations
-
-  it("should generate ULIDs with timestamp prefix for time-based sorting", () => {
-    // ULIDs have a 48-bit timestamp in first 10 characters
-    // The timestamp encodes milliseconds since Unix epoch in Crockford Base32
-    // ULIDs generated at different times will sort chronologically
-    const ulid1 = generateULID();
-    const ulid2 = generateULID();
-
-    // Both should be valid ULID format
-    expect(ulid1).toMatch(/^[0-9A-HJKMNP-TV-Z]{26}$/);
-    expect(ulid2).toMatch(/^[0-9A-HJKMNP-TV-Z]{26}$/);
-
-    // First 10 chars are timestamp - ULIDs from same ms share this prefix
-    // This proves the time component is encoded at the start
-    const timestamp1 = ulid1.substring(0, 10);
-    const timestamp2 = ulid2.substring(0, 10);
-
-    // ULIDs generated in sequence will have same or later timestamp
-    // (later timestamp is lexicographically greater)
-    expect(timestamp2 >= timestamp1).toBe(true);
+    expect(ids.size).toBe(100);
   });
 });
 
@@ -1570,5 +1605,203 @@ describe("MatchingService anchor recency sorting", () => {
 
     // AR-121: Verify ScanIndexForward:false is set
     expect(capturedInput).toHaveProperty("ScanIndexForward", false);
+  });
+});
+
+describe("MatchingService delegate methods", () => {
+  let dynamodb: DynamoDBClient;
+  let sqs: SQSClient;
+  let mockCache: ReturnType<typeof createMockCacheService>;
+  let service: MatchingService;
+
+  beforeEach(() => {
+    dynamoMock.reset();
+    sqsMock.reset();
+    mockCache = createMockCacheService();
+    dynamodb = new DynamoDBClient({});
+    sqs = new SQSClient({});
+
+    const deps: MatchingServiceDeps = {
+      dynamodb,
+      sqs,
+      cache: mockCache,
+      config: testConfig,
+    };
+    service = new MatchingService(deps);
+  });
+
+  describe("tier15SimHashMatch", () => {
+    it("should return null when no SimHash match found", async () => {
+      dynamoMock.on(QueryCommand).resolves({ Items: [] });
+
+      const fingerprint: Fingerprint = { fuzzy_hash: "abcdef1234567890" };
+      const result = await service.tier15SimHashMatch(fingerprint);
+      expect(result).toBeNull();
+    });
+  });
+
+  describe("buildSessionAnchorKey", () => {
+    it("should return null when required fields are missing", () => {
+      const fingerprint: Fingerprint = { ip_address: "1.2.3.4" };
+      expect(service.buildSessionAnchorKey(fingerprint)).toBeNull();
+    });
+
+    it("should return anchor key when ip, user_agent, and screen_dims present", () => {
+      const fingerprint: Fingerprint = {
+        ip_address: "10.0.0.1",
+        user_agent: "Mozilla/5.0 Chrome/120",
+        screen_dims: "1920x1080",
+      };
+      const key = service.buildSessionAnchorKey(fingerprint);
+      expect(key).not.toBeNull();
+      expect(key).toContain("session_anchor#");
+    });
+  });
+
+  describe("sessionAnchorLookup", () => {
+    it("should return null when fingerprint lacks required fields", async () => {
+      const fingerprint: Fingerprint = { ip_address: "1.2.3.4" };
+      const result = await service.sessionAnchorLookup(fingerprint);
+      expect(result).toBeNull();
+    });
+
+    it("should return null when no items in bucket", async () => {
+      dynamoMock.on(QueryCommand).resolves({ Items: [] });
+
+      const fingerprint: Fingerprint = {
+        ip_address: "1.2.3.4",
+        user_agent: "Mozilla/5.0 Chrome/120",
+        screen_dims: "1920x1080",
+      };
+      const result = await service.sessionAnchorLookup(fingerprint);
+      expect(result).toBeNull();
+    });
+
+    it("should return match for recent entry within validity window", async () => {
+      const now = Date.now();
+      dynamoMock.on(QueryCommand).resolves({
+        Items: [
+          marshall({
+            bucket_key: "session_anchor#1.2.3.4#hash#1920x1080",
+            device_id: "dev_anchor",
+            created_at: now - 2 * 60 * 1000, // 2 minutes ago
+          }),
+        ],
+      });
+      dynamoMock.on(GetItemCommand).resolves({
+        Item: marshall({
+          device_id: "dev_anchor",
+          risk_score: 0.3,
+          flags: [],
+        }),
+      });
+
+      const fingerprint: Fingerprint = {
+        ip_address: "1.2.3.4",
+        user_agent: "Mozilla/5.0 Chrome/120",
+        screen_dims: "1920x1080",
+      };
+      const result = await service.sessionAnchorLookup(fingerprint);
+
+      expect(result).not.toBeNull();
+      expect(result?.device_id).toBe("dev_anchor");
+      expect(result?.evidence_codes).toContain("SESSION_ANCHOR_BUCKET");
+    });
+  });
+
+  describe("buildIpUaAnchorKey", () => {
+    it("should return null when ip_address is missing", () => {
+      const fingerprint: Fingerprint = {
+        user_agent: "Mozilla/5.0 Chrome/120",
+      };
+      expect(service.buildIpUaAnchorKey(fingerprint)).toBeNull();
+    });
+
+    it("should return null when user_agent is missing", () => {
+      const fingerprint: Fingerprint = {
+        ip_address: "1.2.3.4",
+      };
+      expect(service.buildIpUaAnchorKey(fingerprint)).toBeNull();
+    });
+
+    it("should return anchor key when both ip and user_agent present", () => {
+      const fingerprint: Fingerprint = {
+        ip_address: "10.0.0.1",
+        user_agent: "Mozilla/5.0 Chrome/120",
+      };
+      const key = service.buildIpUaAnchorKey(fingerprint);
+      expect(key).not.toBeNull();
+      expect(key).toContain("ip_ua_anchor#10.0.0.1#");
+    });
+  });
+
+  describe("ipUaAnchorLookup", () => {
+    it("should return null when fingerprint lacks ip or user_agent", async () => {
+      const fingerprint: Fingerprint = { ip_address: "1.2.3.4" };
+      const result = await service.ipUaAnchorLookup(fingerprint);
+      expect(result).toBeNull();
+    });
+
+    it("should return null when no items in bucket", async () => {
+      dynamoMock.on(QueryCommand).resolves({ Items: [] });
+
+      const fingerprint: Fingerprint = {
+        ip_address: "1.2.3.4",
+        user_agent: "Mozilla/5.0 Chrome/120",
+      };
+      const result = await service.ipUaAnchorLookup(fingerprint);
+      expect(result).toBeNull();
+    });
+
+    it("should return match for a recent entry within validity window", async () => {
+      const now = Date.now();
+      dynamoMock.on(QueryCommand).resolves({
+        Items: [
+          marshall({
+            bucket_key: "ip_ua_anchor#1.2.3.4#hash",
+            device_id: "dev_recent",
+            created_at: now - 60 * 1000, // 1 minute ago
+          }),
+        ],
+      });
+      dynamoMock.on(GetItemCommand).resolves({
+        Item: marshall({
+          device_id: "dev_recent",
+          risk_score: 0.25,
+          flags: ["returning_user"],
+        }),
+      });
+
+      const fingerprint: Fingerprint = {
+        ip_address: "1.2.3.4",
+        user_agent: "Mozilla/5.0 Chrome/120",
+      };
+      const result = await service.ipUaAnchorLookup(fingerprint);
+
+      expect(result).not.toBeNull();
+      expect(result?.device_id).toBe("dev_recent");
+      expect(result?.confidence).toBe(0.6);
+      expect(result?.evidence_codes).toContain("IP_UA_ANCHOR_BUCKET");
+    });
+
+    it("should return null when all entries are expired", async () => {
+      const now = Date.now();
+      dynamoMock.on(QueryCommand).resolves({
+        Items: [
+          marshall({
+            bucket_key: "ip_ua_anchor#1.2.3.4#hash",
+            device_id: "dev_old",
+            created_at: now - 10 * 60 * 1000, // 10 minutes ago (beyond 3-min window)
+          }),
+        ],
+      });
+
+      const fingerprint: Fingerprint = {
+        ip_address: "1.2.3.4",
+        user_agent: "Mozilla/5.0 Chrome/120",
+      };
+      const result = await service.ipUaAnchorLookup(fingerprint);
+      expect(result).toBeNull();
+    });
   });
 });
