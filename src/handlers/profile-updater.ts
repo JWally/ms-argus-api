@@ -1,14 +1,8 @@
 // src/handlers/profile-updater.ts
-// AR-52: Replaced Redis with DynamoDB session cache
-// AR-73: Added fingerprint normalization for web library compatibility
-import {
-  SQSHandler,
-  SQSBatchResponse,
-  SQSBatchItemFailure,
-  SQSRecord,
-} from "aws-lambda";
+import { SQSHandler, SQSRecord } from "aws-lambda";
 import { Logger } from "@aws-lambda-powertools/logger";
 import { Metrics, MetricUnit } from "@aws-lambda-powertools/metrics";
+import { processSqsBatch } from "../helpers/sqs-batch";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import {
   ProfileService,
@@ -17,7 +11,6 @@ import {
   ProfileUpdatePayload,
 } from "../services/profile";
 import { DynamoCacheService } from "../services/cache";
-// Note: BloomFilter removed per AR-21 - adds complexity without sufficient value
 import { getProfileUpdaterEnv, ProfileUpdaterEnvConfig } from "../config/env";
 import {
   PROFILE_TTL_DAYS,
@@ -52,7 +45,7 @@ function getConfig(): ProfileServiceConfig {
   };
 }
 
-// Create DynamoDB cache service (AR-52: replaces Redis)
+// Create DynamoDB cache service
 const cacheService = new DynamoCacheService(dynamodb, {
   tableName: envConfig.SESSION_CACHE_TABLE,
   sessionTtlSeconds: SESSION_TTL_SECONDS,
@@ -74,26 +67,18 @@ function createProfileService(): ProfileService {
  * Writes device profiles and indexes to DynamoDB
  * Implements mutation gating to reduce unnecessary writes
  */
-export const handler: SQSHandler = async (event): Promise<SQSBatchResponse> => {
-  const batchItemFailures: SQSBatchItemFailure[] = [];
+export const handler: SQSHandler = async (event) => {
   const service = createProfileService();
-
-  for (const record of event.Records) {
-    try {
-      await processRecord(record, service);
-      metrics.addMetric("ProfileUpdateSuccess", MetricUnit.Count, 1);
-    } catch (error) {
-      logger.error("Failed to process record", {
-        error,
-        messageId: record.messageId,
-      });
-      metrics.addMetric("ProfileUpdateError", MetricUnit.Count, 1);
-      batchItemFailures.push({ itemIdentifier: record.messageId });
-    }
-  }
-
-  metrics.publishStoredMetrics();
-  return { batchItemFailures };
+  return processSqsBatch(
+    event.Records,
+    (record) => processRecord(record, service),
+    {
+      metrics,
+      logger,
+      successMetric: "ProfileUpdateSuccess",
+      errorMetric: "ProfileUpdateError",
+    },
+  );
 };
 
 /**
@@ -105,7 +90,7 @@ async function processRecord(
 ): Promise<void> {
   const startTime = Date.now();
 
-  // AR-156: Handle malformed JSON payloads - don't retry poison messages
+  // Don't retry malformed JSON - treat as poison message
   let rawPayload: ProfileUpdatePayload;
   try {
     rawPayload = JSON.parse(record.body);
@@ -121,9 +106,7 @@ async function processRecord(
 
   const { device_id } = rawPayload;
 
-  // AR-73: Normalize fingerprint from web library nested format to flat API format
-  // AR-81: Also extracts sigint data (third-party cookie, JA3/JA4, TCP probe)
-  // AR-145: Preserve raw fingerprint for cross-field anomaly detection
+  // Normalize fingerprint and preserve raw for cross-field anomaly detection
   const payload: ProfileUpdatePayload = {
     ...rawPayload,
     fingerprint: normalizeFingerprint(

@@ -1,11 +1,7 @@
-import {
-  SQSHandler,
-  SQSBatchResponse,
-  SQSBatchItemFailure,
-  SQSRecord,
-} from "aws-lambda";
+import { SQSHandler, SQSRecord } from "aws-lambda";
 import { Logger } from "@aws-lambda-powertools/logger";
 import { Metrics, MetricUnit } from "@aws-lambda-powertools/metrics";
+import { processSqsBatch } from "../helpers/sqs-batch";
 import { DynamoDBClient, PutItemCommand } from "@aws-sdk/client-dynamodb";
 import { SQSClient } from "@aws-sdk/client-sqs";
 import { FirehoseClient, PutRecordCommand } from "@aws-sdk/client-firehose";
@@ -86,26 +82,18 @@ function createMatchingService(): MatchingService {
  * Matching Worker Lambda Handler
  * Processes fingerprints from SQS and writes results to DynamoDB session cache
  */
-export const handler: SQSHandler = async (event): Promise<SQSBatchResponse> => {
-  const batchItemFailures: SQSBatchItemFailure[] = [];
+export const handler: SQSHandler = async (event) => {
   const service = createMatchingService();
-
-  for (const record of event.Records) {
-    try {
-      await processRecord(record, service);
-      metrics.addMetric("MatchingSuccess", MetricUnit.Count, 1);
-    } catch (error) {
-      logger.error("Failed to process record", {
-        error,
-        messageId: record.messageId,
-      });
-      metrics.addMetric("MatchingError", MetricUnit.Count, 1);
-      batchItemFailures.push({ itemIdentifier: record.messageId });
-    }
-  }
-
-  metrics.publishStoredMetrics();
-  return { batchItemFailures };
+  return processSqsBatch(
+    event.Records,
+    (record) => processRecord(record, service),
+    {
+      metrics,
+      logger,
+      successMetric: "MatchingSuccess",
+      errorMetric: "MatchingError",
+    },
+  );
 };
 
 /**
