@@ -22,6 +22,7 @@ import {
 } from "../../helpers/constants";
 import { buildBucketKeysWithTypes as buildBucketKeysWithTypesHelper } from "../../helpers/bucket-keys";
 import { EvidenceCode, Fingerprint, MatchResult } from "./types";
+import { computeFuzzyMatchInfo } from "../../helpers/hash";
 
 // AR-153: Structured logging for visibility into cardinality fetch failures
 const logger = new Logger({
@@ -176,6 +177,10 @@ export async function tier2CompoundMatch(
       risk_score: profile?.risk_score ?? 0.4,
       flags: profile?.flags ?? [],
       evidence_codes: bestEvidence,
+      fuzzy_match_info: computeFuzzyMatchInfo(
+        fingerprint.fuzzy_hash,
+        profile?.fuzzy_hash,
+      ),
     };
   }
 

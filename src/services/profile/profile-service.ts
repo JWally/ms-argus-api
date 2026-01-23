@@ -390,14 +390,17 @@ export class ProfileService {
       existingProfile !== null &&
       this.hasSignificantDrift(existingProfile, fingerprint);
 
-    // Always update anchor buckets (they're time-sensitive)
-    // These must be refreshed on every request regardless of drift
+    // Always update anchor and tier 2 buckets regardless of drift:
+    // - Anchor buckets are time-sensitive and must be refreshed each request
+    // - Tier 2 buckets have TTLs and new fingerprint fields (e.g., structural
+    //   hashes) must be indexed even when overall fingerprint hasn't drifted
     await this.updateSessionAnchorBucket(device_id, fingerprint);
     await this.updateIpUaAnchorBucket(device_id, fingerprint);
+    const tier2Writes = await this.updateTier2Buckets(device_id, fingerprint);
 
     if (existingProfile && !hasDrift) {
-      // No significant drift - skip profile/tier writes but anchors were updated
-      return { skipped: true, reason: "no_drift" };
+      // No significant drift - skip profile/tier1/simhash writes
+      return { skipped: true, reason: "no_drift", tier2Writes };
     }
 
     // Perform updates (with flag computation)
@@ -415,14 +418,13 @@ export class ProfileService {
       fingerprint,
       evidence_codes,
     );
-    const tier2Writes = await this.updateTier2Buckets(device_id, fingerprint);
 
     const simhashBandWrites = await this.updateSimHashBands(
       device_id,
       fingerprint,
     );
 
-    // Note: anchor buckets already updated above (before drift check)
+    // Note: anchor + tier2 buckets already updated above (before drift check)
 
     return {
       skipped: false,

@@ -28,9 +28,11 @@ import type { ArgusPayload } from "../helpers/payload-schema";
 import { extractFingerprint } from "../services/matching/fingerprint-extractor";
 
 // V3 Payload from ingestion handler (ArgusPayload + metadata)
+// Supports both V2 "network" and V3 "sigint" field names
 interface SqsPayload extends ArgusPayload {
   _headers?: Record<string, string>;
   _timestamp?: number;
+  network?: ArgusPayload["sigint"]; // V2 compat
 }
 
 // Validate environment variables at module load (cold start)
@@ -136,6 +138,11 @@ async function processRecord(
     });
     metrics.addMetric("MalformedPayload", MetricUnit.Count, 1);
     return;
+  }
+
+  // Normalize V2 "network" → V3 "sigint"
+  if (!rawPayload.sigint && rawPayload.network) {
+    rawPayload.sigint = rawPayload.network;
   }
 
   // V3 format: extract session_id from identifiers
