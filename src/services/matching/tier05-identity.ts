@@ -1,132 +1,91 @@
-// src/services/matching/tier05-identity.ts
 import { DynamoDBClient, GetItemCommand } from "@aws-sdk/client-dynamodb";
 import { unmarshall } from "@aws-sdk/util-dynamodb";
 import { computeFuzzyMatchInfo } from "../../helpers/hash";
 import { EvidenceCode, MatchResult } from "./types";
 
-/**
- * Dependencies for tier 0.5 identity operations
- */
 export interface Tier05IdentityDeps {
   dynamodb: DynamoDBClient;
   tier1IndexTable: string;
 }
 
-/**
- * Tier 0.5: Lookup by ECDSA public key
- * Near-perfect confidence - cryptographic identity stored in IndexedDB
- * Private key is non-extractable, so public key proves device possession
- * Now includes fuzzy_match_info for drift detection
- */
-export async function tier05PublicKeyLookup(
+interface IdentityLookupConfig {
+  prefix: string;
+  confidence: number;
+  evidenceCode: EvidenceCode;
+}
+
+const PUBKEY_CONFIG: IdentityLookupConfig = {
+  prefix: "pubkey#",
+  confidence: 0.99,
+  evidenceCode: "PUBLIC_KEY_MATCH",
+};
+
+const COOKIE_CONFIG: IdentityLookupConfig = {
+  prefix: "evercookie#",
+  confidence: 0.99,
+  evidenceCode: "EVERCOOKIE_MATCH",
+};
+
+const SIGINT_CONFIG: IdentityLookupConfig = {
+  prefix: "sigint#",
+  confidence: 0.98,
+  evidenceCode: "SIGINT_ID_MATCH",
+};
+
+async function identityLookup(
+  deps: Tier05IdentityDeps,
+  id: string,
+  config: IdentityLookupConfig,
+  incomingFuzzyHash?: string,
+): Promise<MatchResult | null> {
+  const result = await deps.dynamodb.send(
+    new GetItemCommand({
+      TableName: deps.tier1IndexTable,
+      Key: {
+        hash_key: { S: `${config.prefix}${id}` },
+      },
+    }),
+  );
+
+  if (result.Item) {
+    const item = unmarshall(result.Item);
+    return {
+      device_id: item.device_id,
+      confidence: config.confidence,
+      match_tier: 0.5,
+      is_new_device: false,
+      risk_score: item.risk_score ?? 0.3,
+      flags: item.flags ?? [],
+      evidence_codes: [config.evidenceCode],
+      fuzzy_match_info: computeFuzzyMatchInfo(
+        incomingFuzzyHash,
+        item.fuzzy_hash,
+      ),
+    };
+  }
+  return null;
+}
+
+export function tier05PublicKeyLookup(
   deps: Tier05IdentityDeps,
   publicKey: string,
   incomingFuzzyHash?: string,
 ): Promise<MatchResult | null> {
-  const result = await deps.dynamodb.send(
-    new GetItemCommand({
-      TableName: deps.tier1IndexTable,
-      Key: {
-        hash_key: { S: `pubkey#${publicKey}` },
-      },
-    }),
-  );
-
-  if (result.Item) {
-    const item = unmarshall(result.Item);
-    return {
-      device_id: item.device_id,
-      confidence: 0.99,
-      match_tier: 0.5,
-      is_new_device: false,
-      risk_score: item.risk_score ?? 0.3,
-      flags: item.flags ?? [],
-      evidence_codes: ["PUBLIC_KEY_MATCH"] as EvidenceCode[],
-      // Compute drift from stored fuzzy_hash
-      fuzzy_match_info: computeFuzzyMatchInfo(
-        incomingFuzzyHash,
-        item.fuzzy_hash,
-      ),
-    };
-  }
-  return null;
+  return identityLookup(deps, publicKey, PUBKEY_CONFIG, incomingFuzzyHash);
 }
 
-/**
- * Tier 0.5: Lookup by evercookie ID
- * Highest confidence - evercookie is hard to clear
- * Now includes fuzzy_match_info for drift detection
- */
-export async function tier05CookieLookup(
+export function tier05CookieLookup(
   deps: Tier05IdentityDeps,
   evercookieId: string,
   incomingFuzzyHash?: string,
 ): Promise<MatchResult | null> {
-  const result = await deps.dynamodb.send(
-    new GetItemCommand({
-      TableName: deps.tier1IndexTable,
-      Key: {
-        hash_key: { S: `evercookie#${evercookieId}` },
-      },
-    }),
-  );
-
-  if (result.Item) {
-    const item = unmarshall(result.Item);
-    return {
-      device_id: item.device_id,
-      confidence: 0.99,
-      match_tier: 0.5,
-      is_new_device: false,
-      risk_score: item.risk_score ?? 0.3,
-      flags: item.flags ?? [],
-      evidence_codes: ["EVERCOOKIE_MATCH"] as EvidenceCode[],
-      // Compute drift from stored fuzzy_hash
-      fuzzy_match_info: computeFuzzyMatchInfo(
-        incomingFuzzyHash,
-        item.fuzzy_hash,
-      ),
-    };
-  }
-  return null;
+  return identityLookup(deps, evercookieId, COOKIE_CONFIG, incomingFuzzyHash);
 }
 
-/**
- * Tier 0.5: Lookup by third-party cookie from sigint
- * High confidence - cross-site cookie from CloudFront edge service
- * Survives first-party cookie clearing, provides cross-site identity
- * Now includes fuzzy_match_info for drift detection
- */
-export async function tier05SigintIdLookup(
+export function tier05SigintIdLookup(
   deps: Tier05IdentityDeps,
   sigintId: string,
   incomingFuzzyHash?: string,
 ): Promise<MatchResult | null> {
-  const result = await deps.dynamodb.send(
-    new GetItemCommand({
-      TableName: deps.tier1IndexTable,
-      Key: {
-        hash_key: { S: `sigint#${sigintId}` },
-      },
-    }),
-  );
-
-  if (result.Item) {
-    const item = unmarshall(result.Item);
-    return {
-      device_id: item.device_id,
-      confidence: 0.98, // Slightly lower than evercookie (can be shared across browsers)
-      match_tier: 0.5,
-      is_new_device: false,
-      risk_score: item.risk_score ?? 0.3,
-      flags: item.flags ?? [],
-      evidence_codes: ["SIGINT_ID_MATCH"] as EvidenceCode[],
-      // Compute drift from stored fuzzy_hash
-      fuzzy_match_info: computeFuzzyMatchInfo(
-        incomingFuzzyHash,
-        item.fuzzy_hash,
-      ),
-    };
-  }
-  return null;
+  return identityLookup(deps, sigintId, SIGINT_CONFIG, incomingFuzzyHash);
 }
