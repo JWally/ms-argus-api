@@ -990,6 +990,42 @@ describe("MatchingService", () => {
       expect(result.is_new_device).toBe(true);
       expect(tier2TimedOut).toBe(true);
     });
+
+    it("should match via ipUaAnchor when session anchor misses", async () => {
+      const now = Date.now();
+
+      // No tier 0.5/1 matches
+      dynamoMock.on(GetItemCommand).resolves({ Item: undefined });
+
+      // Query: tier2 returns empty, ipUaAnchor returns valid entry
+      dynamoMock.on(QueryCommand).callsFake((input) => {
+        const exprValues = input.ExpressionAttributeValues;
+        const bucketKey = exprValues?.[":bk"]?.S ?? "";
+        if (bucketKey.startsWith("ip_ua_anchor#")) {
+          return {
+            Items: [
+              marshall({
+                bucket_key: bucketKey,
+                device_id: "dev_ip_ua",
+                created_at: now - 30 * 1000, // 30 seconds ago
+              }),
+            ],
+          };
+        }
+        return { Items: [] };
+      });
+
+      // Fingerprint with ip+ua but NO screen_dims (session anchor returns null)
+      const fingerprint: Fingerprint = {
+        ip_address: "10.0.0.1",
+        user_agent: "Mozilla/5.0 Chrome/120",
+      };
+
+      const { result } = await service.runTieredMatching(fingerprint);
+
+      expect(result.device_id).toBe("dev_ip_ua");
+      expect(result.evidence_codes).toContain("IP_UA_ANCHOR_BUCKET");
+    });
   });
 
   describe("writeMatchResult", () => {
@@ -1570,5 +1606,203 @@ describe("MatchingService anchor recency sorting", () => {
 
     // AR-121: Verify ScanIndexForward:false is set
     expect(capturedInput).toHaveProperty("ScanIndexForward", false);
+  });
+});
+
+describe("MatchingService delegate methods", () => {
+  let dynamodb: DynamoDBClient;
+  let sqs: SQSClient;
+  let mockCache: ReturnType<typeof createMockCacheService>;
+  let service: MatchingService;
+
+  beforeEach(() => {
+    dynamoMock.reset();
+    sqsMock.reset();
+    mockCache = createMockCacheService();
+    dynamodb = new DynamoDBClient({});
+    sqs = new SQSClient({});
+
+    const deps: MatchingServiceDeps = {
+      dynamodb,
+      sqs,
+      cache: mockCache,
+      config: testConfig,
+    };
+    service = new MatchingService(deps);
+  });
+
+  describe("tier15SimHashMatch", () => {
+    it("should return null when no SimHash match found", async () => {
+      dynamoMock.on(QueryCommand).resolves({ Items: [] });
+
+      const fingerprint: Fingerprint = { fuzzy_hash: "abcdef1234567890" };
+      const result = await service.tier15SimHashMatch(fingerprint);
+      expect(result).toBeNull();
+    });
+  });
+
+  describe("buildSessionAnchorKey", () => {
+    it("should return null when required fields are missing", () => {
+      const fingerprint: Fingerprint = { ip_address: "1.2.3.4" };
+      expect(service.buildSessionAnchorKey(fingerprint)).toBeNull();
+    });
+
+    it("should return anchor key when ip, user_agent, and screen_dims present", () => {
+      const fingerprint: Fingerprint = {
+        ip_address: "10.0.0.1",
+        user_agent: "Mozilla/5.0 Chrome/120",
+        screen_dims: "1920x1080",
+      };
+      const key = service.buildSessionAnchorKey(fingerprint);
+      expect(key).not.toBeNull();
+      expect(key).toContain("session_anchor#");
+    });
+  });
+
+  describe("sessionAnchorLookup", () => {
+    it("should return null when fingerprint lacks required fields", async () => {
+      const fingerprint: Fingerprint = { ip_address: "1.2.3.4" };
+      const result = await service.sessionAnchorLookup(fingerprint);
+      expect(result).toBeNull();
+    });
+
+    it("should return null when no items in bucket", async () => {
+      dynamoMock.on(QueryCommand).resolves({ Items: [] });
+
+      const fingerprint: Fingerprint = {
+        ip_address: "1.2.3.4",
+        user_agent: "Mozilla/5.0 Chrome/120",
+        screen_dims: "1920x1080",
+      };
+      const result = await service.sessionAnchorLookup(fingerprint);
+      expect(result).toBeNull();
+    });
+
+    it("should return match for recent entry within validity window", async () => {
+      const now = Date.now();
+      dynamoMock.on(QueryCommand).resolves({
+        Items: [
+          marshall({
+            bucket_key: "session_anchor#1.2.3.4#hash#1920x1080",
+            device_id: "dev_anchor",
+            created_at: now - 2 * 60 * 1000, // 2 minutes ago
+          }),
+        ],
+      });
+      dynamoMock.on(GetItemCommand).resolves({
+        Item: marshall({
+          device_id: "dev_anchor",
+          risk_score: 0.3,
+          flags: [],
+        }),
+      });
+
+      const fingerprint: Fingerprint = {
+        ip_address: "1.2.3.4",
+        user_agent: "Mozilla/5.0 Chrome/120",
+        screen_dims: "1920x1080",
+      };
+      const result = await service.sessionAnchorLookup(fingerprint);
+
+      expect(result).not.toBeNull();
+      expect(result?.device_id).toBe("dev_anchor");
+      expect(result?.evidence_codes).toContain("SESSION_ANCHOR_BUCKET");
+    });
+  });
+
+  describe("buildIpUaAnchorKey", () => {
+    it("should return null when ip_address is missing", () => {
+      const fingerprint: Fingerprint = {
+        user_agent: "Mozilla/5.0 Chrome/120",
+      };
+      expect(service.buildIpUaAnchorKey(fingerprint)).toBeNull();
+    });
+
+    it("should return null when user_agent is missing", () => {
+      const fingerprint: Fingerprint = {
+        ip_address: "1.2.3.4",
+      };
+      expect(service.buildIpUaAnchorKey(fingerprint)).toBeNull();
+    });
+
+    it("should return anchor key when both ip and user_agent present", () => {
+      const fingerprint: Fingerprint = {
+        ip_address: "10.0.0.1",
+        user_agent: "Mozilla/5.0 Chrome/120",
+      };
+      const key = service.buildIpUaAnchorKey(fingerprint);
+      expect(key).not.toBeNull();
+      expect(key).toContain("ip_ua_anchor#10.0.0.1#");
+    });
+  });
+
+  describe("ipUaAnchorLookup", () => {
+    it("should return null when fingerprint lacks ip or user_agent", async () => {
+      const fingerprint: Fingerprint = { ip_address: "1.2.3.4" };
+      const result = await service.ipUaAnchorLookup(fingerprint);
+      expect(result).toBeNull();
+    });
+
+    it("should return null when no items in bucket", async () => {
+      dynamoMock.on(QueryCommand).resolves({ Items: [] });
+
+      const fingerprint: Fingerprint = {
+        ip_address: "1.2.3.4",
+        user_agent: "Mozilla/5.0 Chrome/120",
+      };
+      const result = await service.ipUaAnchorLookup(fingerprint);
+      expect(result).toBeNull();
+    });
+
+    it("should return match for a recent entry within validity window", async () => {
+      const now = Date.now();
+      dynamoMock.on(QueryCommand).resolves({
+        Items: [
+          marshall({
+            bucket_key: "ip_ua_anchor#1.2.3.4#hash",
+            device_id: "dev_recent",
+            created_at: now - 60 * 1000, // 1 minute ago
+          }),
+        ],
+      });
+      dynamoMock.on(GetItemCommand).resolves({
+        Item: marshall({
+          device_id: "dev_recent",
+          risk_score: 0.25,
+          flags: ["returning_user"],
+        }),
+      });
+
+      const fingerprint: Fingerprint = {
+        ip_address: "1.2.3.4",
+        user_agent: "Mozilla/5.0 Chrome/120",
+      };
+      const result = await service.ipUaAnchorLookup(fingerprint);
+
+      expect(result).not.toBeNull();
+      expect(result?.device_id).toBe("dev_recent");
+      expect(result?.confidence).toBe(0.6);
+      expect(result?.evidence_codes).toContain("IP_UA_ANCHOR_BUCKET");
+    });
+
+    it("should return null when all entries are expired", async () => {
+      const now = Date.now();
+      dynamoMock.on(QueryCommand).resolves({
+        Items: [
+          marshall({
+            bucket_key: "ip_ua_anchor#1.2.3.4#hash",
+            device_id: "dev_old",
+            created_at: now - 10 * 60 * 1000, // 10 minutes ago (beyond 3-min window)
+          }),
+        ],
+      });
+
+      const fingerprint: Fingerprint = {
+        ip_address: "1.2.3.4",
+        user_agent: "Mozilla/5.0 Chrome/120",
+      };
+      const result = await service.ipUaAnchorLookup(fingerprint);
+      expect(result).toBeNull();
+    });
   });
 });

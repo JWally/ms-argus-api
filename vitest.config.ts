@@ -13,16 +13,12 @@ export default defineConfig({
     },
     coverage: {
       provider: "v8",
-      reporter: ["text", "json", "json-summary", "lcov"],
-      include: ["src/**/*.ts", "lib/**/*.ts"],
-      exclude: [
-        "src/**/*.test.ts",
-        "lib/**/*.test.ts",
-        "src/**/*.d.ts",
-        "lib/**/*.d.ts",
-        "node_modules",
-        "dist",
-      ],
+      reporter: ["text", "json", "json-summary", "lcov", "html"],
+      reportsDirectory: "./coverage",
+      all: true,
+      clean: true,
+      include: ["src/**/*.ts"],
+      exclude: ["**/*.test.ts", "**/*.d.ts", "node_modules", "dist", "cdk.out"],
       thresholds: {
         // AR-41: Increased thresholds to prevent coverage regression
         // Current: statements 57%, branches 94%, functions 97%, lines 57%

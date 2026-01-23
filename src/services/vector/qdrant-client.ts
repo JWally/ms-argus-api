@@ -18,6 +18,8 @@ export interface QdrantClientConfig {
   logger: Logger;
   /** Request timeout in milliseconds (default: 10000) */
   timeoutMs?: number;
+  /** Optional SecretsManagerClient instance (for dependency injection in tests) */
+  secretsClient?: SecretsManagerClient;
 }
 
 /**
@@ -104,7 +106,7 @@ interface QdrantResponse<T> {
  * Communicates with QDrant via REST API through the internal ALB
  */
 export class QdrantClient {
-  private readonly config: Required<QdrantClientConfig>;
+  private readonly config: Required<Omit<QdrantClientConfig, "secretsClient">>;
   private readonly secretsClient: SecretsManagerClient;
   private cachedApiKey: string | null = null;
   private apiKeyExpiresAt: number = 0;
@@ -117,7 +119,7 @@ export class QdrantClient {
       ...config,
       timeoutMs: config.timeoutMs ?? 10000,
     };
-    this.secretsClient = new SecretsManagerClient({});
+    this.secretsClient = config.secretsClient ?? new SecretsManagerClient({});
   }
 
   /**

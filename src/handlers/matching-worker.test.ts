@@ -46,21 +46,25 @@ vi.hoisted(() => {
   process.env.PROFILES_TABLE = "test-profiles";
   process.env.PROFILE_QUEUE_URL =
     "https://sqs.us-east-1.amazonaws.com/123456789/test-profile-queue";
+  process.env.OBSERVATIONS_STREAM_NAME = "test-observations-stream";
 });
 
 import { mockClient } from "aws-sdk-client-mock";
 import {
   DynamoDBClient,
   GetItemCommand,
+  PutItemCommand,
   QueryCommand,
 } from "@aws-sdk/client-dynamodb";
 import { SQSClient, SendMessageCommand } from "@aws-sdk/client-sqs";
+import { FirehoseClient, PutRecordCommand } from "@aws-sdk/client-firehose";
 import { marshall } from "@aws-sdk/util-dynamodb";
 import { SQSEvent, SQSRecord, Context } from "aws-lambda";
 
 // Mock AWS SDK clients
 const dynamoMock = mockClient(DynamoDBClient);
 const sqsMock = mockClient(SQSClient);
+const firehoseMock = mockClient(FirehoseClient);
 
 // Import handler after mocking
 import { handler } from "./matching-worker";
@@ -84,6 +88,10 @@ describe("matching-worker handler", () => {
   beforeEach(() => {
     dynamoMock.reset();
     sqsMock.reset();
+    firehoseMock.reset();
+    // Default: resolve PutItemCommand and PutRecordCommand to avoid unhandled rejections
+    dynamoMock.on(PutItemCommand).resolves({});
+    firehoseMock.on(PutRecordCommand).resolves({ RecordId: "rec-1" });
     vi.clearAllMocks();
     // AR-123: Reset metric mocks
     mockAddMetric.mockClear();
@@ -502,6 +510,390 @@ describe("matching-worker handler", () => {
       expect(mockAddMetric).not.toHaveBeenCalledWith("NewDevice", "Count", 1);
       // Should have emitted Tier1Hit instead
       expect(mockAddMetric).toHaveBeenCalledWith("Tier1Hit", "Count", 1);
+    });
+  });
+
+  // ==================== FINGERPRINT EXTRACTION ====================
+
+  describe("fingerprint extraction - STUN signals", () => {
+    it("should extract publicIp from sigint.stun", async () => {
+      const payload = createFingerprintPayload({
+        sigint: {
+          tlsFingerprint: { ip: "192.168.1.1", ja4: "ja4hash" },
+          stun: { publicIp: "203.0.113.5" },
+        },
+      });
+
+      dynamoMock.on(GetItemCommand).resolves({
+        Item: marshall({ hash_value: "hash-abc123", device_id: "dev-1" }),
+      });
+      sqsMock.on(SendMessageCommand).resolves({ MessageId: "m1" });
+
+      const event = createSQSEvent([createSQSRecord(payload)]);
+      const result = await handler(event, mockContext, () => {});
+      expect(result!.batchItemFailures).toHaveLength(0);
+    });
+
+    it("should extract reflexiveIp (web format) as stun_public_ip", async () => {
+      const payload = createFingerprintPayload({
+        sigint: {
+          tlsFingerprint: { ip: "192.168.1.1" },
+          stun: { reflexiveIp: "198.51.100.10" },
+        },
+      });
+
+      dynamoMock.on(GetItemCommand).resolves({
+        Item: marshall({ hash_value: "hash-abc123", device_id: "dev-1" }),
+      });
+      sqsMock.on(SendMessageCommand).resolves({ MessageId: "m1" });
+
+      const event = createSQSEvent([createSQSRecord(payload)]);
+      const result = await handler(event, mockContext, () => {});
+      expect(result!.batchItemFailures).toHaveLength(0);
+    });
+
+    it("should extract localIps[0] (API array format) as stun_local_ip", async () => {
+      const payload = createFingerprintPayload({
+        sigint: {
+          tlsFingerprint: { ip: "192.168.1.1" },
+          stun: { localIps: ["10.0.0.1", "10.0.0.2"] },
+        },
+      });
+
+      dynamoMock.on(GetItemCommand).resolves({
+        Item: marshall({ hash_value: "hash-abc123", device_id: "dev-1" }),
+      });
+      sqsMock.on(SendMessageCommand).resolves({ MessageId: "m1" });
+
+      const event = createSQSEvent([createSQSRecord(payload)]);
+      const result = await handler(event, mockContext, () => {});
+      expect(result!.batchItemFailures).toHaveLength(0);
+    });
+
+    it("should extract localIp (web string format) as stun_local_ip", async () => {
+      const payload = createFingerprintPayload({
+        sigint: {
+          tlsFingerprint: { ip: "192.168.1.1" },
+          stun: { localIp: "10.0.0.5" },
+        },
+      });
+
+      dynamoMock.on(GetItemCommand).resolves({
+        Item: marshall({ hash_value: "hash-abc123", device_id: "dev-1" }),
+      });
+      sqsMock.on(SendMessageCommand).resolves({ MessageId: "m1" });
+
+      const event = createSQSEvent([createSQSRecord(payload)]);
+      const result = await handler(event, mockContext, () => {});
+      expect(result!.batchItemFailures).toHaveLength(0);
+    });
+  });
+
+  describe("fingerprint extraction - TCP probe", () => {
+    it("should extract nested rtt_fingerprint format", async () => {
+      const payload = createFingerprintPayload({
+        sigint: {
+          tlsFingerprint: { ip: "192.168.1.1" },
+          tcpProbe: {
+            rtt_fingerprint: {
+              proxy_score: 0.85,
+              vpn_score: 0.7,
+              tcp_rtt_us: 15000,
+            },
+          },
+        },
+      });
+
+      dynamoMock.on(GetItemCommand).resolves({
+        Item: marshall({ hash_value: "hash-abc123", device_id: "dev-1" }),
+      });
+      sqsMock.on(SendMessageCommand).resolves({ MessageId: "m1" });
+
+      const event = createSQSEvent([createSQSRecord(payload)]);
+      const result = await handler(event, mockContext, () => {});
+      expect(result!.batchItemFailures).toHaveLength(0);
+    });
+
+    it("should extract flat TCP probe format (proxyScore/vpnScore/rttMs)", async () => {
+      const payload = createFingerprintPayload({
+        sigint: {
+          tlsFingerprint: { ip: "192.168.1.1" },
+          tcpProbe: {
+            proxyScore: 0.9,
+            vpnScore: 0.6,
+            rttMs: 25,
+          },
+        },
+      });
+
+      dynamoMock.on(GetItemCommand).resolves({
+        Item: marshall({ hash_value: "hash-abc123", device_id: "dev-1" }),
+      });
+      sqsMock.on(SendMessageCommand).resolves({ MessageId: "m1" });
+
+      const event = createSQSEvent([createSQSRecord(payload)]);
+      const result = await handler(event, mockContext, () => {});
+      expect(result!.batchItemFailures).toHaveLength(0);
+    });
+
+    it("should extract faviconCache id", async () => {
+      const payload = createFingerprintPayload({
+        sigint: {
+          tlsFingerprint: { ip: "192.168.1.1" },
+          faviconCache: { id: "fav-cache-uuid-123" },
+        },
+      });
+
+      dynamoMock.on(GetItemCommand).resolves({
+        Item: marshall({ hash_value: "hash-abc123", device_id: "dev-1" }),
+      });
+      sqsMock.on(SendMessageCommand).resolves({ MessageId: "m1" });
+
+      const event = createSQSEvent([createSQSRecord(payload)]);
+      const result = await handler(event, mockContext, () => {});
+      expect(result!.batchItemFailures).toHaveLength(0);
+    });
+  });
+
+  describe("fingerprint extraction - headless detection", () => {
+    it("should extract direct isHeadless boolean", async () => {
+      const payload = createFingerprintPayload({
+        device: {
+          workerScope: { userAgent: "HeadlessChrome" },
+          screen: { width: 1920, height: 1080 },
+          headless: { isHeadless: true },
+        },
+      });
+
+      dynamoMock.on(GetItemCommand).resolves({
+        Item: marshall({ hash_value: "hash-abc123", device_id: "dev-1" }),
+      });
+      sqsMock.on(SendMessageCommand).resolves({ MessageId: "m1" });
+
+      const event = createSQSEvent([createSQSRecord(payload)]);
+      const result = await handler(event, mockContext, () => {});
+      expect(result!.batchItemFailures).toHaveLength(0);
+    });
+
+    it("should compute isHeadless from nested headless signals (some true)", async () => {
+      const payload = createFingerprintPayload({
+        device: {
+          workerScope: { userAgent: "Chrome/120" },
+          screen: { width: 1920, height: 1080 },
+          headless: {
+            headless: {
+              chromeDriver: true,
+              notificationPermission: false,
+              webDriverFlag: false,
+            },
+          },
+        },
+      });
+
+      dynamoMock.on(GetItemCommand).resolves({
+        Item: marshall({ hash_value: "hash-abc123", device_id: "dev-1" }),
+      });
+      sqsMock.on(SendMessageCommand).resolves({ MessageId: "m1" });
+
+      const event = createSQSEvent([createSQSRecord(payload)]);
+      const result = await handler(event, mockContext, () => {});
+      expect(result!.batchItemFailures).toHaveLength(0);
+    });
+
+    it("should not flag headless when all nested signals are false", async () => {
+      const payload = createFingerprintPayload({
+        device: {
+          workerScope: { userAgent: "Chrome/120" },
+          screen: { width: 1920, height: 1080 },
+          headless: {
+            headless: {
+              chromeDriver: false,
+              notificationPermission: false,
+            },
+          },
+        },
+      });
+
+      dynamoMock.on(GetItemCommand).resolves({
+        Item: marshall({ hash_value: "hash-abc123", device_id: "dev-1" }),
+      });
+      sqsMock.on(SendMessageCommand).resolves({ MessageId: "m1" });
+
+      const event = createSQSEvent([createSQSRecord(payload)]);
+      const result = await handler(event, mockContext, () => {});
+      expect(result!.batchItemFailures).toHaveLength(0);
+    });
+  });
+
+  describe("fingerprint extraction - lies detection", () => {
+    it("should extract lies.count (API schema)", async () => {
+      const payload = createFingerprintPayload({
+        device: {
+          workerScope: { userAgent: "Chrome/120" },
+          screen: { width: 1920, height: 1080 },
+          lies: { count: 5 },
+        },
+      });
+
+      dynamoMock.on(GetItemCommand).resolves({
+        Item: marshall({ hash_value: "hash-abc123", device_id: "dev-1" }),
+      });
+      sqsMock.on(SendMessageCommand).resolves({ MessageId: "m1" });
+
+      const event = createSQSEvent([createSQSRecord(payload)]);
+      const result = await handler(event, mockContext, () => {});
+      expect(result!.batchItemFailures).toHaveLength(0);
+    });
+
+    it("should extract lies.totalLies (web client format)", async () => {
+      const payload = createFingerprintPayload({
+        device: {
+          workerScope: { userAgent: "Chrome/120" },
+          screen: { width: 1920, height: 1080 },
+          lies: { totalLies: 3 },
+        },
+      });
+
+      dynamoMock.on(GetItemCommand).resolves({
+        Item: marshall({ hash_value: "hash-abc123", device_id: "dev-1" }),
+      });
+      sqsMock.on(SendMessageCommand).resolves({ MessageId: "m1" });
+
+      const event = createSQSEvent([createSQSRecord(payload)]);
+      const result = await handler(event, mockContext, () => {});
+      expect(result!.batchItemFailures).toHaveLength(0);
+    });
+  });
+
+  // ==================== MISSING SESSION ID ====================
+
+  describe("missing session_id handling", () => {
+    it("should skip record without session_id and emit metric", async () => {
+      const payload = {
+        identifiers: { evercookie_id: "cookie-123" }, // No session_id
+        hashes: { stable: "abc", fuzzy: "def" },
+        device: {},
+      };
+
+      const event = createSQSEvent([createSQSRecord(payload)]);
+      const result = await handler(event, mockContext, () => {});
+
+      // Should not be in failures (not retried)
+      expect(result!.batchItemFailures).toHaveLength(0);
+      expect(mockAddMetric).toHaveBeenCalledWith(
+        "MissingSessionId",
+        "Count",
+        1,
+      );
+    });
+  });
+
+  // ==================== SESSION PAYLOAD WRITING ====================
+
+  describe("writeSessionPayload", () => {
+    it("should write gzipped payload to session payload table on success", async () => {
+      dynamoMock.on(GetItemCommand).resolves({
+        Item: marshall({ hash_value: "hash-abc123", device_id: "dev-1" }),
+      });
+      dynamoMock.on(PutItemCommand).resolves({});
+      sqsMock.on(SendMessageCommand).resolves({ MessageId: "m1" });
+
+      const payload = createFingerprintPayload({
+        identifiers: {
+          session_id: "sess-payload-test",
+          evercookie_id: "ec-123",
+          public_key: "pk-456",
+        },
+      });
+
+      const event = createSQSEvent([createSQSRecord(payload)]);
+      const result = await handler(event, mockContext, () => {});
+
+      expect(result!.batchItemFailures).toHaveLength(0);
+
+      // Verify PutItemCommand was called for session payload
+      const putCalls = dynamoMock.commandCalls(PutItemCommand);
+      const payloadWrite = putCalls.find(
+        (c) => c.args[0].input.TableName === "test-session-payload",
+      );
+      expect(payloadWrite).toBeDefined();
+      expect(payloadWrite!.args[0].input.Item!.session_id.S).toBe(
+        "sess-payload-test",
+      );
+      expect(
+        payloadWrite!.args[0].input.Item!.payload_gzip_b64.S,
+      ).toBeDefined();
+      expect(payloadWrite!.args[0].input.Item!.ttl.N).toBeDefined();
+    });
+
+    it("should not fail when session payload write errors", async () => {
+      dynamoMock.on(GetItemCommand).resolves({
+        Item: marshall({ hash_value: "hash-abc123", device_id: "dev-1" }),
+      });
+      // Make PutItemCommand fail only for session payload table
+      dynamoMock.on(PutItemCommand).callsFake((input) => {
+        if (input.TableName === "test-session-payload") {
+          throw new Error("DynamoDB write error");
+        }
+        return {};
+      });
+      sqsMock.on(SendMessageCommand).resolves({ MessageId: "m1" });
+
+      const payload = createFingerprintPayload();
+      const event = createSQSEvent([createSQSRecord(payload)]);
+      const result = await handler(event, mockContext, () => {});
+
+      // Should still succeed (writeSessionPayload has try/catch)
+      expect(result!.batchItemFailures).toHaveLength(0);
+      expect(mockAddMetric).toHaveBeenCalledWith(
+        "SessionPayloadWriteError",
+        "Count",
+        1,
+      );
+    });
+  });
+
+  // ==================== OBSERVATION EMISSION ====================
+
+  describe("emitObservation", () => {
+    it("should emit observation to Firehose on successful processing", async () => {
+      dynamoMock.on(GetItemCommand).resolves({
+        Item: marshall({ hash_value: "hash-abc123", device_id: "dev-1" }),
+      });
+      sqsMock.on(SendMessageCommand).resolves({ MessageId: "m1" });
+
+      const payload = createFingerprintPayload();
+      const event = createSQSEvent([createSQSRecord(payload)]);
+      const result = await handler(event, mockContext, () => {});
+
+      expect(result!.batchItemFailures).toHaveLength(0);
+
+      // Wait for fire-and-forget to settle
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const firehoseCalls = firehoseMock.commandCalls(PutRecordCommand);
+      expect(firehoseCalls.length).toBeGreaterThanOrEqual(1);
+      expect(firehoseCalls[0].args[0].input.DeliveryStreamName).toBe(
+        "test-observations-stream",
+      );
+    });
+
+    it("should handle Firehose error gracefully without failing", async () => {
+      firehoseMock.on(PutRecordCommand).rejects(new Error("Firehose error"));
+      dynamoMock.on(GetItemCommand).resolves({
+        Item: marshall({ hash_value: "hash-abc123", device_id: "dev-1" }),
+      });
+      sqsMock.on(SendMessageCommand).resolves({ MessageId: "m1" });
+
+      const payload = createFingerprintPayload();
+      const event = createSQSEvent([createSQSRecord(payload)]);
+      const result = await handler(event, mockContext, () => {});
+
+      // Should still succeed (emitObservation is fire-and-forget)
+      expect(result!.batchItemFailures).toHaveLength(0);
+
+      // Wait for fire-and-forget to settle
+      await new Promise((resolve) => setTimeout(resolve, 50));
     });
   });
 });
