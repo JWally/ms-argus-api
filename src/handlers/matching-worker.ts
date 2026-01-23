@@ -169,6 +169,14 @@ function extractFingerprint(payload: SqsPayload): Fingerprint {
     }
   }
 
+  // Extract GPU renderer from canvasWebgl component (V3 format fallback)
+  if (!fingerprint.gpu_renderer) {
+    const gpu = device.canvasWebgl?.gpu as Record<string, unknown> | undefined;
+    if (gpu?.compressedGPU && typeof gpu.compressedGPU === "string") {
+      fingerprint.gpu_renderer = gpu.compressedGPU;
+    }
+  }
+
   // Extract from screen component
   const screen = device.screen;
   if (screen) {

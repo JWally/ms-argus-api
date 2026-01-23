@@ -1,7 +1,4 @@
 // src/services/profile/index-writers.ts
-// AR-120: Extracted index writing logic from profile-service.ts
-// AR-150: Added tier-gated identity association
-// AR-XXX: Added SimHash LSH band entry writing for Tier 1.5
 
 import {
   DynamoDBClient,
@@ -18,15 +15,16 @@ import {
   SIMHASH_CONFIG,
 } from "../../helpers/constants";
 import {
-  buildTier2BucketKeys as buildTier2BucketKeysHelper,
+  buildBucketKeys,
   buildSessionAnchorKey as buildSessionAnchorKeyHelper,
   buildIpUaAnchorKey as buildIpUaAnchorKeyHelper,
   buildSimHashBandKeys,
   buildSimHashBandSK,
 } from "../../helpers/bucket-keys";
+import { sleep } from "../../helpers/sleep";
 
 /**
- * AR-150: Evidence codes that permit identity association
+ * Evidence codes that permit identity association
  *
  * Only these match types should create identity indexes (pubkey#, evercookie#, sigint#).
  * Tier 2 unbounded matches (IP_JA4_BUCKET, GPU_SCREEN_TZ_BUCKET, etc.) are excluded
@@ -60,12 +58,12 @@ export const ASSOCIATION_ALLOWED_EVIDENCE: readonly string[] = [
 
 /**
  * Type for Tier 1 index entry
- * AR-XXX: Added fuzzy_hash for drift detection at match time
+ * Added fuzzy_hash for drift detection at match time
  */
 export interface Tier1IndexEntry {
   hash_key: string;
   device_id: string;
-  /** AR-XXX: Device's fuzzy_hash at time of index write, for drift comparison */
+  /** Device's fuzzy_hash at time of index write, for drift comparison */
   fuzzy_hash?: string;
   ttl: number;
 }
@@ -89,15 +87,8 @@ export interface IndexWriterDeps {
 }
 
 /**
- * Sleep utility for retry backoff
- */
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-/**
  * Build Tier 1 index entries for a fingerprint
- * AR-XXX: Added fuzzy_hash to all entries for drift detection at match time
+ * Added fuzzy_hash to all entries for drift detection at match time
  */
 export function buildTier1IndexEntries(
   deviceId: string,
@@ -105,7 +96,7 @@ export function buildTier1IndexEntries(
   ttl: number,
 ): Tier1IndexEntry[] {
   const entries: Tier1IndexEntry[] = [];
-  // AR-XXX: Include fuzzy_hash in all entries for drift comparison at match time
+  // Include fuzzy_hash in all entries for drift comparison at match time
   const fuzzyHash = fingerprint.fuzzy_hash;
 
   if (fingerprint.evercookie_id) {
@@ -117,7 +108,7 @@ export function buildTier1IndexEntries(
     });
   }
 
-  // AR-81: Third-party cookie from sigint CloudFront edge
+  // Third-party cookie from sigint CloudFront edge
   if (fingerprint.sigint_id) {
     entries.push({
       hash_key: `sigint#${fingerprint.sigint_id}`,
@@ -127,7 +118,7 @@ export function buildTier1IndexEntries(
     });
   }
 
-  // AR-64: ECDSA public key for cryptographic device identity
+  // ECDSA public key for cryptographic device identity
   if (fingerprint.public_key) {
     entries.push({
       hash_key: `pubkey#${fingerprint.public_key}`,
@@ -155,7 +146,7 @@ export function buildTier1IndexEntries(
     });
   }
 
-  // AR-115: Removed standalone ja4# indexing - JA4 alone is not unique enough
+  // Removed standalone ja4# indexing - JA4 alone is not unique enough
   // for direct matching (many devices share the same JA4). JA4 is still used
   // in Tier2 compound buckets (ip_ja4) where it's combined with other signals.
 
@@ -163,10 +154,10 @@ export function buildTier1IndexEntries(
 }
 
 /**
- * AR-150: Build identity index entries only (pubkey#, evercookie#, sigint#)
+ * Build identity index entries only (pubkey#, evercookie#, sigint#)
  * These are the indexes that link crypto-id/evercookie to device_id.
  * Only write these for high-confidence matches to prevent viral spreading.
- * AR-XXX: Added fuzzy_hash for drift detection at match time
+ * Added fuzzy_hash for drift detection at match time
  */
 export function buildIdentityIndexEntries(
   deviceId: string,
@@ -174,7 +165,7 @@ export function buildIdentityIndexEntries(
   ttl: number,
 ): Tier1IndexEntry[] {
   const entries: Tier1IndexEntry[] = [];
-  // AR-XXX: Include fuzzy_hash for drift comparison at match time
+  // Include fuzzy_hash for drift comparison at match time
   const fuzzyHash = fingerprint.fuzzy_hash;
 
   if (fingerprint.evercookie_id) {
@@ -186,7 +177,7 @@ export function buildIdentityIndexEntries(
     });
   }
 
-  // AR-81: Third-party cookie from sigint CloudFront edge
+  // Third-party cookie from sigint CloudFront edge
   if (fingerprint.sigint_id) {
     entries.push({
       hash_key: `sigint#${fingerprint.sigint_id}`,
@@ -196,7 +187,7 @@ export function buildIdentityIndexEntries(
     });
   }
 
-  // AR-64: ECDSA public key for cryptographic device identity
+  // ECDSA public key for cryptographic device identity
   if (fingerprint.public_key) {
     entries.push({
       hash_key: `pubkey#${fingerprint.public_key}`,
@@ -210,10 +201,10 @@ export function buildIdentityIndexEntries(
 }
 
 /**
- * AR-150: Build hash index entries only (stable#, fuzzy#)
+ * Build hash index entries only (stable#, fuzzy#)
  * These indexes enable fingerprint-based lookups.
  * Always written regardless of match tier.
- * AR-XXX: Added fuzzy_hash for drift detection at match time
+ * Added fuzzy_hash for drift detection at match time
  */
 export function buildHashIndexEntries(
   deviceId: string,
@@ -221,7 +212,7 @@ export function buildHashIndexEntries(
   ttl: number,
 ): Tier1IndexEntry[] {
   const entries: Tier1IndexEntry[] = [];
-  // AR-XXX: Include fuzzy_hash for drift comparison at match time
+  // Include fuzzy_hash for drift comparison at match time
   const fuzzyHash = fingerprint.fuzzy_hash;
 
   if (fingerprint.stable_hash) {
@@ -247,7 +238,7 @@ export function buildHashIndexEntries(
 
 /**
  * Batch write Tier 1 index entries with retry logic for unprocessed items
- * AR-XXX: Uses removeUndefinedValues to handle optional fuzzy_hash
+ * Uses removeUndefinedValues to handle optional fuzzy_hash
  */
 export async function batchWriteTier1Indexes(
   deps: IndexWriterDeps,
@@ -293,14 +284,14 @@ export async function batchWriteTier1Indexes(
 
 /**
  * Build Tier 2 bucket keys for compound matching
- * AR-117: Delegates to shared bucket-keys helper
+ * Delegates to shared bucket-keys helper
  */
 export function buildTier2BucketKeys(fingerprint: Fingerprint): string[] {
-  return buildTier2BucketKeysHelper(fingerprint);
+  return buildBucketKeys(fingerprint);
 }
 
 /**
- * Batch write Tier 2 bucket entries with retry logic for unprocessed items (AR-40)
+ * Batch write Tier 2 bucket entries with retry logic for unprocessed items
  */
 export async function batchWriteTier2Buckets(
   deps: IndexWriterDeps,
@@ -349,7 +340,7 @@ export async function batchWriteTier2Buckets(
 }
 
 /**
- * AR-56: Increment cardinality counters for Tier 2 buckets
+ * Increment cardinality counters for Tier 2 buckets
  * Uses UpdateItem with ADD for atomic increment
  * Stats items use "_stats" as sort key to distinguish from device entries
  */
@@ -385,15 +376,15 @@ export async function incrementBucketCardinalities(
 }
 
 /**
- * AR-82: Build session anchor bucket key for ephemeral short-window matching
- * AR-117: Delegates to shared bucket-keys helper
+ * Build session anchor bucket key for ephemeral short-window matching
+ * Delegates to shared bucket-keys helper
  */
 export function buildSessionAnchorKey(fingerprint: Fingerprint): string | null {
   return buildSessionAnchorKeyHelper(fingerprint);
 }
 
 /**
- * AR-82: Write session anchor bucket for ephemeral matching
+ * Write session anchor bucket for ephemeral matching
  * Stores created_at timestamp for application-side 10-minute validity check
  * Uses shorter TTL (1 hour) for DynamoDB cleanup
  */
@@ -419,15 +410,15 @@ export async function writeSessionAnchorBucket(
 }
 
 /**
- * AR-94: Build IP+UA-only anchor bucket key for ephemeral matching
- * AR-117: Delegates to shared bucket-keys helper
+ * Build IP+UA-only anchor bucket key for ephemeral matching
+ * Delegates to shared bucket-keys helper
  */
 export function buildIpUaAnchorKey(fingerprint: Fingerprint): string | null {
   return buildIpUaAnchorKeyHelper(fingerprint);
 }
 
 /**
- * AR-94: Write IP+UA-only anchor bucket for ephemeral matching
+ * Write IP+UA-only anchor bucket for ephemeral matching
  * Stores created_at timestamp for application-side 3-minute validity check
  * Uses 1 hour TTL for DynamoDB cleanup (same as session anchor)
  */
@@ -455,7 +446,7 @@ export async function writeIpUaAnchorBucket(
 // ==================== SIMHASH LSH BAND ENTRIES (Tier 1.5) ====================
 
 /**
- * AR-XXX: Type for SimHash LSH band entry
+ * Type for SimHash LSH band entry
  * Stored in tier2BucketsTable with special PK format
  *
  * Schema:
@@ -474,7 +465,7 @@ export interface SimHashBandEntry {
 }
 
 /**
- * AR-XXX: Build SimHash LSH band entries for a fingerprint
+ * Build SimHash LSH band entries for a fingerprint
  * Creates 4 band entries (one per band) with inline hash for scoring
  *
  * @param deviceId - The device ID
@@ -503,7 +494,7 @@ export function buildSimHashBandEntries(
 }
 
 /**
- * AR-XXX: Batch write SimHash LSH band entries with retry logic
+ * Batch write SimHash LSH band entries with retry logic
  * Uses tier2BucketsTable with special PK format for band entries
  */
 export async function batchWriteSimHashBands(

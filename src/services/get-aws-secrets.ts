@@ -7,14 +7,13 @@ import { Logger } from "@aws-lambda-powertools/logger";
 import {
   AWS_SECRETS_REQUIRED_KEYS,
   KEY_CACHE_DURATION,
-  SECRET_KEY_ARN,
   ERROR_STRINGS,
 } from "../helpers/constants";
 
 const logger = new Logger({ serviceName: "argus-secrets" });
 
 /**
- * Versioned secrets structure (AR-28)
+ * Versioned secrets structure
  * Supports key rotation without split-brain issues
  */
 export interface VersionedSecrets {
@@ -44,10 +43,11 @@ let cacheTimestamp = 0;
 
 /**
  * Retrieves versioned secrets from AWS Secrets Manager with caching.
- * Supports both current and previous keys for seamless key rotation (AR-28).
+ * Supports both current and previous keys for seamless key rotation.
  */
 export const getVersionedSecrets = async (): Promise<VersionedSecrets> => {
-  if (!SECRET_KEY_ARN) {
+  const secretKeyArn = process.env.SECRET_KEY_ARN;
+  if (!secretKeyArn) {
     throw new Error(ERROR_STRINGS.KEY_ARN_NOT_SET);
   }
 
@@ -63,7 +63,7 @@ export const getVersionedSecrets = async (): Promise<VersionedSecrets> => {
   }
 
   try {
-    const command = new GetSecretValueCommand({ SecretId: SECRET_KEY_ARN });
+    const command = new GetSecretValueCommand({ SecretId: secretKeyArn });
     const data = await client.send(command);
     const secret = JSON.parse(data.SecretString!) as
       | VersionedSecrets

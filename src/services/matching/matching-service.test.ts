@@ -15,7 +15,6 @@ import {
   MatchingServiceConfig,
   MatchingServiceDeps,
   generateIdempotencyKey,
-  generateULID,
 } from "./matching-service";
 import { EvidenceCode, Fingerprint, SessionCacheValue } from "./types";
 import { DynamoCacheService } from "../cache";
@@ -1323,52 +1322,52 @@ describe("generateIdempotencyKey", () => {
   });
 });
 
-// AR-121: Tests updated for ULID format
-describe("generateULID", () => {
-  it("should generate valid ULID format (26 chars, Crockford Base32)", () => {
-    const ulid = generateULID();
-    // ULID: 26 characters, Crockford's Base32 (0-9, A-Z excluding I, L, O, U)
-    expect(ulid).toMatch(/^[0-9A-HJKMNP-TV-Z]{26}$/);
+// AR-210: generateULID wrapper removed - ulid() inlined in createNewDevice
+describe("generateULID wrapper removed", () => {
+  it("should not export generateULID from matching-service", async () => {
+    const matchingService = await import("./matching-service");
+    expect("generateULID" in matchingService).toBe(false);
   });
 
-  it("should generate unique ULIDs", () => {
-    const ulids = new Set<string>();
-    for (let i = 0; i < 1000; i++) {
-      ulids.add(generateULID());
-    }
-    expect(ulids.size).toBe(1000);
+  it("createNewDevice should still generate valid dev_ prefixed ULID IDs", () => {
+    const dynamodb = new DynamoDBClient({});
+    const sqsClient = new SQSClient({});
+    const mockCache = createMockCacheService();
+
+    const deps: MatchingServiceDeps = {
+      dynamodb,
+      sqs: sqsClient,
+      cache: mockCache,
+      config: testConfig,
+    };
+    const svc = new MatchingService(deps);
+    const result = svc.createNewDevice();
+
+    // ULID format: dev_ + 26 chars Crockford's Base32
+    expect(result.device_id).toMatch(/^dev_[0-9A-HJKMNP-TV-Z]{26}$/);
+    expect(result.is_new_device).toBe(true);
+    expect(result.confidence).toBe(0);
+    expect(result.match_tier).toBe(-1);
   });
 
-  it("should produce no collisions in 100K generated ULIDs", () => {
-    const ulids = new Set<string>();
-    const count = 100_000;
-    for (let i = 0; i < count; i++) {
-      const ulid = generateULID();
-      expect(ulids.has(ulid)).toBe(false);
-      ulids.add(ulid);
+  it("createNewDevice should produce unique IDs without generateULID wrapper", () => {
+    const dynamodb = new DynamoDBClient({});
+    const sqsClient = new SQSClient({});
+    const mockCache = createMockCacheService();
+
+    const deps: MatchingServiceDeps = {
+      dynamodb,
+      sqs: sqsClient,
+      cache: mockCache,
+      config: testConfig,
+    };
+    const svc = new MatchingService(deps);
+
+    const ids = new Set<string>();
+    for (let i = 0; i < 100; i++) {
+      ids.add(svc.createNewDevice().device_id);
     }
-    expect(ulids.size).toBe(count);
-  }, 30000); // 30 second timeout for 100K iterations
-
-  it("should generate ULIDs with timestamp prefix for time-based sorting", () => {
-    // ULIDs have a 48-bit timestamp in first 10 characters
-    // The timestamp encodes milliseconds since Unix epoch in Crockford Base32
-    // ULIDs generated at different times will sort chronologically
-    const ulid1 = generateULID();
-    const ulid2 = generateULID();
-
-    // Both should be valid ULID format
-    expect(ulid1).toMatch(/^[0-9A-HJKMNP-TV-Z]{26}$/);
-    expect(ulid2).toMatch(/^[0-9A-HJKMNP-TV-Z]{26}$/);
-
-    // First 10 chars are timestamp - ULIDs from same ms share this prefix
-    // This proves the time component is encoded at the start
-    const timestamp1 = ulid1.substring(0, 10);
-    const timestamp2 = ulid2.substring(0, 10);
-
-    // ULIDs generated in sequence will have same or later timestamp
-    // (later timestamp is lexicographically greater)
-    expect(timestamp2 >= timestamp1).toBe(true);
+    expect(ids.size).toBe(100);
   });
 });
 

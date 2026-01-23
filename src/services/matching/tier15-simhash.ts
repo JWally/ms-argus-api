@@ -1,5 +1,5 @@
 // src/services/matching/tier15-simhash.ts
-// AR-XXX: SimHash LSH matching tier for same-browser drift detection
+// SimHash LSH matching tier for same-browser drift detection
 // Uses fuzzy_hash field with locality-sensitive hashing for efficient similarity search
 
 import { DynamoDBClient, QueryCommand } from "@aws-sdk/client-dynamodb";
@@ -10,9 +10,9 @@ import { SIMHASH_CONFIG, getSimHashFlags } from "../../helpers/constants";
 import {
   buildSimHashBandKeys,
   parseSimHashBandSK,
-  hammingDistance,
   type SimHashBandKey,
 } from "../../helpers/bucket-keys";
+import { hammingDistance } from "../../helpers/hash";
 import type { Fingerprint, MatchResult, SimHashDetails } from "./types";
 
 const logger = new Logger({
