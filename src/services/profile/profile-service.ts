@@ -1,6 +1,4 @@
 // src/services/profile/profile-service.ts
-// AR-52: Replaced Redis with DynamoDB session cache
-// AR-120: Refactored to orchestration-only, delegates to focused modules
 import {
   DynamoDBClient,
   GetItemCommand,
@@ -22,17 +20,18 @@ import {
   batchWriteTier1Indexes,
   batchWriteTier2Buckets,
   incrementBucketCardinalities,
-  buildSessionAnchorKey,
-  writeSessionAnchorBucket,
-  buildIpUaAnchorKey,
-  writeIpUaAnchorBucket,
+  writeAnchorBucket,
   buildSimHashBandEntries,
   batchWriteSimHashBands,
   Tier1IndexEntry,
   IndexWriterDeps,
   ASSOCIATION_ALLOWED_EVIDENCE,
 } from "./index-writers";
-import { buildBucketKeys } from "../../helpers/bucket-keys";
+import {
+  buildBucketKeys,
+  buildSessionAnchorKey,
+  buildIpUaAnchorKey,
+} from "../../helpers/bucket-keys";
 import { getSimHashFlags } from "../../helpers/constants";
 
 /**
@@ -52,14 +51,13 @@ export interface ProfileServiceConfig {
  */
 export interface ProfileServiceDeps {
   dynamodb: DynamoDBClient;
-  cache: DynamoCacheService; // AR-52: DynamoDB cache replaces Redis
+  cache: DynamoCacheService;
   config: ProfileServiceConfig;
 }
 
 /**
  * Profile service handles device profile updates
  * Implements mutation gating to reduce unnecessary writes
- * AR-120: Orchestration-only - delegates to focused modules
  */
 export class ProfileService {
   private indexWriterDeps: IndexWriterDeps;
@@ -75,7 +73,7 @@ export class ProfileService {
 
   /**
    * Atomically try to acquire the mutation gate for a device
-   * Uses DynamoDB conditional write to avoid TOCTOU race condition (AR-27, AR-52)
+   * Uses DynamoDB conditional write to avoid TOCTOU race condition
    * Returns true if gate was acquired (we should update), false if already held
    */
   async tryAcquireMutationGate(deviceId: string): Promise<boolean> {
@@ -101,24 +99,14 @@ export class ProfileService {
     return null;
   }
 
-  /**
-   * AR-120: Delegates to drift-detection module
-   */
   hasSignificantDrift(existing: DeviceProfile, incoming: Fingerprint): boolean {
     return hasSignificantDrift(existing, incoming);
   }
 
-  /**
-   * AR-120: Delegates to flag-computation module
-   */
   detectBotSignals(fingerprint: Fingerprint): string[] {
     return detectBotSignals(fingerprint);
   }
 
-  /**
-   * AR-120: Delegates to flag-computation module
-   * AR-145: Added raw parameter for cross-field anomaly detection
-   */
   computeFlags(
     fingerprint: Fingerprint,
     existingProfile: DeviceProfile | null,
@@ -135,9 +123,6 @@ export class ProfileService {
     );
   }
 
-  /**
-   * AR-120: Delegates to flag-computation module
-   */
   computeRiskScore(
     flags: string[],
     existingProfile: DeviceProfile | null,
@@ -148,7 +133,6 @@ export class ProfileService {
 
   /**
    * Update device profile in DynamoDB
-   * AR-145: Added rawFingerprint for cross-field anomaly detection
    */
   async updateProfile(
     deviceId: string,
@@ -171,7 +155,6 @@ export class ProfileService {
     const shouldUpdateLastSeen = currentHour !== existingHour;
 
     // Compute flags based on fingerprint and profile state
-    // AR-145: Pass raw fingerprint for cross-field anomaly detection
     const flags = this.computeFlags(
       fingerprint,
       existingProfile,
@@ -211,7 +194,6 @@ export class ProfileService {
   /**
    * Update Tier 1 indexes (O(1) hash lookups)
    * Uses BatchWriteItem to reduce round-trips to DynamoDB
-   * AR-120: Delegates to index-writers module
    */
   async updateTier1Indexes(
     deviceId: string,
@@ -236,9 +218,6 @@ export class ProfileService {
     return indexEntries.length;
   }
 
-  /**
-   * AR-120: Delegates to index-writers module
-   */
   buildTier1IndexEntries(
     deviceId: string,
     fingerprint: Fingerprint,
@@ -248,7 +227,7 @@ export class ProfileService {
   }
 
   /**
-   * AR-150: Update Tier 1 indexes with tier-gated identity association
+   * Update Tier 1 indexes with tier-gated identity association
    *
    * Hash indexes (stable#, fuzzy#) are always written.
    * Identity indexes (pubkey#, evercookie#, sigint#) are only written when
@@ -290,10 +269,8 @@ export class ProfileService {
 
   /**
    * Update Tier 2 buckets (compound filter matching)
-   * Uses shorter TTL (7 days) to prevent bucket accumulation (AR-39)
-   * Uses BatchWriteItem with retry logic for reliability (AR-40)
-   * AR-56: Also increments cardinality counters for each bucket
-   * AR-120: Delegates to index-writers module
+   * Uses shorter TTL (7 days) to prevent bucket accumulation
+   * Also increments cardinality counters for each bucket
    */
   async updateTier2Buckets(
     deviceId: string,
@@ -317,7 +294,7 @@ export class ProfileService {
     // Use BatchWriteItem with retry logic
     await batchWriteTier2Buckets(this.indexWriterDeps, bucketEntries);
 
-    // AR-56: Increment cardinality counters for each bucket
+    // Increment cardinality counters for each bucket
     await incrementBucketCardinalities(this.indexWriterDeps, bucketKeys, ttl);
 
     return bucketEntries.length;
@@ -328,19 +305,15 @@ export class ProfileService {
   }
 
   /**
-   * AR-82: Build session anchor bucket key for ephemeral short-window matching
-   * AR-117: Delegates to shared bucket-keys helper
-   * AR-120: Delegates to index-writers module
+   * Build session anchor bucket key for ephemeral short-window matching
    */
   buildSessionAnchorKey(fingerprint: Fingerprint): string | null {
     return buildSessionAnchorKey(fingerprint);
   }
 
   /**
-   * AR-82: Update session anchor bucket for ephemeral matching
-   * Stores created_at timestamp for application-side 10-minute validity check
-   * Uses shorter TTL (1 hour) for DynamoDB cleanup
-   * AR-120: Delegates to index-writers module
+   * Update session anchor bucket for ephemeral matching
+   * Stores created_at for application-side 10-minute validity check
    */
   async updateSessionAnchorBucket(
     deviceId: string,
@@ -351,24 +324,20 @@ export class ProfileService {
       return false;
     }
 
-    await writeSessionAnchorBucket(this.indexWriterDeps, bucketKey, deviceId);
+    await writeAnchorBucket(this.indexWriterDeps, bucketKey, deviceId);
     return true;
   }
 
   /**
-   * AR-94: Build IP+UA-only anchor bucket key for ephemeral matching
-   * AR-117: Delegates to shared bucket-keys helper
-   * AR-120: Delegates to index-writers module
+   * Build IP+UA-only anchor bucket key for ephemeral matching
    */
   buildIpUaAnchorKey(fingerprint: Fingerprint): string | null {
     return buildIpUaAnchorKey(fingerprint);
   }
 
   /**
-   * AR-94: Update IP+UA-only anchor bucket for ephemeral matching
-   * Stores created_at timestamp for application-side 3-minute validity check
-   * Uses 1 hour TTL for DynamoDB cleanup (same as session anchor)
-   * AR-120: Delegates to index-writers module
+   * Update IP+UA-only anchor bucket for ephemeral matching
+   * Stores created_at for application-side 3-minute validity check
    */
   async updateIpUaAnchorBucket(
     deviceId: string,
@@ -379,15 +348,13 @@ export class ProfileService {
       return false;
     }
 
-    await writeIpUaAnchorBucket(this.indexWriterDeps, bucketKey, deviceId);
+    await writeAnchorBucket(this.indexWriterDeps, bucketKey, deviceId);
     return true;
   }
 
   /**
-   * AR-XXX: Update SimHash LSH band entries for Tier 1.5 matching
-   * Writes 4 band entries (one per band) with inline hash for efficient scoring
+   * Update SimHash LSH band entries for Tier 1.5 matching
    * Only writes if SimHash tier is enabled via feature flag
-   * AR-120: Delegates to index-writers module
    */
   async updateSimHashBands(
     deviceId: string,
@@ -417,7 +384,6 @@ export class ProfileService {
   /**
    * Process a complete profile update (orchestration method)
    * Returns object indicating what was done
-   * AR-XXX: Added simhashBandWrites for Tier 1.5 SimHash LSH
    */
   async processProfileUpdate(payload: ProfileUpdatePayload): Promise<{
     skipped: boolean;
@@ -432,11 +398,10 @@ export class ProfileService {
       raw_fingerprint,
       timestamp,
       is_new_device = false,
-      // AR-149/AR-150: Match context for tier-gated identity association
       evidence_codes,
     } = payload;
 
-    // Atomically acquire mutation gate (AR-27: fixes TOCTOU race condition)
+    // Atomically acquire mutation gate
     // Gate is acquired upfront - if we crash after this, gate expires after TTL
     const acquired = await this.tryAcquireMutationGate(device_id);
     if (!acquired) {
@@ -451,7 +416,7 @@ export class ProfileService {
       existingProfile !== null &&
       this.hasSignificantDrift(existingProfile, fingerprint);
 
-    // AR-94: Always update anchor buckets (they're time-sensitive)
+    // Always update anchor buckets (they're time-sensitive)
     // These must be refreshed on every request regardless of drift
     await this.updateSessionAnchorBucket(device_id, fingerprint);
     await this.updateIpUaAnchorBucket(device_id, fingerprint);
@@ -462,7 +427,6 @@ export class ProfileService {
     }
 
     // Perform updates (with flag computation)
-    // AR-145: Pass raw_fingerprint for cross-field anomaly detection
     await this.updateProfile(
       device_id,
       fingerprint,
@@ -472,7 +436,6 @@ export class ProfileService {
       hasDrift,
       raw_fingerprint,
     );
-    // AR-150: Use tier-gated identity association
     const tier1Writes = await this.updateTier1IndexesWithEvidence(
       device_id,
       fingerprint,
@@ -480,8 +443,6 @@ export class ProfileService {
     );
     const tier2Writes = await this.updateTier2Buckets(device_id, fingerprint);
 
-    // AR-XXX: Update SimHash LSH band entries for Tier 1.5 matching
-    // Only writes if SIMHASH_ENABLED=true
     const simhashBandWrites = await this.updateSimHashBands(
       device_id,
       fingerprint,
