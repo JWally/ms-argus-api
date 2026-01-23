@@ -1,6 +1,4 @@
 // src/helpers/http-error.ts
-// AR-162: Shared HttpError class extracted from handlers
-// Custom HttpError class to replace http-errors module (ESM bundling compatible)
 
 /**
  * Custom HTTP error class for consistent error handling across handlers.
@@ -17,10 +15,3 @@ export class HttpError extends Error {
     this.expose = statusCode < 500; // Only expose client errors
   }
 }
-
-/**
- * Factory function for creating HttpError instances.
- * Provides a cleaner API similar to the http-errors package.
- */
-export const createError = (statusCode: number, message: string): HttpError =>
-  new HttpError(statusCode, message);

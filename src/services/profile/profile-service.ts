@@ -279,7 +279,7 @@ export class ProfileService {
     const ttlSeconds = this.deps.config.tier2BucketTtlDays * 24 * 60 * 60;
     const ttl = Math.floor(Date.now() / 1000) + ttlSeconds;
 
-    const bucketKeys = this.buildTier2BucketKeys(fingerprint);
+    const bucketKeys = buildBucketKeys(fingerprint);
     if (bucketKeys.length === 0) {
       return 0;
     }
@@ -300,26 +300,11 @@ export class ProfileService {
     return bucketEntries.length;
   }
 
-  buildTier2BucketKeys(fingerprint: Fingerprint): string[] {
-    return buildBucketKeys(fingerprint);
-  }
-
-  /**
-   * Build session anchor bucket key for ephemeral short-window matching
-   */
-  buildSessionAnchorKey(fingerprint: Fingerprint): string | null {
-    return buildSessionAnchorKey(fingerprint);
-  }
-
-  /**
-   * Update session anchor bucket for ephemeral matching
-   * Stores created_at for application-side 10-minute validity check
-   */
   async updateSessionAnchorBucket(
     deviceId: string,
     fingerprint: Fingerprint,
   ): Promise<boolean> {
-    const bucketKey = this.buildSessionAnchorKey(fingerprint);
+    const bucketKey = buildSessionAnchorKey(fingerprint);
     if (!bucketKey) {
       return false;
     }
@@ -328,22 +313,11 @@ export class ProfileService {
     return true;
   }
 
-  /**
-   * Build IP+UA-only anchor bucket key for ephemeral matching
-   */
-  buildIpUaAnchorKey(fingerprint: Fingerprint): string | null {
-    return buildIpUaAnchorKey(fingerprint);
-  }
-
-  /**
-   * Update IP+UA-only anchor bucket for ephemeral matching
-   * Stores created_at for application-side 3-minute validity check
-   */
   async updateIpUaAnchorBucket(
     deviceId: string,
     fingerprint: Fingerprint,
   ): Promise<boolean> {
-    const bucketKey = this.buildIpUaAnchorKey(fingerprint);
+    const bucketKey = buildIpUaAnchorKey(fingerprint);
     if (!bucketKey) {
       return false;
     }

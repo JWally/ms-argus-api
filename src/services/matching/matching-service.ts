@@ -14,7 +14,6 @@ import {
   PRIVATE_BROWSING_PENALTY,
 } from "../../helpers/constants";
 import { fnv1a } from "../../helpers/hash";
-import { buildBucketKeys as buildBucketKeysHelper } from "../../helpers/bucket-keys";
 
 // Tier module imports
 import {
@@ -40,8 +39,6 @@ import {
 import {
   sessionAnchorLookup,
   ipUaAnchorLookup,
-  buildSessionAnchorKey,
-  buildIpUaAnchorKey,
   SessionAnchorDeps,
 } from "./session-anchors";
 
@@ -289,28 +286,16 @@ export class MatchingService {
     return tier2CompoundMatch(this.tier2Deps, fingerprint, options);
   }
 
-  buildSessionAnchorKey(fingerprint: Fingerprint): string | null {
-    return buildSessionAnchorKey(fingerprint);
-  }
-
   async sessionAnchorLookup(
     fingerprint: Fingerprint,
   ): Promise<MatchResult | null> {
     return sessionAnchorLookup(this.anchorDeps, fingerprint);
   }
 
-  buildIpUaAnchorKey(fingerprint: Fingerprint): string | null {
-    return buildIpUaAnchorKey(fingerprint);
-  }
-
   async ipUaAnchorLookup(
     fingerprint: Fingerprint,
   ): Promise<MatchResult | null> {
     return ipUaAnchorLookup(this.anchorDeps, fingerprint);
-  }
-
-  buildBucketKeys(fingerprint: Fingerprint): string[] {
-    return buildBucketKeysHelper(fingerprint);
   }
 
   async loadProfile(

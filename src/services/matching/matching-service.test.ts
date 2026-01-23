@@ -1,5 +1,5 @@
 // src/services/matching/matching-service.test.ts
-// AR-52: Updated to use DynamoCacheService mock instead of Redis
+// src/services/matching/matching-service.test.ts
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { mockClient } from "aws-sdk-client-mock";
 import {
@@ -52,9 +52,9 @@ function createMockCacheService() {
             existing.status !== "complete"
           ) {
             sessions.set(sessionId, value);
-            return true; // AR-170: Write succeeded
+            return true;
           }
-          return false; // AR-170: Write skipped (higher confidence exists)
+          return false;
         },
       ),
     tryAcquireMutationGate: vi.fn().mockResolvedValue(true),
@@ -174,7 +174,7 @@ describe("MatchingService", () => {
     });
   });
 
-  // AR-81: Sigint ID (third-party cookie) matching tests
+  // Sigint ID (third-party cookie) matching tests
   describe("tier05SigintIdLookup", () => {
     it("should return null when sigint_id not found", async () => {
       dynamoMock.on(GetItemCommand).resolves({ Item: undefined });
@@ -220,7 +220,7 @@ describe("MatchingService", () => {
     });
   });
 
-  // AR-64: Public key (ECDSA) matching tests
+  // Public key (ECDSA) matching tests
   describe("tier05PublicKeyLookup", () => {
     it("should return null when public key not found", async () => {
       dynamoMock.on(GetItemCommand).resolves({ Item: undefined });
@@ -353,7 +353,6 @@ describe("MatchingService", () => {
     });
   });
 
-  // AR-119: buildBucketKeys tests moved to bucket-keys.test.ts (AR-117)
   // Deleted 10 duplicate tests that are now covered in src/helpers/bucket-keys.test.ts
 
   describe("tier2CompoundMatch", () => {
@@ -502,7 +501,7 @@ describe("MatchingService", () => {
     });
   });
 
-  // AR-56: Cardinality tracking tests
+  // Cardinality tracking tests
   describe("tier2CompoundMatch with cardinality tracking", () => {
     it("should penalize confidence for high-cardinality buckets", async () => {
       // Setup: device appears in 2 buckets (same device_id in all query results)
@@ -663,14 +662,14 @@ describe("MatchingService", () => {
   });
 
   describe("createNewDevice", () => {
-    // AR-121: Updated to expect ULID format (26 alphanumeric chars in Crockford's Base32)
+    // Expect ULID format (26 alphanumeric chars in Crockford's Base32)
     it("should create device with dev_ prefix and ULID format", () => {
       const result = service.createNewDevice();
 
       // ULID format: 26 characters, Crockford's Base32 (0-9, A-Z excluding I, L, O, U)
       expect(result.device_id).toMatch(/^dev_[0-9A-HJKMNP-TV-Z]{26}$/);
       expect(result.is_new_device).toBe(true);
-      expect(result.confidence).toBe(0); // AR-55: No match confidence for new devices
+      expect(result.confidence).toBe(0);
       expect(result.match_tier).toBe(-1);
       expect(result.risk_score).toBe(0.5);
       expect(result.flags).toEqual([]);
@@ -690,7 +689,7 @@ describe("MatchingService", () => {
     });
   });
 
-  // AR-65: Privacy browser penalty tests
+  // Privacy browser penalty tests
   describe("applyPrivacyPenalty", () => {
     it("should return unchanged result when no privacy signals", () => {
       const result = {
@@ -797,7 +796,7 @@ describe("MatchingService", () => {
   });
 
   describe("runTieredMatching", () => {
-    // AR-64: Public key matching tests
+    // Public key matching tests
     it("should return public_key match at Tier 0.5", async () => {
       const publicKey = "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE...base64...";
       dynamoMock.on(GetItemCommand).resolves({
@@ -903,7 +902,7 @@ describe("MatchingService", () => {
       expect(tier2TimedOut).toBe(false);
     });
 
-    // AR-65: Privacy penalty integration test
+    // Privacy penalty integration test
     it("should apply privacy browser penalty to match results", async () => {
       dynamoMock.on(GetItemCommand).resolves({
         Item: marshall({
@@ -1181,7 +1180,7 @@ describe("MatchingService", () => {
       expect(messageBody.fingerprint).toEqual({ stable_hash: "abc" });
     });
 
-    // AR-149: Tests for match context passing
+    // Tests for match context passing
     it("should include match_tier and evidence_codes when matchResult is provided", async () => {
       sqsMock.on(SendMessageCommand).resolves({ MessageId: "msg123" });
 
@@ -1322,7 +1321,6 @@ describe("generateIdempotencyKey", () => {
   });
 });
 
-// AR-210: generateULID wrapper removed - ulid() inlined in createNewDevice
 describe("generateULID wrapper removed", () => {
   it("should not export generateULID from matching-service", async () => {
     const matchingService = await import("./matching-service");
@@ -1371,7 +1369,7 @@ describe("generateULID wrapper removed", () => {
   });
 });
 
-// AR-95: Anchor lookup recency sorting tests
+// Anchor lookup recency sorting tests
 describe("MatchingService anchor recency sorting", () => {
   let dynamodb: DynamoDBClient;
   let sqs: SQSClient;
@@ -1446,7 +1444,7 @@ describe("MatchingService anchor recency sorting", () => {
 
     const { result } = await service.runTieredMatching(fingerprint);
 
-    // AR-95: Should return the MOST RECENT valid device (dev_zzz_new),
+    // Should return the MOST RECENT valid device (dev_zzz_new),
     // NOT the first alphabetically (dev_aaa_old)
     expect(result.device_id).toBe("dev_zzz_new");
     expect(result.evidence_codes).toContain("SESSION_ANCHOR_BUCKET");
@@ -1560,7 +1558,7 @@ describe("MatchingService anchor recency sorting", () => {
     expect(result.device_id).toBe("dev_m");
   });
 
-  // AR-121: Test that ScanIndexForward:false is used for anchor queries
+  // Test that ScanIndexForward:false is used for anchor queries
   it("should pass ScanIndexForward:false to sessionAnchorLookup QueryCommand", async () => {
     const now = Date.now();
     let capturedInput: unknown;
@@ -1603,7 +1601,7 @@ describe("MatchingService anchor recency sorting", () => {
 
     await service.runTieredMatching(fingerprint);
 
-    // AR-121: Verify ScanIndexForward:false is set
+    // Verify ScanIndexForward:false is set
     expect(capturedInput).toHaveProperty("ScanIndexForward", false);
   });
 });
@@ -1637,24 +1635,6 @@ describe("MatchingService delegate methods", () => {
       const fingerprint: Fingerprint = { fuzzy_hash: "abcdef1234567890" };
       const result = await service.tier15SimHashMatch(fingerprint);
       expect(result).toBeNull();
-    });
-  });
-
-  describe("buildSessionAnchorKey", () => {
-    it("should return null when required fields are missing", () => {
-      const fingerprint: Fingerprint = { ip_address: "1.2.3.4" };
-      expect(service.buildSessionAnchorKey(fingerprint)).toBeNull();
-    });
-
-    it("should return anchor key when ip, user_agent, and screen_dims present", () => {
-      const fingerprint: Fingerprint = {
-        ip_address: "10.0.0.1",
-        user_agent: "Mozilla/5.0 Chrome/120",
-        screen_dims: "1920x1080",
-      };
-      const key = service.buildSessionAnchorKey(fingerprint);
-      expect(key).not.toBeNull();
-      expect(key).toContain("session_anchor#");
     });
   });
 
@@ -1706,32 +1686,6 @@ describe("MatchingService delegate methods", () => {
       expect(result).not.toBeNull();
       expect(result?.device_id).toBe("dev_anchor");
       expect(result?.evidence_codes).toContain("SESSION_ANCHOR_BUCKET");
-    });
-  });
-
-  describe("buildIpUaAnchorKey", () => {
-    it("should return null when ip_address is missing", () => {
-      const fingerprint: Fingerprint = {
-        user_agent: "Mozilla/5.0 Chrome/120",
-      };
-      expect(service.buildIpUaAnchorKey(fingerprint)).toBeNull();
-    });
-
-    it("should return null when user_agent is missing", () => {
-      const fingerprint: Fingerprint = {
-        ip_address: "1.2.3.4",
-      };
-      expect(service.buildIpUaAnchorKey(fingerprint)).toBeNull();
-    });
-
-    it("should return anchor key when both ip and user_agent present", () => {
-      const fingerprint: Fingerprint = {
-        ip_address: "10.0.0.1",
-        user_agent: "Mozilla/5.0 Chrome/120",
-      };
-      const key = service.buildIpUaAnchorKey(fingerprint);
-      expect(key).not.toBeNull();
-      expect(key).toContain("ip_ua_anchor#10.0.0.1#");
     });
   });
 
