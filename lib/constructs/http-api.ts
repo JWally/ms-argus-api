@@ -96,7 +96,7 @@ export class HttpApiConstruct extends Construct {
           SQS_QUEUE_URL: matchingQueue.queueUrl,
           // AR-139: Payload archiving configuration
           PAYLOAD_ARCHIVE_BUCKET: payloadArchiveBucket.bucketName,
-          PAYLOAD_ARCHIVE_SAMPLE_RATE: stage.startsWith("dev") ? "1.0" : "0",
+          PAYLOAD_ARCHIVE_SAMPLE_RATE: stage === "prod" ? "0" : "1.0",
         },
       },
     );
