@@ -148,8 +148,8 @@ async function processRecord(
     return;
   }
 
-  // Extract flat fingerprint from V3 payload
-  const fingerprint = extractFingerprint(rawPayload);
+  // Extract flat fingerprint from V3 payload (with header fallback for IP)
+  const fingerprint = extractFingerprint(rawPayload, rawPayload._headers);
 
   // Build legacy payload format for downstream compatibility
   const payload: FingerprintPayload = {

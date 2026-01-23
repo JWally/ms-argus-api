@@ -4,8 +4,14 @@ import type { Fingerprint } from "../../types";
 /**
  * Extract flat fingerprint fields from V3 payload.
  * Pure transformation: no AWS calls, no side effects.
+ *
+ * @param payload - Validated V3 payload from web client
+ * @param headers - Optional request headers (for IP fallback from X-Forwarded-For)
  */
-export function extractFingerprint(payload: ArgusPayload): Fingerprint {
+export function extractFingerprint(
+  payload: ArgusPayload,
+  headers?: Record<string, string>,
+): Fingerprint {
   const { hashes, device, sigint, identifiers } = payload;
 
   const fingerprint: Fingerprint = {
@@ -73,6 +79,40 @@ export function extractFingerprint(payload: ArgusPayload): Fingerprint {
     fingerprint.maths_hash = hashes.maths;
   }
 
+  // Structural hashes (stable browser engine anchors - survive private browsing)
+  if (hashes.windowFeatures) {
+    fingerprint.window_features_hash = hashes.windowFeatures;
+  }
+  if (hashes.htmlElementVersion) {
+    fingerprint.html_element_hash = hashes.htmlElementVersion;
+  }
+  if (hashes.css) {
+    fingerprint.css_hash = hashes.css;
+  }
+  if (hashes.svg) {
+    fingerprint.svg_hash = hashes.svg;
+  }
+  if (hashes.intl) {
+    fingerprint.intl_hash = hashes.intl;
+  }
+  if (hashes.features) {
+    fingerprint.features_hash = hashes.features;
+  }
+  if (hashes.consoleErrors) {
+    fingerprint.console_errors_hash = hashes.consoleErrors;
+  }
+  if (hashes.clientRects) {
+    fingerprint.client_rects_hash = hashes.clientRects;
+  }
+
+  // WebGL extensions count (capability signal for WEBGL_STRUCT bucket)
+  const webglData = device.canvasWebgl;
+  if (webglData && Array.isArray(webglData.extensions)) {
+    fingerprint.webgl_extensions_count = (
+      webglData.extensions as unknown[]
+    ).length;
+  }
+
   // Sigint (network intelligence)
   if (sigint) {
     if (sigint.tlsFingerprint) {
@@ -122,6 +162,30 @@ export function extractFingerprint(payload: ArgusPayload): Fingerprint {
       if (typeof localIp === "string") {
         fingerprint.stun_local_ip = localIp;
       }
+    }
+  }
+
+  // IP fallback: use X-Forwarded-For when sigint didn't provide IP
+  // (e.g., private browsing blocks cross-origin sigint endpoint)
+  if (!fingerprint.ip_address && headers?.["X-Forwarded-For"]) {
+    const clientIp = headers["X-Forwarded-For"].split(",")[0].trim();
+    if (clientIp) {
+      fingerprint.ip_address = clientIp;
+    }
+  }
+
+  // Privacy mode detection
+  const incognito = device.incognito as Record<string, unknown> | undefined;
+  if (incognito) {
+    if (incognito.privateBrowsing === true || incognito.isPrivate === true) {
+      fingerprint.is_private_browsing = true;
+    }
+  }
+  const resistance = device.resistance as Record<string, unknown> | undefined;
+  if (resistance) {
+    const privacyVal = resistance.privacy;
+    if (typeof privacyVal === "string" && privacyVal !== "unknown") {
+      fingerprint.privacy_browser = privacyVal;
     }
   }
 
