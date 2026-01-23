@@ -271,22 +271,23 @@ async function processRecord(
   });
 }
 
-/**
- * Record metric for which tier matched
- */
+const TIER_METRICS: Record<number, string[]> = {
+  0.5: ["Tier05Hit"],
+  1: ["Tier1Hit"],
+  2: ["Tier2Hit"],
+  3: ["Tier3Hit"],
+};
+
+const NEW_DEVICE_METRICS = [
+  "NewDevice",
+  "NEW_DEVICE_RATE",
+  "DeviceIdFormat_ulid",
+];
+
 function recordTierMetric(tier: number, isNewDevice: boolean): void {
-  if (isNewDevice) {
-    metrics.addMetric("NewDevice", MetricUnit.Count, 1);
-    metrics.addMetric("NEW_DEVICE_RATE", MetricUnit.Count, 1);
-    metrics.addMetric("DeviceIdFormat_ulid", MetricUnit.Count, 1);
-  } else if (tier === 0.5) {
-    metrics.addMetric("Tier05Hit", MetricUnit.Count, 1);
-  } else if (tier === 1) {
-    metrics.addMetric("Tier1Hit", MetricUnit.Count, 1);
-  } else if (tier === 2) {
-    metrics.addMetric("Tier2Hit", MetricUnit.Count, 1);
-  } else if (tier === 3) {
-    metrics.addMetric("Tier3Hit", MetricUnit.Count, 1);
+  const names = isNewDevice ? NEW_DEVICE_METRICS : (TIER_METRICS[tier] ?? []);
+  for (const name of names) {
+    metrics.addMetric(name, MetricUnit.Count, 1);
   }
 }
 

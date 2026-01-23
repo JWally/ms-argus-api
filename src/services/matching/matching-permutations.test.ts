@@ -1,5 +1,4 @@
 // src/services/matching/matching-permutations.test.ts
-// AR-61: Permutation matrix tests for tier matching logic
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { mockClient } from "aws-sdk-client-mock";
 import {
@@ -17,6 +16,7 @@ import {
 } from "./matching-service";
 import { Fingerprint, SessionCacheValue } from "./types";
 import { DynamoCacheService } from "../cache";
+import { buildBucketKeys } from "../../helpers/bucket-keys";
 import {
   createFingerprint,
   createDriftedFingerprint,
@@ -55,9 +55,9 @@ function createMockCacheService() {
             existing.status !== "complete"
           ) {
             sessions.set(sessionId, value);
-            return true; // AR-170: Write succeeded
+            return true;
           }
-          return false; // AR-170: Write skipped (higher confidence exists)
+          return false;
         },
       ),
     tryAcquireMutationGate: vi.fn().mockResolvedValue(true),
@@ -536,19 +536,19 @@ describe("Signal Presence Matrix", () => {
   describe("partial signals", () => {
     it("should not build ip_ja4 bucket when only ip_address present", () => {
       const fingerprint: Fingerprint = { ip_address: "10.0.0.1" };
-      const keys = service.buildBucketKeys(fingerprint);
+      const keys = buildBucketKeys(fingerprint);
       expect(keys).toHaveLength(0);
     });
 
     it("should not build gpu_screen_tz bucket when only gpu_renderer present", () => {
       const fingerprint: Fingerprint = { gpu_renderer: "GPU" };
-      const keys = service.buildBucketKeys(fingerprint);
+      const keys = buildBucketKeys(fingerprint);
       expect(keys).toHaveLength(0);
     });
 
     it("should not build audio_canvas bucket when only audio_hash present", () => {
       const fingerprint: Fingerprint = { audio_hash: "audio123" };
-      const keys = service.buildBucketKeys(fingerprint);
+      const keys = buildBucketKeys(fingerprint);
       expect(keys).toHaveLength(0);
     });
   });
@@ -783,7 +783,7 @@ describe("Edge Cases", () => {
         timezone: "",
       };
 
-      const keys = service.buildBucketKeys(fingerprint);
+      const keys = buildBucketKeys(fingerprint);
       expect(keys).toHaveLength(0);
     });
   });
@@ -929,27 +929,6 @@ describe("Edge Cases", () => {
 });
 
 describe("Using Fingerprint Factory Presets", () => {
-  let dynamodb: DynamoDBClient;
-  let sqs: SQSClient;
-  let mockCache: ReturnType<typeof createMockCacheService>;
-  let service: MatchingService;
-
-  beforeEach(() => {
-    dynamoMock.reset();
-    sqsMock.reset();
-    mockCache = createMockCacheService();
-    dynamodb = new DynamoDBClient({});
-    sqs = new SQSClient({});
-
-    const deps: MatchingServiceDeps = {
-      dynamodb,
-      sqs,
-      cache: mockCache,
-      config: testConfig,
-    };
-    service = new MatchingService(deps);
-  });
-
   describe("FULL preset", () => {
     it("should have evercookie, stable_hash, fuzzy_hash, and all tier 2 signals", () => {
       const fp = createFingerprint(FingerprintPresets.FULL);
@@ -968,7 +947,7 @@ describe("Using Fingerprint Factory Presets", () => {
 
     it("should build all 3 bucket keys", () => {
       const fp = createFingerprint(FingerprintPresets.FULL);
-      const keys = service.buildBucketKeys(fp);
+      const keys = buildBucketKeys(fp);
       expect(keys).toHaveLength(3);
     });
   });
@@ -984,7 +963,7 @@ describe("Using Fingerprint Factory Presets", () => {
 
     it("should build no bucket keys", () => {
       const fp = createFingerprint(FingerprintPresets.MINIMAL);
-      const keys = service.buildBucketKeys(fp);
+      const keys = buildBucketKeys(fp);
       expect(keys).toHaveLength(0);
     });
   });

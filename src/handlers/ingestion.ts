@@ -20,7 +20,7 @@ import validator from "@middy/validator";
 import { transpileSchema } from "@middy/validator/transpile";
 import warmup from "@middy/warmup";
 import { onWarmup } from "../helpers/middy-helpers";
-import { HttpError, createError } from "../helpers/http-error";
+import { HttpError } from "../helpers/http-error";
 import { validateRequiredEnvVars } from "../helpers/env-validation";
 import { corsMiddleware } from "../helpers/cors-middleware";
 import { jsonErrorHandler } from "../helpers/error-middleware";
@@ -182,7 +182,7 @@ const binaryGzipBodyParser =
       if (!contentType.startsWith("application/octet-stream")) {
         if (Buffer.byteLength(rawBody, "utf8") > MAX_BODY_BYTES) {
           metrics.addMetric("PayloadTooLarge", MetricUnit.Count, 1);
-          throw createError(413, "Request entity too large");
+          throw new HttpError(413, "Request entity too large");
         }
         // AR-171: Track JSON payload format for adoption monitoring
         metrics.addMetric("JsonPayloadReceived", MetricUnit.Count, 1);
@@ -192,7 +192,7 @@ const binaryGzipBodyParser =
       // Binary path: require gzip encoding
       if (!contentEncoding.includes("gzip")) {
         metrics.addMetric("MissingGzipEncoding", MetricUnit.Count, 1);
-        throw createError(
+        throw new HttpError(
           400,
           "Binary payload requires Content-Encoding: gzip",
         );
@@ -200,7 +200,7 @@ const binaryGzipBodyParser =
 
       // Validate isBase64Encoded flag (API Gateway sets this for binary)
       if (!event.isBase64Encoded) {
-        throw createError(
+        throw new HttpError(
           400,
           "Binary payload must be base64-encoded by API Gateway",
         );
@@ -210,7 +210,7 @@ const binaryGzipBodyParser =
       const gzipBuffer = Buffer.from(rawBody, "base64");
       if (gzipBuffer.length > MAX_BODY_BYTES) {
         metrics.addMetric("PayloadTooLarge", MetricUnit.Count, 1);
-        throw createError(413, "Compressed payload too large");
+        throw new HttpError(413, "Compressed payload too large");
       }
 
       // Validate gzip magic bytes (0x1f 0x8b)
@@ -220,7 +220,7 @@ const binaryGzipBodyParser =
         gzipBuffer[1] !== 0x8b
       ) {
         metrics.addMetric("GzipDecompressionFailed", MetricUnit.Count, 1);
-        throw createError(400, "Invalid gzip data");
+        throw new HttpError(400, "Invalid gzip data");
       }
 
       // AR-136: Streaming decompress with early abort (zip bomb defense)
@@ -239,7 +239,7 @@ const binaryGzipBodyParser =
           err instanceof Error && err.message.includes("exceeds limit")
             ? err.message
             : "Failed to decompress gzip payload";
-        throw createError(400, message);
+        throw new HttpError(400, message);
       }
     },
   });
@@ -268,7 +268,7 @@ const jsonBodyParser = (): middy.MiddlewareObj<APIGatewayProxyEventV2> => ({
       (event as any).parsedBody = JSON.parse(event.body ?? "{}");
     } catch {
       metrics.addMetric("InvalidJson", MetricUnit.Count, 1);
-      throw createError(400, "Invalid JSON payload");
+      throw new HttpError(400, "Invalid JSON payload");
     }
   },
 });
@@ -296,10 +296,10 @@ const baseHandler = async (
     return { statusCode: 204 };
   }
   if (method !== "POST") {
-    throw createError(405, "Method not allowed");
+    throw new HttpError(405, "Method not allowed");
   }
   if (event.rawPath !== "/v1/collect") {
-    throw createError(404, "Not found");
+    throw new HttpError(404, "Not found");
   }
 
   // Payload is parsed and validated by middleware at this point
@@ -332,7 +332,7 @@ const baseHandler = async (
       session_id: sessionId,
     });
     metrics.addMetric("SqsSendFailed", MetricUnit.Count, 1);
-    throw createError(503, "Service temporarily unavailable");
+    throw new HttpError(503, "Service temporarily unavailable");
   }
 
   // AR-139: Archive raw payload (async fire-and-forget, does not block response)
