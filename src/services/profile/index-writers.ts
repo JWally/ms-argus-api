@@ -2,7 +2,6 @@
 
 import {
   DynamoDBClient,
-  BatchWriteItemCommand,
   PutItemCommand,
   UpdateItemCommand,
   WriteRequest,
@@ -15,13 +14,12 @@ import {
   SIMHASH_CONFIG,
 } from "../../helpers/constants";
 import {
-  buildBucketKeys,
   buildSessionAnchorKey as buildSessionAnchorKeyHelper,
   buildIpUaAnchorKey as buildIpUaAnchorKeyHelper,
   buildSimHashBandKeys,
   buildSimHashBandSK,
 } from "../../helpers/bucket-keys";
-import { sleep } from "../../helpers/sleep";
+import { batchWriteWithRetry } from "../../helpers/batch-write";
 
 /**
  * Evidence codes that permit identity association
@@ -245,49 +243,18 @@ export async function batchWriteTier1Indexes(
   entries: Tier1IndexEntry[],
   maxRetries: number = 3,
 ): Promise<void> {
-  const tableName = deps.tier1IndexTable;
-  let unprocessedItems: WriteRequest[] = entries.map((entry) => ({
+  const items: WriteRequest[] = entries.map((entry) => ({
     PutRequest: {
       Item: marshall(entry, { removeUndefinedValues: true }),
     },
   }));
-
-  let attempt = 0;
-
-  while (unprocessedItems.length > 0 && attempt < maxRetries) {
-    const result = await deps.dynamodb.send(
-      new BatchWriteItemCommand({
-        RequestItems: {
-          [tableName]: unprocessedItems,
-        },
-      }),
-    );
-
-    // Check for unprocessed items (can happen during throttling)
-    const remaining = result.UnprocessedItems?.[tableName];
-    if (remaining && remaining.length > 0) {
-      unprocessedItems = remaining;
-      attempt++;
-      // Exponential backoff: 100ms, 200ms, 400ms
-      await sleep(Math.pow(2, attempt) * 100);
-    } else {
-      unprocessedItems = [];
-    }
-  }
-
-  if (unprocessedItems.length > 0) {
-    throw new Error(
-      `Failed to write ${unprocessedItems.length} Tier1 index items after ${maxRetries} retries`,
-    );
-  }
-}
-
-/**
- * Build Tier 2 bucket keys for compound matching
- * Delegates to shared bucket-keys helper
- */
-export function buildTier2BucketKeys(fingerprint: Fingerprint): string[] {
-  return buildBucketKeys(fingerprint);
+  await batchWriteWithRetry(
+    deps.dynamodb,
+    deps.tier1IndexTable,
+    items,
+    "Tier1 index",
+    maxRetries,
+  );
 }
 
 /**
@@ -298,8 +265,7 @@ export async function batchWriteTier2Buckets(
   entries: Tier2BucketEntry[],
   maxRetries: number = 3,
 ): Promise<void> {
-  const tableName = deps.tier2BucketsTable;
-  let unprocessedItems: WriteRequest[] = entries.map((entry) => ({
+  const items: WriteRequest[] = entries.map((entry) => ({
     PutRequest: {
       Item: {
         bucket_key: { S: entry.bucket_key },
@@ -308,35 +274,13 @@ export async function batchWriteTier2Buckets(
       },
     },
   }));
-
-  let attempt = 0;
-
-  while (unprocessedItems.length > 0 && attempt < maxRetries) {
-    const result = await deps.dynamodb.send(
-      new BatchWriteItemCommand({
-        RequestItems: {
-          [tableName]: unprocessedItems,
-        },
-      }),
-    );
-
-    // Check for unprocessed items (can happen during throttling)
-    const remaining = result.UnprocessedItems?.[tableName];
-    if (remaining && remaining.length > 0) {
-      unprocessedItems = remaining;
-      attempt++;
-      // Exponential backoff: 100ms, 200ms, 400ms
-      await sleep(Math.pow(2, attempt) * 100);
-    } else {
-      unprocessedItems = [];
-    }
-  }
-
-  if (unprocessedItems.length > 0) {
-    throw new Error(
-      `Failed to write ${unprocessedItems.length} Tier2 bucket items after ${maxRetries} retries`,
-    );
-  }
+  await batchWriteWithRetry(
+    deps.dynamodb,
+    deps.tier2BucketsTable,
+    items,
+    "Tier2 bucket",
+    maxRetries,
+  );
 }
 
 /**
@@ -502,10 +446,7 @@ export async function batchWriteSimHashBands(
   entries: SimHashBandEntry[],
   maxRetries: number = 3,
 ): Promise<void> {
-  if (entries.length === 0) return;
-
-  const tableName = deps.tier2BucketsTable;
-  let unprocessedItems: WriteRequest[] = entries.map((entry) => ({
+  const items: WriteRequest[] = entries.map((entry) => ({
     PutRequest: {
       Item: {
         bucket_key: { S: entry.bucket_key },
@@ -516,33 +457,11 @@ export async function batchWriteSimHashBands(
       },
     },
   }));
-
-  let attempt = 0;
-
-  while (unprocessedItems.length > 0 && attempt < maxRetries) {
-    const result = await deps.dynamodb.send(
-      new BatchWriteItemCommand({
-        RequestItems: {
-          [tableName]: unprocessedItems,
-        },
-      }),
-    );
-
-    // Check for unprocessed items (can happen during throttling)
-    const remaining = result.UnprocessedItems?.[tableName];
-    if (remaining && remaining.length > 0) {
-      unprocessedItems = remaining;
-      attempt++;
-      // Exponential backoff: 100ms, 200ms, 400ms
-      await sleep(Math.pow(2, attempt) * 100);
-    } else {
-      unprocessedItems = [];
-    }
-  }
-
-  if (unprocessedItems.length > 0) {
-    throw new Error(
-      `Failed to write ${unprocessedItems.length} SimHash band items after ${maxRetries} retries`,
-    );
-  }
+  await batchWriteWithRetry(
+    deps.dynamodb,
+    deps.tier2BucketsTable,
+    items,
+    "SimHash band",
+    maxRetries,
+  );
 }
