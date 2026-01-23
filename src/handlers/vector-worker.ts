@@ -1,14 +1,10 @@
 // src/handlers/vector-worker.ts
 // Vector search worker Lambda for QDrant integration
 // Runs in the ms-argus-vector VPC to access the internal ALB
-import {
-  SQSHandler,
-  SQSBatchResponse,
-  SQSBatchItemFailure,
-  SQSRecord,
-} from "aws-lambda";
+import { SQSHandler, SQSRecord } from "aws-lambda";
 import { Logger } from "@aws-lambda-powertools/logger";
 import { Metrics, MetricUnit } from "@aws-lambda-powertools/metrics";
+import { processSqsBatch } from "../helpers/sqs-batch";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import {
   QdrantClient,
@@ -69,25 +65,13 @@ type VectorMessage = VectorSearchMessage | VectorUpsertMessage | WarmupMessage;
  * Vector Worker Lambda Handler
  * Processes vector operations from SQS and communicates with QDrant
  */
-export const handler: SQSHandler = async (event): Promise<SQSBatchResponse> => {
-  const batchItemFailures: SQSBatchItemFailure[] = [];
-
-  for (const record of event.Records) {
-    try {
-      await processRecord(record);
-      metrics.addMetric("VectorOperationSuccess", MetricUnit.Count, 1);
-    } catch (error) {
-      logger.error("Failed to process vector record", {
-        error,
-        messageId: record.messageId,
-      });
-      metrics.addMetric("VectorOperationError", MetricUnit.Count, 1);
-      batchItemFailures.push({ itemIdentifier: record.messageId });
-    }
-  }
-
-  metrics.publishStoredMetrics();
-  return { batchItemFailures };
+export const handler: SQSHandler = async (event) => {
+  return processSqsBatch(event.Records, processRecord, {
+    metrics,
+    logger,
+    successMetric: "VectorOperationSuccess",
+    errorMetric: "VectorOperationError",
+  });
 };
 
 /**
