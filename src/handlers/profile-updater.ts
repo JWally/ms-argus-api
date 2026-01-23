@@ -126,7 +126,17 @@ async function processRecord(
       logger.info("Skipping update - recently updated", { device_id });
     } else if (result.reason === "no_drift") {
       metrics.addMetric("NoDriftSkip", MetricUnit.Count, 1);
-      logger.info("Skipping update - no significant drift", { device_id });
+      if (result.tier2Writes) {
+        metrics.addMetric(
+          "Tier2BucketWrites",
+          MetricUnit.Count,
+          result.tier2Writes,
+        );
+      }
+      logger.info("Skipping update - no significant drift", {
+        device_id,
+        tier2Writes: result.tier2Writes,
+      });
     }
     return;
   }

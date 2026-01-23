@@ -12,7 +12,7 @@ import {
   parseSimHashBandSK,
   type SimHashBandKey,
 } from "../../helpers/bucket-keys";
-import { hammingDistance } from "../../helpers/hash";
+import { hammingDistance, computeFuzzyMatchInfo } from "../../helpers/hash";
 import type { Fingerprint, MatchResult, SimHashDetails } from "./types";
 
 const logger = new Logger({
@@ -202,6 +202,10 @@ export async function tier15SimHashMatch(
       flags: [],
       evidence_codes: ["SIMHASH_MATCH"],
       simhash_details,
+      fuzzy_match_info: computeFuzzyMatchInfo(
+        fingerprint.fuzzy_hash,
+        best.fuzzyHash,
+      ),
     };
 
     // Shadow mode: log but don't return

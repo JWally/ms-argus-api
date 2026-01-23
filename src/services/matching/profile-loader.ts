@@ -18,6 +18,7 @@ export interface ProfileLoaderDeps {
 export interface ProfileData {
   risk_score: number;
   flags: string[];
+  fuzzy_hash?: string;
 }
 
 /**
@@ -34,7 +35,7 @@ export async function loadProfile(
       Key: {
         device_id: { S: deviceId },
       },
-      ProjectionExpression: "risk_score, flags",
+      ProjectionExpression: "risk_score, flags, fuzzy_hash",
     }),
   );
 
@@ -43,6 +44,7 @@ export async function loadProfile(
     return {
       risk_score: item.risk_score,
       flags: item.flags ?? [],
+      fuzzy_hash: item.fuzzy_hash,
     };
   }
   return null;
