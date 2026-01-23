@@ -14,8 +14,6 @@ import {
   SIMHASH_CONFIG,
 } from "../../helpers/constants";
 import {
-  buildSessionAnchorKey as buildSessionAnchorKeyHelper,
-  buildIpUaAnchorKey as buildIpUaAnchorKeyHelper,
   buildSimHashBandKeys,
   buildSimHashBandSK,
 } from "../../helpers/bucket-keys";
@@ -320,53 +318,12 @@ export async function incrementBucketCardinalities(
 }
 
 /**
- * Build session anchor bucket key for ephemeral short-window matching
- * Delegates to shared bucket-keys helper
+ * Write anchor bucket entry for ephemeral matching.
+ * Used for both session anchors and IP+UA anchors.
+ * Stores created_at for application-side validity check.
+ * Uses SESSION_ANCHOR_CLEANUP_TTL for DynamoDB TTL cleanup.
  */
-export function buildSessionAnchorKey(fingerprint: Fingerprint): string | null {
-  return buildSessionAnchorKeyHelper(fingerprint);
-}
-
-/**
- * Write session anchor bucket for ephemeral matching
- * Stores created_at timestamp for application-side 10-minute validity check
- * Uses shorter TTL (1 hour) for DynamoDB cleanup
- */
-export async function writeSessionAnchorBucket(
-  deps: IndexWriterDeps,
-  bucketKey: string,
-  deviceId: string,
-): Promise<void> {
-  const now = Date.now();
-  const ttl = Math.floor(now / 1000) + SESSION_ANCHOR_CLEANUP_TTL_SECONDS;
-
-  await deps.dynamodb.send(
-    new PutItemCommand({
-      TableName: deps.tier2BucketsTable,
-      Item: {
-        bucket_key: { S: bucketKey },
-        device_id: { S: deviceId },
-        created_at: { N: String(now) },
-        ttl: { N: String(ttl) },
-      },
-    }),
-  );
-}
-
-/**
- * Build IP+UA-only anchor bucket key for ephemeral matching
- * Delegates to shared bucket-keys helper
- */
-export function buildIpUaAnchorKey(fingerprint: Fingerprint): string | null {
-  return buildIpUaAnchorKeyHelper(fingerprint);
-}
-
-/**
- * Write IP+UA-only anchor bucket for ephemeral matching
- * Stores created_at timestamp for application-side 3-minute validity check
- * Uses 1 hour TTL for DynamoDB cleanup (same as session anchor)
- */
-export async function writeIpUaAnchorBucket(
+export async function writeAnchorBucket(
   deps: IndexWriterDeps,
   bucketKey: string,
   deviceId: string,

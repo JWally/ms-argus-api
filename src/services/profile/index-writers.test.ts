@@ -1,5 +1,4 @@
 // src/services/profile/index-writers.test.ts
-// AR-150: Tests for tier-gated identity association
 
 import { describe, it, expect, beforeEach } from "vitest";
 import { mockClient } from "aws-sdk-client-mock";
@@ -16,8 +15,7 @@ import {
   batchWriteTier1Indexes,
   batchWriteTier2Buckets,
   incrementBucketCardinalities,
-  writeSessionAnchorBucket,
-  writeIpUaAnchorBucket,
+  writeAnchorBucket,
   buildSimHashBandEntries,
   batchWriteSimHashBands,
   ASSOCIATION_ALLOWED_EVIDENCE,
@@ -539,15 +537,15 @@ describe("incrementBucketCardinalities", () => {
   });
 });
 
-describe("writeSessionAnchorBucket", () => {
+describe("writeAnchorBucket", () => {
   beforeEach(() => {
     dynamoMock.reset();
   });
 
-  it("writes PutItem with correct table and keys", async () => {
+  it("writes PutItem with correct table and keys (session anchor)", async () => {
     dynamoMock.on(PutItemCommand).resolves({});
 
-    await writeSessionAnchorBucket(
+    await writeAnchorBucket(
       createDeps(),
       "session_anchor#1.2.3.4#hash#1920x1080",
       "dev-1",
@@ -563,46 +561,10 @@ describe("writeSessionAnchorBucket", () => {
     expect(input.Item!.device_id.S).toBe("dev-1");
   });
 
-  it("includes created_at timestamp", async () => {
-    dynamoMock.on(PutItemCommand).resolves({});
-    const before = Date.now();
-
-    await writeSessionAnchorBucket(createDeps(), "key", "dev-1");
-
-    const after = Date.now();
-    const calls = dynamoMock.commandCalls(PutItemCommand);
-    const createdAt = Number(calls[0].args[0].input.Item!.created_at.N);
-    expect(createdAt).toBeGreaterThanOrEqual(before);
-    expect(createdAt).toBeLessThanOrEqual(after);
-  });
-
-  it("sets TTL ~1 hour from now", async () => {
+  it("writes PutItem with correct table and keys (ip_ua anchor)", async () => {
     dynamoMock.on(PutItemCommand).resolves({});
 
-    await writeSessionAnchorBucket(createDeps(), "key", "dev-1");
-
-    const calls = dynamoMock.commandCalls(PutItemCommand);
-    const ttl = Number(calls[0].args[0].input.Item!.ttl.N);
-    const nowSeconds = Math.floor(Date.now() / 1000);
-    // TTL should be ~3600 seconds from now (1 hour cleanup)
-    expect(ttl - nowSeconds).toBeGreaterThan(3500);
-    expect(ttl - nowSeconds).toBeLessThanOrEqual(3600);
-  });
-});
-
-describe("writeIpUaAnchorBucket", () => {
-  beforeEach(() => {
-    dynamoMock.reset();
-  });
-
-  it("writes PutItem with correct table and keys", async () => {
-    dynamoMock.on(PutItemCommand).resolves({});
-
-    await writeIpUaAnchorBucket(
-      createDeps(),
-      "ip_ua_anchor#1.2.3.4#hash",
-      "dev-2",
-    );
+    await writeAnchorBucket(createDeps(), "ip_ua_anchor#1.2.3.4#hash", "dev-2");
 
     const calls = dynamoMock.commandCalls(PutItemCommand);
     expect(calls).toHaveLength(1);
@@ -616,7 +578,7 @@ describe("writeIpUaAnchorBucket", () => {
     dynamoMock.on(PutItemCommand).resolves({});
     const before = Date.now();
 
-    await writeIpUaAnchorBucket(createDeps(), "key", "dev-2");
+    await writeAnchorBucket(createDeps(), "key", "dev-1");
 
     const after = Date.now();
     const calls = dynamoMock.commandCalls(PutItemCommand);
@@ -625,10 +587,10 @@ describe("writeIpUaAnchorBucket", () => {
     expect(createdAt).toBeLessThanOrEqual(after);
   });
 
-  it("sets TTL ~1 hour from now (same as session anchor)", async () => {
+  it("sets TTL ~1 hour from now", async () => {
     dynamoMock.on(PutItemCommand).resolves({});
 
-    await writeIpUaAnchorBucket(createDeps(), "key", "dev-2");
+    await writeAnchorBucket(createDeps(), "key", "dev-1");
 
     const calls = dynamoMock.commandCalls(PutItemCommand);
     const ttl = Number(calls[0].args[0].input.Item!.ttl.N);
