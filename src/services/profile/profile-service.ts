@@ -20,7 +20,6 @@ import {
   buildIdentityIndexEntries,
   buildHashIndexEntries,
   batchWriteTier1Indexes,
-  buildTier2BucketKeys,
   batchWriteTier2Buckets,
   incrementBucketCardinalities,
   buildSessionAnchorKey,
@@ -33,6 +32,7 @@ import {
   IndexWriterDeps,
   ASSOCIATION_ALLOWED_EVIDENCE,
 } from "./index-writers";
+import { buildBucketKeys } from "../../helpers/bucket-keys";
 import { getSimHashFlags } from "../../helpers/constants";
 
 /**
@@ -323,13 +323,8 @@ export class ProfileService {
     return bucketEntries.length;
   }
 
-  /**
-   * Build Tier 2 bucket keys for compound matching
-   * AR-117: Delegates to shared bucket-keys helper
-   * AR-120: Delegates to index-writers module
-   */
   buildTier2BucketKeys(fingerprint: Fingerprint): string[] {
-    return buildTier2BucketKeys(fingerprint);
+    return buildBucketKeys(fingerprint);
   }
 
   /**
