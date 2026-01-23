@@ -1,10 +1,3 @@
-// src/handlers/matching-worker.ts
-// AR-52: Replaced Redis with DynamoDB session cache
-// AR-57: Added Firehose observations for analytics
-// AR-71: Added warmup detection for SQS pipeline warming
-// AR-73: Added fingerprint normalization for web library compatibility
-// AR-148: Added anomaly detection for session response
-// AR-XXX: V3 payload schema - simplified, no V1/V2 detection
 import {
   SQSHandler,
   SQSBatchResponse,
@@ -33,9 +26,10 @@ import {
   MUTATION_GATE_TTL_SECONDS,
 } from "../helpers/constants";
 import { detectAllAnomalies } from "../services/profile/anomaly";
-import type { SessionAnomalySignal, Fingerprint } from "../types";
+import type { SessionAnomalySignal } from "../types";
 import { gzipSync } from "zlib";
 import type { ArgusPayload } from "../helpers/payload-schema";
+import { extractFingerprint } from "../services/matching/fingerprint-extractor";
 
 // V3 Payload from ingestion handler (ArgusPayload + metadata)
 interface SqsPayload extends ArgusPayload {
@@ -56,7 +50,7 @@ const metrics = new Metrics({
 // AWS SDK clients (reused across invocations)
 const dynamodb = new DynamoDBClient({});
 const sqs = new SQSClient({});
-const firehose = new FirehoseClient({}); // AR-57: For observations
+const firehose = new FirehoseClient({});
 
 // Service configuration from validated environment
 function getConfig(): MatchingServiceConfig {
@@ -70,7 +64,7 @@ function getConfig(): MatchingServiceConfig {
   };
 }
 
-// Create DynamoDB cache service (AR-52: replaces Redis)
+// DynamoDB cache service
 const cacheService = new DynamoCacheService(dynamodb, {
   tableName: envConfig.SESSION_CACHE_TABLE,
   sessionTtlSeconds: SESSION_TTL_SECONDS,
@@ -115,7 +109,7 @@ export const handler: SQSHandler = async (event): Promise<SQSBatchResponse> => {
 };
 
 /**
- * AR-71: Check if this is a warmup message from EventBridge
+ * Check if this is a warmup message from EventBridge
  * Warmup messages keep the SQS polling pipeline active
  */
 function isWarmupMessage(body: string): boolean {
@@ -128,182 +122,12 @@ function isWarmupMessage(body: string): boolean {
 }
 
 /**
- * Extract flat fingerprint fields from V3 device section
- * The device section contains nested objects per component (workerScope, navigator, etc.)
- * We extract the relevant fields for matching into a flat Fingerprint object
- */
-function extractFingerprint(payload: SqsPayload): Fingerprint {
-  const { hashes, device, sigint, identifiers } = payload;
-
-  // Start with core hashes
-  const fingerprint: Fingerprint = {
-    stable_hash: hashes.stable,
-    fuzzy_hash: hashes.fuzzy,
-  };
-
-  // Extract identifiers
-  if (identifiers.evercookie_id) {
-    fingerprint.evercookie_id = identifiers.evercookie_id;
-  }
-  if (identifiers.public_key) {
-    fingerprint.public_key = identifiers.public_key;
-  }
-
-  // Extract from workerScope component (browser/device info)
-  const workerScope = device.workerScope;
-  if (workerScope) {
-    if (typeof workerScope.userAgent === "string") {
-      fingerprint.user_agent = workerScope.userAgent;
-    }
-    if (typeof workerScope.hardwareConcurrency === "number") {
-      fingerprint.hardware_concurrency = workerScope.hardwareConcurrency;
-    }
-    if (typeof workerScope.deviceMemory === "number") {
-      fingerprint.device_memory = workerScope.deviceMemory;
-    }
-    if (typeof workerScope.webglRenderer === "string") {
-      fingerprint.gpu_renderer = workerScope.webglRenderer;
-    }
-    if (typeof workerScope.timezoneLocation === "string") {
-      fingerprint.timezone = workerScope.timezoneLocation;
-    }
-  }
-
-  // Extract GPU renderer from canvasWebgl component (V3 format fallback)
-  if (!fingerprint.gpu_renderer) {
-    const gpu = device.canvasWebgl?.gpu as Record<string, unknown> | undefined;
-    if (gpu?.compressedGPU && typeof gpu.compressedGPU === "string") {
-      fingerprint.gpu_renderer = gpu.compressedGPU;
-    }
-  }
-
-  // Extract from screen component
-  const screen = device.screen;
-  if (screen) {
-    const width = screen.width;
-    const height = screen.height;
-    if (typeof width === "number" && typeof height === "number") {
-      fingerprint.screen_dims = `${width}x${height}`;
-    }
-  }
-
-  // Extract canvas hash
-  if (hashes.canvas2d) {
-    fingerprint.canvas_hash = hashes.canvas2d;
-  }
-
-  // Extract webgl hash
-  if (hashes.canvasWebgl) {
-    fingerprint.webgl_hash = hashes.canvasWebgl;
-  }
-
-  // Extract audio hash
-  if (hashes.offlineAudioContext) {
-    fingerprint.audio_hash = hashes.offlineAudioContext;
-  }
-
-  // Extract maths hash (for structural anchors)
-  if (hashes.maths) {
-    fingerprint.maths_hash = hashes.maths;
-  }
-
-  // Extract from sigint (network intelligence)
-  if (sigint) {
-    if (sigint.tlsFingerprint) {
-      const tls = sigint.tlsFingerprint;
-      if (tls.ip) fingerprint.ip_address = tls.ip;
-      if (tls.ja3) fingerprint.ja3 = tls.ja3;
-      if (tls.ja4) fingerprint.ja4 = tls.ja4;
-      if (tls.id) fingerprint.sigint_id = tls.id;
-    }
-    if (sigint.tcpProbe) {
-      const tcp = sigint.tcpProbe as Record<string, unknown>;
-      // Handle both flat structure (proxyScore) and nested structure (rtt_fingerprint.proxy_score)
-      const rttFp = tcp.rtt_fingerprint as Record<string, unknown> | undefined;
-      if (rttFp) {
-        // Web client sends nested rtt_fingerprint object
-        if (typeof rttFp.proxy_score === "number") {
-          fingerprint.proxy_score = rttFp.proxy_score;
-        }
-        if (typeof rttFp.vpn_score === "number") {
-          fingerprint.vpn_score = rttFp.vpn_score;
-        }
-        if (typeof rttFp.tcp_rtt_us === "number") {
-          fingerprint.tcp_rtt_us = rttFp.tcp_rtt_us;
-        }
-      } else {
-        // Fallback to flat structure for backwards compatibility
-        if (typeof tcp.proxyScore === "number") {
-          fingerprint.proxy_score = tcp.proxyScore;
-        }
-        if (typeof tcp.vpnScore === "number") {
-          fingerprint.vpn_score = tcp.vpnScore;
-        }
-        if (typeof tcp.rttMs === "number") {
-          fingerprint.tcp_rtt_us = (tcp.rttMs as number) * 1000;
-        }
-      }
-    }
-    if (sigint.faviconCache?.id) {
-      // Use favicon cache ID as an additional identity signal
-      fingerprint.favicon_cache_id = sigint.faviconCache.id;
-    }
-    // Extract STUN data - handle both field naming conventions
-    const stun = sigint.stun as Record<string, unknown> | undefined;
-    if (stun) {
-      // Web sends reflexiveIp, API schema expects publicIp
-      const publicIp = stun.publicIp ?? stun.reflexiveIp;
-      if (typeof publicIp === "string") {
-        fingerprint.stun_public_ip = publicIp;
-      }
-      // Web sends localIp (string), API schema expects localIps (array)
-      const localIp =
-        stun.localIp ?? (stun.localIps as string[] | undefined)?.[0];
-      if (typeof localIp === "string") {
-        fingerprint.stun_local_ip = localIp;
-      }
-    }
-  }
-
-  // Extract headless/bot detection signals
-  const headless = device.headless as Record<string, unknown> | undefined;
-  if (headless) {
-    // Handle direct isHeadless boolean
-    if (typeof headless.isHeadless === "boolean") {
-      fingerprint.is_headless = headless.isHeadless;
-    } else {
-      // Web client sends headless.headless object with individual signals
-      // Compute isHeadless from the nested headless signals
-      const headlessSignals = headless.headless as
-        | Record<string, boolean>
-        | undefined;
-      if (headlessSignals) {
-        fingerprint.is_headless = Object.values(headlessSignals).some(Boolean);
-      }
-    }
-  }
-
-  const lies = device.lies as Record<string, unknown> | undefined;
-  if (lies) {
-    // Handle both field names: count (API schema) and totalLies (web client)
-    if (typeof lies.count === "number") {
-      fingerprint.lie_count = lies.count;
-    } else if (typeof lies.totalLies === "number") {
-      fingerprint.lie_count = lies.totalLies;
-    }
-  }
-
-  return fingerprint;
-}
-
-/**
  * Process a single SQS record
  */
 async function processRecord(
   record: SQSRecord,
   service: MatchingService,
 ): Promise<void> {
-  // AR-71: Handle warmup messages - just log and return
   if (isWarmupMessage(record.body)) {
     logger.info("Warmup ping received - keeping pipeline warm");
     metrics.addMetric("WarmupPing", MetricUnit.Count, 1);
@@ -312,7 +136,7 @@ async function processRecord(
 
   const startTime = Date.now();
 
-  // AR-156: Handle malformed JSON payloads - don't retry poison messages
+  // Don't retry malformed JSON - treat as poison message
   let rawPayload: SqsPayload;
   try {
     rawPayload = JSON.parse(record.body);
@@ -391,7 +215,7 @@ async function processRecord(
     throw error;
   }
 
-  // AR-148: Run anomaly detection on fingerprint
+  // Run anomaly detection on fingerprint
   const anomalyResult = detectAllAnomalies(
     fingerprint,
     rawPayload.device, // Raw device data for cross-field checks
@@ -441,7 +265,7 @@ async function processRecord(
   const duration = Date.now() - startTime;
   metrics.addMetric("MatchingDuration", MetricUnit.Milliseconds, duration);
 
-  // AR-57: Emit observation to Firehose (fire-and-forget)
+  // Emit observation to Firehose (fire-and-forget)
   emitObservation({
     sessionId: session_id,
     matchResult,
@@ -479,7 +303,7 @@ function recordTierMetric(tier: number, isNewDevice: boolean): void {
 }
 
 /**
- * AR-57: Emit match observation to Firehose for analytics
+ * Emit match observation to Firehose for analytics
  */
 async function emitObservation(params: {
   sessionId: string;
