@@ -1,0 +1,64 @@
+rules:
+  - id: no-unnecessary-async
+    patterns:
+      - pattern: |
+          async function $FN(...) {
+            return $EXPR;
+          }
+      - pattern-not: |
+          async function $FN(...) {
+            return await $EXPR;
+          }
+    message: "Function '$FN' is async but only returns a value without awaiting. Remove the async keyword."
+    languages: [typescript]
+    severity: WARNING
+
+  - id: no-wrapper-function
+    patterns:
+      - pattern: |
+          function $WRAPPER($ARG) {
+            return $INNER($ARG);
+          }
+    message: "Function '$WRAPPER' just forwards to '$INNER'. Remove the indirection."
+    languages: [typescript]
+    severity: WARNING
+
+  - id: no-factory-factory
+    pattern: |
+      function $FACTORY(...): (...) => $TYPE { ... }
+    message: "Function '$FACTORY' returns another function. Consider simplifying to direct construction."
+    languages: [typescript]
+    severity: WARNING
+
+  - id: no-trivial-class-wrapper
+    patterns:
+      - pattern: |
+          class $CLASS {
+            $METHOD($SELF, ...) {
+              return this.$FIELD.$METHOD2(...);
+            }
+          }
+    message: "Class '$CLASS' method just delegates to a field. Consider using the field directly."
+    languages: [typescript]
+    severity: WARNING
+
+  - id: no-redundant-boolean-return
+    pattern: |
+      if ($COND) {
+        return true;
+      }
+      return false;
+    message: "Simplify to 'return $COND' instead of if/else boolean."
+    languages: [typescript]
+    severity: WARNING
+
+  - id: no-redundant-else-return
+    pattern: |
+      if ($COND) {
+        return $A;
+      } else {
+        return $B;
+      }
+    message: "Remove 'else' after 'return' — the else is redundant."
+    languages: [typescript]
+    severity: WARNING

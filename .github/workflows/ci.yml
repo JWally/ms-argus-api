@@ -65,10 +65,64 @@ jobs:
             exit 1
           fi
 
+  quality:
+    name: Code Quality
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Dependency rules (no circular deps, layering)
+        run: npm run deps
+
+      - name: Dead code detection (unused exports, files, deps)
+        run: npm run dead-code
+
+      - name: Duplication detection (copy-paste)
+        run: npm run duplication
+
+  semgrep:
+    name: Semgrep Anti-Pattern Scan
+    runs-on: ubuntu-latest
+    container:
+      image: semgrep/semgrep
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run Semgrep with custom rules
+        run: semgrep scan --config .semgrep/ --error src/ lib/
+
+  mutation:
+    name: Mutation Testing
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run Stryker mutation testing
+        run: npm run mutate
+
   build:
     name: Build
     runs-on: ubuntu-latest
-    needs: [lint-and-format, test-node]
+    needs: [lint-and-format, test-node, quality, semgrep]
     steps:
       - uses: actions/checkout@v4
 

@@ -22,3 +22,9 @@ pre-push:
       run: npm test
     typecheck:
       run: npm run build
+    deps:
+      run: npm run deps
+    dead-code:
+      run: npm run dead-code
+    duplication:
+      run: npm run duplication
