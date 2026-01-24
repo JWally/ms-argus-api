@@ -76,7 +76,7 @@ export class ProfileService {
    * Uses DynamoDB conditional write to avoid TOCTOU race condition
    * Returns true if gate was acquired (we should update), false if already held
    */
-  async tryAcquireMutationGate(deviceId: string): Promise<boolean> {
+  tryAcquireMutationGate(deviceId: string): Promise<boolean> {
     return this.deps.cache.tryAcquireMutationGate(deviceId);
   }
 

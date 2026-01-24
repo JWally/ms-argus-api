@@ -112,7 +112,7 @@ export class MatchingService {
   }
 
   /** Check if session is already cached */
-  async checkCache(sessionId: string): Promise<SessionCacheValue | null> {
+  checkCache(sessionId: string): Promise<SessionCacheValue | null> {
     return tier0CheckCache(this.tier0Deps, sessionId);
   }
 
@@ -239,39 +239,37 @@ export class MatchingService {
 
   // Delegate methods to tier modules for backward compatibility
   // Added optional incomingFuzzyHash for drift detection
-  async tier05PublicKeyLookup(
+  tier05PublicKeyLookup(
     publicKey: string,
     incomingFuzzyHash?: string,
   ): Promise<MatchResult | null> {
     return tier05PublicKeyLookup(this.tier05Deps, publicKey, incomingFuzzyHash);
   }
 
-  async tier05CookieLookup(
+  tier05CookieLookup(
     evercookieId: string,
     incomingFuzzyHash?: string,
   ): Promise<MatchResult | null> {
     return tier05CookieLookup(this.tier05Deps, evercookieId, incomingFuzzyHash);
   }
 
-  async tier05SigintIdLookup(
+  tier05SigintIdLookup(
     sigintId: string,
     incomingFuzzyHash?: string,
   ): Promise<MatchResult | null> {
     return tier05SigintIdLookup(this.tier05Deps, sigintId, incomingFuzzyHash);
   }
 
-  async tier1HashMatch(fingerprint: Fingerprint): Promise<MatchResult | null> {
+  tier1HashMatch(fingerprint: Fingerprint): Promise<MatchResult | null> {
     return tier1HashMatch(this.tier1Deps, fingerprint);
   }
 
   /** SimHash LSH match for same-browser drift detection */
-  async tier15SimHashMatch(
-    fingerprint: Fingerprint,
-  ): Promise<MatchResult | null> {
+  tier15SimHashMatch(fingerprint: Fingerprint): Promise<MatchResult | null> {
     return tier15SimHashMatch(this.tier15Deps, fingerprint);
   }
 
-  async tier2CompoundMatchWithTimeout(
+  tier2CompoundMatchWithTimeout(
     fingerprint: Fingerprint,
   ): Promise<{ result: MatchResult | null; timedOut: boolean }> {
     return tier2CompoundMatchWithTimeout(this.tier2Deps, fingerprint);
@@ -286,19 +284,15 @@ export class MatchingService {
     return tier2CompoundMatch(this.tier2Deps, fingerprint, options);
   }
 
-  async sessionAnchorLookup(
-    fingerprint: Fingerprint,
-  ): Promise<MatchResult | null> {
+  sessionAnchorLookup(fingerprint: Fingerprint): Promise<MatchResult | null> {
     return sessionAnchorLookup(this.anchorDeps, fingerprint);
   }
 
-  async ipUaAnchorLookup(
-    fingerprint: Fingerprint,
-  ): Promise<MatchResult | null> {
+  ipUaAnchorLookup(fingerprint: Fingerprint): Promise<MatchResult | null> {
     return ipUaAnchorLookup(this.anchorDeps, fingerprint);
   }
 
-  async loadProfile(
+  loadProfile(
     deviceId: string,
   ): Promise<{ risk_score: number; flags: string[] } | null> {
     return loadProfile(this.tier2Deps, deviceId);
@@ -323,7 +317,7 @@ export class MatchingService {
    * Returns boolean indicating if write succeeded
    * @returns true if written, false if skipped (higher confidence exists)
    */
-  async writeMatchResult(
+  writeMatchResult(
     sessionId: string,
     result: MatchResult,
     idempotencyKey: string,
@@ -343,7 +337,7 @@ export class MatchingService {
    * Returns boolean indicating if write succeeded
    * @returns true if written, false if skipped (higher confidence exists)
    */
-  async writeDegradedResult(
+  writeDegradedResult(
     sessionId: string,
     idempotencyKey: string,
   ): Promise<boolean> {

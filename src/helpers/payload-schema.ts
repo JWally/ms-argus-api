@@ -228,9 +228,7 @@ export function isArgusPayload(input: unknown): input is ArgusPayload {
   if (typeof hashes.stable !== "string") return false;
   if (typeof hashes.fuzzy !== "string") return false;
 
-  if (!obj.device || typeof obj.device !== "object") return false;
-
-  return true;
+  return !!obj.device && typeof obj.device === "object";
 }
 
 // ==================== SESSION RESPONSE TYPES ====================

@@ -213,8 +213,7 @@ async function processRecord(
   // Run anomaly detection on fingerprint
   const anomalyResult = detectAllAnomalies(
     fingerprint,
-    rawPayload.device, // Raw device data for cross-field checks
-    undefined, // sigint - no geo.timezone available yet
+    rawPayload.device, // sigint - no geo.timezone available yet
   );
 
   // Convert anomaly signals to session format

@@ -372,7 +372,7 @@ describe("detectCrossFieldAnomalies", () => {
 
   describe("missing data handling", () => {
     it("should return empty array when raw is undefined", () => {
-      const signals = detectCrossFieldAnomalies({} as Fingerprint, undefined);
+      const signals = detectCrossFieldAnomalies({} as Fingerprint);
       expect(signals).toHaveLength(0);
     });
 

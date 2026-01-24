@@ -14,7 +14,7 @@ export interface Tier0CacheDeps {
 /**
  * Check if session is already cached (AR-52: DynamoDB replaces Redis)
  */
-export async function checkCache(
+export function checkCache(
   deps: Tier0CacheDeps,
   sessionId: string,
 ): Promise<SessionCacheValue | null> {

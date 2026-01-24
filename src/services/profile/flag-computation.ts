@@ -59,8 +59,7 @@ export function detectBotSignals(fingerprint: Fingerprint): string[] {
 
   // SwiftShader is a software renderer commonly used by headless browsers
   if (fingerprint.gpu_renderer?.toLowerCase().includes("swiftshader")) {
-    flags.push(DeviceFlags.HEADLESS_BROWSER);
-    flags.push(DeviceFlags.BOT_DETECTED);
+    flags.push(DeviceFlags.HEADLESS_BROWSER, DeviceFlags.BOT_DETECTED);
   }
 
   // Very small viewport (800x600) is typical of automated browsers

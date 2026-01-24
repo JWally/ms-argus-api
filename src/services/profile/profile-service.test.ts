@@ -602,8 +602,7 @@ describe("ProfileService", () => {
 
       const count = await service.updateTier1IndexesWithEvidence(
         "dev_123",
-        fingerprint,
-        undefined, // No evidence codes
+        fingerprint, // No evidence codes
       );
 
       // Should write all 2 indexes for backward compatibility

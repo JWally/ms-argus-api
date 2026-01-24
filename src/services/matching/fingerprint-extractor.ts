@@ -176,10 +176,11 @@ export function extractFingerprint(
 
   // Privacy mode detection
   const incognito = device.incognito as Record<string, unknown> | undefined;
-  if (incognito) {
-    if (incognito.privateBrowsing === true || incognito.isPrivate === true) {
-      fingerprint.is_private_browsing = true;
-    }
+  if (
+    incognito &&
+    (incognito.privateBrowsing === true || incognito.isPrivate === true)
+  ) {
+    fingerprint.is_private_browsing = true;
   }
   const resistance = device.resistance as Record<string, unknown> | undefined;
   if (resistance) {

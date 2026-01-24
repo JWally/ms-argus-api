@@ -213,7 +213,7 @@ describe("normalizeFingerprint", () => {
     });
 
     it("should handle undefined sigint gracefully", () => {
-      const result = normalizeFingerprint({ stable_hash: "test" }, undefined);
+      const result = normalizeFingerprint({ stable_hash: "test" });
       expect(result.stable_hash).toBe("test");
     });
 

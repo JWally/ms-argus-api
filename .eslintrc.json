@@ -58,7 +58,8 @@
         "@typescript-eslint/no-explicit-any": "off",
         "max-lines-per-function": "off",
         "max-nested-callbacks": "off",
-        "sonarjs/no-duplicate-string": "off"
+        "sonarjs/no-duplicate-string": "off",
+        "unicorn/no-useless-undefined": "off"
       }
     },
     {

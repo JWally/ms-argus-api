@@ -87,7 +87,7 @@ describe("AR-XXX: fuzzy_match_info drift detection", () => {
       });
 
       const deps = { dynamodb: mockDynamodb, tier1IndexTable };
-      const result = await tier05PublicKeyLookup(deps, "pubkey123", undefined);
+      const result = await tier05PublicKeyLookup(deps, "pubkey123");
 
       expect(result).not.toBeNull();
       expect(result!.fuzzy_match_info).toBeUndefined();

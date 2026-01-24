@@ -105,7 +105,7 @@ describe("detectNetworkAnomalies", () => {
     it("should return empty array when sigint is undefined", () => {
       const fingerprint = {} as Fingerprint;
 
-      const signals = detectNetworkAnomalies(fingerprint, undefined, undefined);
+      const signals = detectNetworkAnomalies(fingerprint);
 
       expect(signals).toHaveLength(0);
     });
