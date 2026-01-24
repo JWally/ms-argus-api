@@ -28,13 +28,18 @@ export function checkCache(
  *
  * @returns true if written, false if skipped (existing value has higher confidence)
  */
+export interface WriteMatchResultParams {
+  sessionId: string;
+  result: MatchResult;
+  idempotencyKey: string;
+  anomalies?: SessionAnomalySignal[];
+}
+
 export async function writeMatchResult(
   deps: Tier0CacheDeps,
-  sessionId: string,
-  result: MatchResult,
-  idempotencyKey: string,
-  anomalies?: SessionAnomalySignal[],
+  params: WriteMatchResultParams,
 ): Promise<boolean> {
+  const { sessionId, result, idempotencyKey, anomalies } = params;
   const value: SessionCacheValue = {
     status: "complete",
     device_id: result.device_id,

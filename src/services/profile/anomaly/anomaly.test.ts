@@ -33,14 +33,11 @@ import { Fingerprint } from "../../../types";
 describe("Anomaly Detection Foundation", () => {
   describe("createSignal", () => {
     it("should create a valid signal with all fields", () => {
-      const signal = createSignal(
-        "CROSS_FIELD",
-        AnomalyCodes.NAVIGATOR_LIES,
-        0.7,
-        "expected value",
-        "actual value",
-        ["field1", "field2"],
-      );
+      const signal = createSignal("CROSS_FIELD", AnomalyCodes.NAVIGATOR_LIES, 0.7, {
+        expected: "expected value",
+        actual: "actual value",
+        fields: ["field1", "field2"],
+      });
 
       expect(signal.type).toBe("CROSS_FIELD");
       expect(signal.code).toBe("NAVIGATOR_LIES");
@@ -51,37 +48,28 @@ describe("Anomaly Detection Foundation", () => {
     });
 
     it("should clamp severity to maximum of 1.0", () => {
-      const signal = createSignal(
-        "NETWORK",
-        AnomalyCodes.IP_TIMEZONE_MISMATCH,
-        1.5,
-        "expected",
-        "actual",
-      );
+      const signal = createSignal("NETWORK", AnomalyCodes.IP_TIMEZONE_MISMATCH, 1.5, {
+        expected: "expected",
+        actual: "actual",
+      });
 
       expect(signal.severity).toBe(1.0);
     });
 
     it("should clamp severity to minimum of 0.0", () => {
-      const signal = createSignal(
-        "CROSS_FIELD",
-        AnomalyCodes.WORKER_MISMATCH,
-        -0.5,
-        "expected",
-        "actual",
-      );
+      const signal = createSignal("CROSS_FIELD", AnomalyCodes.WORKER_MISMATCH, -0.5, {
+        expected: "expected",
+        actual: "actual",
+      });
 
       expect(signal.severity).toBe(0.0);
     });
 
     it("should work without optional fields parameter", () => {
-      const signal = createSignal(
-        "IDENTITY",
-        AnomalyCodes.HEADLESS_DETECTED,
-        0.9,
-        "false",
-        "true",
-      );
+      const signal = createSignal("IDENTITY", AnomalyCodes.HEADLESS_DETECTED, 0.9, {
+        expected: "false",
+        actual: "true",
+      });
 
       expect(signal.evidence.fields).toBeUndefined();
     });
@@ -136,14 +124,14 @@ describe("Anomaly Detection Foundation", () => {
     it("should aggregate scores from signals", () => {
       // Register a detector that returns signals
       const testDetector = (): AnomalySignal[] => [
-        createSignal("CROSS_FIELD", AnomalyCodes.NAVIGATOR_LIES, 0.3, "0", "3"),
-        createSignal(
-          "NETWORK",
-          AnomalyCodes.HIGH_PROXY_SCORE,
-          0.4,
-          "0.5",
-          "0.8",
-        ),
+        createSignal("CROSS_FIELD", AnomalyCodes.NAVIGATOR_LIES, 0.3, {
+          expected: "0",
+          actual: "3",
+        }),
+        createSignal("NETWORK", AnomalyCodes.HIGH_PROXY_SCORE, 0.4, {
+          expected: "0.5",
+          actual: "0.8",
+        }),
       ];
       registerDetector(testDetector);
 
@@ -159,20 +147,14 @@ describe("Anomaly Detection Foundation", () => {
     it("should cap aggregate score at 1.0", () => {
       // Register a detector that returns high-severity signals
       const highSeverityDetector = (): AnomalySignal[] => [
-        createSignal(
-          "NETWORK",
-          AnomalyCodes.IP_TIMEZONE_MISMATCH,
-          0.95,
-          "America/New_York",
-          "Asia/Tokyo",
-        ),
-        createSignal(
-          "CROSS_FIELD",
-          AnomalyCodes.WORKER_MISMATCH,
-          0.8,
-          "Chrome",
-          "Firefox",
-        ),
+        createSignal("NETWORK", AnomalyCodes.IP_TIMEZONE_MISMATCH, 0.95, {
+          expected: "America/New_York",
+          actual: "Asia/Tokyo",
+        }),
+        createSignal("CROSS_FIELD", AnomalyCodes.WORKER_MISMATCH, 0.8, {
+          expected: "Chrome",
+          actual: "Firefox",
+        }),
       ];
       registerDetector(highSeverityDetector);
 

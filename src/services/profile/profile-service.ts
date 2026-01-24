@@ -47,12 +47,33 @@ export interface ProfileServiceConfig {
 }
 
 /**
+ * Parameters for updateProfile method
+ */
+export interface UpdateProfileParams {
+  deviceId: string;
+  fingerprint: Fingerprint;
+  timestamp: number;
+  existingProfile: DeviceProfile | null;
+  isNewDevice?: boolean;
+  hasDrift?: boolean;
+  rawFingerprint?: unknown;
+}
+
+/**
  * Dependencies injected into the profile service
  */
 export interface ProfileServiceDeps {
   dynamodb: DynamoDBClient;
   cache: DynamoCacheService;
   config: ProfileServiceConfig;
+}
+
+interface ProfileUpdateResult {
+  skipped: boolean;
+  reason?: "mutation_gate" | "no_drift";
+  tier1Writes?: number;
+  tier2Writes?: number;
+  simhashBandWrites?: number;
 }
 
 /**
@@ -110,17 +131,9 @@ export class ProfileService {
   computeFlags(
     fingerprint: Fingerprint,
     existingProfile: DeviceProfile | null,
-    isNewDevice: boolean,
-    hasDrift: boolean,
-    raw?: unknown,
+    ctx: { isNewDevice: boolean; hasDrift: boolean; raw?: unknown },
   ): string[] {
-    return computeFlags(
-      fingerprint,
-      existingProfile,
-      isNewDevice,
-      hasDrift,
-      raw,
-    );
+    return computeFlags(fingerprint, existingProfile, ctx);
   }
 
   computeRiskScore(
@@ -134,15 +147,15 @@ export class ProfileService {
   /**
    * Update device profile in DynamoDB
    */
-  async updateProfile(
-    deviceId: string,
-    fingerprint: Fingerprint,
-    timestamp: number,
-    existingProfile: DeviceProfile | null,
-    isNewDevice: boolean = false,
-    hasDrift: boolean = false,
-    rawFingerprint?: unknown,
-  ): Promise<void> {
+  async updateProfile(params: UpdateProfileParams): Promise<void> {
+    const {
+      deviceId,
+      fingerprint,
+      existingProfile,
+      isNewDevice = false,
+      hasDrift = false,
+      rawFingerprint,
+    } = params;
     const ttlSeconds = this.deps.config.profileTtlDays * 24 * 60 * 60;
     const ttl = Math.floor(Date.now() / 1000) + ttlSeconds;
     const now = Date.now();
@@ -155,13 +168,11 @@ export class ProfileService {
     const shouldUpdateLastSeen = currentHour !== existingHour;
 
     // Compute flags based on fingerprint and profile state
-    const flags = this.computeFlags(
-      fingerprint,
-      existingProfile,
+    const flags = this.computeFlags(fingerprint, existingProfile, {
       isNewDevice,
       hasDrift,
-      rawFingerprint,
-    );
+      raw: rawFingerprint,
+    });
 
     const profileData: Record<string, unknown> = {
       device_id: deviceId,
@@ -355,17 +366,22 @@ export class ProfileService {
     return bandEntries.length;
   }
 
+  private async updateBuckets(
+    deviceId: string,
+    fingerprint: Fingerprint,
+  ): Promise<number> {
+    await this.updateSessionAnchorBucket(deviceId, fingerprint);
+    await this.updateIpUaAnchorBucket(deviceId, fingerprint);
+    return this.updateTier2Buckets(deviceId, fingerprint);
+  }
+
   /**
    * Process a complete profile update (orchestration method)
    * Returns object indicating what was done
    */
-  async processProfileUpdate(payload: ProfileUpdatePayload): Promise<{
-    skipped: boolean;
-    reason?: "mutation_gate" | "no_drift";
-    tier1Writes?: number;
-    tier2Writes?: number;
-    simhashBandWrites?: number;
-  }> {
+  async processProfileUpdate(
+    payload: ProfileUpdatePayload,
+  ): Promise<ProfileUpdateResult> {
     const {
       device_id,
       fingerprint,
@@ -375,28 +391,18 @@ export class ProfileService {
       evidence_codes,
     } = payload;
 
-    // Atomically acquire mutation gate
-    // Gate is acquired upfront - if we crash after this, gate expires after TTL
     const acquired = await this.tryAcquireMutationGate(device_id);
     if (!acquired) {
       return { skipped: true, reason: "mutation_gate" };
     }
 
-    // Load existing profile
     const existingProfile = await this.loadExistingProfile(device_id);
-
-    // Check for drift
     const hasDrift =
       existingProfile !== null &&
       this.hasSignificantDrift(existingProfile, fingerprint);
 
-    // Always update anchor and tier 2 buckets regardless of drift:
-    // - Anchor buckets are time-sensitive and must be refreshed each request
-    // - Tier 2 buckets have TTLs and new fingerprint fields (e.g., structural
-    //   hashes) must be indexed even when overall fingerprint hasn't drifted
-    await this.updateSessionAnchorBucket(device_id, fingerprint);
-    await this.updateIpUaAnchorBucket(device_id, fingerprint);
-    const tier2Writes = await this.updateTier2Buckets(device_id, fingerprint);
+    // Anchors + tier2 are always refreshed regardless of drift
+    const tier2Writes = await this.updateBuckets(device_id, fingerprint);
 
     if (existingProfile && !hasDrift) {
       // No significant drift - skip profile/tier1/simhash writes
@@ -404,15 +410,15 @@ export class ProfileService {
     }
 
     // Perform updates (with flag computation)
-    await this.updateProfile(
-      device_id,
+    await this.updateProfile({
+      deviceId: device_id,
       fingerprint,
       timestamp,
       existingProfile,
-      is_new_device,
+      isNewDevice: is_new_device,
       hasDrift,
-      raw_fingerprint,
-    );
+      rawFingerprint: raw_fingerprint,
+    });
     const tier1Writes = await this.updateTier1IndexesWithEvidence(
       device_id,
       fingerprint,
@@ -423,8 +429,6 @@ export class ProfileService {
       device_id,
       fingerprint,
     );
-
-    // Note: anchor + tier2 buckets already updated above (before drift check)
 
     return {
       skipped: false,

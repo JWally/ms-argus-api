@@ -44,51 +44,41 @@ function getUtcOffsetMinutes(timezone: string): number | undefined {
  * @param sigint - Signal intelligence data with geo
  * @returns Array of anomaly signals
  */
+function formatTzOffset(tz: string, offset: number): string {
+  const sign = offset >= 0 ? "+" : "";
+  return `${tz} (UTC${sign}${(offset / 60).toFixed(0)})`;
+}
+
+function detectTimezoneMismatch(
+  serverTz: string,
+  clientTz: string,
+): AnomalySignal | null {
+  if (serverTz === clientTz) return null;
+
+  const serverOffset = getUtcOffsetMinutes(serverTz);
+  const clientOffset = getUtcOffsetMinutes(clientTz);
+  if (serverOffset === undefined || clientOffset === undefined) return null;
+
+  const hoursDiff = Math.abs(serverOffset - clientOffset) / 60;
+  if (hoursDiff < TZ_MISMATCH_THRESHOLD_HOURS) return null;
+
+  const severity = Math.min(0.8, 0.4 + hoursDiff * 0.05);
+  return createSignal("NETWORK", AnomalyCodes.IP_TIMEZONE_MISMATCH, severity, {
+    expected: `Server timezone: ${formatTzOffset(serverTz, serverOffset)}`,
+    actual: `Client timezone: ${formatTzOffset(clientTz, clientOffset)}`,
+    fields: ["sigint.geo.timezone", "fingerprint.timezone"],
+  });
+}
+
 export function detectNetworkAnomalies(
   fingerprint: Fingerprint,
   _raw?: unknown,
   sigint?: SigintData,
 ): AnomalySignal[] {
-  const signals: AnomalySignal[] = [];
-
-  // Return empty if no sigint data
-  if (!sigint) {
-    return signals;
+  if (!sigint?.geo?.timezone || !fingerprint.timezone) {
+    return [];
   }
 
-  // Timezone Mismatch Detection - requires geo.timezone and fingerprint.timezone
-  if (sigint.geo?.timezone && fingerprint.timezone) {
-    const serverTz = sigint.geo.timezone;
-    const clientTz = fingerprint.timezone;
-
-    // Skip if exact match
-    if (serverTz !== clientTz) {
-      const serverOffset = getUtcOffsetMinutes(serverTz);
-      const clientOffset = getUtcOffsetMinutes(clientTz);
-
-      // Only flag if we can calculate both offsets
-      if (serverOffset !== undefined && clientOffset !== undefined) {
-        const hoursDiff = Math.abs(serverOffset - clientOffset) / 60;
-
-        // Flag significant timezone mismatches (>3 hours)
-        if (hoursDiff >= TZ_MISMATCH_THRESHOLD_HOURS) {
-          // Severity scales with difference: 0.4 base + 0.05 per hour, max 0.8
-          const severity = Math.min(0.8, 0.4 + hoursDiff * 0.05);
-
-          signals.push(
-            createSignal(
-              "NETWORK",
-              AnomalyCodes.IP_TIMEZONE_MISMATCH,
-              severity,
-              `Server timezone: ${serverTz} (UTC${serverOffset >= 0 ? "+" : ""}${(serverOffset / 60).toFixed(0)})`,
-              `Client timezone: ${clientTz} (UTC${clientOffset >= 0 ? "+" : ""}${(clientOffset / 60).toFixed(0)})`,
-              ["sigint.geo.timezone", "fingerprint.timezone"],
-            ),
-          );
-        }
-      }
-    }
-  }
-
-  return signals;
+  const signal = detectTimezoneMismatch(sigint.geo.timezone, fingerprint.timezone);
+  return signal ? [signal] : [];
 }

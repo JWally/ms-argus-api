@@ -114,19 +114,20 @@ function isWarmupMessage(body: string): boolean {
 /**
  * Process a single SQS record
  */
-async function processRecord(
-  record: SQSRecord,
-  service: MatchingService,
-): Promise<void> {
+interface ParsedRecord {
+  rawPayload: SqsPayload;
+  sessionId: string;
+  fingerprint: ReturnType<typeof extractFingerprint>;
+  payload: FingerprintPayload;
+}
+
+function parseSqsRecord(record: SQSRecord): ParsedRecord | null {
   if (isWarmupMessage(record.body)) {
     logger.info("Warmup ping received - keeping pipeline warm");
     metrics.addMetric("WarmupPing", MetricUnit.Count, 1);
-    return;
+    return null;
   }
 
-  const startTime = Date.now();
-
-  // Don't retry malformed JSON - treat as poison message
   let rawPayload: SqsPayload;
   try {
     rawPayload = JSON.parse(record.body);
@@ -137,7 +138,7 @@ async function processRecord(
       bodyPreview: record.body.slice(0, 200),
     });
     metrics.addMetric("MalformedPayload", MetricUnit.Count, 1);
-    return;
+    return null;
   }
 
   // Normalize V2 "network" → V3 "sigint"
@@ -145,78 +146,88 @@ async function processRecord(
     rawPayload.sigint = rawPayload.network;
   }
 
-  // V3 format: extract session_id from identifiers
-  const session_id = rawPayload.identifiers?.session_id;
-  if (!session_id) {
+  const sessionId = rawPayload.identifiers?.session_id;
+  if (!sessionId) {
     logger.error("Missing session_id in payload", {
       messageId: record.messageId,
     });
     metrics.addMetric("MissingSessionId", MetricUnit.Count, 1);
-    return;
+    return null;
   }
 
-  // Extract flat fingerprint from V3 payload (with header fallback for IP)
   const fingerprint = extractFingerprint(rawPayload, rawPayload._headers);
-
-  // Build legacy payload format for downstream compatibility
   const payload: FingerprintPayload = {
-    session_id,
+    session_id: sessionId,
     fingerprint,
     sigint: rawPayload.sigint as FingerprintPayload["sigint"],
     headers: rawPayload._headers || {},
     timestamp: rawPayload._timestamp || Date.now(),
   };
 
-  logger.info("Processing fingerprint", { session_id });
+  return { rawPayload, sessionId, fingerprint, payload };
+}
 
-  // Generate idempotency key for dedup
-  const idempotencyKey = generateIdempotencyKey(session_id, fingerprint);
+async function runMatching(
+  service: MatchingService,
+  sessionId: string,
+  fingerprint: ParsedRecord["fingerprint"],
+  idempotencyKey: string,
+): Promise<{ matchResult: MatchResult; tier2TimedOut: boolean }> {
+  try {
+    const response = await service.runTieredMatching(fingerprint);
+    recordTierMetric(response.result.match_tier, response.result.is_new_device);
+    if (response.tier2TimedOut) {
+      metrics.addMetric("Tier2Timeout", MetricUnit.Count, 1);
+      logger.warn("Tier2 matching timed out", { session_id: sessionId });
+    }
+    return {
+      matchResult: response.result,
+      tier2TimedOut: response.tier2TimedOut,
+    };
+  } catch (error) {
+    logger.error("Matching failed", { error, session_id: sessionId });
+    const written = await service.writeDegradedResult(
+      sessionId,
+      idempotencyKey,
+    );
+    if (!written) {
+      metrics.addMetric("SessionCacheWriteSkipped", MetricUnit.Count, 1);
+    }
+    throw error;
+  }
+}
 
-  // Check if already processed (Tier 0 - DynamoDB session cache)
-  const cached = await service.checkCache(session_id);
+async function processRecord(
+  record: SQSRecord,
+  service: MatchingService,
+): Promise<void> {
+  const parsed = parseSqsRecord(record);
+  if (!parsed) return;
+
+  const startTime = Date.now();
+  const { rawPayload, sessionId, fingerprint, payload } = parsed;
+
+  logger.info("Processing fingerprint", { session_id: sessionId });
+  const idempotencyKey = generateIdempotencyKey(sessionId, fingerprint);
+
+  const cached = await service.checkCache(sessionId);
   if (cached && cached.status === "complete") {
     logger.info("Cache hit - already processed", {
-      session_id,
+      session_id: sessionId,
       device_id: cached.device_id,
     });
     metrics.addMetric("Tier0CacheHit", MetricUnit.Count, 1);
     return;
   }
 
-  // Run tiered matching
-  let matchResult;
-  let tier2TimedOut = false;
-  try {
-    const matchResponse = await service.runTieredMatching(fingerprint);
-    matchResult = matchResponse.result;
-    tier2TimedOut = matchResponse.tier2TimedOut;
-    recordTierMetric(matchResult.match_tier, matchResult.is_new_device);
-
-    // Track Tier2 timeouts for monitoring "fail open" scenarios
-    if (tier2TimedOut) {
-      metrics.addMetric("Tier2Timeout", MetricUnit.Count, 1);
-      logger.warn("Tier2 matching timed out", { session_id });
-    }
-  } catch (error) {
-    // On matching failure, write degraded status
-    logger.error("Matching failed", { error, session_id });
-    const degradedWritten = await service.writeDegradedResult(
-      session_id,
-      idempotencyKey,
-    );
-    if (!degradedWritten) {
-      metrics.addMetric("SessionCacheWriteSkipped", MetricUnit.Count, 1);
-    }
-    throw error;
-  }
-
-  // Run anomaly detection on fingerprint
-  const anomalyResult = detectAllAnomalies(
+  const { matchResult, tier2TimedOut } = await runMatching(
+    service,
+    sessionId,
     fingerprint,
-    rawPayload.device, // sigint - no geo.timezone available yet
+    idempotencyKey,
   );
 
-  // Convert anomaly signals to session format
+  const anomalyResult = detectAllAnomalies(fingerprint, rawPayload.device);
   const anomalies: SessionAnomalySignal[] = anomalyResult.signals.map((s) => ({
     type: s.type,
     code: s.code,
@@ -224,31 +235,17 @@ async function processRecord(
     evidence: s.evidence,
   }));
 
-  // Write result to DynamoDB session cache (now with anomalies)
-  const cacheWritten = await service.writeMatchResult(
-    session_id,
-    matchResult,
+  const cacheWritten = await service.writeMatchResult({
+    sessionId,
+    result: matchResult,
     idempotencyKey,
     anomalies,
-  );
+  });
   if (!cacheWritten) {
     metrics.addMetric("SessionCacheWriteSkipped", MetricUnit.Count, 1);
-    logger.info("Session cache write skipped (higher confidence exists)", {
-      session_id,
-      confidence: matchResult.confidence,
-    });
   }
 
-  // Write full payload to session payload table
-  await writeSessionPayload(
-    session_id,
-    payload,
-    rawPayload,
-    matchResult,
-    anomalies,
-  );
-
-  // Queue profile update
+  await writeSessionPayload({ sessionId, rawPayload, matchResult, anomalies });
   await service.queueProfileUpdate(
     matchResult.device_id,
     payload,
@@ -259,18 +256,17 @@ async function processRecord(
   const duration = Date.now() - startTime;
   metrics.addMetric("MatchingDuration", MetricUnit.Milliseconds, duration);
 
-  // Emit observation to Firehose (fire-and-forget)
   emitObservation({
-    sessionId: session_id,
+    sessionId,
     matchResult,
     tier2TimedOut,
     durationMs: duration,
   }).catch(() => {
-    // Error already logged in emitObservation
+    /* logged in emitObservation */
   });
 
   logger.info("Matching complete", {
-    session_id,
+    session_id: sessionId,
     device_id: matchResult.device_id,
     duration,
     tier: matchResult.match_tier,
@@ -338,65 +334,69 @@ async function emitObservation(params: {
   }
 }
 
+function buildSessionResponseData(params: {
+  sessionId: string;
+  rawPayload: SqsPayload;
+  matchResult: MatchResult;
+  anomalies: SessionAnomalySignal[];
+}): Record<string, unknown> {
+  const { sessionId, rawPayload, matchResult, anomalies } = params;
+
+  const identifiers: Record<string, unknown> = {
+    session_id: sessionId,
+    device_id: matchResult.device_id,
+  };
+  if (rawPayload.identifiers.evercookie_id) {
+    identifiers.evercookie_id = rawPayload.identifiers.evercookie_id;
+  }
+  if (rawPayload.identifiers.public_key) {
+    identifiers.public_key = rawPayload.identifiers.public_key;
+  }
+
+  const analysis: Record<string, unknown> = {
+    status: "complete",
+    confidence: matchResult.confidence,
+    match_tier: matchResult.match_tier,
+    is_new_device: matchResult.is_new_device,
+    risk_score: matchResult.risk_score,
+    flags: matchResult.flags,
+    evidence_codes: matchResult.evidence_codes,
+  };
+  if (anomalies.length > 0) {
+    analysis.anomalies = anomalies;
+  }
+  if (matchResult.simhash_details) {
+    analysis.simhash_details = matchResult.simhash_details;
+  }
+  if (matchResult.fuzzy_match_info) {
+    analysis.fuzzy_match_info = matchResult.fuzzy_match_info;
+  }
+
+  return {
+    identifiers,
+    analysis,
+    hashes: rawPayload.hashes,
+    device: rawPayload.device,
+    sigint: rawPayload.sigint,
+  };
+}
+
 /**
  * Write full fingerprint payload to session payload table
- * Enables session-get endpoint to return complete data
  * Uses gzipped base64 storage for efficiency
  */
-async function writeSessionPayload(
-  sessionId: string,
-  payload: FingerprintPayload,
-  rawPayload: SqsPayload,
-  matchResult: MatchResult,
-  anomalies: SessionAnomalySignal[],
-): Promise<void> {
+async function writeSessionPayload(params: {
+  sessionId: string;
+  rawPayload: SqsPayload;
+  matchResult: MatchResult;
+  anomalies: SessionAnomalySignal[];
+}): Promise<void> {
+  const { sessionId } = params;
   const ttl = Math.floor(Date.now() / 1000) + SESSION_PAYLOAD_TTL_SECONDS;
 
   try {
-    // Build identifiers section
-    const identifiers: Record<string, unknown> = {
-      session_id: sessionId,
-      device_id: matchResult.device_id,
-    };
-    if (rawPayload.identifiers.evercookie_id) {
-      identifiers.evercookie_id = rawPayload.identifiers.evercookie_id;
-    }
-    if (rawPayload.identifiers.public_key) {
-      identifiers.public_key = rawPayload.identifiers.public_key;
-    }
-
-    // Build analysis section
-    const analysis: Record<string, unknown> = {
-      status: "complete",
-      confidence: matchResult.confidence,
-      match_tier: matchResult.match_tier,
-      is_new_device: matchResult.is_new_device,
-      risk_score: matchResult.risk_score,
-      flags: matchResult.flags,
-      evidence_codes: matchResult.evidence_codes,
-    };
-    if (anomalies.length > 0) {
-      analysis.anomalies = anomalies;
-    }
-    if (matchResult.simhash_details) {
-      analysis.simhash_details = matchResult.simhash_details;
-    }
-    if (matchResult.fuzzy_match_info) {
-      analysis.fuzzy_match_info = matchResult.fuzzy_match_info;
-    }
-
-    // Build complete response payload matching V3 response schema
-    const fullData = {
-      identifiers,
-      analysis,
-      hashes: rawPayload.hashes,
-      device: rawPayload.device,
-      sigint: rawPayload.sigint,
-    };
-
-    // Gzip and base64 encode
-    const payloadJson = JSON.stringify(fullData);
-    const gzipped = gzipSync(Buffer.from(payloadJson));
+    const fullData = buildSessionResponseData(params);
+    const gzipped = gzipSync(Buffer.from(JSON.stringify(fullData)));
     const payloadGzipB64 = gzipped.toString("base64");
 
     await dynamodb.send(
@@ -411,10 +411,7 @@ async function writeSessionPayload(
       }),
     );
   } catch (error) {
-    logger.warn("Failed to write session payload", {
-      error,
-      sessionId,
-    });
+    logger.warn("Failed to write session payload", { error, sessionId });
     metrics.addMetric("SessionPayloadWriteError", MetricUnit.Count, 1);
   }
 }

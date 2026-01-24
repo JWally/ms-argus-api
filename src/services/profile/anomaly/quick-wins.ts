@@ -22,42 +22,33 @@ export function detectQuickWinAnomalies(
     // Severity scales with lie count: 0.5 base + 0.1 per lie, max 0.9
     const severity = Math.min(0.9, 0.5 + fingerprint.lie_count * 0.1);
     signals.push(
-      createSignal(
-        "CROSS_FIELD",
-        AnomalyCodes.NAVIGATOR_LIES,
-        severity,
-        "0 lies",
-        `${fingerprint.lie_count} lies detected`,
-        ["lie_count"],
-      ),
+      createSignal("CROSS_FIELD", AnomalyCodes.NAVIGATOR_LIES, severity, {
+        expected: "0 lies",
+        actual: `${fingerprint.lie_count} lies detected`,
+        fields: ["lie_count"],
+      }),
     );
   }
 
   // Direct headless detection
   if (fingerprint.is_headless === true) {
     signals.push(
-      createSignal(
-        "CROSS_FIELD",
-        AnomalyCodes.HEADLESS_DETECTED,
-        0.9,
-        "is_headless: false",
-        "is_headless: true",
-        ["is_headless"],
-      ),
+      createSignal("CROSS_FIELD", AnomalyCodes.HEADLESS_DETECTED, 0.9, {
+        expected: "is_headless: false",
+        actual: "is_headless: true",
+        fields: ["is_headless"],
+      }),
     );
   }
 
   // Proxy score threshold - high likelihood of proxy usage
   if (fingerprint.proxy_score !== undefined && fingerprint.proxy_score > 0.7) {
     signals.push(
-      createSignal(
-        "NETWORK",
-        AnomalyCodes.HIGH_PROXY_SCORE,
-        fingerprint.proxy_score,
-        "proxy_score <= 0.7",
-        `proxy_score: ${fingerprint.proxy_score.toFixed(2)}`,
-        ["proxy_score"],
-      ),
+      createSignal("NETWORK", AnomalyCodes.HIGH_PROXY_SCORE, fingerprint.proxy_score, {
+        expected: "proxy_score <= 0.7",
+        actual: `proxy_score: ${fingerprint.proxy_score.toFixed(2)}`,
+        fields: ["proxy_score"],
+      }),
     );
   }
 
@@ -65,14 +56,11 @@ export function detectQuickWinAnomalies(
   if (fingerprint.vpn_score !== undefined && fingerprint.vpn_score > 0.7) {
     // VPN is less suspicious than proxy, so multiply by 0.8
     signals.push(
-      createSignal(
-        "NETWORK",
-        AnomalyCodes.HIGH_VPN_SCORE,
-        fingerprint.vpn_score * 0.8,
-        "vpn_score <= 0.7",
-        `vpn_score: ${fingerprint.vpn_score.toFixed(2)}`,
-        ["vpn_score"],
-      ),
+      createSignal("NETWORK", AnomalyCodes.HIGH_VPN_SCORE, fingerprint.vpn_score * 0.8, {
+        expected: "vpn_score <= 0.7",
+        actual: `vpn_score: ${fingerprint.vpn_score.toFixed(2)}`,
+        fields: ["vpn_score"],
+      }),
     );
   }
 

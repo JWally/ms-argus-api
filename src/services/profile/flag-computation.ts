@@ -54,33 +54,29 @@ export const RISK_WEIGHTS = {
  * Detect bot-like signals in fingerprint
  * Returns array of detected bot flags
  */
+const BOT_UA_PATTERNS = ["bot", "crawler", "spider", "headless"];
+
+function hasBotUserAgent(ua: string | undefined): boolean {
+  if (!ua) return false;
+  const lower = ua.toLowerCase();
+  return BOT_UA_PATTERNS.some((pattern) => lower.includes(pattern));
+}
+
 export function detectBotSignals(fingerprint: Fingerprint): string[] {
   const flags: string[] = [];
 
-  // SwiftShader is a software renderer commonly used by headless browsers
   if (fingerprint.gpu_renderer?.toLowerCase().includes("swiftshader")) {
     flags.push(DeviceFlags.HEADLESS_BROWSER, DeviceFlags.BOT_DETECTED);
   }
 
-  // Very small viewport (800x600) is typical of automated browsers
   if (fingerprint.screen_dims === "800x600") {
     flags.push(DeviceFlags.BOT_DETECTED);
   }
 
-  // Check user agent for bot patterns
-  if (fingerprint.user_agent) {
-    const ua = fingerprint.user_agent.toLowerCase();
-    if (
-      ua.includes("bot") ||
-      ua.includes("crawler") ||
-      ua.includes("spider") ||
-      ua.includes("headless")
-    ) {
-      flags.push(DeviceFlags.BOT_DETECTED);
-    }
+  if (hasBotUserAgent(fingerprint.user_agent)) {
+    flags.push(DeviceFlags.BOT_DETECTED);
   }
 
-  // Single CPU core and very low memory are atypical for real devices
   if (
     fingerprint.hardware_concurrency === 1 &&
     fingerprint.device_memory !== undefined &&
@@ -89,7 +85,6 @@ export function detectBotSignals(fingerprint: Fingerprint): string[] {
     flags.push(DeviceFlags.BOT_DETECTED);
   }
 
-  // Remove duplicates
   return [...new Set(flags)];
 }
 
@@ -97,13 +92,18 @@ export function detectBotSignals(fingerprint: Fingerprint): string[] {
  * Compute all flags for a profile based on fingerprint and profile state
  * AR-145: Added raw parameter for cross-field anomaly detection
  */
+export interface FlagContext {
+  isNewDevice: boolean;
+  hasDrift: boolean;
+  raw?: unknown;
+}
+
 export function computeFlags(
   fingerprint: Fingerprint,
   existingProfile: DeviceProfile | null,
-  isNewDevice: boolean,
-  hasDrift: boolean,
-  raw?: unknown,
+  ctx: FlagContext,
 ): string[] {
+  const { isNewDevice, hasDrift, raw } = ctx;
   const flags: string[] = [];
 
   // NEW_DEVICE flag for first-time devices

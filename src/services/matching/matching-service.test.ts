@@ -1038,7 +1038,7 @@ describe("MatchingService", () => {
         evidence_codes: ["STABLE_HASH_MATCH"] as EvidenceCode[],
       };
 
-      await service.writeMatchResult("session123", result, "idempkey");
+      await service.writeMatchResult({ sessionId: "session123", result, idempotencyKey: "idempkey" });
 
       // Verify cache service was called
       expect(mockCache.writeSessionCache).toHaveBeenCalledWith(
@@ -1087,7 +1087,7 @@ describe("MatchingService", () => {
         evidence_codes: ["FUZZY_HASH_MATCH"] as EvidenceCode[],
       };
 
-      await service.writeMatchResult("session123", result, "newkey");
+      await service.writeMatchResult({ sessionId: "session123", result, idempotencyKey: "newkey" });
 
       // Should still have the better match (mock simulates conditional write)
       const value = mockCache._getSession("session123");
@@ -1121,7 +1121,7 @@ describe("MatchingService", () => {
         evidence_codes: ["STABLE_HASH_MATCH"] as EvidenceCode[],
       };
 
-      await service.writeMatchResult("session123", result, "newkey");
+      await service.writeMatchResult({ sessionId: "session123", result, idempotencyKey: "newkey" });
 
       const value = mockCache._getSession("session123");
       expect(value?.device_id).toBe("dev_better");

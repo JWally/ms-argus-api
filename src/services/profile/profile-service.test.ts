@@ -343,7 +343,12 @@ describe("ProfileService", () => {
         canvas_hash: "canvas456",
       };
 
-      await service.updateProfile("dev_new", fingerprint, Date.now(), null);
+      await service.updateProfile({
+        deviceId: "dev_new",
+        fingerprint,
+        timestamp: Date.now(),
+        existingProfile: null,
+      });
 
       const calls = dynamoMock.commandCalls(PutItemCommand);
       expect(calls).toHaveLength(1);
@@ -373,12 +378,12 @@ describe("ProfileService", () => {
         ttl: 1705000000,
       };
 
-      await service.updateProfile(
-        "dev_existing",
-        {},
-        Date.now(),
+      await service.updateProfile({
+        deviceId: "dev_existing",
+        fingerprint: {},
+        timestamp: Date.now(),
         existingProfile,
-      );
+      });
 
       const calls = dynamoMock.commandCalls(PutItemCommand);
       const item = calls[0].args[0].input.Item;
@@ -406,7 +411,12 @@ describe("ProfileService", () => {
         ttl: 1705000000,
       };
 
-      await service.updateProfile("dev_123", {}, Date.now(), existingProfile);
+      await service.updateProfile({
+        deviceId: "dev_123",
+        fingerprint: {},
+        timestamp: Date.now(),
+        existingProfile,
+      });
 
       const calls = dynamoMock.commandCalls(PutItemCommand);
       const item = calls[0].args[0].input.Item;
@@ -1026,7 +1036,7 @@ describe("ProfileService", () => {
     it("should set NEW_DEVICE flag for new devices", () => {
       const fingerprint: Fingerprint = {};
 
-      const flags = service.computeFlags(fingerprint, null, true, false);
+      const flags = service.computeFlags(fingerprint, null, { isNewDevice: true, hasDrift: false });
 
       expect(flags).toContain("new_device");
     });
@@ -1044,12 +1054,7 @@ describe("ProfileService", () => {
         ttl: Date.now() / 1000 + 86400,
       };
 
-      const flags = service.computeFlags(
-        fingerprint,
-        existingProfile,
-        false,
-        true,
-      );
+      const flags = service.computeFlags(fingerprint, existingProfile, { isNewDevice: false, hasDrift: true });
 
       expect(flags).toContain("fingerprint_mismatch");
     });
@@ -1068,12 +1073,7 @@ describe("ProfileService", () => {
         ttl: Date.now() / 1000 + 86400,
       };
 
-      const flags = service.computeFlags(
-        fingerprint,
-        existingProfile,
-        false,
-        false,
-      );
+      const flags = service.computeFlags(fingerprint, existingProfile, { isNewDevice: false, hasDrift: false });
 
       expect(flags).toContain("rapid_requests");
     });
@@ -1091,12 +1091,7 @@ describe("ProfileService", () => {
         ttl: Date.now() / 1000 + 86400,
       };
 
-      const flags = service.computeFlags(
-        fingerprint,
-        existingProfile,
-        false,
-        false,
-      );
+      const flags = service.computeFlags(fingerprint, existingProfile, { isNewDevice: false, hasDrift: false });
 
       expect(flags).toContain("verified");
       expect(flags).toContain("returning_user");
@@ -1115,12 +1110,7 @@ describe("ProfileService", () => {
         ttl: Date.now() / 1000 + 86400,
       };
 
-      const flags = service.computeFlags(
-        fingerprint,
-        existingProfile,
-        false,
-        false,
-      );
+      const flags = service.computeFlags(fingerprint, existingProfile, { isNewDevice: false, hasDrift: false });
 
       // These negative flags should not be preserved (only re-detected if fingerprint triggers)
       expect(flags).not.toContain("suspicious_behavior");
@@ -1142,12 +1132,7 @@ describe("ProfileService", () => {
         ttl: Date.now() / 1000 + 86400,
       };
 
-      const flags = service.computeFlags(
-        fingerprint,
-        existingProfile,
-        false,
-        true, // drift
-      );
+      const flags = service.computeFlags(fingerprint, existingProfile, { isNewDevice: false, hasDrift: true });
 
       expect(flags).toContain("headless_browser");
       expect(flags).toContain("bot_detected");

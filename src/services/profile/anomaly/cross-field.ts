@@ -101,49 +101,42 @@ function truncate(value: unknown, maxLen: number = 50): string {
  * - workerScope.scopes.shared (shared worker, null if unavailable)
  * - workerScope.scopes.service (service worker, "unavailable" if blocked)
  */
+function isObjectScope(val: unknown): val is EnvironmentScope {
+  return val !== null && typeof val === "object";
+}
+
+function hasComparableFields(ws: EnvironmentScope): boolean {
+  return !ws.scopes && !!(ws.userAgent || ws.platform || ws.hardwareConcurrency);
+}
+
+function extractWorkerScopes(
+  device: DevicePayload,
+  environments: Map<EnvironmentName, EnvironmentScope>,
+): void {
+  const scopes = device.workerScope?.scopes;
+  if (scopes) {
+    if (isObjectScope(scopes.web)) environments.set("dedicatedWorker", scopes.web);
+    if (isObjectScope(scopes.shared)) environments.set("sharedWorker", scopes.shared);
+    if (isObjectScope(scopes.service)) environments.set("serviceWorker", scopes.service);
+    return;
+  }
+
+  const ws = device.workerScope;
+  if (environments.size === 1 && isObjectScope(ws) && hasComparableFields(ws)) {
+    environments.set("workerScope", ws);
+  }
+}
+
 function extractEnvironments(
   device: DevicePayload,
 ): Map<EnvironmentName, EnvironmentScope> {
   const environments = new Map<EnvironmentName, EnvironmentScope>();
 
-  // Navigator (main thread)
-  if (device.navigator && typeof device.navigator === "object") {
+  if (isObjectScope(device.navigator)) {
     environments.set("navigator", device.navigator);
   }
 
-  // Worker scopes from workerScope.scopes
-  const scopes = device.workerScope?.scopes;
-  if (scopes) {
-    // Dedicated Worker (web)
-    if (scopes.web && typeof scopes.web === "object") {
-      environments.set("dedicatedWorker", scopes.web);
-    }
-
-    // Shared Worker (can be null if unavailable)
-    if (scopes.shared && typeof scopes.shared === "object") {
-      environments.set("sharedWorker", scopes.shared);
-    }
-
-    // Service Worker (can be "unavailable" string if blocked)
-    if (scopes.service && typeof scopes.service === "object") {
-      environments.set("serviceWorker", scopes.service);
-    }
-  }
-
-  // Also check legacy workerScope top-level (fallback for older payloads)
-  // Only use if no scopes were found and workerScope has comparable fields
-  if (
-    environments.size === 1 &&
-    device.workerScope &&
-    typeof device.workerScope === "object" &&
-    !device.workerScope.scopes &&
-    (device.workerScope.userAgent ||
-      device.workerScope.platform ||
-      device.workerScope.hardwareConcurrency)
-  ) {
-    environments.set("workerScope", device.workerScope);
-  }
-
+  extractWorkerScopes(device, environments);
   return environments;
 }
 
@@ -168,14 +161,11 @@ function compareEnvironments(
       const env2Display = ENV_DISPLAY_NAMES[env2Name];
 
       signals.push(
-        createSignal(
-          "CROSS_FIELD",
-          AnomalyCodes.WORKER_MISMATCH,
-          severity,
-          `${env1Display} ${displayName} matches ${env2Display}`,
-          `${env1Display}: ${truncate(val1)} vs ${env2Display}: ${truncate(val2)}`,
-          [`${env1Name}.${field}`, `${env2Name}.${field}`],
-        ),
+        createSignal("CROSS_FIELD", AnomalyCodes.WORKER_MISMATCH, severity, {
+          expected: `${env1Display} ${displayName} matches ${env2Display}`,
+          actual: `${env1Display}: ${truncate(val1)} vs ${env2Display}: ${truncate(val2)}`,
+          fields: [`${env1Name}.${field}`, `${env2Name}.${field}`],
+        }),
       );
     }
   }

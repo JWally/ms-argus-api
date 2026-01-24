@@ -62,14 +62,12 @@ export function createSignal(
   type: AnomalyType,
   code: AnomalyCode,
   severity: number,
-  expected: string,
-  actual: string,
-  fields?: string[],
+  evidence: AnomalyEvidence,
 ): AnomalySignal {
   return {
     type,
     code,
     severity: Math.max(0, Math.min(1, severity)),
-    evidence: { expected, actual, fields },
+    evidence,
   };
 }

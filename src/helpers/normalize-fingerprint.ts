@@ -99,31 +99,38 @@ export function normalizeFingerprint(
     // Skip objects and arrays (nested structures with potentially huge numbers)
   }
 
-  // Apply sigint overrides
-  if (sigint) {
-    if (sigint.tlsFingerprint && typeof sigint.tlsFingerprint === "object") {
-      const tls = sigint.tlsFingerprint;
-      const sigintId = sanitizeString(tls.id);
-      if (sigintId) result.sigint_id = sigintId;
-      const ja3 = sanitizeString(tls.ja3);
-      if (ja3) result.ja3 = ja3;
-      const ja4 = sanitizeString(tls.ja4);
-      if (ja4) result.ja4 = ja4;
-      const ip = sanitizeString(tls.ip);
-      if (ip) result.ip_address = ip;
-    }
-    if (sigint.tcpProbe && typeof sigint.tcpProbe === "object") {
-      const tcp = sigint.tcpProbe;
-      const rttMs = toValidPositiveNumber(tcp.rttMs);
-      if (rttMs !== undefined) result.tcp_rtt_us = Math.round(rttMs * 1000);
-      const proxyScore = toValidScore(tcp.proxyScore);
-      if (proxyScore !== undefined) result.proxy_score = proxyScore;
-      const vpnScore = toValidScore(tcp.vpnScore);
-      if (vpnScore !== undefined) result.vpn_score = vpnScore;
-    }
-    const faviconDeviceId = sanitizeString(sigint.faviconCache?.deviceId);
-    if (faviconDeviceId) result.evercookie_id = faviconDeviceId;
-  }
+  if (sigint) applySigintOverrides(sigint, result);
 
   return result;
+}
+
+function applyTlsOverrides(tls: NonNullable<SigintData["tlsFingerprint"]>, fp: Fingerprint) {
+  const sigintId = sanitizeString(tls.id);
+  if (sigintId) fp.sigint_id = sigintId;
+  const ja3 = sanitizeString(tls.ja3);
+  if (ja3) fp.ja3 = ja3;
+  const ja4 = sanitizeString(tls.ja4);
+  if (ja4) fp.ja4 = ja4;
+  const ip = sanitizeString(tls.ip);
+  if (ip) fp.ip_address = ip;
+}
+
+function applyTcpOverrides(tcp: NonNullable<SigintData["tcpProbe"]>, fp: Fingerprint) {
+  const rttMs = toValidPositiveNumber(tcp.rttMs);
+  if (rttMs !== undefined) fp.tcp_rtt_us = Math.round(rttMs * 1000);
+  const proxyScore = toValidScore(tcp.proxyScore);
+  if (proxyScore !== undefined) fp.proxy_score = proxyScore;
+  const vpnScore = toValidScore(tcp.vpnScore);
+  if (vpnScore !== undefined) fp.vpn_score = vpnScore;
+}
+
+function applySigintOverrides(sigint: SigintData, fp: Fingerprint) {
+  if (sigint.tlsFingerprint && typeof sigint.tlsFingerprint === "object") {
+    applyTlsOverrides(sigint.tlsFingerprint, fp);
+  }
+  if (sigint.tcpProbe && typeof sigint.tcpProbe === "object") {
+    applyTcpOverrides(sigint.tcpProbe, fp);
+  }
+  const faviconDeviceId = sanitizeString(sigint.faviconCache?.deviceId);
+  if (faviconDeviceId) fp.evercookie_id = faviconDeviceId;
 }

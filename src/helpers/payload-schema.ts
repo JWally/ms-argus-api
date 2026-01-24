@@ -215,20 +215,23 @@ export function getSessionId(payload: ArgusPayload): string {
 /**
  * Type guard for ArgusPayload (use after middy validation)
  */
+function hasValidIdentifiers(obj: Record<string, unknown>): boolean {
+  if (!obj.identifiers || typeof obj.identifiers !== "object") return false;
+  const ids = obj.identifiers as Record<string, unknown>;
+  return typeof ids.session_id === "string";
+}
+
+function hasValidHashes(obj: Record<string, unknown>): boolean {
+  if (!obj.hashes || typeof obj.hashes !== "object") return false;
+  const hashes = obj.hashes as Record<string, unknown>;
+  return typeof hashes.stable === "string" && typeof hashes.fuzzy === "string";
+}
+
 export function isArgusPayload(input: unknown): input is ArgusPayload {
   if (!input || typeof input !== "object") return false;
   const obj = input as Record<string, unknown>;
-
-  if (!obj.identifiers || typeof obj.identifiers !== "object") return false;
-  const ids = obj.identifiers as Record<string, unknown>;
-  if (typeof ids.session_id !== "string") return false;
-
-  if (!obj.hashes || typeof obj.hashes !== "object") return false;
-  const hashes = obj.hashes as Record<string, unknown>;
-  if (typeof hashes.stable !== "string") return false;
-  if (typeof hashes.fuzzy !== "string") return false;
-
-  return !!obj.device && typeof obj.device === "object";
+  return hasValidIdentifiers(obj) && hasValidHashes(obj) &&
+    !!obj.device && typeof obj.device === "object";
 }
 
 // ==================== SESSION RESPONSE TYPES ====================
@@ -270,53 +273,44 @@ export interface SessionResponse {
  * Validate a session response object
  * Throws if invalid
  */
+function requireObject(obj: Record<string, unknown>, field: string): Record<string, unknown> {
+  const val = obj[field];
+  if (!val || typeof val !== "object") {
+    throw new Error(`Invalid response: missing ${field}`);
+  }
+  return val as Record<string, unknown>;
+}
+
+function requireString(obj: Record<string, unknown>, field: string, path: string): void {
+  if (!obj[field] || typeof obj[field] !== "string") {
+    throw new Error(`Invalid response: missing ${path}`);
+  }
+}
+
+function requireType(obj: Record<string, unknown>, field: string, type: string, path: string): void {
+  if (typeof obj[field] !== type) {
+    throw new Error(`Invalid response: missing ${path}`);
+  }
+}
+
 export function validateSessionResponse(response: unknown): SessionResponse {
   if (!response || typeof response !== "object") {
     throw new Error("Invalid response: not an object");
   }
-
   const obj = response as Record<string, unknown>;
 
-  // Check identifiers
-  if (!obj.identifiers || typeof obj.identifiers !== "object") {
-    throw new Error("Invalid response: missing identifiers");
-  }
-  const ids = obj.identifiers as Record<string, unknown>;
-  if (!ids.session_id || typeof ids.session_id !== "string") {
-    throw new Error("Invalid response: missing session_id");
-  }
-  if (!ids.device_id || typeof ids.device_id !== "string") {
-    throw new Error("Invalid response: missing device_id");
-  }
+  const ids = requireObject(obj, "identifiers");
+  requireString(ids, "session_id", "session_id");
+  requireString(ids, "device_id", "device_id");
 
-  // Check analysis
-  if (!obj.analysis || typeof obj.analysis !== "object") {
-    throw new Error("Invalid response: missing analysis");
-  }
-  const analysis = obj.analysis as Record<string, unknown>;
-  if (typeof analysis.status !== "string") {
-    throw new Error("Invalid response: missing analysis.status");
-  }
-  if (typeof analysis.confidence !== "number") {
-    throw new Error("Invalid response: missing analysis.confidence");
-  }
+  const analysis = requireObject(obj, "analysis");
+  requireType(analysis, "status", "string", "analysis.status");
+  requireType(analysis, "confidence", "number", "analysis.confidence");
 
-  // Check hashes
-  if (!obj.hashes || typeof obj.hashes !== "object") {
-    throw new Error("Invalid response: missing hashes");
-  }
-  const hashes = obj.hashes as Record<string, unknown>;
-  if (!hashes.stable || typeof hashes.stable !== "string") {
-    throw new Error("Invalid response: missing hashes.stable");
-  }
-  if (!hashes.fuzzy || typeof hashes.fuzzy !== "string") {
-    throw new Error("Invalid response: missing hashes.fuzzy");
-  }
+  const hashes = requireObject(obj, "hashes");
+  requireString(hashes, "stable", "hashes.stable");
+  requireString(hashes, "fuzzy", "hashes.fuzzy");
 
-  // Check device
-  if (!obj.device || typeof obj.device !== "object") {
-    throw new Error("Invalid response: missing device");
-  }
-
+  requireObject(obj, "device");
   return response as SessionResponse;
 }

@@ -246,13 +246,12 @@ export async function batchWriteTier1Indexes(
       Item: marshall(entry, { removeUndefinedValues: true }),
     },
   }));
-  await batchWriteWithRetry(
-    deps.dynamodb,
-    deps.tier1IndexTable,
+  await batchWriteWithRetry(deps.dynamodb, {
+    tableName: deps.tier1IndexTable,
     items,
-    "Tier1 index",
+    entityName: "Tier1 index",
     maxRetries,
-  );
+  });
 }
 
 /**
@@ -272,13 +271,12 @@ export async function batchWriteTier2Buckets(
       },
     },
   }));
-  await batchWriteWithRetry(
-    deps.dynamodb,
-    deps.tier2BucketsTable,
+  await batchWriteWithRetry(deps.dynamodb, {
+    tableName: deps.tier2BucketsTable,
     items,
-    "Tier2 bucket",
+    entityName: "Tier2 bucket",
     maxRetries,
-  );
+  });
 }
 
 /**
@@ -414,11 +412,10 @@ export async function batchWriteSimHashBands(
       },
     },
   }));
-  await batchWriteWithRetry(
-    deps.dynamodb,
-    deps.tier2BucketsTable,
+  await batchWriteWithRetry(deps.dynamodb, {
+    tableName: deps.tier2BucketsTable,
     items,
-    "SimHash band",
+    entityName: "SimHash band",
     maxRetries,
-  );
+  });
 }

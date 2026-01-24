@@ -20,7 +20,7 @@ import {
   TIER2_CARDINALITY_PENALTY,
   TIER2_STATS_SK,
 } from "../../helpers/constants";
-import { buildBucketKeysWithTypes as buildBucketKeysWithTypesHelper } from "../../helpers/bucket-keys";
+import { buildBucketKeysWithTypes as buildBucketKeysWithTypesHelper, BucketKeyInfo } from "../../helpers/bucket-keys";
 import { EvidenceCode, Fingerprint, MatchResult } from "./types";
 import { computeFuzzyMatchInfo } from "../../helpers/hash";
 
@@ -85,6 +85,33 @@ export async function tier2CompoundMatchWithTimeout(
  * Uses Query with adjacency list pattern (bucket_key, device_id)
  * AR-56: Applies cardinality penalty for high-traffic buckets
  */
+function selectBestCandidate(
+  candidates: Map<string, { score: number; evidenceCodes: EvidenceCode[] }>,
+): { deviceId: string; score: number; evidenceCodes: EvidenceCode[] } | null {
+  let best: { deviceId: string; score: number; evidenceCodes: EvidenceCode[] } | null = null;
+  for (const [deviceId, data] of candidates) {
+    if (!best || data.score > best.score) {
+      best = { deviceId, score: data.score, evidenceCodes: data.evidenceCodes };
+    }
+  }
+  return best && best.score >= 2 ? best : null;
+}
+
+function computeTier2Confidence(
+  score: number,
+  evidenceCodes: EvidenceCode[],
+  bucketInfos: BucketKeyInfo[],
+  cardinalities: Map<string, number>,
+): number {
+  let confidence = Math.min(0.6 + score * 0.1, 0.85);
+  const highCount = countHighCardinalityBuckets(evidenceCodes, bucketInfos, cardinalities);
+  if (highCount > 0) {
+    const penalty = (highCount / evidenceCodes.length) * TIER2_CARDINALITY_PENALTY;
+    confidence = Math.max(0.3, confidence - penalty);
+  }
+  return confidence;
+}
+
 export async function tier2CompoundMatch(
   deps: Tier2CompoundDeps,
   fingerprint: Fingerprint,
@@ -93,16 +120,12 @@ export async function tier2CompoundMatch(
   const bucketInfos = buildBucketKeysWithTypesHelper(fingerprint);
   if (bucketInfos.length === 0) return null;
 
-  // Query all buckets in parallel using adjacency list pattern
-  // Pass abortSignal to allow cancellation on timeout
   const queries = bucketInfos.map((info) =>
     deps.dynamodb.send(
       new QueryCommand({
         TableName: deps.tier2BucketsTable,
         KeyConditionExpression: "bucket_key = :bk",
-        ExpressionAttributeValues: {
-          ":bk": { S: info.key },
-        },
+        ExpressionAttributeValues: { ":bk": { S: info.key } },
         ProjectionExpression: "device_id",
         Limit: TIER2_BUCKET_LIMIT,
       }),
@@ -110,81 +133,35 @@ export async function tier2CompoundMatch(
     ),
   );
 
-  // AR-56: Fetch bucket cardinalities in parallel with device queries
-  const cardinalityPromise = fetchBucketCardinalities(
-    deps,
-    bucketInfos.map((info) => info.key),
-    options,
-  );
-
   let results;
   let cardinalities: Map<string, number>;
   try {
     [results, cardinalities] = await Promise.all([
       Promise.all(queries),
-      cardinalityPromise,
+      fetchBucketCardinalities(deps, bucketInfos.map((i) => i.key), options),
     ]);
   } catch (error) {
-    // If the request was aborted, return null gracefully
-    if (error instanceof Error && error.name === "AbortError") {
-      return null;
-    }
+    if (error instanceof Error && error.name === "AbortError") return null;
     throw error;
   }
 
-  // Track which buckets each device matched in
   const candidates = scoreDeviceCandidatesWithEvidence(results, bucketInfos);
+  const best = selectBestCandidate(candidates);
+  if (!best) return null;
 
-  // Find best match (highest bucket overlap)
-  let bestDeviceId: string | null = null;
-  let bestScore = 0;
-  let bestEvidence: EvidenceCode[] = [];
+  const profile = await loadProfile(deps, best.deviceId);
+  const confidence = computeTier2Confidence(best.score, best.evidenceCodes, bucketInfos, cardinalities);
 
-  for (const [deviceId, data] of candidates) {
-    if (data.score > bestScore) {
-      bestScore = data.score;
-      bestDeviceId = deviceId;
-      bestEvidence = data.evidenceCodes;
-    }
-  }
-
-  // Require at least 2 bucket matches for confidence
-  if (bestDeviceId && bestScore >= 2) {
-    const profile = await loadProfile(deps, bestDeviceId);
-
-    // AR-56: Calculate base confidence
-    let confidence = Math.min(0.6 + bestScore * 0.1, 0.85);
-
-    // AR-56: Apply cardinality penalty if any matched bucket exceeds threshold
-    const highCardinalityCount = countHighCardinalityBuckets(
-      bestEvidence,
-      bucketInfos,
-      cardinalities,
-    );
-    if (highCardinalityCount > 0) {
-      // Penalize proportionally to how many buckets are high-cardinality
-      const penaltyFactor =
-        (highCardinalityCount / bestEvidence.length) *
-        TIER2_CARDINALITY_PENALTY;
-      confidence = Math.max(0.3, confidence - penaltyFactor);
-    }
-
-    return {
-      device_id: bestDeviceId,
-      confidence,
-      match_tier: 2,
-      is_new_device: false,
-      risk_score: profile?.risk_score ?? 0.4,
-      flags: profile?.flags ?? [],
-      evidence_codes: bestEvidence,
-      fuzzy_match_info: computeFuzzyMatchInfo(
-        fingerprint.fuzzy_hash,
-        profile?.fuzzy_hash,
-      ),
-    };
-  }
-
-  return null;
+  return {
+    device_id: best.deviceId,
+    confidence,
+    match_tier: 2,
+    is_new_device: false,
+    risk_score: profile?.risk_score ?? 0.4,
+    flags: profile?.flags ?? [],
+    evidence_codes: best.evidenceCodes,
+    fuzzy_match_info: computeFuzzyMatchInfo(fingerprint.fuzzy_hash, profile?.fuzzy_hash),
+  };
 }
 
 /**
@@ -272,9 +249,16 @@ function countHighCardinalityBuckets(
  * Score device candidates and track which buckets matched
  * AR-54: Used to populate evidence_codes in match results
  */
+function extractDeviceIds(result: QueryCommandOutput): string[] {
+  if (!result.Items || result.Items.length === 0) return [];
+  return result.Items
+    .map((item) => unmarshall(item).device_id as string)
+    .filter((id) => id && id !== TIER2_STATS_SK);
+}
+
 function scoreDeviceCandidatesWithEvidence(
   results: QueryCommandOutput[],
-  bucketInfos: { key: string; evidenceCode: EvidenceCode }[],
+  bucketInfos: BucketKeyInfo[],
 ): Map<string, { score: number; evidenceCodes: EvidenceCode[] }> {
   const candidates = new Map<
     string,
@@ -282,41 +266,21 @@ function scoreDeviceCandidatesWithEvidence(
   >();
 
   for (let i = 0; i < results.length; i++) {
-    const result = results[i];
     const evidenceCode = bucketInfos[i].evidenceCode;
-
-    if (result.Items && result.Items.length > 0) {
-      for (const item of result.Items) {
-        const unmarshalled = unmarshall(item);
-        const deviceId = unmarshalled.device_id;
-        // AR-77: Filter out _stats entries (used for bucket cardinality tracking)
-        // AR-98: Use TIER2_STATS_SK constant instead of hardcoded string
-        if (deviceId && deviceId !== TIER2_STATS_SK) {
-          const existing = candidates.get(deviceId);
-          if (existing) {
-            existing.score += 1;
-            existing.evidenceCodes.add(evidenceCode);
-          } else {
-            candidates.set(deviceId, {
-              score: 1,
-              evidenceCodes: new Set([evidenceCode]),
-            });
-          }
-        }
+    for (const deviceId of extractDeviceIds(results[i])) {
+      const existing = candidates.get(deviceId);
+      if (existing) {
+        existing.score += 1;
+        existing.evidenceCodes.add(evidenceCode);
+      } else {
+        candidates.set(deviceId, { score: 1, evidenceCodes: new Set([evidenceCode]) });
       }
     }
   }
 
-  // Convert Sets to arrays for the return value
-  const resultMap = new Map<
-    string,
-    { score: number; evidenceCodes: EvidenceCode[] }
-  >();
+  const resultMap = new Map<string, { score: number; evidenceCodes: EvidenceCode[] }>();
   for (const [deviceId, data] of candidates) {
-    resultMap.set(deviceId, {
-      score: data.score,
-      evidenceCodes: Array.from(data.evidenceCodes),
-    });
+    resultMap.set(deviceId, { score: data.score, evidenceCodes: [...data.evidenceCodes] });
   }
 
   return resultMap;
