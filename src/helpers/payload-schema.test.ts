@@ -1,4 +1,3 @@
-// src/helpers/payload-schema.test.ts
 import { describe, it, expect } from "vitest";
 import {
   getSessionId,
@@ -8,8 +7,6 @@ import {
 } from "./payload-schema";
 
 describe("payload-schema", () => {
-  // ==================== getSessionId ====================
-
   describe("getSessionId", () => {
     it("extracts session_id from payload", () => {
       const payload: ArgusPayload = {
@@ -20,8 +17,6 @@ describe("payload-schema", () => {
       expect(getSessionId(payload)).toBe("test-session-123");
     });
   });
-
-  // ==================== isArgusPayload ====================
 
   describe("isArgusPayload", () => {
     it("returns true for valid minimal payload", () => {
@@ -188,8 +183,6 @@ describe("payload-schema", () => {
       ).toBe(false);
     });
   });
-
-  // ==================== validateSessionResponse ====================
 
   describe("validateSessionResponse", () => {
     const validResponse = {

@@ -1,7 +1,3 @@
-// src/services/matching/tier2-compound.ts
-// AR-119: Extracted from matching-service.ts - Compound bucket matching (Tier 2)
-// AR-153: Added structured logging and metrics for cardinality fetch failures
-// AR-157: Moved loadProfile to shared profile-loader module
 import {
   DynamoDBClient,
   QueryCommand,
@@ -9,9 +5,7 @@ import {
   BatchGetItemCommand,
 } from "@aws-sdk/client-dynamodb";
 import { unmarshall } from "@aws-sdk/util-dynamodb";
-// AR-157: Import for local use and re-export from shared module
 import { loadProfile } from "./profile-loader";
-export { loadProfile, type ProfileData } from "./profile-loader";
 import { Logger } from "@aws-lambda-powertools/logger";
 import { Metrics, MetricUnit } from "@aws-lambda-powertools/metrics";
 import {
@@ -27,7 +21,6 @@ import {
 import { EvidenceCode, Fingerprint, MatchResult } from "./types";
 import { computeFuzzyMatchInfo } from "../../helpers/hash";
 
-// AR-153: Structured logging for visibility into cardinality fetch failures
 const logger = new Logger({
   serviceName: process.env.POWERTOOLS_SERVICE_NAME || "argus-tier2-compound",
 });
@@ -35,9 +28,6 @@ const metrics = new Metrics({
   namespace: process.env.POWERTOOLS_METRICS_NAMESPACE || "Argus",
 });
 
-/**
- * Dependencies for tier 2 compound operations
- */
 export interface Tier2CompoundDeps {
   dynamodb: DynamoDBClient;
   tier2BucketsTable: string;
@@ -57,7 +47,6 @@ export async function tier2CompoundMatchWithTimeout(
   const timeoutMs = deps.tier2TimeoutMs;
   const abortController = new AbortController();
 
-  // Use a sentinel to distinguish timeout from null result
   const TIMEOUT_SENTINEL = Symbol("timeout");
 
   const raceResult = await Promise.race([
@@ -86,7 +75,7 @@ export async function tier2CompoundMatchWithTimeout(
  * Tier 2: Match by compound signal buckets
  * Lower confidence - relies on multiple weak signals
  * Uses Query with adjacency list pattern (bucket_key, device_id)
- * AR-56: Applies cardinality penalty for high-traffic buckets
+ * Applies cardinality penalty for high-traffic buckets
  */
 function selectBestCandidate(
   candidates: Map<string, { score: number; evidenceCodes: EvidenceCode[] }>,
@@ -200,7 +189,7 @@ export async function tier2CompoundMatch(
 }
 
 /**
- * AR-56: Fetch cardinality stats for multiple buckets using BatchGetItem
+ * Fetch cardinality stats for multiple buckets using BatchGetItem
  */
 async function fetchBucketCardinalities(
   deps: Tier2CompoundDeps,
@@ -226,7 +215,6 @@ async function fetchBucketCardinalities(
       { abortSignal: options?.abortSignal },
     );
 
-    // Parse results
     const responses = result.Responses?.[deps.tier2BucketsTable] ?? [];
     for (const item of responses) {
       const unmarshalled = unmarshall(item);
@@ -238,12 +226,10 @@ async function fetchBucketCardinalities(
       }
     }
   } catch (error) {
-    // If aborted or error, return empty map (fail open)
     if (error instanceof Error && error.name === "AbortError") {
       return cardinalities;
     }
-    // AR-153: Log error and emit metric but don't fail matching - cardinality check is optional
-    // This fails open silently which affects fraud penalty scoring
+    // Fail open: log error but don't fail matching - cardinality check is optional
     logger.warn(
       "Failed to fetch bucket cardinalities - fraud penalty scoring disabled",
       {
@@ -259,7 +245,7 @@ async function fetchBucketCardinalities(
 }
 
 /**
- * AR-56: Count how many matched buckets exceed the cardinality threshold
+ * Count how many matched buckets exceed the cardinality threshold
  */
 function countHighCardinalityBuckets(
   evidenceCodes: EvidenceCode[],
@@ -268,7 +254,6 @@ function countHighCardinalityBuckets(
 ): number {
   let count = 0;
   for (const code of evidenceCodes) {
-    // Find the bucket key for this evidence code
     const bucketInfo = bucketInfos.find((info) => info.evidenceCode === code);
     if (bucketInfo) {
       const cardinality = cardinalities.get(bucketInfo.key) ?? 0;
@@ -280,10 +265,6 @@ function countHighCardinalityBuckets(
   return count;
 }
 
-/**
- * Score device candidates and track which buckets matched
- * AR-54: Used to populate evidence_codes in match results
- */
 function extractDeviceIds(result: QueryCommandOutput): string[] {
   if (!result.Items || result.Items.length === 0) return [];
   return result.Items.map(

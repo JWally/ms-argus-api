@@ -1,5 +1,3 @@
-// src/services/profile/flag-computation.ts
-// AR-120: Extracted flag computation logic from profile-service.ts
 import { Fingerprint, DeviceProfile, DeviceFlags } from "./types";
 import { detectAllAnomalies } from "./anomaly";
 
@@ -33,7 +31,6 @@ export const RISK_WEIGHTS = {
   [DeviceFlags.VERIFIED]: -0.2,
   /** Returning users get slight trust bonus */
   [DeviceFlags.RETURNING_USER]: -0.1,
-  // Anomaly detection weights (AR-141)
   /** Navigator API tampering */
   [DeviceFlags.NAVIGATOR_LIES]: 0.15,
   /** High proxy likelihood */
@@ -88,10 +85,6 @@ export function detectBotSignals(fingerprint: Fingerprint): string[] {
   return [...new Set(flags)];
 }
 
-/**
- * Compute all flags for a profile based on fingerprint and profile state
- * AR-145: Added raw parameter for cross-field anomaly detection
- */
 export interface FlagContext {
   isNewDevice: boolean;
   hasDrift: boolean;
@@ -106,26 +99,20 @@ export function computeFlags(
   const { isNewDevice, hasDrift, raw } = ctx;
   const flags: string[] = [];
 
-  // NEW_DEVICE flag for first-time devices
   if (isNewDevice) {
     flags.push(DeviceFlags.NEW_DEVICE);
   }
 
-  // Bot detection flags
   const botFlags = detectBotSignals(fingerprint);
   flags.push(...botFlags);
 
-  // Anomaly detection flags (AR-142)
-  // AR-145: Pass raw for cross-field anomaly detection
   const anomalyResult = detectAllAnomalies(fingerprint, raw);
   flags.push(...anomalyResult.suggestedFlags);
 
-  // FINGERPRINT_MISMATCH flag when significant drift is detected
   if (existingProfile && hasDrift) {
     flags.push(DeviceFlags.FINGERPRINT_MISMATCH);
   }
 
-  // RAPID_REQUESTS flag - check if request rate is suspicious
   if (existingProfile) {
     const hoursSinceFirstSeen =
       (Date.now() - existingProfile.first_seen_at) / (1000 * 60 * 60);
@@ -147,7 +134,6 @@ export function computeFlags(
     flags.push(...positiveFlags);
   }
 
-  // Remove duplicates and return
   return [...new Set(flags)];
 }
 
@@ -160,15 +146,12 @@ export function computeRiskScore(
   existingProfile: DeviceProfile | null,
   isNewDevice: boolean,
 ): number {
-  // Treat as new device if explicitly marked or no existing profile
   const effectivelyNewDevice = isNewDevice || existingProfile === null;
 
-  // Start with base risk
   let riskScore = effectivelyNewDevice
     ? RISK_WEIGHTS.BASE_NEW_DEVICE
     : RISK_WEIGHTS.BASE_RETURNING;
 
-  // Apply flag-based adjustments using lookup table
   for (const flag of flags) {
     const weight = RISK_WEIGHTS[flag as keyof typeof RISK_WEIGHTS];
     if (weight !== undefined) {
@@ -185,6 +168,5 @@ export function computeRiskScore(
       existingProfile.risk_score * historicalWeight;
   }
 
-  // Clamp to valid range [0, 1]
   return Math.max(0, Math.min(1, riskScore));
 }

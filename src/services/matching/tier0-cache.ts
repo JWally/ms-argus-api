@@ -1,19 +1,10 @@
-// src/services/matching/tier0-cache.ts
-// AR-119: Extracted from matching-service.ts - Session cache operations (Tier 0)
-// AR-148: Added anomalies parameter to writeMatchResult
 import { DynamoCacheService } from "../cache";
 import { MatchResult, SessionCacheValue, SessionAnomalySignal } from "./types";
 
-/**
- * Dependencies for tier 0 cache operations
- */
 export interface Tier0CacheDeps {
   cache: DynamoCacheService;
 }
 
-/**
- * Check if session is already cached (AR-52: DynamoDB replaces Redis)
- */
 export function checkCache(
   deps: Tier0CacheDeps,
   sessionId: string,
@@ -22,10 +13,7 @@ export function checkCache(
 }
 
 /**
- * Write match result to session cache (AR-52: DynamoDB replaces Redis)
- * AR-148: Added optional anomalies parameter for server-side detection results
- * AR-170: Returns boolean indicating if write succeeded or was skipped
- *
+ * Write match result to session cache
  * @returns true if written, false if skipped (existing value has higher confidence)
  */
 export interface WriteMatchResultParams {
@@ -49,10 +37,10 @@ export async function writeMatchResult(
     match_version: Date.now(),
     idempotency_key: idempotencyKey,
     flags: result.flags,
-    evidence_codes: result.evidence_codes, // AR-54
-    anomalies: anomalies?.length ? anomalies : undefined, // AR-148: Only include if signals detected
-    simhash_details: result.simhash_details, // AR-XXX: Include SimHash match details
-    fuzzy_match_info: result.fuzzy_match_info, // AR-XXX: Include fuzzy hash drift info
+    evidence_codes: result.evidence_codes,
+    anomalies: anomalies?.length ? anomalies : undefined,
+    simhash_details: result.simhash_details,
+    fuzzy_match_info: result.fuzzy_match_info,
     updated_at: Date.now(),
   };
 
@@ -61,9 +49,7 @@ export async function writeMatchResult(
 }
 
 /**
- * Write degraded status to cache when matching fails (AR-52: DynamoDB replaces Redis)
- * AR-170: Returns boolean indicating if write succeeded or was skipped
- *
+ * Write degraded status to cache when matching fails
  * @returns true if written, false if skipped (existing value has higher confidence)
  */
 export async function writeDegradedResult(
@@ -80,7 +66,7 @@ export async function writeDegradedResult(
     match_version: Date.now(),
     idempotency_key: idempotencyKey,
     flags: ["matching_failed"],
-    evidence_codes: [], // AR-54: No evidence when matching fails
+    evidence_codes: [],
     updated_at: Date.now(),
   };
 

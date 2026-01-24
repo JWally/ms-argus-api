@@ -14,21 +14,17 @@ import {
 import { createMatchingService } from "./matching-worker/config";
 import { processRecord } from "./matching-worker/process-record";
 
-// Validate environment variables at module load (cold start)
 const envConfig = getMatchingWorkerEnv();
 
-// Powertools (using validated config)
 const logger = new Logger({ serviceName: envConfig.POWERTOOLS_SERVICE_NAME });
 const metrics = new Metrics({
   namespace: envConfig.POWERTOOLS_METRICS_NAMESPACE,
 });
 
-// AWS SDK clients (reused across invocations)
 const dynamodb = new DynamoDBClient({});
 const sqs = new SQSClient({});
 const firehose = new FirehoseClient({});
 
-// DynamoDB cache service
 const cacheService = new DynamoCacheService(dynamodb, {
   tableName: envConfig.SESSION_CACHE_TABLE,
   sessionTtlSeconds: SESSION_TTL_SECONDS,

@@ -1,19 +1,10 @@
-// src/helpers/normalize-fingerprint.ts
-// AR-73: Normalize fingerprint from matching-worker flat format
-// AR-83: Added robust type coercion, validation, and sanitization
-// AR-XXX: Simplified to only handle flat fingerprints (nested web format removed)
-//
-// The matching-worker now extracts flat fingerprints from V3 payloads via extractFingerprint().
-// This helper sanitizes those flat fingerprints and applies sigint overrides.
-
 import type { Fingerprint } from "../types/fingerprint";
 import type { SigintData } from "../types/matching";
 
-// AR-83: Maximum string length to prevent storage issues
 const MAX_STRING_LENGTH = 8192;
 
 /**
- * AR-83: Safely coerce a value to a valid positive number.
+ * Safely coerce a value to a valid positive number.
  * Returns undefined if the value cannot be coerced or is invalid.
  */
 function toValidNumber(val: unknown): number | undefined {
@@ -24,7 +15,7 @@ function toValidNumber(val: unknown): number | undefined {
 }
 
 /**
- * AR-83: Safely coerce a value to a valid positive integer.
+ * Safely coerce a value to a valid positive integer.
  * Returns undefined if the value is negative, NaN, or Infinity.
  */
 function toValidPositiveNumber(val: unknown): number | undefined {
@@ -34,19 +25,16 @@ function toValidPositiveNumber(val: unknown): number | undefined {
 }
 
 /**
- * AR-83: Validate and sanitize a string value.
+ * Validate and sanitize a string value.
  * Returns undefined for empty/whitespace strings, sanitizes null bytes, truncates long strings.
  */
 function sanitizeString(val: unknown): string | undefined {
   if (typeof val !== "string") return undefined;
-  // Trim whitespace
   let str = val.trim();
   if (str.length === 0) return undefined;
-  // Remove null bytes (using String.fromCharCode to avoid eslint no-control-regex)
   // eslint-disable-next-line no-control-regex
   str = str.replace(/\x00/g, "");
   if (str.length === 0) return undefined;
-  // Truncate very long strings
   if (str.length > MAX_STRING_LENGTH) {
     str = str.substring(0, MAX_STRING_LENGTH);
   }
@@ -54,7 +42,7 @@ function sanitizeString(val: unknown): string | undefined {
 }
 
 /**
- * AR-83: Validate a score is in the 0-1 range.
+ * Validate a score is in the 0-1 range.
  */
 function toValidScore(val: unknown): number | undefined {
   const num = toValidNumber(val);
@@ -82,9 +70,7 @@ export function normalizeFingerprint(
     return {};
   }
 
-  // AR-146: Strip nested objects that might contain large numbers (e.g., maths)
-  // Only keep primitive fields (string, number, boolean, null, undefined)
-  // This prevents DynamoDB marshalling errors from numbers > MAX_SAFE_INTEGER
+  // Only keep primitive fields to prevent DynamoDB marshalling errors from numbers > MAX_SAFE_INTEGER
   const result: Fingerprint = {};
   for (const [key, value] of Object.entries(raw)) {
     if (
@@ -96,7 +82,6 @@ export function normalizeFingerprint(
     ) {
       (result as Record<string, unknown>)[key] = value;
     }
-    // Skip objects and arrays (nested structures with potentially huge numbers)
   }
 
   if (sigint) applySigintOverrides(sigint, result);

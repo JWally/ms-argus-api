@@ -1,5 +1,3 @@
-// src/services/matching/matching-service.test.ts
-// src/services/matching/matching-service.test.ts
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { mockClient } from "aws-sdk-client-mock";
 import {
@@ -16,14 +14,30 @@ import {
   MatchingServiceDeps,
   generateIdempotencyKey,
 } from "./matching-service";
+import {
+  tier05PublicKeyLookup,
+  tier05CookieLookup,
+  tier05SigintIdLookup,
+  tier1HashMatch,
+  tier15SimHashMatch,
+  tier2CompoundMatch,
+  tier2CompoundMatchWithTimeout,
+  sessionAnchorLookup,
+  ipUaAnchorLookup,
+  loadProfile,
+  type Tier05IdentityDeps,
+  type Tier1HashDeps,
+  type Tier15SimHashDeps,
+  type Tier2CompoundDeps,
+  type SessionAnchorDeps,
+  type ProfileLoaderDeps,
+} from ".";
 import { EvidenceCode, Fingerprint, SessionCacheValue } from "./types";
 import { DynamoCacheService } from "../cache";
 
-// Mock AWS SDK clients
 const dynamoMock = mockClient(DynamoDBClient);
 const sqsMock = mockClient(SQSClient);
 
-// Test configuration
 const testConfig: MatchingServiceConfig = {
   tier1IndexTable: "test-tier1-index",
   tier2BucketsTable: "test-tier2-buckets",
@@ -33,7 +47,6 @@ const testConfig: MatchingServiceConfig = {
   tier2TimeoutMs: 100,
 };
 
-// Mock DynamoCacheService for testing
 function createMockCacheService() {
   const sessions = new Map<string, SessionCacheValue>();
   return {
@@ -44,7 +57,7 @@ function createMockCacheService() {
       .fn()
       .mockImplementation(
         async (sessionId: string, value: SessionCacheValue) => {
-          // Simulate conditional write - only write if confidence is higher
+          // Only write if confidence is higher (conditional write simulation)
           const existing = sessions.get(sessionId);
           if (
             !existing ||
@@ -58,7 +71,6 @@ function createMockCacheService() {
         },
       ),
     tryAcquireMutationGate: vi.fn().mockResolvedValue(true),
-    // Helper for tests
     _setSession: (sessionId: string, value: SessionCacheValue) =>
       sessions.set(sessionId, value),
     _getSession: (sessionId: string) => sessions.get(sessionId),
@@ -75,20 +87,38 @@ describe("MatchingService", () => {
   let sqs: SQSClient;
   let mockCache: ReturnType<typeof createMockCacheService>;
   let service: MatchingService;
+  let tier05Deps: Tier05IdentityDeps;
+  let tier1Deps: Tier1HashDeps;
+  let _tier15Deps: Tier15SimHashDeps;
+  let tier2Deps: Tier2CompoundDeps;
+  let _anchorDeps: SessionAnchorDeps;
+  let profileDeps: ProfileLoaderDeps;
 
   beforeEach(() => {
-    // Reset mocks
     dynamoMock.reset();
     sqsMock.reset();
 
-    // Create fresh cache mock
     mockCache = createMockCacheService();
 
-    // Create real clients (mocked by aws-sdk-client-mock)
     dynamodb = new DynamoDBClient({});
     sqs = new SQSClient({});
 
-    // Create service with test dependencies
+    tier05Deps = { dynamodb, tier1IndexTable: testConfig.tier1IndexTable };
+    tier1Deps = { dynamodb, tier1IndexTable: testConfig.tier1IndexTable };
+    _tier15Deps = { dynamodb, tier2BucketsTable: testConfig.tier2BucketsTable };
+    tier2Deps = {
+      dynamodb,
+      tier2BucketsTable: testConfig.tier2BucketsTable,
+      profilesTable: testConfig.profilesTable,
+      tier2TimeoutMs: testConfig.tier2TimeoutMs,
+    };
+    _anchorDeps = {
+      dynamodb,
+      tier2BucketsTable: testConfig.tier2BucketsTable,
+      profilesTable: testConfig.profilesTable,
+    };
+    profileDeps = { dynamodb, profilesTable: testConfig.profilesTable };
+
     const deps: MatchingServiceDeps = {
       dynamodb,
       sqs,
@@ -133,7 +163,7 @@ describe("MatchingService", () => {
     it("should return null when evercookie not found", async () => {
       dynamoMock.on(GetItemCommand).resolves({ Item: undefined });
 
-      const result = await service.tier05CookieLookup("unknown-cookie");
+      const result = await tier05CookieLookup(tier05Deps, "unknown-cookie");
       expect(result).toBeNull();
     });
 
@@ -148,7 +178,7 @@ describe("MatchingService", () => {
         }),
       });
 
-      const result = await service.tier05CookieLookup("cookie123");
+      const result = await tier05CookieLookup(tier05Deps, "cookie123");
 
       expect(result).not.toBeNull();
       expect(result?.device_id).toBe(deviceId);
@@ -168,18 +198,20 @@ describe("MatchingService", () => {
         }),
       });
 
-      const result = await service.tier05CookieLookup("cookie123");
+      const result = await tier05CookieLookup(tier05Deps, "cookie123");
       expect(result?.risk_score).toBe(0.3);
       expect(result?.flags).toEqual([]);
     });
   });
 
-  // Sigint ID (third-party cookie) matching tests
   describe("tier05SigintIdLookup", () => {
     it("should return null when sigint_id not found", async () => {
       dynamoMock.on(GetItemCommand).resolves({ Item: undefined });
 
-      const result = await service.tier05SigintIdLookup("unknown-sigint-id");
+      const result = await tier05SigintIdLookup(
+        tier05Deps,
+        "unknown-sigint-id",
+      );
       expect(result).toBeNull();
     });
 
@@ -194,11 +226,11 @@ describe("MatchingService", () => {
         }),
       });
 
-      const result = await service.tier05SigintIdLookup("abc123-def456");
+      const result = await tier05SigintIdLookup(tier05Deps, "abc123-def456");
 
       expect(result).not.toBeNull();
       expect(result?.device_id).toBe(deviceId);
-      expect(result?.confidence).toBe(0.98); // Slightly lower than evercookie
+      expect(result?.confidence).toBe(0.98);
       expect(result?.match_tier).toBe(0.5);
       expect(result?.is_new_device).toBe(false);
       expect(result?.risk_score).toBe(0.2);
@@ -214,18 +246,20 @@ describe("MatchingService", () => {
         }),
       });
 
-      const result = await service.tier05SigintIdLookup("abc123");
+      const result = await tier05SigintIdLookup(tier05Deps, "abc123");
       expect(result?.risk_score).toBe(0.3);
       expect(result?.flags).toEqual([]);
     });
   });
 
-  // Public key (ECDSA) matching tests
   describe("tier05PublicKeyLookup", () => {
     it("should return null when public key not found", async () => {
       dynamoMock.on(GetItemCommand).resolves({ Item: undefined });
 
-      const result = await service.tier05PublicKeyLookup("unknown-public-key");
+      const result = await tier05PublicKeyLookup(
+        tier05Deps,
+        "unknown-public-key",
+      );
       expect(result).toBeNull();
     });
 
@@ -241,7 +275,7 @@ describe("MatchingService", () => {
         }),
       });
 
-      const result = await service.tier05PublicKeyLookup(publicKey);
+      const result = await tier05PublicKeyLookup(tier05Deps, publicKey);
 
       expect(result).not.toBeNull();
       expect(result?.device_id).toBe(deviceId);
@@ -262,7 +296,7 @@ describe("MatchingService", () => {
         }),
       });
 
-      const result = await service.tier05PublicKeyLookup(publicKey);
+      const result = await tier05PublicKeyLookup(tier05Deps, publicKey);
       expect(result?.risk_score).toBe(0.3);
       expect(result?.flags).toEqual([]);
     });
@@ -277,7 +311,7 @@ describe("MatchingService", () => {
         fuzzy_hash: "fuzzy456",
       };
 
-      const result = await service.tier1HashMatch(fingerprint);
+      const result = await tier1HashMatch(tier1Deps, fingerprint);
       expect(result).toBeNull();
     });
 
@@ -291,7 +325,7 @@ describe("MatchingService", () => {
       });
 
       const fingerprint: Fingerprint = { stable_hash: "stable123" };
-      const result = await service.tier1HashMatch(fingerprint);
+      const result = await tier1HashMatch(tier1Deps, fingerprint);
 
       expect(result).not.toBeNull();
       expect(result?.device_id).toBe("dev_stable");
@@ -327,7 +361,7 @@ describe("MatchingService", () => {
         fuzzy_hash: "fuzzy456",
       };
 
-      const result = await service.tier1HashMatch(fingerprint);
+      const result = await tier1HashMatch(tier1Deps, fingerprint);
 
       expect(result).not.toBeNull();
       expect(result?.device_id).toBe("dev_fuzzy");
@@ -348,12 +382,10 @@ describe("MatchingService", () => {
         fuzzy_hash: "fuzzy456",
       };
 
-      const result = await service.tier1HashMatch(fingerprint);
-      expect(result?.confidence).toBe(0.95); // stable_hash confidence
+      const result = await tier1HashMatch(tier1Deps, fingerprint);
+      expect(result?.confidence).toBe(0.95);
     });
   });
-
-  // Deleted 10 duplicate tests that are now covered in src/helpers/bucket-keys.test.ts
 
   describe("tier2CompoundMatch", () => {
     it("should return null when no buckets match", async () => {
@@ -364,12 +396,11 @@ describe("MatchingService", () => {
         ja4: "ja4hash",
       };
 
-      const result = await service.tier2CompoundMatch(fingerprint);
+      const result = await tier2CompoundMatch(tier2Deps, fingerprint);
       expect(result).toBeNull();
     });
 
     it("should return null when only one bucket matches (need 2+)", async () => {
-      // Only one bucket has the device (single Query returns items)
       dynamoMock.on(QueryCommand).resolves({
         Items: [
           marshall({
@@ -384,12 +415,11 @@ describe("MatchingService", () => {
         ja4: "ja4hash",
       };
 
-      const result = await service.tier2CompoundMatch(fingerprint);
+      const result = await tier2CompoundMatch(tier2Deps, fingerprint);
       expect(result).toBeNull();
     });
 
     it("should return match when device appears in 2+ buckets", async () => {
-      // Mock Query to return devices from each bucket (adjacency list pattern)
       dynamoMock
         .on(QueryCommand, { TableName: testConfig.tier2BucketsTable })
         .resolves({
@@ -399,7 +429,6 @@ describe("MatchingService", () => {
           ],
         });
 
-      // Also mock profile lookup
       dynamoMock
         .on(GetItemCommand, { TableName: testConfig.profilesTable })
         .resolves({
@@ -417,7 +446,7 @@ describe("MatchingService", () => {
         canvas_hash: "canvas",
       };
 
-      const result = await service.tier2CompoundMatch(fingerprint);
+      const result = await tier2CompoundMatch(tier2Deps, fingerprint);
 
       expect(result).not.toBeNull();
       expect(result?.match_tier).toBe(2);
@@ -428,9 +457,8 @@ describe("MatchingService", () => {
 
   describe("tier2CompoundMatchWithTimeout", () => {
     it("should return timedOut=true if matching takes too long", async () => {
-      // Make DynamoDB calls slow
       dynamoMock.on(QueryCommand).callsFake(async () => {
-        await new Promise((resolve) => setTimeout(resolve, 200)); // Longer than 100ms timeout
+        await new Promise((resolve) => setTimeout(resolve, 200));
         return { Items: [] };
       });
 
@@ -439,8 +467,10 @@ describe("MatchingService", () => {
         ja4: "ja4hash",
       };
 
-      const { result, timedOut } =
-        await service.tier2CompoundMatchWithTimeout(fingerprint);
+      const { result, timedOut } = await tier2CompoundMatchWithTimeout(
+        tier2Deps,
+        fingerprint,
+      );
       expect(result).toBeNull();
       expect(timedOut).toBe(true);
     });
@@ -453,18 +483,18 @@ describe("MatchingService", () => {
         ja4: "ja4hash",
       };
 
-      const { result, timedOut } =
-        await service.tier2CompoundMatchWithTimeout(fingerprint);
+      const { result, timedOut } = await tier2CompoundMatchWithTimeout(
+        tier2Deps,
+        fingerprint,
+      );
       expect(result).toBeNull();
       expect(timedOut).toBe(false);
     });
 
     it("should handle AbortError gracefully in tier2CompoundMatch", async () => {
-      // Create an already-aborted signal
       const abortController = new AbortController();
       abortController.abort();
 
-      // Mock DynamoDB to throw AbortError when abort signal is provided
       dynamoMock.on(QueryCommand).callsFake(() => {
         const error = new Error("The operation was aborted");
         error.name = "AbortError";
@@ -476,15 +506,13 @@ describe("MatchingService", () => {
         ja4: "ja4hash",
       };
 
-      // tier2CompoundMatch should catch AbortError and return null
-      const result = await service.tier2CompoundMatch(fingerprint, {
+      const result = await tier2CompoundMatch(tier2Deps, fingerprint, {
         abortSignal: abortController.signal,
       });
       expect(result).toBeNull();
     });
 
     it("should propagate non-abort errors in tier2CompoundMatch", async () => {
-      // Mock DynamoDB to throw a different error
       const dbError = new Error("DynamoDB error");
       dbError.name = "ServiceUnavailable";
       dynamoMock.on(QueryCommand).rejects(dbError);
@@ -494,24 +522,20 @@ describe("MatchingService", () => {
         ja4: "ja4hash",
       };
 
-      // Non-abort errors should be propagated
-      await expect(service.tier2CompoundMatch(fingerprint)).rejects.toThrow(
+      await expect(tier2CompoundMatch(tier2Deps, fingerprint)).rejects.toThrow(
         "DynamoDB error",
       );
     });
   });
 
-  // Cardinality tracking tests
   describe("tier2CompoundMatch with cardinality tracking", () => {
     it("should penalize confidence for high-cardinality buckets", async () => {
-      // Setup: device appears in 2 buckets (same device_id in all query results)
       dynamoMock
         .on(QueryCommand, { TableName: testConfig.tier2BucketsTable })
         .resolves({
           Items: [marshall({ device_id: "device-123" })],
         });
 
-      // Mock cardinality stats - high cardinality buckets (>500)
       dynamoMock.on(BatchGetItemCommand).resolves({
         Responses: {
           [testConfig.tier2BucketsTable]: [
@@ -527,7 +551,6 @@ describe("MatchingService", () => {
         },
       });
 
-      // Mock profile lookup
       dynamoMock
         .on(GetItemCommand, { TableName: testConfig.profilesTable })
         .resolves({
@@ -542,26 +565,21 @@ describe("MatchingService", () => {
         timezone: "America/New_York",
       };
 
-      const result = await service.tier2CompoundMatch(fingerprint);
+      const result = await tier2CompoundMatch(tier2Deps, fingerprint);
 
       expect(result).not.toBeNull();
       expect(result?.match_tier).toBe(2);
-      // Base confidence for 2 bucket matches is 0.8
-      // With both buckets being high-cardinality: penalty = (2/2) * 0.3 = 0.3
-      // Final confidence = 0.8 - 0.3 = 0.5
       expect(result?.confidence).toBeLessThan(0.8);
       expect(result?.confidence).toBeGreaterThanOrEqual(0.3);
     });
 
     it("should not penalize confidence for low-cardinality buckets", async () => {
-      // Setup: device appears in 2 buckets
       dynamoMock
         .on(QueryCommand, { TableName: testConfig.tier2BucketsTable })
         .resolves({
           Items: [marshall({ device_id: "device-123" })],
         });
 
-      // Mock cardinality stats - low cardinality buckets (<500)
       dynamoMock.on(BatchGetItemCommand).resolves({
         Responses: {
           [testConfig.tier2BucketsTable]: [
@@ -577,7 +595,6 @@ describe("MatchingService", () => {
         },
       });
 
-      // Mock profile lookup
       dynamoMock
         .on(GetItemCommand, { TableName: testConfig.profilesTable })
         .resolves({
@@ -592,26 +609,22 @@ describe("MatchingService", () => {
         timezone: "America/New_York",
       };
 
-      const result = await service.tier2CompoundMatch(fingerprint);
+      const result = await tier2CompoundMatch(tier2Deps, fingerprint);
 
       expect(result).not.toBeNull();
       expect(result?.match_tier).toBe(2);
-      // Base confidence for 2 bucket matches is 0.8 (no penalty applied)
       expect(result?.confidence).toBe(0.8);
     });
 
     it("should fail open when cardinality fetch fails", async () => {
-      // Setup: device appears in 2 buckets
       dynamoMock
         .on(QueryCommand, { TableName: testConfig.tier2BucketsTable })
         .resolves({
           Items: [marshall({ device_id: "device-123" })],
         });
 
-      // Mock cardinality fetch to fail
       dynamoMock.on(BatchGetItemCommand).rejects(new Error("DynamoDB error"));
 
-      // Mock profile lookup
       dynamoMock
         .on(GetItemCommand, { TableName: testConfig.profilesTable })
         .resolves({
@@ -626,12 +639,10 @@ describe("MatchingService", () => {
         timezone: "America/New_York",
       };
 
-      // Should not throw, should return match without penalty
-      const result = await service.tier2CompoundMatch(fingerprint);
+      const result = await tier2CompoundMatch(tier2Deps, fingerprint);
 
       expect(result).not.toBeNull();
       expect(result?.match_tier).toBe(2);
-      // No penalty applied when cardinality fetch fails (fail open)
       expect(result?.confidence).toBe(0.8);
     });
   });
@@ -640,7 +651,7 @@ describe("MatchingService", () => {
     it("should return null when profile not found", async () => {
       dynamoMock.on(GetItemCommand).resolves({ Item: undefined });
 
-      const result = await service.loadProfile("unknown-device");
+      const result = await loadProfile(profileDeps, "unknown-device");
       expect(result).toBeNull();
     });
 
@@ -653,7 +664,7 @@ describe("MatchingService", () => {
         }),
       });
 
-      const result = await service.loadProfile("dev_123");
+      const result = await loadProfile(profileDeps, "dev_123");
 
       expect(result).not.toBeNull();
       expect(result?.risk_score).toBe(0.7);
@@ -662,11 +673,9 @@ describe("MatchingService", () => {
   });
 
   describe("createNewDevice", () => {
-    // Expect ULID format (26 alphanumeric chars in Crockford's Base32)
     it("should create device with dev_ prefix and ULID format", () => {
       const result = service.createNewDevice();
 
-      // ULID format: 26 characters, Crockford's Base32 (0-9, A-Z excluding I, L, O, U)
       expect(result.device_id).toMatch(/^dev_[0-9A-HJKMNP-TV-Z]{26}$/);
       expect(result.is_new_device).toBe(true);
       expect(result.confidence).toBe(0);
@@ -689,7 +698,6 @@ describe("MatchingService", () => {
     });
   });
 
-  // Privacy browser penalty tests
   describe("applyPrivacyPenalty", () => {
     it("should return unchanged result when no privacy signals", () => {
       const result = {
@@ -706,7 +714,7 @@ describe("MatchingService", () => {
       const penalized = service.applyPrivacyPenalty(result, fingerprint);
 
       expect(penalized.confidence).toBe(0.95);
-      expect(penalized).toBe(result); // Same object reference
+      expect(penalized).toBe(result);
     });
 
     it("should reduce confidence for privacy_browser", () => {
@@ -726,8 +734,8 @@ describe("MatchingService", () => {
       };
       const penalized = service.applyPrivacyPenalty(result, fingerprint);
 
-      expect(penalized.confidence).toBeCloseTo(0.8, 10); // 0.95 - 0.15 penalty
-      expect(penalized).not.toBe(result); // New object
+      expect(penalized.confidence).toBeCloseTo(0.8, 10);
+      expect(penalized).not.toBe(result);
     });
 
     it("should reduce confidence for is_private_browsing", () => {
@@ -747,7 +755,7 @@ describe("MatchingService", () => {
       };
       const penalized = service.applyPrivacyPenalty(result, fingerprint);
 
-      expect(penalized.confidence).toBeCloseTo(0.85, 10); // 0.95 - 0.1 penalty
+      expect(penalized.confidence).toBeCloseTo(0.85, 10);
     });
 
     it("should apply cumulative penalties for both signals", () => {
@@ -768,7 +776,7 @@ describe("MatchingService", () => {
       };
       const penalized = service.applyPrivacyPenalty(result, fingerprint);
 
-      expect(penalized.confidence).toBeCloseTo(0.7, 10); // 0.95 - 0.15 - 0.1 = 0.7
+      expect(penalized.confidence).toBeCloseTo(0.7, 10);
     });
 
     it("should not reduce confidence below 0", () => {
@@ -791,12 +799,11 @@ describe("MatchingService", () => {
       };
       const penalized = service.applyPrivacyPenalty(result, fingerprint);
 
-      expect(penalized.confidence).toBe(0); // Clamped at 0, not negative
+      expect(penalized.confidence).toBe(0);
     });
   });
 
   describe("runTieredMatching", () => {
-    // Public key matching tests
     it("should return public_key match at Tier 0.5", async () => {
       const publicKey = "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE...base64...";
       dynamoMock.on(GetItemCommand).resolves({
@@ -848,7 +855,6 @@ describe("MatchingService", () => {
       };
       const { result } = await service.runTieredMatching(fingerprint);
 
-      // Public key should take precedence
       expect(result.device_id).toBe("dev_pubkey");
       expect(result.evidence_codes).toEqual(["PUBLIC_KEY_MATCH"]);
     });
@@ -880,7 +886,6 @@ describe("MatchingService", () => {
       };
       const { result } = await service.runTieredMatching(fingerprint);
 
-      // Should fall back to evercookie
       expect(result.device_id).toBe("dev_cookie");
       expect(result.evidence_codes).toEqual(["EVERCOOKIE_MATCH"]);
     });
@@ -902,7 +907,6 @@ describe("MatchingService", () => {
       expect(tier2TimedOut).toBe(false);
     });
 
-    // Privacy penalty integration test
     it("should apply privacy browser penalty to match results", async () => {
       dynamoMock.on(GetItemCommand).resolves({
         Item: marshall({
@@ -970,7 +974,6 @@ describe("MatchingService", () => {
 
     it("should track tier2TimedOut when Tier 2 times out", async () => {
       dynamoMock.on(GetItemCommand).resolves({ Item: undefined });
-      // Make Tier 2 Query slow to trigger timeout
       dynamoMock.on(QueryCommand).callsFake(async () => {
         await new Promise((resolve) => setTimeout(resolve, 200));
         return { Items: [] };
@@ -992,10 +995,8 @@ describe("MatchingService", () => {
     it("should match via ipUaAnchor when session anchor misses", async () => {
       const now = Date.now();
 
-      // No tier 0.5/1 matches
       dynamoMock.on(GetItemCommand).resolves({ Item: undefined });
 
-      // Query: tier2 returns empty, ipUaAnchor returns valid entry
       dynamoMock.on(QueryCommand).callsFake((input) => {
         const exprValues = input.ExpressionAttributeValues;
         const bucketKey = exprValues?.[":bk"]?.S ?? "";
@@ -1005,7 +1006,7 @@ describe("MatchingService", () => {
               marshall({
                 bucket_key: bucketKey,
                 device_id: "dev_ip_ua",
-                created_at: now - 30 * 1000, // 30 seconds ago
+                created_at: now - 30 * 1000,
               }),
             ],
           };
@@ -1013,7 +1014,6 @@ describe("MatchingService", () => {
         return { Items: [] };
       });
 
-      // Fingerprint with ip+ua but NO screen_dims (session anchor returns null)
       const fingerprint: Fingerprint = {
         ip_address: "10.0.0.1",
         user_agent: "Mozilla/5.0 Chrome/120",
@@ -1038,9 +1038,12 @@ describe("MatchingService", () => {
         evidence_codes: ["STABLE_HASH_MATCH"] as EvidenceCode[],
       };
 
-      await service.writeMatchResult({ sessionId: "session123", result, idempotencyKey: "idempkey" });
+      await service.writeMatchResult({
+        sessionId: "session123",
+        result,
+        idempotencyKey: "idempkey",
+      });
 
-      // Verify cache service was called
       expect(mockCache.writeSessionCache).toHaveBeenCalledWith(
         "session123",
         expect.objectContaining({
@@ -1051,7 +1054,6 @@ describe("MatchingService", () => {
         }),
       );
 
-      // Verify value was written
       const value = mockCache._getSession("session123");
       expect(value).not.toBeUndefined();
       expect(value?.status).toBe("complete");
@@ -1061,7 +1063,6 @@ describe("MatchingService", () => {
     });
 
     it("should not overwrite higher confidence match", async () => {
-      // Pre-populate with higher confidence match
       const existing: SessionCacheValue = {
         status: "complete",
         device_id: "dev_better",
@@ -1076,7 +1077,6 @@ describe("MatchingService", () => {
       };
       mockCache._setSession("session123", existing);
 
-      // Try to write lower confidence match
       const result = {
         device_id: "dev_worse",
         confidence: 0.85,
@@ -1087,15 +1087,17 @@ describe("MatchingService", () => {
         evidence_codes: ["FUZZY_HASH_MATCH"] as EvidenceCode[],
       };
 
-      await service.writeMatchResult({ sessionId: "session123", result, idempotencyKey: "newkey" });
+      await service.writeMatchResult({
+        sessionId: "session123",
+        result,
+        idempotencyKey: "newkey",
+      });
 
-      // Should still have the better match (mock simulates conditional write)
       const value = mockCache._getSession("session123");
       expect(value?.device_id).toBe("dev_better");
     });
 
     it("should overwrite lower confidence match", async () => {
-      // Pre-populate with lower confidence match
       const existing: SessionCacheValue = {
         status: "complete",
         device_id: "dev_old",
@@ -1110,7 +1112,6 @@ describe("MatchingService", () => {
       };
       mockCache._setSession("session123", existing);
 
-      // Write higher confidence match
       const result = {
         device_id: "dev_better",
         confidence: 0.95,
@@ -1121,7 +1122,11 @@ describe("MatchingService", () => {
         evidence_codes: ["STABLE_HASH_MATCH"] as EvidenceCode[],
       };
 
-      await service.writeMatchResult({ sessionId: "session123", result, idempotencyKey: "newkey" });
+      await service.writeMatchResult({
+        sessionId: "session123",
+        result,
+        idempotencyKey: "newkey",
+      });
 
       const value = mockCache._getSession("session123");
       expect(value?.device_id).toBe("dev_better");
@@ -1132,7 +1137,6 @@ describe("MatchingService", () => {
     it("should write degraded status to cache", async () => {
       await service.writeDegradedResult("session123", "idempkey");
 
-      // Verify cache service was called
       expect(mockCache.writeSessionCache).toHaveBeenCalledWith(
         "session123",
         expect.objectContaining({
@@ -1180,7 +1184,6 @@ describe("MatchingService", () => {
       expect(messageBody.fingerprint).toEqual({ stable_hash: "abc" });
     });
 
-    // Tests for match context passing
     it("should include match_tier and evidence_codes when matchResult is provided", async () => {
       sqsMock.on(SendMessageCommand).resolves({ MessageId: "msg123" });
 
@@ -1267,7 +1270,6 @@ describe("MatchingService", () => {
         timestamp: Date.now(),
       };
 
-      // Call without matchResult (old signature)
       await service.queueProfileUpdate("dev_123", payload);
 
       const calls = sqsMock.calls();
@@ -1341,7 +1343,6 @@ describe("generateULID wrapper removed", () => {
     const svc = new MatchingService(deps);
     const result = svc.createNewDevice();
 
-    // ULID format: dev_ + 26 chars Crockford's Base32
     expect(result.device_id).toMatch(/^dev_[0-9A-HJKMNP-TV-Z]{26}$/);
     expect(result.is_new_device).toBe(true);
     expect(result.confidence).toBe(0);
@@ -1369,7 +1370,6 @@ describe("generateULID wrapper removed", () => {
   });
 });
 
-// Anchor lookup recency sorting tests
 describe("MatchingService anchor recency sorting", () => {
   let dynamodb: DynamoDBClient;
   let sqs: SQSClient;
@@ -1395,29 +1395,22 @@ describe("MatchingService anchor recency sorting", () => {
   it("should return most recent valid device, not first alphabetically", async () => {
     const now = Date.now();
 
-    // Mock: Multiple devices in same anchor bucket
-    // DynamoDB returns items sorted by device_id (sort key) alphabetically
-    // dev_aaa is OLDER but comes first alphabetically
-    // dev_zzz is NEWER but comes last alphabetically
     dynamoMock
       .on(QueryCommand, { TableName: testConfig.tier2BucketsTable })
       .callsFake((input) => {
         const keyExpr = input.KeyConditionExpression || "";
-        // Session anchor query - return items sorted by device_id (DynamoDB default)
         if (keyExpr.includes("bucket_key = :bk")) {
           return {
             Items: [
-              // First alphabetically, but OLDER (5 minutes ago - still valid for 10min window)
               marshall({
                 bucket_key: "session_anchor#1.2.3.4#uahash#1920x1080",
                 device_id: "dev_aaa_old",
-                created_at: now - 5 * 60 * 1000, // 5 minutes ago
+                created_at: now - 5 * 60 * 1000,
               }),
-              // Second alphabetically, but NEWER (1 minute ago)
               marshall({
                 bucket_key: "session_anchor#1.2.3.4#uahash#1920x1080",
                 device_id: "dev_zzz_new",
-                created_at: now - 1 * 60 * 1000, // 1 minute ago
+                created_at: now - 1 * 60 * 1000,
               }),
             ],
           };
@@ -1425,7 +1418,6 @@ describe("MatchingService anchor recency sorting", () => {
         return { Items: [] };
       });
 
-    // Mock: Profile lookup for the expected device
     dynamoMock.on(GetItemCommand).resolves({
       Item: marshall({
         device_id: "dev_zzz_new",
@@ -1434,7 +1426,6 @@ describe("MatchingService anchor recency sorting", () => {
       }),
     });
 
-    // Fingerprint with no tier0.5/tier1 matches - will fall through to anchor lookup
     const fingerprint: Fingerprint = {
       ip_address: "1.2.3.4",
       user_agent:
@@ -1444,8 +1435,6 @@ describe("MatchingService anchor recency sorting", () => {
 
     const { result } = await service.runTieredMatching(fingerprint);
 
-    // Should return the MOST RECENT valid device (dev_zzz_new),
-    // NOT the first alphabetically (dev_aaa_old)
     expect(result.device_id).toBe("dev_zzz_new");
     expect(result.evidence_codes).toContain("SESSION_ANCHOR_BUCKET");
   });
@@ -1453,7 +1442,6 @@ describe("MatchingService anchor recency sorting", () => {
   it("should skip expired devices even if they are more recent", async () => {
     const now = Date.now();
 
-    // Mock: One expired device (newer) and one valid device (older)
     dynamoMock
       .on(QueryCommand, { TableName: testConfig.tier2BucketsTable })
       .callsFake((input) => {
@@ -1461,17 +1449,15 @@ describe("MatchingService anchor recency sorting", () => {
         if (keyExpr.includes("bucket_key = :bk")) {
           return {
             Items: [
-              // First alphabetically, EXPIRED (created 15 mins ago, validity is 10 mins)
               marshall({
                 bucket_key: "session_anchor#1.2.3.4#uahash#1920x1080",
                 device_id: "dev_aaa_expired",
-                created_at: now - 15 * 60 * 1000, // 15 minutes ago - EXPIRED
+                created_at: now - 15 * 60 * 1000,
               }),
-              // Second alphabetically, VALID but older within window
               marshall({
                 bucket_key: "session_anchor#1.2.3.4#uahash#1920x1080",
                 device_id: "dev_bbb_valid",
-                created_at: now - 8 * 60 * 1000, // 8 minutes ago - still valid
+                created_at: now - 8 * 60 * 1000,
               }),
             ],
           };
@@ -1479,7 +1465,6 @@ describe("MatchingService anchor recency sorting", () => {
         return { Items: [] };
       });
 
-    // Mock: Profile lookup
     dynamoMock.on(GetItemCommand).resolves({
       Item: marshall({
         device_id: "dev_bbb_valid",
@@ -1497,14 +1482,12 @@ describe("MatchingService anchor recency sorting", () => {
 
     const { result } = await service.runTieredMatching(fingerprint);
 
-    // Should return the valid device, not the expired one
     expect(result.device_id).toBe("dev_bbb_valid");
   });
 
   it("should prefer most recent among multiple valid devices", async () => {
     const now = Date.now();
 
-    // Mock: Three valid devices with different ages
     dynamoMock
       .on(QueryCommand, { TableName: testConfig.tier2BucketsTable })
       .callsFake((input) => {
@@ -1512,19 +1495,16 @@ describe("MatchingService anchor recency sorting", () => {
         if (keyExpr.includes("bucket_key = :bk")) {
           return {
             Items: [
-              // Alphabetically first, 7 minutes old
               marshall({
                 bucket_key: "session_anchor#1.2.3.4#uahash#1920x1080",
                 device_id: "dev_a",
                 created_at: now - 7 * 60 * 1000,
               }),
-              // Alphabetically middle, 3 minutes old (NEWEST)
               marshall({
                 bucket_key: "session_anchor#1.2.3.4#uahash#1920x1080",
                 device_id: "dev_m",
                 created_at: now - 3 * 60 * 1000,
               }),
-              // Alphabetically last, 5 minutes old
               marshall({
                 bucket_key: "session_anchor#1.2.3.4#uahash#1920x1080",
                 device_id: "dev_z",
@@ -1536,7 +1516,6 @@ describe("MatchingService anchor recency sorting", () => {
         return { Items: [] };
       });
 
-    // Mock: Profile lookup for expected device
     dynamoMock.on(GetItemCommand).resolves({
       Item: marshall({
         device_id: "dev_m",
@@ -1554,16 +1533,13 @@ describe("MatchingService anchor recency sorting", () => {
 
     const { result } = await service.runTieredMatching(fingerprint);
 
-    // Should return dev_m (3 minutes old) - the newest valid device
     expect(result.device_id).toBe("dev_m");
   });
 
-  // Test that ScanIndexForward:false is used for anchor queries
   it("should pass ScanIndexForward:false to sessionAnchorLookup QueryCommand", async () => {
     const now = Date.now();
     let capturedInput: unknown;
 
-    // Mock: Capture the QueryCommand input to verify ScanIndexForward
     dynamoMock
       .on(QueryCommand, { TableName: testConfig.tier2BucketsTable })
       .callsFake((input) => {
@@ -1583,7 +1559,6 @@ describe("MatchingService anchor recency sorting", () => {
         return { Items: [] };
       });
 
-    // Mock: Profile lookup
     dynamoMock.on(GetItemCommand).resolves({
       Item: marshall({
         device_id: "dev_test",
@@ -1601,31 +1576,25 @@ describe("MatchingService anchor recency sorting", () => {
 
     await service.runTieredMatching(fingerprint);
 
-    // Verify ScanIndexForward:false is set
     expect(capturedInput).toHaveProperty("ScanIndexForward", false);
   });
 });
 
-describe("MatchingService delegate methods", () => {
+describe("Tier function direct calls", () => {
   let dynamodb: DynamoDBClient;
-  let sqs: SQSClient;
-  let mockCache: ReturnType<typeof createMockCacheService>;
-  let service: MatchingService;
+  let tier15Deps: Tier15SimHashDeps;
+  let anchorDeps: SessionAnchorDeps;
 
   beforeEach(() => {
     dynamoMock.reset();
     sqsMock.reset();
-    mockCache = createMockCacheService();
     dynamodb = new DynamoDBClient({});
-    sqs = new SQSClient({});
-
-    const deps: MatchingServiceDeps = {
+    tier15Deps = { dynamodb, tier2BucketsTable: testConfig.tier2BucketsTable };
+    anchorDeps = {
       dynamodb,
-      sqs,
-      cache: mockCache,
-      config: testConfig,
+      tier2BucketsTable: testConfig.tier2BucketsTable,
+      profilesTable: testConfig.profilesTable,
     };
-    service = new MatchingService(deps);
   });
 
   describe("tier15SimHashMatch", () => {
@@ -1633,7 +1602,7 @@ describe("MatchingService delegate methods", () => {
       dynamoMock.on(QueryCommand).resolves({ Items: [] });
 
       const fingerprint: Fingerprint = { fuzzy_hash: "abcdef1234567890" };
-      const result = await service.tier15SimHashMatch(fingerprint);
+      const result = await tier15SimHashMatch(tier15Deps, fingerprint);
       expect(result).toBeNull();
     });
   });
@@ -1641,7 +1610,7 @@ describe("MatchingService delegate methods", () => {
   describe("sessionAnchorLookup", () => {
     it("should return null when fingerprint lacks required fields", async () => {
       const fingerprint: Fingerprint = { ip_address: "1.2.3.4" };
-      const result = await service.sessionAnchorLookup(fingerprint);
+      const result = await sessionAnchorLookup(anchorDeps, fingerprint);
       expect(result).toBeNull();
     });
 
@@ -1653,7 +1622,7 @@ describe("MatchingService delegate methods", () => {
         user_agent: "Mozilla/5.0 Chrome/120",
         screen_dims: "1920x1080",
       };
-      const result = await service.sessionAnchorLookup(fingerprint);
+      const result = await sessionAnchorLookup(anchorDeps, fingerprint);
       expect(result).toBeNull();
     });
 
@@ -1664,7 +1633,7 @@ describe("MatchingService delegate methods", () => {
           marshall({
             bucket_key: "session_anchor#1.2.3.4#hash#1920x1080",
             device_id: "dev_anchor",
-            created_at: now - 2 * 60 * 1000, // 2 minutes ago
+            created_at: now - 2 * 60 * 1000,
           }),
         ],
       });
@@ -1681,7 +1650,7 @@ describe("MatchingService delegate methods", () => {
         user_agent: "Mozilla/5.0 Chrome/120",
         screen_dims: "1920x1080",
       };
-      const result = await service.sessionAnchorLookup(fingerprint);
+      const result = await sessionAnchorLookup(anchorDeps, fingerprint);
 
       expect(result).not.toBeNull();
       expect(result?.device_id).toBe("dev_anchor");
@@ -1692,7 +1661,7 @@ describe("MatchingService delegate methods", () => {
   describe("ipUaAnchorLookup", () => {
     it("should return null when fingerprint lacks ip or user_agent", async () => {
       const fingerprint: Fingerprint = { ip_address: "1.2.3.4" };
-      const result = await service.ipUaAnchorLookup(fingerprint);
+      const result = await ipUaAnchorLookup(anchorDeps, fingerprint);
       expect(result).toBeNull();
     });
 
@@ -1703,7 +1672,7 @@ describe("MatchingService delegate methods", () => {
         ip_address: "1.2.3.4",
         user_agent: "Mozilla/5.0 Chrome/120",
       };
-      const result = await service.ipUaAnchorLookup(fingerprint);
+      const result = await ipUaAnchorLookup(anchorDeps, fingerprint);
       expect(result).toBeNull();
     });
 
@@ -1714,7 +1683,7 @@ describe("MatchingService delegate methods", () => {
           marshall({
             bucket_key: "ip_ua_anchor#1.2.3.4#hash",
             device_id: "dev_recent",
-            created_at: now - 60 * 1000, // 1 minute ago
+            created_at: now - 60 * 1000,
           }),
         ],
       });
@@ -1730,7 +1699,7 @@ describe("MatchingService delegate methods", () => {
         ip_address: "1.2.3.4",
         user_agent: "Mozilla/5.0 Chrome/120",
       };
-      const result = await service.ipUaAnchorLookup(fingerprint);
+      const result = await ipUaAnchorLookup(anchorDeps, fingerprint);
 
       expect(result).not.toBeNull();
       expect(result?.device_id).toBe("dev_recent");
@@ -1745,7 +1714,7 @@ describe("MatchingService delegate methods", () => {
           marshall({
             bucket_key: "ip_ua_anchor#1.2.3.4#hash",
             device_id: "dev_old",
-            created_at: now - 10 * 60 * 1000, // 10 minutes ago (beyond 3-min window)
+            created_at: now - 10 * 60 * 1000,
           }),
         ],
       });
@@ -1754,7 +1723,7 @@ describe("MatchingService delegate methods", () => {
         ip_address: "1.2.3.4",
         user_agent: "Mozilla/5.0 Chrome/120",
       };
-      const result = await service.ipUaAnchorLookup(fingerprint);
+      const result = await ipUaAnchorLookup(anchorDeps, fingerprint);
       expect(result).toBeNull();
     });
   });

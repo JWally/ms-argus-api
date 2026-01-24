@@ -1,8 +1,3 @@
-// src/services/profile/anomaly/cross-field.test.ts
-// AR-145: Tests for cross-field anomaly detection
-// AR-143: Updated to use actual ms-argus-web payload structure
-// AR-XXX: Updated to V3 device format (no loose wrapper)
-
 import { describe, it, expect } from "vitest";
 import { detectCrossFieldAnomalies } from "./cross-field";
 import { AnomalyCodes } from "./types";
@@ -186,11 +181,11 @@ describe("detectCrossFieldAnomalies", () => {
 
     it("should detect mismatches between different worker types", () => {
       const raw = {
-        navigator: { userAgent: "Chrome/120" }, // matches dedicated
+        navigator: { userAgent: "Chrome/120" },
         workerScope: {
           scopes: {
             web: { userAgent: "Chrome/120" },
-            service: { userAgent: "Firefox/120" }, // mismatch
+            service: { userAgent: "Firefox/120" },
           },
         },
       };
@@ -203,7 +198,6 @@ describe("detectCrossFieldAnomalies", () => {
     });
 
     it("should detect all pairwise mismatches across multiple environments", () => {
-      // Navigator spoofed, but all worker types left unspoofed
       const raw = {
         navigator: { userAgent: "Spoofed/1.0" },
         workerScope: {
@@ -221,20 +215,18 @@ describe("detectCrossFieldAnomalies", () => {
       // Workers match each other = 0 mismatches
       expect(signals).toHaveLength(3);
 
-      // All should be userAgent mismatches
       expect(
         signals.every((s) => s.code === AnomalyCodes.WORKER_MISMATCH),
       ).toBe(true);
     });
 
     it("should detect when one worker type is spoofed but others are not", () => {
-      // Attacker spoofed navigator and dedicated worker, forgot service worker
       const raw = {
         navigator: { platform: "Spoofed" },
         workerScope: {
           scopes: {
             web: { platform: "Spoofed" },
-            service: { platform: "Win32" }, // Forgot this one
+            service: { platform: "Win32" },
           },
         },
       };
@@ -274,14 +266,13 @@ describe("detectCrossFieldAnomalies", () => {
         workerScope: {
           scopes: {
             web: { userAgent: "Firefox/120" },
-            shared: null, // Not available
+            shared: null,
           },
         },
       };
 
       const signals = detectCrossFieldAnomalies({} as Fingerprint, raw);
 
-      // Only navigator vs dedicated worker
       expect(signals).toHaveLength(1);
       expect(signals[0].evidence.fields).toContain("dedicatedWorker.userAgent");
     });
@@ -292,14 +283,13 @@ describe("detectCrossFieldAnomalies", () => {
         workerScope: {
           scopes: {
             web: { userAgent: "Firefox/120" },
-            service: "unavailable", // Blocked
+            service: "unavailable",
           },
         },
       };
 
       const signals = detectCrossFieldAnomalies({} as Fingerprint, raw);
 
-      // Only navigator vs dedicated worker
       expect(signals).toHaveLength(1);
       expect(signals[0].evidence.fields).toContain("dedicatedWorker.userAgent");
     });
@@ -313,7 +303,6 @@ describe("detectCrossFieldAnomalies", () => {
         },
         workerScope: {
           userAgent: "Firefox/120",
-          // No scopes property - legacy format
         },
       };
 
@@ -327,7 +316,7 @@ describe("detectCrossFieldAnomalies", () => {
       const raw = {
         navigator: { userAgent: "Chrome/120" },
         workerScope: {
-          userAgent: "TopLevel/1.0", // Should be ignored
+          userAgent: "TopLevel/1.0",
           scopes: {
             web: { userAgent: "Firefox/120" },
           },
@@ -419,12 +408,11 @@ describe("detectCrossFieldAnomalies", () => {
         navigator: { userAgent: "Chrome/120" },
         workerScope: {
           scopes: {
-            web: { platform: "Win32" }, // No userAgent
+            web: { platform: "Win32" },
           },
         },
       };
 
-      // No overlapping fields to compare
       const signals = detectCrossFieldAnomalies({} as Fingerprint, raw);
       expect(signals).toHaveLength(0);
     });
@@ -439,7 +427,6 @@ describe("detectCrossFieldAnomalies", () => {
           scopes: {
             web: {
               userAgent: "Firefox/120",
-              // platform missing
             },
           },
         },
@@ -447,7 +434,6 @@ describe("detectCrossFieldAnomalies", () => {
 
       const signals = detectCrossFieldAnomalies({} as Fingerprint, raw);
 
-      // Only userAgent mismatch should be detected
       expect(signals).toHaveLength(1);
       expect(signals[0].evidence.fields).toContain("navigator.userAgent");
     });
@@ -522,7 +508,6 @@ describe("detectCrossFieldAnomalies", () => {
 
       const signals = detectCrossFieldAnomalies({} as Fingerprint, raw);
 
-      // Should only detect platform mismatch (userAgent undefined in one)
       expect(signals).toHaveLength(1);
       expect(signals[0].evidence.fields).toContain("navigator.platform");
     });
@@ -530,7 +515,6 @@ describe("detectCrossFieldAnomalies", () => {
 
   describe("real payload structure", () => {
     it("should work with actual ms-argus-web payload structure", () => {
-      // Based on actual payload from S3 archive
       const raw = {
         navigator: {
           userAgent:
@@ -566,7 +550,6 @@ describe("detectCrossFieldAnomalies", () => {
 
       const signals = detectCrossFieldAnomalies({} as Fingerprint, raw);
 
-      // All values match - should be clean
       expect(signals).toHaveLength(0);
     });
 
@@ -593,7 +576,6 @@ describe("detectCrossFieldAnomalies", () => {
 
       const signals = detectCrossFieldAnomalies({} as Fingerprint, raw);
 
-      // All 3 fields mismatch between navigator and dedicated worker
       expect(signals).toHaveLength(3);
       expect(signals.map((s) => s.severity).sort()).toEqual([0.7, 0.75, 0.8]);
     });

@@ -1,5 +1,3 @@
-// src/services/profile/drift-detection.ts
-// AR-120: Extracted drift detection logic from profile-service.ts
 import { DeviceProfile, Fingerprint } from "./types";
 
 /**
@@ -10,12 +8,10 @@ export function hasSignificantDrift(
   existing: DeviceProfile,
   incoming: Fingerprint,
 ): boolean {
-  // Major drift: stable hash changed
   if (existing.stable_hash !== incoming.stable_hash) {
     return true;
   }
 
-  // Count how many signals have changed
   let changedSignals = 0;
 
   if (existing.canvas_hash !== incoming.canvas_hash) changedSignals++;

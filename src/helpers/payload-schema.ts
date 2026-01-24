@@ -1,7 +1,3 @@
-// src/helpers/payload-schema.ts
-// V3 Payload Schema - Clean schema matching the current web payload structure
-// Includes JSON Schema for middy validator middleware
-
 /**
  * V3 Payload structure from ms-argus-web
  *
@@ -11,8 +7,6 @@
  * - device: detailed device fingerprint data (nested objects)
  * - sigint: network intelligence (tlsFingerprint, tcpProbe, stun, faviconCache)
  */
-
-// ==================== TYPESCRIPT TYPES ====================
 
 export interface PayloadIdentifiers {
   session_id: string;
@@ -113,8 +107,6 @@ export interface ArgusPayload {
   sigint?: PayloadSigint;
 }
 
-// ==================== JSON SCHEMA FOR MIDDY VALIDATOR ====================
-
 /**
  * JSON Schema for payload validation via middy validator
  *
@@ -203,8 +195,6 @@ export const payloadJsonSchema = {
   },
 } as const;
 
-// ==================== HELPER FUNCTIONS ====================
-
 /**
  * Extract session_id from a validated payload
  */
@@ -237,8 +227,6 @@ export function isArgusPayload(input: unknown): input is ArgusPayload {
     typeof obj.device === "object"
   );
 }
-
-// ==================== SESSION RESPONSE TYPES ====================
 
 export interface SessionResponseIdentifiers {
   session_id: string;
@@ -277,35 +265,17 @@ export interface SessionResponse {
  * Validate a session response object
  * Throws if invalid
  */
-function requireObject(
-  obj: Record<string, unknown>,
-  field: string,
-): Record<string, unknown> {
-  const val = obj[field];
-  if (!val || typeof val !== "object") {
-    throw new Error(`Invalid response: missing ${field}`);
-  }
-  return val as Record<string, unknown>;
-}
-
-function requireString(
-  obj: Record<string, unknown>,
-  field: string,
-  path: string,
-): void {
-  if (!obj[field] || typeof obj[field] !== "string") {
-    throw new Error(`Invalid response: missing ${path}`);
-  }
-}
-
-function requireType(
+function requireField(
   obj: Record<string, unknown>,
   field: string,
   type: string,
-  path: string,
+  path?: string,
 ): void {
-  if (typeof obj[field] !== type) {
-    throw new Error(`Invalid response: missing ${path}`);
+  const val = obj[field];
+  if (
+    type === "object" ? !val || typeof val !== "object" : typeof val !== type
+  ) {
+    throw new Error(`Invalid response: missing ${path ?? field}`);
   }
 }
 
@@ -315,18 +285,21 @@ export function validateSessionResponse(response: unknown): SessionResponse {
   }
   const obj = response as Record<string, unknown>;
 
-  const ids = requireObject(obj, "identifiers");
-  requireString(ids, "session_id", "session_id");
-  requireString(ids, "device_id", "device_id");
+  requireField(obj, "identifiers", "object");
+  const ids = obj.identifiers as Record<string, unknown>;
+  requireField(ids, "session_id", "string");
+  requireField(ids, "device_id", "string");
 
-  const analysis = requireObject(obj, "analysis");
-  requireType(analysis, "status", "string", "analysis.status");
-  requireType(analysis, "confidence", "number", "analysis.confidence");
+  requireField(obj, "analysis", "object");
+  const analysis = obj.analysis as Record<string, unknown>;
+  requireField(analysis, "status", "string", "analysis.status");
+  requireField(analysis, "confidence", "number", "analysis.confidence");
 
-  const hashes = requireObject(obj, "hashes");
-  requireString(hashes, "stable", "hashes.stable");
-  requireString(hashes, "fuzzy", "hashes.fuzzy");
+  requireField(obj, "hashes", "object");
+  const hashes = obj.hashes as Record<string, unknown>;
+  requireField(hashes, "stable", "string", "hashes.stable");
+  requireField(hashes, "fuzzy", "string", "hashes.fuzzy");
 
-  requireObject(obj, "device");
+  requireField(obj, "device", "object");
   return response as SessionResponse;
 }

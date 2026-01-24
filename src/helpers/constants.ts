@@ -1,24 +1,14 @@
-// src/helpers/constants.ts
-
-// ==================== CACHE & TTL CONSTANTS ====================
-
 /** Cache duration for AWS Secrets: 15 minutes (900,000ms) */
 export const KEY_CACHE_DURATION: number = 1000 * 60 * 15;
 
 /** Cache duration for API Keys: 5 minutes (300,000ms) */
 export const API_KEYS_CACHE_TTL: number = 1000 * 60 * 5;
 
-// ==================== FNV-1A HASH CONSTANTS ====================
-// Used for fast idempotency key generation and request deduplication
-// See: https://en.wikipedia.org/wiki/Fowler%E2%80%93Noll%E2%80%93Vo_hash_function
-
 /** FNV-1a 32-bit offset basis (standard value) */
 export const FNV1A_OFFSET_BASIS = 2166136261;
 
 /** FNV-1a 32-bit prime (standard value) */
 export const FNV1A_PRIME = 16777619;
-
-// ==================== MATCHING SERVICE CONSTANTS ====================
 
 /** Session cache TTL in DynamoDB: 15 minutes (900 seconds) */
 export const SESSION_TTL_SECONDS = 900;
@@ -47,8 +37,6 @@ export const PRIVACY_BROWSER_PENALTY = 0.15;
 /** Confidence penalty for private/incognito browsing mode */
 export const PRIVATE_BROWSING_PENALTY = 0.1;
 
-// ==================== PROFILE SERVICE CONSTANTS ====================
-
 /** Profile TTL in DynamoDB: 60 days */
 export const PROFILE_TTL_DAYS = 60;
 
@@ -72,8 +60,6 @@ export const IP_UA_ANCHOR_VALIDITY_SECONDS = 180;
 /** Mutation gate TTL: 1 hour (3600 seconds) - prevents rapid repeated writes */
 export const MUTATION_GATE_TTL_SECONDS = 3600;
 
-// ==================== DEDUPLICATION CACHE CONSTANTS ====================
-
 /** Max entries in request deduplication LRU cache */
 export const DEDUPE_CACHE_MAX_ENTRIES = 30_000;
 
@@ -81,8 +67,8 @@ export const DEDUPE_CACHE_MAX_ENTRIES = 30_000;
 export const DEDUPE_CACHE_TTL_MS = 30_000;
 
 export const AWS_SECRETS_REQUIRED_KEYS: string[] = [
-  "ENCRYPTION_KEY", // AES-GCM key for TCP blob decryption
-  "HMAC_KEY", // HMAC key for signature validation
+  "ENCRYPTION_KEY",
+  "HMAC_KEY",
 ];
 
 export const ERROR_STRINGS = {
@@ -92,10 +78,6 @@ export const ERROR_STRINGS = {
   CANNOT_DECRYPT: "Cannot Decrypt Payload",
   CANNOT_VERIFY_SIGNATURE: "Cannot Verify Signature",
 };
-
-// ==================== SIMHASH LSH CONSTANTS (Tier 1.5) ====================
-// SimHash Locality-Sensitive Hashing for same-browser drift detection
-// Uses fuzzy_hash field which is already computed in production
 
 /**
  * SimHash LSH Configuration

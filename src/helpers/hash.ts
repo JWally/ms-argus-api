@@ -1,6 +1,3 @@
-// src/helpers/hash.ts
-// Single source of truth for hash functions
-
 import { FNV1A_OFFSET_BASIS, FNV1A_PRIME } from "./constants";
 import type { FuzzyMatchInfo } from "../types/matching";
 
@@ -53,7 +50,6 @@ export function fnv1aNum(str: string): number {
  * @returns Number of differing bits (0-64), or -1 if invalid
  */
 export function hammingDistance(hash1: string, hash2: string): number {
-  // Normalize
   const h1 = hash1.replace(/^0x/i, "").toLowerCase();
   const h2 = hash2.replace(/^0x/i, "").toLowerCase();
 

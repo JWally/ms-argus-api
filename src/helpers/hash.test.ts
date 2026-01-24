@@ -1,4 +1,3 @@
-// src/helpers/hash.test.ts
 import { describe, it, expect } from "vitest";
 import {
   fnv1a,
@@ -67,7 +66,6 @@ describe("fnv1aNum", () => {
   });
 });
 
-// AR-210: Tests for hammingDistance (consolidated from bucket-keys.ts to hash.ts)
 describe("hammingDistance", () => {
   it("should return 0 for identical hashes", () => {
     expect(hammingDistance("0123456789abcdef", "0123456789abcdef")).toBe(0);
@@ -96,7 +94,6 @@ describe("hammingDistance", () => {
   });
 });
 
-// AR-210: Tests for computeFuzzyMatchInfo (consolidated from tier modules to hash.ts)
 describe("computeFuzzyMatchInfo", () => {
   it("should return correct hamming_distance and similarity for two valid hashes", () => {
     // 000f vs 0000 in first band = 4 bits different

@@ -1,5 +1,3 @@
-// src/handlers/cardinality-recalc.ts
-// Daily Lambda to recalculate Tier2 bucket cardinalities
 // Fixes drift from TTL-expired devices (ADD only increments, never decrements)
 import { ScheduledHandler } from "aws-lambda";
 import { Logger } from "@aws-lambda-powertools/logger";
@@ -29,16 +27,13 @@ function getCardinalityRecalcEnv(): CardinalityRecalcEnvConfig {
   };
 }
 
-// Validate environment variables at module load (cold start)
 const envConfig: CardinalityRecalcEnvConfig = getCardinalityRecalcEnv();
 
-// Powertools
 const logger = new Logger({ serviceName: envConfig.POWERTOOLS_SERVICE_NAME });
 const metrics = new Metrics({
   namespace: envConfig.POWERTOOLS_METRICS_NAMESPACE,
 });
 
-// AWS SDK client (reused across invocations)
 const dynamodb = new DynamoDBClient({});
 
 /** Cardinality Recalculation Lambda Handler - triggered daily via EventBridge */

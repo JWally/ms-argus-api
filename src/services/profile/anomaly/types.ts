@@ -1,6 +1,3 @@
-// src/services/profile/anomaly/types.ts
-// AR-141: Anomaly detection types - minimal structure for Phase 1
-
 /**
  * Type of anomaly detected
  */
@@ -8,7 +5,6 @@ export type AnomalyType = "CROSS_FIELD" | "NETWORK" | "HARDWARE" | "IDENTITY";
 
 /**
  * Anomaly codes as const object for type-safe lookup
- * Uses const assertions to catch typos at compile time
  */
 export const AnomalyCodes = {
   // Cross-field anomalies

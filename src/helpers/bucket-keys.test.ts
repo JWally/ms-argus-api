@@ -1,6 +1,3 @@
-// src/helpers/bucket-keys.test.ts
-// AR-117: Tests for shared bucket key utilities
-// AR-134: Tenant removed from all bucket key functions
 import { describe, it, expect } from "vitest";
 import {
   buildBucketKeys,
@@ -68,7 +65,6 @@ describe("buildBucketKeys", () => {
     expect(keys).toHaveLength(3);
   });
 
-  // AR-80: Structural tier2 bucket tests
   it("should build maths_window bucket key", () => {
     const fingerprint: Fingerprint = {
       maths_hash: "maths123abc",
@@ -102,7 +98,6 @@ describe("buildBucketKeys", () => {
 
   it("should build all 6 bucket types when all signals present", () => {
     const fingerprint: Fingerprint = {
-      // Original 3 bucket signals
       ip_address: "10.0.0.1",
       ja4: "ja4hash",
       gpu_renderer: "GPU",
@@ -110,7 +105,6 @@ describe("buildBucketKeys", () => {
       timezone: "UTC",
       audio_hash: "audio",
       canvas_hash: "canvas",
-      // AR-80: Structural signals
       maths_hash: "maths123",
       window_features_hash: "winfeatures456",
       html_element_hash: "html789",
@@ -131,7 +125,6 @@ describe("buildBucketKeys", () => {
   });
 });
 
-// AR-210: buildTier2BucketKeys alias removed - only buildBucketKeys exists
 describe("buildTier2BucketKeys alias removed", () => {
   it("should not export buildTier2BucketKeys", async () => {
     const bucketKeys = await import("./bucket-keys");
@@ -334,9 +327,7 @@ describe("buildSessionAnchorKey", () => {
     const key = buildSessionAnchorKey(fingerprint);
 
     expect(key).not.toBeNull();
-    // Should NOT contain the raw user agent string
     expect(key).not.toContain(userAgent);
-    // Should contain the fnv1a hash of user agent
     const expectedHash = fnv1a(userAgent);
     expect(key).toContain(expectedHash);
   });
@@ -411,9 +402,7 @@ describe("buildIpUaAnchorKey", () => {
     const key = buildIpUaAnchorKey(fingerprint);
 
     expect(key).not.toBeNull();
-    // Should NOT contain screen dims
     expect(key).not.toContain("1920x1080");
-    // Should only have 3 parts (no screen)
     expect(key!.split("#")).toHaveLength(3);
   });
 
@@ -427,9 +416,7 @@ describe("buildIpUaAnchorKey", () => {
     const key = buildIpUaAnchorKey(fingerprint);
 
     expect(key).not.toBeNull();
-    // Should NOT contain the raw user agent string
     expect(key).not.toContain(userAgent);
-    // Should contain the fnv1a hash of user agent
     const expectedHash = fnv1a(userAgent);
     expect(key).toContain(expectedHash);
   });
@@ -470,7 +457,6 @@ describe("parity: session anchor vs ip_ua anchor", () => {
     expect(sessionKey).not.toBeNull();
     expect(ipUaKey).not.toBeNull();
 
-    // Extract UA hash from both keys
     const sessionParts = sessionKey!.split("#");
     const ipUaParts = ipUaKey!.split("#");
 
@@ -504,7 +490,6 @@ describe("edge cases", () => {
     };
     const keys = buildBucketKeys(fingerprint);
     expect(keys).toHaveLength(1);
-    // Key will contain the hash characters as-is
     expect(keys[0]).toBe("ip_ja4#192.168.1.1#ja4#with#hashes");
   });
 

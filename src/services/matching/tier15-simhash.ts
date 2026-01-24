@@ -1,7 +1,3 @@
-// src/services/matching/tier15-simhash.ts
-// SimHash LSH matching tier for same-browser drift detection
-// Uses fuzzy_hash field with locality-sensitive hashing for efficient similarity search
-
 import { DynamoDBClient, QueryCommand } from "@aws-sdk/client-dynamodb";
 import { unmarshall } from "@aws-sdk/util-dynamodb";
 import { Logger } from "@aws-lambda-powertools/logger";
@@ -23,17 +19,11 @@ const metrics = new Metrics({
   namespace: process.env.POWERTOOLS_METRICS_NAMESPACE || "Argus",
 });
 
-/**
- * Dependencies for Tier 1.5 SimHash operations
- */
 export interface Tier15SimHashDeps {
   dynamodb: DynamoDBClient;
   tier2BucketsTable: string;
 }
 
-/**
- * Candidate entry from band query with inline hash
- */
 interface BandCandidate {
   deviceId: string;
   fuzzyHash: string;
@@ -41,9 +31,6 @@ interface BandCandidate {
   bandIndex: number;
 }
 
-/**
- * Aggregated candidate with match count and scoring data
- */
 interface ScoredCandidate {
   deviceId: string;
   fuzzyHash: string;
@@ -218,9 +205,6 @@ export async function tier15SimHashMatch(
   }
 }
 
-/**
- * Query a single band partition with LIMIT
- */
 async function queryBand(
   deps: Tier15SimHashDeps,
   band: SimHashBandKey,
@@ -232,12 +216,10 @@ async function queryBand(
       ExpressionAttributeValues: {
         ":bk": { S: band.pk },
       },
-      // Project only what we need: SK (has device_id + timestamp), fuzzy_hash, last_seen
       ProjectionExpression: "device_id, fuzzy_hash, last_seen",
-      // Per-band LIMIT - critical for preventing hot-band explosion
+      // Per-band LIMIT prevents hot-band explosion
       Limit: SIMHASH_CONFIG.PER_BAND_LIMIT,
-      // ScanIndexForward: true means ascending SK order
-      // With inverted timestamp SK, this returns newest first
+      // Inverted timestamp SK means ascending order returns newest first
       ScanIndexForward: true,
     }),
   );
@@ -248,7 +230,6 @@ async function queryBand(
     for (const item of result.Items) {
       const unmarshalled = unmarshall(item);
 
-      // Parse SK to get device_id and timestamp
       const sk = unmarshalled.device_id as string;
       const parsed = parseSimHashBandSK(sk);
 
@@ -284,7 +265,6 @@ function aggregateCandidates(
     const existing = aggregated.get(c.deviceId);
     if (existing) {
       existing.bandMatches.add(c.bandIndex);
-      // Keep most recent last_seen
       existing.lastSeen = Math.max(existing.lastSeen, c.lastSeen);
     } else {
       aggregated.set(c.deviceId, {
@@ -295,7 +275,6 @@ function aggregateCandidates(
     }
   }
 
-  // Filter to candidates with 2+ band matches
   for (const [deviceId, data] of aggregated) {
     if (data.bandMatches.size < SIMHASH_CONFIG.MIN_BANDS_MATCH) {
       aggregated.delete(deviceId);
@@ -333,7 +312,6 @@ function scoreCandidates(
     }
   }
 
-  // Sort by Hamming distance (lower is better), then by recency (newer is better)
   scored.sort((a, b) => {
     if (a.hammingDistance !== b.hammingDistance) {
       return a.hammingDistance - b.hammingDistance;
@@ -341,7 +319,6 @@ function scoreCandidates(
     return b.lastSeen - a.lastSeen;
   });
 
-  // Cap candidates
   return scored.slice(0, maxCandidates);
 }
 
@@ -359,19 +336,16 @@ function computeConfidence(
   bandMatches: number,
 ): number {
   const baseConfidence = 0.9 - hammingDistance * 0.05;
-  const bandBonus = Math.min((bandMatches - 2) * 0.02, 0.04); // Max 4% bonus for 4 bands
+  const bandBonus = Math.min((bandMatches - 2) * 0.02, 0.04);
   return Math.max(0.6, Math.min(0.95, baseConfidence + bandBonus));
 }
 
-/**
- * Simple hash code for rollout bucketing
- */
 function hashCode(str: string): number {
   let hash = 0;
   for (let i = 0; i < str.length; i++) {
     const char = str.charCodeAt(i);
     hash = (hash << 5) - hash + char;
-    hash = hash & hash; // Convert to 32-bit integer
+    hash = hash & hash;
   }
   return hash;
 }

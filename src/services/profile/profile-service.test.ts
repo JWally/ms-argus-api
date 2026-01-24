@@ -1,5 +1,3 @@
-// src/services/profile/profile-service.test.ts
-// AR-52: Updated to use DynamoCacheService mock instead of Redis
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { mockClient } from "aws-sdk-client-mock";
 import {
@@ -17,11 +15,16 @@ import {
 } from "./profile-service";
 import { Fingerprint, DeviceProfile, ProfileUpdatePayload } from "./types";
 import { DynamoCacheService } from "../cache";
+import { hasSignificantDrift } from "./drift-detection";
+import {
+  detectBotSignals,
+  computeFlags,
+  computeRiskScore,
+} from "./flag-computation";
+import { buildTier1IndexEntries } from "./index-writers";
 
-// Mock AWS SDK client
 const dynamoMock = mockClient(DynamoDBClient);
 
-// Test configuration
 const testConfig: ProfileServiceConfig = {
   profilesTable: "test-profiles",
   tier1IndexTable: "test-tier1-index",
@@ -31,12 +34,11 @@ const testConfig: ProfileServiceConfig = {
   mutationGateTtlSeconds: 3600,
 };
 
-// Mock DynamoCacheService for testing
 function createMockCacheService() {
   const gates = new Set<string>();
   return {
     checkSessionCache: vi.fn().mockResolvedValue(null),
-    writeSessionCache: vi.fn().mockResolvedValue(true), // AR-170: Returns boolean
+    writeSessionCache: vi.fn().mockResolvedValue(true),
     tryAcquireMutationGate: vi
       .fn()
       .mockImplementation(async (deviceId: string) => {
@@ -46,7 +48,6 @@ function createMockCacheService() {
         gates.add(deviceId);
         return true;
       }),
-    // Helper for tests to pre-set gates
     _setGate: (deviceId: string) => gates.add(deviceId),
     _clearGates: () => gates.clear(),
   } as unknown as DynamoCacheService & {
@@ -61,16 +62,10 @@ describe("ProfileService", () => {
   let service: ProfileService;
 
   beforeEach(() => {
-    // Reset mocks
     dynamoMock.reset();
-
-    // Create fresh cache mock
     mockCache = createMockCacheService();
-
-    // Create real client (mocked by aws-sdk-client-mock)
     dynamodb = new DynamoDBClient({});
 
-    // Create service with test dependencies
     const deps: ProfileServiceDeps = {
       dynamodb,
       cache: mockCache,
@@ -84,14 +79,12 @@ describe("ProfileService", () => {
       const result = await service.tryAcquireMutationGate("dev_gate_test");
       expect(result).toBe(true);
 
-      // Verify cache service was called
       expect(mockCache.tryAcquireMutationGate).toHaveBeenCalledWith(
         "dev_gate_test",
       );
     });
 
     it("should fail to acquire gate when key already exists", async () => {
-      // Pre-set the gate
       mockCache._setGate("dev_gate_held");
 
       const result = await service.tryAcquireMutationGate("dev_gate_held");
@@ -99,14 +92,12 @@ describe("ProfileService", () => {
     });
 
     it("should be atomic - only one concurrent call succeeds", async () => {
-      // Simulate 100 concurrent calls for same device (AR-27 acceptance criteria)
       const results = await Promise.all(
         Array.from({ length: 100 }, () =>
           service.tryAcquireMutationGate("dev_race_condition"),
         ),
       );
 
-      // Exactly one should succeed
       const successCount = results.filter((r) => r === true).length;
       expect(successCount).toBe(1);
     });
@@ -167,38 +158,38 @@ describe("ProfileService", () => {
 
     it("should return true when stable_hash changes (major drift)", () => {
       const incoming: Fingerprint = {
-        stable_hash: "different_hash", // Changed!
+        stable_hash: "different_hash",
         canvas_hash: "canvas456",
         webgl_hash: "webgl789",
       };
 
-      expect(service.hasSignificantDrift(baseProfile, incoming)).toBe(true);
+      expect(hasSignificantDrift(baseProfile, incoming)).toBe(true);
     });
 
     it("should return false when only one signal changes", () => {
       const incoming: Fingerprint = {
         stable_hash: "stable123",
-        canvas_hash: "different_canvas", // 1 change
+        canvas_hash: "different_canvas",
         webgl_hash: "webgl789",
         audio_hash: "audio012",
         gpu_renderer: "Intel UHD",
         screen_dims: "1920x1080",
       };
 
-      expect(service.hasSignificantDrift(baseProfile, incoming)).toBe(false);
+      expect(hasSignificantDrift(baseProfile, incoming)).toBe(false);
     });
 
     it("should return true when 2+ signals change", () => {
       const incoming: Fingerprint = {
         stable_hash: "stable123",
-        canvas_hash: "different_canvas", // Change 1
-        webgl_hash: "different_webgl", // Change 2
+        canvas_hash: "different_canvas",
+        webgl_hash: "different_webgl",
         audio_hash: "audio012",
         gpu_renderer: "Intel UHD",
         screen_dims: "1920x1080",
       };
 
-      expect(service.hasSignificantDrift(baseProfile, incoming)).toBe(true);
+      expect(hasSignificantDrift(baseProfile, incoming)).toBe(true);
     });
 
     it("should return true when 3+ signals change", () => {
@@ -209,7 +200,7 @@ describe("ProfileService", () => {
         audio_hash: "different3",
       };
 
-      expect(service.hasSignificantDrift(baseProfile, incoming)).toBe(true);
+      expect(hasSignificantDrift(baseProfile, incoming)).toBe(true);
     });
 
     it("should return false when fingerprint is identical", () => {
@@ -222,7 +213,7 @@ describe("ProfileService", () => {
         screen_dims: "1920x1080",
       };
 
-      expect(service.hasSignificantDrift(baseProfile, incoming)).toBe(false);
+      expect(hasSignificantDrift(baseProfile, incoming)).toBe(false);
     });
   });
 
@@ -231,21 +222,13 @@ describe("ProfileService", () => {
 
     it("should return empty array when no hashes present", () => {
       const fingerprint: Fingerprint = {};
-      const entries = service.buildTier1IndexEntries(
-        "dev_123",
-        fingerprint,
-        ttl,
-      );
+      const entries = buildTier1IndexEntries("dev_123", fingerprint, ttl);
       expect(entries).toEqual([]);
     });
 
     it("should build evercookie entry", () => {
       const fingerprint: Fingerprint = { evercookie_id: "cookie123" };
-      const entries = service.buildTier1IndexEntries(
-        "dev_123",
-        fingerprint,
-        ttl,
-      );
+      const entries = buildTier1IndexEntries("dev_123", fingerprint, ttl);
 
       expect(entries).toHaveLength(1);
       expect(entries[0]).toEqual({
@@ -255,14 +238,9 @@ describe("ProfileService", () => {
       });
     });
 
-    // AR-81: Test for sigint_id (third-party cookie)
     it("should build sigint_id entry", () => {
       const fingerprint: Fingerprint = { sigint_id: "abc123-def456-789" };
-      const entries = service.buildTier1IndexEntries(
-        "dev_123",
-        fingerprint,
-        ttl,
-      );
+      const entries = buildTier1IndexEntries("dev_123", fingerprint, ttl);
 
       expect(entries).toHaveLength(1);
       expect(entries[0]).toEqual({
@@ -272,15 +250,10 @@ describe("ProfileService", () => {
       });
     });
 
-    // AR-64: Test for ECDSA public key
     it("should build public_key entry", () => {
       const publicKey = "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE...base64...";
       const fingerprint: Fingerprint = { public_key: publicKey };
-      const entries = service.buildTier1IndexEntries(
-        "dev_123",
-        fingerprint,
-        ttl,
-      );
+      const entries = buildTier1IndexEntries("dev_123", fingerprint, ttl);
 
       expect(entries).toHaveLength(1);
       expect(entries[0]).toEqual({
@@ -292,11 +265,7 @@ describe("ProfileService", () => {
 
     it("should build stable_hash entry", () => {
       const fingerprint: Fingerprint = { stable_hash: "stable456" };
-      const entries = service.buildTier1IndexEntries(
-        "dev_123",
-        fingerprint,
-        ttl,
-      );
+      const entries = buildTier1IndexEntries("dev_123", fingerprint, ttl);
 
       expect(entries).toHaveLength(1);
       expect(entries[0].hash_key).toBe("stable#stable456");
@@ -306,33 +275,26 @@ describe("ProfileService", () => {
       const publicKey = "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE...";
       const fingerprint: Fingerprint = {
         evercookie_id: "cookie",
-        sigint_id: "sigint-uuid-123", // AR-81
-        public_key: publicKey, // AR-64
+        sigint_id: "sigint-uuid-123",
+        public_key: publicKey,
         stable_hash: "stable",
         fuzzy_hash: "fuzzy",
-        ja4: "ja4hash", // ja4 is in fingerprint but NOT indexed in Tier1 (AR-115)
+        ja4: "ja4hash",
       };
 
-      const entries = service.buildTier1IndexEntries(
-        "dev_123",
-        fingerprint,
-        ttl,
-      );
+      const entries = buildTier1IndexEntries("dev_123", fingerprint, ttl);
 
-      // AR-115: Now 5 entries - removed standalone ja4# indexing (not unique enough)
+      // 5 entries - ja4 is not indexed in Tier1 (not unique enough)
       expect(entries).toHaveLength(5);
       const hashKeys = entries.map((e) => e.hash_key);
       expect(hashKeys).toContain("evercookie#cookie");
-      expect(hashKeys).toContain("sigint#sigint-uuid-123"); // AR-81
-      expect(hashKeys).toContain(`pubkey#${publicKey}`); // AR-64
+      expect(hashKeys).toContain("sigint#sigint-uuid-123");
+      expect(hashKeys).toContain(`pubkey#${publicKey}`);
       expect(hashKeys).toContain("stable#stable");
       expect(hashKeys).toContain("fuzzy#fuzzy");
-      // AR-115: ja4 is NOT indexed standalone - only used in Tier2 ip_ja4 buckets
       expect(hashKeys).not.toContain("ja4#ja4hash");
     });
   });
-
-  // AR-120: buildTier2BucketKeys tests removed - now comprehensively tested in bucket-keys.test.ts (AR-117)
 
   describe("updateProfile", () => {
     it("should create new profile with defaults", async () => {
@@ -356,11 +318,10 @@ describe("ProfileService", () => {
       const putCall = calls[0];
       expect(putCall.args[0].input.TableName).toBe(testConfig.profilesTable);
 
-      // Verify the item has expected fields
       const item = putCall.args[0].input.Item;
       expect(item?.device_id?.S).toBe("dev_new");
       expect(item?.stable_hash?.S).toBe("stable123");
-      expect(item?.risk_score?.N).toBe("0.5"); // Default for new
+      expect(item?.risk_score?.N).toBe("0.5");
       expect(item?.request_count?.N).toBe("1");
     });
 
@@ -369,8 +330,8 @@ describe("ProfileService", () => {
 
       const existingProfile: DeviceProfile = {
         device_id: "dev_existing",
-        risk_score: 0.8, // High risk (historical)
-        flags: ["verified", "returning_user"], // Positive flags that should be preserved
+        risk_score: 0.8,
+        flags: ["verified", "returning_user"],
         first_seen_at: 1700000000000,
         last_seen_at: 1700100000000,
         request_count: 100,
@@ -388,13 +349,11 @@ describe("ProfileService", () => {
       const calls = dynamoMock.commandCalls(PutItemCommand);
       const item = calls[0].args[0].input.Item;
 
-      // Risk is now dynamically computed:
       // Base: 0.3 (returning) - 0.2 (verified) - 0.1 (returning_user) = 0.0
       // Blended: 0.0 * 0.7 + 0.8 * 0.3 = 0.24
       expect(parseFloat(item?.risk_score?.N ?? "0")).toBeCloseTo(0.24, 2);
-      // Positive flags (verified, returning_user) should be preserved
       expect(item?.flags?.L).toHaveLength(2);
-      expect(item?.request_count?.N).toBe("101"); // Incremented
+      expect(item?.request_count?.N).toBe("101");
     });
 
     it("should increment request_count", async () => {
@@ -425,74 +384,6 @@ describe("ProfileService", () => {
     });
   });
 
-  describe("updateTier1Indexes", () => {
-    it("should batch write all index entries", async () => {
-      dynamoMock.on(BatchWriteItemCommand).resolves({});
-
-      const fingerprint: Fingerprint = {
-        evercookie_id: "cookie",
-        stable_hash: "stable",
-        fuzzy_hash: "fuzzy",
-      };
-
-      const count = await service.updateTier1Indexes("dev_123", fingerprint);
-
-      expect(count).toBe(3);
-
-      const calls = dynamoMock.commandCalls(BatchWriteItemCommand);
-      expect(calls).toHaveLength(1);
-
-      // Verify batch contains 3 items for correct table
-      const requestItems = calls[0].args[0].input.RequestItems;
-      expect(requestItems).toBeDefined();
-      expect(requestItems?.[testConfig.tier1IndexTable]).toHaveLength(3);
-    });
-
-    it("should return 0 when no indexes to write", async () => {
-      const count = await service.updateTier1Indexes("dev_123", {});
-      expect(count).toBe(0);
-
-      // Verify no BatchWriteItemCommand was called
-      const calls = dynamoMock.commandCalls(BatchWriteItemCommand);
-      expect(calls).toHaveLength(0);
-    });
-
-    it("should retry on unprocessed items", async () => {
-      // First call returns unprocessed items
-      dynamoMock
-        .on(BatchWriteItemCommand)
-        .resolvesOnce({
-          UnprocessedItems: {
-            [testConfig.tier1IndexTable]: [
-              {
-                PutRequest: {
-                  Item: marshall({
-                    hash_key: "stable#stable",
-                    device_id: "dev_123",
-                    ttl: 1705000000,
-                  }),
-                },
-              },
-            ],
-          },
-        })
-        .resolves({}); // Second call succeeds
-
-      const fingerprint: Fingerprint = {
-        stable_hash: "stable",
-      };
-
-      const count = await service.updateTier1Indexes("dev_123", fingerprint);
-
-      expect(count).toBe(1);
-
-      // Should have made 2 calls (initial + retry)
-      const calls = dynamoMock.commandCalls(BatchWriteItemCommand);
-      expect(calls).toHaveLength(2);
-    });
-  });
-
-  // AR-150: Tests for tier-gated identity association
   describe("updateTier1IndexesWithEvidence", () => {
     it("should write all indexes when evidence is PUBLIC_KEY_MATCH (Tier 0.5)", async () => {
       dynamoMock.on(BatchWriteItemCommand).resolves({});
@@ -510,7 +401,6 @@ describe("ProfileService", () => {
         ["PUBLIC_KEY_MATCH"],
       );
 
-      // Should write all 4 indexes (pubkey, evercookie, stable, fuzzy)
       expect(count).toBe(4);
     });
 
@@ -529,7 +419,6 @@ describe("ProfileService", () => {
         ["STABLE_HASH_MATCH"],
       );
 
-      // Should write all 3 indexes (pubkey, stable, fuzzy)
       expect(count).toBe(3);
     });
 
@@ -547,7 +436,6 @@ describe("ProfileService", () => {
         ["SESSION_ANCHOR_BUCKET"],
       );
 
-      // Should write all 2 indexes (evercookie, stable)
       expect(count).toBe(2);
     });
 
@@ -568,10 +456,9 @@ describe("ProfileService", () => {
         ["IP_JA4_BUCKET"],
       );
 
-      // Should only write 2 indexes (stable, fuzzy) - NO identity indexes
+      // Only hash indexes (stable, fuzzy) - NO identity indexes
       expect(count).toBe(2);
 
-      // Verify only hash indexes were written
       const calls = dynamoMock.commandCalls(BatchWriteItemCommand);
       expect(calls).toHaveLength(1);
       const items =
@@ -598,7 +485,6 @@ describe("ProfileService", () => {
         ["GPU_SCREEN_TZ_BUCKET"],
       );
 
-      // Should only write 1 hash index - no identity index
       expect(count).toBe(1);
     });
 
@@ -612,10 +498,9 @@ describe("ProfileService", () => {
 
       const count = await service.updateTier1IndexesWithEvidence(
         "dev_123",
-        fingerprint, // No evidence codes
+        fingerprint,
       );
 
-      // Should write all 2 indexes for backward compatibility
       expect(count).toBe(2);
     });
 
@@ -630,10 +515,9 @@ describe("ProfileService", () => {
       const count = await service.updateTier1IndexesWithEvidence(
         "dev_123",
         fingerprint,
-        [], // Empty evidence codes
+        [],
       );
 
-      // Should write all indexes for backward compatibility
       expect(count).toBe(2);
     });
 
@@ -641,7 +525,6 @@ describe("ProfileService", () => {
       const fingerprint: Fingerprint = {
         public_key: "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE...",
         evercookie_id: "cookie123",
-        // No hash fields
       };
 
       const count = await service.updateTier1IndexesWithEvidence(
@@ -650,13 +533,12 @@ describe("ProfileService", () => {
         ["IP_JA4_BUCKET"],
       );
 
-      // Should write 0 indexes - no hash fields, identity blocked
       expect(count).toBe(0);
     });
   });
 
   describe("updateTier2Buckets", () => {
-    it("should use BatchWriteItem for reliability (AR-40)", async () => {
+    it("should use BatchWriteItem for reliability", async () => {
       dynamoMock.on(BatchWriteItemCommand).resolves({});
 
       const fingerprint: Fingerprint = {
@@ -668,7 +550,6 @@ describe("ProfileService", () => {
 
       expect(count).toBe(1);
 
-      // Filter BatchWriteItemCommand calls for tier2 buckets table only
       const calls = dynamoMock
         .commandCalls(BatchWriteItemCommand)
         .filter(
@@ -698,9 +579,8 @@ describe("ProfileService", () => {
 
       const count = await service.updateTier2Buckets("dev_123", fingerprint);
 
-      expect(count).toBe(2); // ip_ja4 and audio_canvas
+      expect(count).toBe(2);
 
-      // Should make single BatchWriteItem call with all entries
       const calls = dynamoMock
         .commandCalls(BatchWriteItemCommand)
         .filter(
@@ -714,7 +594,7 @@ describe("ProfileService", () => {
       expect(requestItems).toHaveLength(2);
     });
 
-    it("should set tier2 bucket TTL to 7 days (AR-39)", async () => {
+    it("should set tier2 bucket TTL to 7 days", async () => {
       dynamoMock.on(BatchWriteItemCommand).resolves({});
 
       const fingerprint: Fingerprint = {
@@ -732,7 +612,6 @@ describe("ProfileService", () => {
         );
       expect(calls).toHaveLength(1);
 
-      // Verify TTL is approximately 7 days from now
       const requestItems =
         calls[0].args[0].input.RequestItems?.[testConfig.tier2BucketsTable];
       const ttlValue = Number(requestItems?.[0].PutRequest?.Item?.ttl?.N);
@@ -744,8 +623,7 @@ describe("ProfileService", () => {
       expect(ttlValue).toBeLessThanOrEqual(expectedTtl + 5);
     });
 
-    it("should retry on unprocessed items (AR-40)", async () => {
-      // First call returns unprocessed items, second succeeds
+    it("should retry on unprocessed items", async () => {
       dynamoMock
         .on(BatchWriteItemCommand)
         .resolvesOnce({
@@ -772,7 +650,6 @@ describe("ProfileService", () => {
 
       await service.updateTier2Buckets("dev_123", fingerprint);
 
-      // Should have made 2 calls (initial + retry)
       const calls = dynamoMock
         .commandCalls(BatchWriteItemCommand)
         .filter(
@@ -784,18 +661,15 @@ describe("ProfileService", () => {
 
     it("should return 0 when no bucket keys to write", async () => {
       const fingerprint: Fingerprint = {
-        // No fields that generate bucket keys
         stable_hash: "abc",
       };
 
       const count = await service.updateTier2Buckets("dev_123", fingerprint);
 
       expect(count).toBe(0);
-      // No BatchWriteItem calls should be made
       expect(dynamoMock.commandCalls(BatchWriteItemCommand)).toHaveLength(0);
     });
 
-    // AR-56: Cardinality tracking tests
     it("should increment bucket cardinality counters", async () => {
       dynamoMock.on(BatchWriteItemCommand).resolves({});
       dynamoMock.on(UpdateItemCommand).resolves({});
@@ -809,11 +683,9 @@ describe("ProfileService", () => {
 
       await service.updateTier2Buckets("dev_123", fingerprint);
 
-      // Should make UpdateItemCommand calls for cardinality (one per bucket)
       const updateCalls = dynamoMock.commandCalls(UpdateItemCommand);
-      expect(updateCalls).toHaveLength(2); // ip_ja4 and audio_canvas buckets
+      expect(updateCalls).toHaveLength(2);
 
-      // Verify the update expression uses ADD for atomic increment
       for (const call of updateCalls) {
         expect(call.args[0].input.UpdateExpression).toContain(
           "ADD cardinality",
@@ -821,7 +693,6 @@ describe("ProfileService", () => {
         expect(call.args[0].input.ExpressionAttributeValues?.[":inc"]?.N).toBe(
           "1",
         );
-        // Verify stats item uses "_stats" as sort key
         expect(call.args[0].input.Key?.device_id?.S).toBe("_stats");
       }
     });
@@ -829,7 +700,6 @@ describe("ProfileService", () => {
 
   describe("processProfileUpdate", () => {
     it("should skip when mutation gate is active", async () => {
-      // Pre-set mutation gate
       mockCache._setGate("dev_gated");
 
       const payload: ProfileUpdatePayload = {
@@ -842,8 +712,6 @@ describe("ProfileService", () => {
 
       expect(result.skipped).toBe(true);
       expect(result.reason).toBe("mutation_gate");
-
-      // Verify no DynamoDB calls were made
       expect(dynamoMock.calls()).toHaveLength(0);
     });
 
@@ -868,8 +736,8 @@ describe("ProfileService", () => {
       const payload: ProfileUpdatePayload = {
         device_id: "dev_stable",
         fingerprint: {
-          stable_hash: "same_hash", // Same as existing
-          canvas_hash: "same_canvas", // Same as existing
+          stable_hash: "same_hash",
+          canvas_hash: "same_canvas",
         },
         timestamp: Date.now(),
       };
@@ -878,17 +746,15 @@ describe("ProfileService", () => {
 
       expect(result.skipped).toBe(true);
       expect(result.reason).toBe("no_drift");
-
-      // Verify cache service was called to acquire gate
       expect(mockCache.tryAcquireMutationGate).toHaveBeenCalledWith(
         "dev_stable",
       );
     });
 
     it("should perform full update for new device", async () => {
-      dynamoMock.on(GetItemCommand).resolves({ Item: undefined }); // No existing profile
+      dynamoMock.on(GetItemCommand).resolves({ Item: undefined });
       dynamoMock.on(PutItemCommand).resolves({});
-      dynamoMock.on(BatchWriteItemCommand).resolves({}); // For Tier1 indexes
+      dynamoMock.on(BatchWriteItemCommand).resolves({});
 
       const payload: ProfileUpdatePayload = {
         device_id: "dev_new",
@@ -904,18 +770,15 @@ describe("ProfileService", () => {
       const result = await service.processProfileUpdate(payload);
 
       expect(result.skipped).toBe(false);
-      // AR-115: Now 2 tier1 writes (stable_hash, evercookie_id) - ja4 no longer indexed standalone
       expect(result.tier1Writes).toBe(2);
-      expect(result.tier2Writes).toBe(1); // ip_ja4
-
-      // Verify mutation gate was acquired
+      expect(result.tier2Writes).toBe(1);
       expect(mockCache.tryAcquireMutationGate).toHaveBeenCalledWith("dev_new");
     });
 
     it("should perform full update when drift detected", async () => {
       const existingProfile: DeviceProfile = {
         device_id: "dev_drift",
-        stable_hash: "old_hash", // Will change
+        stable_hash: "old_hash",
         canvas_hash: "old_canvas",
         webgl_hash: "old_webgl",
         first_seen_at: 1700000000000,
@@ -931,12 +794,12 @@ describe("ProfileService", () => {
         Item: marshall(existingProfile),
       });
       dynamoMock.on(PutItemCommand).resolves({});
-      dynamoMock.on(BatchWriteItemCommand).resolves({}); // For Tier1 indexes
+      dynamoMock.on(BatchWriteItemCommand).resolves({});
 
       const payload: ProfileUpdatePayload = {
         device_id: "dev_drift",
         fingerprint: {
-          stable_hash: "new_hash", // Major drift!
+          stable_hash: "new_hash",
           canvas_hash: "new_canvas",
           webgl_hash: "new_webgl",
         },
@@ -946,7 +809,7 @@ describe("ProfileService", () => {
       const result = await service.processProfileUpdate(payload);
 
       expect(result.skipped).toBe(false);
-      expect(result.tier1Writes).toBe(1); // stable_hash
+      expect(result.tier1Writes).toBe(1);
     });
   });
 
@@ -956,7 +819,7 @@ describe("ProfileService", () => {
         gpu_renderer: "SwiftShader",
       };
 
-      const flags = service.detectBotSignals(fingerprint);
+      const flags = detectBotSignals(fingerprint);
 
       expect(flags).toContain("headless_browser");
       expect(flags).toContain("bot_detected");
@@ -967,7 +830,7 @@ describe("ProfileService", () => {
         screen_dims: "800x600",
       };
 
-      const flags = service.detectBotSignals(fingerprint);
+      const flags = detectBotSignals(fingerprint);
 
       expect(flags).toContain("bot_detected");
     });
@@ -977,7 +840,7 @@ describe("ProfileService", () => {
         user_agent: "Mozilla/5.0 (compatible; Googlebot/2.1)",
       };
 
-      const flags = service.detectBotSignals(fingerprint);
+      const flags = detectBotSignals(fingerprint);
 
       expect(flags).toContain("bot_detected");
     });
@@ -987,9 +850,8 @@ describe("ProfileService", () => {
         user_agent: "Mozilla/5.0 (compatible; Baiduspider/2.0)",
       };
 
-      const flags = service.detectBotSignals(fingerprint);
+      const flags = detectBotSignals(fingerprint);
 
-      // "spider" pattern in user_agent
       expect(flags).toContain("bot_detected");
     });
 
@@ -999,7 +861,7 @@ describe("ProfileService", () => {
         device_memory: 0.5,
       };
 
-      const flags = service.detectBotSignals(fingerprint);
+      const flags = detectBotSignals(fingerprint);
 
       expect(flags).toContain("bot_detected");
     });
@@ -1013,20 +875,19 @@ describe("ProfileService", () => {
         device_memory: 8,
       };
 
-      const flags = service.detectBotSignals(fingerprint);
+      const flags = detectBotSignals(fingerprint);
 
       expect(flags).toHaveLength(0);
     });
 
     it("should remove duplicate flags", () => {
       const fingerprint: Fingerprint = {
-        gpu_renderer: "SwiftShader", // triggers bot_detected
-        screen_dims: "800x600", // also triggers bot_detected
+        gpu_renderer: "SwiftShader",
+        screen_dims: "800x600",
       };
 
-      const flags = service.detectBotSignals(fingerprint);
+      const flags = detectBotSignals(fingerprint);
 
-      // Should only have one bot_detected
       const botDetectedCount = flags.filter((f) => f === "bot_detected").length;
       expect(botDetectedCount).toBe(1);
     });
@@ -1036,7 +897,10 @@ describe("ProfileService", () => {
     it("should set NEW_DEVICE flag for new devices", () => {
       const fingerprint: Fingerprint = {};
 
-      const flags = service.computeFlags(fingerprint, null, { isNewDevice: true, hasDrift: false });
+      const flags = computeFlags(fingerprint, null, {
+        isNewDevice: true,
+        hasDrift: false,
+      });
 
       expect(flags).toContain("new_device");
     });
@@ -1047,14 +911,17 @@ describe("ProfileService", () => {
         device_id: "d1",
         risk_score: 0.5,
         flags: [],
-        first_seen_at: Date.now() - 86400000, // 1 day ago
+        first_seen_at: Date.now() - 86400000,
         last_seen_at: Date.now() - 3600000,
         request_count: 10,
         updated_at: Date.now() - 3600000,
         ttl: Date.now() / 1000 + 86400,
       };
 
-      const flags = service.computeFlags(fingerprint, existingProfile, { isNewDevice: false, hasDrift: true });
+      const flags = computeFlags(fingerprint, existingProfile, {
+        isNewDevice: false,
+        hasDrift: true,
+      });
 
       expect(flags).toContain("fingerprint_mismatch");
     });
@@ -1066,14 +933,17 @@ describe("ProfileService", () => {
         device_id: "d1",
         risk_score: 0.5,
         flags: [],
-        first_seen_at: oneHourAgo, // 1 hour ago
+        first_seen_at: oneHourAgo,
         last_seen_at: Date.now() - 60000,
-        request_count: 100, // 100 requests in 1 hour = 100/hour (> 50 threshold)
+        request_count: 100,
         updated_at: Date.now() - 60000,
         ttl: Date.now() / 1000 + 86400,
       };
 
-      const flags = service.computeFlags(fingerprint, existingProfile, { isNewDevice: false, hasDrift: false });
+      const flags = computeFlags(fingerprint, existingProfile, {
+        isNewDevice: false,
+        hasDrift: false,
+      });
 
       expect(flags).toContain("rapid_requests");
     });
@@ -1084,14 +954,17 @@ describe("ProfileService", () => {
         device_id: "d1",
         risk_score: 0.3,
         flags: ["verified", "returning_user"],
-        first_seen_at: Date.now() - 86400000 * 30, // 30 days ago
+        first_seen_at: Date.now() - 86400000 * 30,
         last_seen_at: Date.now() - 3600000,
         request_count: 500,
         updated_at: Date.now() - 3600000,
         ttl: Date.now() / 1000 + 86400,
       };
 
-      const flags = service.computeFlags(fingerprint, existingProfile, { isNewDevice: false, hasDrift: false });
+      const flags = computeFlags(fingerprint, existingProfile, {
+        isNewDevice: false,
+        hasDrift: false,
+      });
 
       expect(flags).toContain("verified");
       expect(flags).toContain("returning_user");
@@ -1110,9 +983,11 @@ describe("ProfileService", () => {
         ttl: Date.now() / 1000 + 86400,
       };
 
-      const flags = service.computeFlags(fingerprint, existingProfile, { isNewDevice: false, hasDrift: false });
+      const flags = computeFlags(fingerprint, existingProfile, {
+        isNewDevice: false,
+        hasDrift: false,
+      });
 
-      // These negative flags should not be preserved (only re-detected if fingerprint triggers)
       expect(flags).not.toContain("suspicious_behavior");
     });
 
@@ -1132,19 +1007,22 @@ describe("ProfileService", () => {
         ttl: Date.now() / 1000 + 86400,
       };
 
-      const flags = service.computeFlags(fingerprint, existingProfile, { isNewDevice: false, hasDrift: true });
+      const flags = computeFlags(fingerprint, existingProfile, {
+        isNewDevice: false,
+        hasDrift: true,
+      });
 
       expect(flags).toContain("headless_browser");
       expect(flags).toContain("bot_detected");
       expect(flags).toContain("fingerprint_mismatch");
       expect(flags).toContain("rapid_requests");
-      expect(flags).toContain("verified"); // preserved positive flag
+      expect(flags).toContain("verified");
     });
   });
 
   describe("computeRiskScore", () => {
     it("should return base risk of 0.5 for new device", () => {
-      const score = service.computeRiskScore([], null, true);
+      const score = computeRiskScore([], null, true);
       expect(score).toBe(0.5);
     });
 
@@ -1160,48 +1038,44 @@ describe("ProfileService", () => {
         ttl: Date.now() / 1000 + 86400,
       };
 
-      const score = service.computeRiskScore([], existingProfile, false);
+      const score = computeRiskScore([], existingProfile, false);
       expect(score).toBe(0.3);
     });
 
     it("should increase risk for bot_detected flag", () => {
-      const score = service.computeRiskScore(["bot_detected"], null, true);
-      expect(score).toBe(0.75); // 0.5 base + 0.25 bot
+      const score = computeRiskScore(["bot_detected"], null, true);
+      expect(score).toBe(0.75);
     });
 
     it("should increase risk for headless_browser flag", () => {
-      const score = service.computeRiskScore(["headless_browser"], null, true);
-      expect(score).toBe(0.65); // 0.5 base + 0.15 headless
+      const score = computeRiskScore(["headless_browser"], null, true);
+      expect(score).toBe(0.65);
     });
 
     it("should increase risk for fingerprint_mismatch flag", () => {
-      const score = service.computeRiskScore(
-        ["fingerprint_mismatch"],
-        null,
-        true,
-      );
-      expect(score).toBe(0.65); // 0.5 base + 0.15 mismatch
+      const score = computeRiskScore(["fingerprint_mismatch"], null, true);
+      expect(score).toBe(0.65);
     });
 
     it("should increase risk for rapid_requests flag", () => {
-      const score = service.computeRiskScore(["rapid_requests"], null, true);
-      expect(score).toBe(0.6); // 0.5 base + 0.1 rapid
+      const score = computeRiskScore(["rapid_requests"], null, true);
+      expect(score).toBe(0.6);
     });
 
     it("should decrease risk for verified flag", () => {
-      const score = service.computeRiskScore(["verified"], null, true);
-      expect(score).toBe(0.3); // 0.5 base - 0.2 verified
+      const score = computeRiskScore(["verified"], null, true);
+      expect(score).toBe(0.3);
     });
 
     it("should decrease risk for returning_user flag", () => {
-      const score = service.computeRiskScore(["returning_user"], null, true);
-      expect(score).toBe(0.4); // 0.5 base - 0.1 returning
+      const score = computeRiskScore(["returning_user"], null, true);
+      expect(score).toBe(0.4);
     });
 
     it("should stack multiple negative signals", () => {
       const flags = ["bot_detected", "headless_browser", "rapid_requests"];
-      const score = service.computeRiskScore(flags, null, true);
-      expect(score).toBe(1.0); // 0.5 + 0.25 + 0.15 + 0.1 = 1.0 (clamped)
+      const score = computeRiskScore(flags, null, true);
+      expect(score).toBe(1.0);
     });
 
     it("should clamp risk score to maximum of 1.0", () => {
@@ -1211,20 +1085,20 @@ describe("ProfileService", () => {
         "fingerprint_mismatch",
         "rapid_requests",
       ];
-      const score = service.computeRiskScore(flags, null, true);
-      expect(score).toBe(1.0); // Would be 1.15, clamped to 1.0
+      const score = computeRiskScore(flags, null, true);
+      expect(score).toBe(1.0);
     });
 
     it("should clamp risk score to minimum of 0.0", () => {
       const flags = ["verified", "returning_user"];
-      const score = service.computeRiskScore(flags, null, true);
-      expect(score).toBeCloseTo(0.2, 2); // 0.5 - 0.2 - 0.1 = 0.2
+      const score = computeRiskScore(flags, null, true);
+      expect(score).toBeCloseTo(0.2, 2);
     });
 
     it("should blend with historical risk for returning devices", () => {
       const existingProfile: DeviceProfile = {
         device_id: "d1",
-        risk_score: 0.9, // High historical risk
+        risk_score: 0.9,
         flags: [],
         first_seen_at: Date.now() - 86400000,
         last_seen_at: Date.now() - 3600000,
@@ -1235,7 +1109,7 @@ describe("ProfileService", () => {
 
       // Base risk for returning = 0.3
       // With 30% historical weight: 0.3 * 0.7 + 0.9 * 0.3 = 0.21 + 0.27 = 0.48
-      const score = service.computeRiskScore([], existingProfile, false);
+      const score = computeRiskScore([], existingProfile, false);
       expect(score).toBeCloseTo(0.48, 2);
     });
 
@@ -1253,33 +1127,26 @@ describe("ProfileService", () => {
 
       // Base: 0.3 + bot_detected: 0.25 = 0.55
       // Blended: 0.55 * 0.7 + 0.3 * 0.3 = 0.385 + 0.09 = 0.475
-      const score = service.computeRiskScore(
-        ["bot_detected"],
-        existingProfile,
-        false,
-      );
+      const score = computeRiskScore(["bot_detected"], existingProfile, false);
       expect(score).toBeCloseTo(0.475, 2);
     });
 
     it("should not blend historical risk for new devices", () => {
-      // Even if we somehow pass an existing profile with isNewDevice=true,
-      // it should not blend (this is a consistency check)
-      const score = service.computeRiskScore(["verified"], null, true);
-      expect(score).toBe(0.3); // 0.5 - 0.2 = 0.3, no blending
+      const score = computeRiskScore(["verified"], null, true);
+      expect(score).toBe(0.3);
     });
 
     it("should silently ignore unknown flags", () => {
-      // Unknown flags should not throw errors or affect the score
-      const score = service.computeRiskScore(
+      const score = computeRiskScore(
         ["unknown_flag", "another_unknown"],
         null,
         true,
       );
-      expect(score).toBe(0.5); // Base score only, unknown flags ignored
+      expect(score).toBe(0.5);
     });
 
     it("should process known flags and ignore unknown flags in same array", () => {
-      const score = service.computeRiskScore(
+      const score = computeRiskScore(
         ["bot_detected", "unknown_flag", "verified"],
         null,
         true,

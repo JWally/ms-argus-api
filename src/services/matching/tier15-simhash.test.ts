@@ -1,4 +1,3 @@
-// src/services/matching/tier15-simhash.test.ts
 import { describe, it, expect, beforeEach, vi, afterEach } from "vitest";
 import { mockClient } from "aws-sdk-client-mock";
 import { DynamoDBClient, QueryCommand } from "@aws-sdk/client-dynamodb";
@@ -6,10 +5,8 @@ import { marshall } from "@aws-sdk/util-dynamodb";
 import { tier15SimHashMatch, Tier15SimHashDeps } from "./tier15-simhash";
 import type { Fingerprint } from "../../types";
 
-// Mock AWS SDK
 const dynamoMock = mockClient(DynamoDBClient);
 
-// Mock environment variables for feature flags
 const originalEnv = process.env;
 
 function setSimHashEnv(overrides: Record<string, string> = {}) {
@@ -18,7 +15,7 @@ function setSimHashEnv(overrides: Record<string, string> = {}) {
     SIMHASH_ENABLED: "true",
     SIMHASH_SHADOW: "false",
     SIMHASH_ROLLOUT: "100",
-    SIMHASH_LATENCY_BYPASS: "5000", // High to avoid flaky tests
+    SIMHASH_LATENCY_BYPASS: "5000",
     POWERTOOLS_SERVICE_NAME: "argus-test",
     POWERTOOLS_METRICS_NAMESPACE: "ArgusTest",
     ...overrides,
@@ -35,14 +32,14 @@ function createDeps(): Tier15SimHashDeps {
 function createFingerprint(overrides: Partial<Fingerprint> = {}): Fingerprint {
   return {
     stable_hash: "abc123",
-    fuzzy_hash: "1234567890abcdef", // Valid 64-bit hex
+    fuzzy_hash: "1234567890abcdef",
     ...overrides,
   };
 }
 
 /**
  * Build a DynamoDB item for a band query result.
- * The device_id field in the real table uses the SK format: t#<inverted_ts>#<device_id>
+ * The device_id field uses the SK format: t#<inverted_ts>#<device_id>
  */
 function buildBandItem(
   deviceId: string,
@@ -68,8 +65,6 @@ describe("tier15SimHashMatch", () => {
     vi.restoreAllMocks();
   });
 
-  // ==================== FEATURE FLAGS ====================
-
   describe("Feature Flags", () => {
     it("returns null when SIMHASH_ENABLED is false", async () => {
       setSimHashEnv({ SIMHASH_ENABLED: "false" });
@@ -81,7 +76,6 @@ describe("tier15SimHashMatch", () => {
     });
 
     it("returns null when rollout percentage excludes this hash", async () => {
-      // Rollout 0% means no one gets it
       setSimHashEnv({ SIMHASH_ROLLOUT: "0" });
       const result = await tier15SimHashMatch(
         createDeps(),
@@ -92,7 +86,6 @@ describe("tier15SimHashMatch", () => {
 
     it("proceeds when rollout percentage includes this hash", async () => {
       setSimHashEnv({ SIMHASH_ROLLOUT: "100" });
-      // No band results - should proceed past flag checks and return null (no candidates)
       dynamoMock.on(QueryCommand).resolves({ Items: [] });
       const result = await tier15SimHashMatch(
         createDeps(),
@@ -105,7 +98,6 @@ describe("tier15SimHashMatch", () => {
       setSimHashEnv({ SIMHASH_SHADOW: "true" });
       const now = Math.floor(Date.now() / 1000);
 
-      // Set up a match: same hash in 2+ bands
       dynamoMock.on(QueryCommand).resolves({
         Items: [buildBandItem("device-123", "1234567890abcdef", now)],
       });
@@ -117,8 +109,6 @@ describe("tier15SimHashMatch", () => {
       expect(result).toBeNull();
     });
   });
-
-  // ==================== INPUT VALIDATION ====================
 
   describe("Input Validation", () => {
     it("returns null when fuzzy_hash is undefined", async () => {
@@ -153,8 +143,6 @@ describe("tier15SimHashMatch", () => {
       expect(result).toBeNull();
     });
   });
-
-  // ==================== BAND QUERY ====================
 
   describe("Band Queries", () => {
     it("queries all 4 bands in parallel", async () => {
@@ -201,12 +189,9 @@ describe("tier15SimHashMatch", () => {
     });
   });
 
-  // ==================== CANDIDATE AGGREGATION ====================
-
   describe("Candidate Aggregation", () => {
     it("returns null when no candidates appear in 2+ bands", async () => {
       const now = Math.floor(Date.now() / 1000);
-      // Device appears in only 1 band
       dynamoMock
         .on(QueryCommand)
         .resolvesOnce({
@@ -223,7 +208,6 @@ describe("tier15SimHashMatch", () => {
 
     it("returns match when candidate appears in 2+ bands", async () => {
       const now = Math.floor(Date.now() / 1000);
-      // Same device appears in bands 0 and 1 (same hash = distance 0)
       dynamoMock
         .on(QueryCommand)
         .resolvesOnce({
@@ -248,10 +232,6 @@ describe("tier15SimHashMatch", () => {
 
     it("selects best candidate when multiple appear in 2+ bands", async () => {
       const now = Math.floor(Date.now() / 1000);
-      // Two devices in 2 bands each, but device-closer has lower Hamming distance
-      // Incoming: 1234567890abcdef
-      // device-closer: 1234567890abcde0 (distance 4 bits in last nibble)
-      // device-farther: 1234567800000000 (higher distance)
       dynamoMock
         .on(QueryCommand)
         .resolvesOnce({
@@ -278,8 +258,6 @@ describe("tier15SimHashMatch", () => {
     });
   });
 
-  // ==================== HAMMING DISTANCE SCORING ====================
-
   describe("Hamming Distance Scoring", () => {
     it("accepts distance 0 (exact match)", async () => {
       const now = Math.floor(Date.now() / 1000);
@@ -304,13 +282,6 @@ describe("tier15SimHashMatch", () => {
 
     it("rejects candidates beyond threshold", async () => {
       const now = Math.floor(Date.now() / 1000);
-      // Create hash with more than 4 bits different (threshold default is 4)
-      // 1234567890abcdef vs 0000567890abcdef = many bits different in first band
-      // But they share bands 1,2,3 so they'll be candidates...
-      // Actually to share 2 bands we need the same band values.
-      // Use a hash that differs by more than 4 bits total but shares 2 bands:
-      // 1234567890ab0000 vs 1234567890abffff = 16 bits different in last band only,
-      // shares bands 0,1,2
       dynamoMock
         .on(QueryCommand)
         .resolvesOnce({
@@ -329,13 +300,11 @@ describe("tier15SimHashMatch", () => {
         createFingerprint({ fuzzy_hash: "1234567890ab0000" }),
       );
 
-      // Distance between 0000 and ffff is 16 bits - above threshold of 4
       expect(result).toBeNull();
     });
 
     it("accepts candidates within threshold (distance 1-4)", async () => {
       const now = Math.floor(Date.now() / 1000);
-      // 1234567890abcdef vs 1234567890abcdee = 1 bit difference (last bit)
       dynamoMock
         .on(QueryCommand)
         .resolvesOnce({
@@ -358,8 +327,6 @@ describe("tier15SimHashMatch", () => {
       expect(result!.simhash_details?.hamming_distance).toBeLessThanOrEqual(4);
     });
   });
-
-  // ==================== CONFIDENCE CALCULATION ====================
 
   describe("Confidence Calculation", () => {
     it("distance 0 gives ~0.90 confidence", async () => {
@@ -385,7 +352,6 @@ describe("tier15SimHashMatch", () => {
 
     it("more band matches give a bonus", async () => {
       const now = Math.floor(Date.now() / 1000);
-      // Device appears in 4 bands (max bonus)
       dynamoMock.on(QueryCommand).resolves({
         Items: [buildBandItem("dev", "1234567890abcdef", now)],
       });
@@ -396,7 +362,6 @@ describe("tier15SimHashMatch", () => {
       );
 
       expect(result).not.toBeNull();
-      // 4 bands = baseConfidence(0.9) + bandBonus(min((4-2)*0.02, 0.04)) = 0.94
       expect(result!.confidence).toBeGreaterThan(0.9);
     });
 
@@ -417,11 +382,8 @@ describe("tier15SimHashMatch", () => {
 
     it("confidence never drops below 0.6", async () => {
       const now = Math.floor(Date.now() / 1000);
-      // Use custom threshold to allow higher distance
       setSimHashEnv({ SIMHASH_HAMMING_THRESHOLD: "10" });
 
-      // Hash with distance ~6-7: 1234567890abcdef vs 1234567890ab0d0f
-      // Bands 0,1,2 match, band 3 differs
       dynamoMock
         .on(QueryCommand)
         .resolvesOnce({
@@ -446,11 +408,8 @@ describe("tier15SimHashMatch", () => {
     });
   });
 
-  // ==================== RECENCY GATE ====================
-
   describe("Recency Gate", () => {
     it("accepts old device with distance 0 or 1", async () => {
-      // 60 days ago - beyond RECENCY_WINDOW_DAYS (30)
       const oldTs = Math.floor(Date.now() / 1000) - 60 * 86400;
 
       dynamoMock
@@ -468,14 +427,11 @@ describe("tier15SimHashMatch", () => {
         createFingerprint({ fuzzy_hash: "1234567890abcdef" }),
       );
 
-      // Distance 0, even though old - should still match
       expect(result).not.toBeNull();
     });
 
     it("rejects old device with distance > 1", async () => {
-      // 60 days ago
       const oldTs = Math.floor(Date.now() / 1000) - 60 * 86400;
-      // Distance 2: 1234567890abcdef vs 1234567890abcdec (2 bits different in last nibble)
       dynamoMock
         .on(QueryCommand)
         .resolvesOnce({
@@ -498,9 +454,7 @@ describe("tier15SimHashMatch", () => {
     });
 
     it("accepts recent device with distance > 1", async () => {
-      // 5 days ago - within RECENCY_WINDOW_DAYS
       const recentTs = Math.floor(Date.now() / 1000) - 5 * 86400;
-      // Distance 2-3 bits
       dynamoMock
         .on(QueryCommand)
         .resolvesOnce({
@@ -522,8 +476,6 @@ describe("tier15SimHashMatch", () => {
       expect(result).not.toBeNull();
     });
   });
-
-  // ==================== MATCH RESULT STRUCTURE ====================
 
   describe("Match Result Structure", () => {
     it("includes simhash_details", async () => {
@@ -593,8 +545,6 @@ describe("tier15SimHashMatch", () => {
     });
   });
 
-  // ==================== ERROR HANDLING ====================
-
   describe("Error Handling", () => {
     it("fails open on DynamoDB error", async () => {
       dynamoMock.on(QueryCommand).rejects(new Error("DynamoDB unavailable"));
@@ -607,7 +557,7 @@ describe("tier15SimHashMatch", () => {
     });
 
     it("fails open on timeout", async () => {
-      setSimHashEnv({ SIMHASH_LATENCY_BYPASS: "0" }); // 0ms = always timeout
+      setSimHashEnv({ SIMHASH_LATENCY_BYPASS: "0" });
       dynamoMock.on(QueryCommand).resolves({ Items: [] });
 
       const result = await tier15SimHashMatch(
@@ -618,18 +568,11 @@ describe("tier15SimHashMatch", () => {
     });
   });
 
-  // ==================== SORTING & TIE-BREAKING ====================
-
   describe("Sorting and Tie-breaking", () => {
     it("prefers lower Hamming distance over recency", async () => {
       const now = Math.floor(Date.now() / 1000);
       const older = now - 1000;
 
-      // device-far is more recent but has higher distance
-      // device-close is older but has lower distance
-      // Incoming: 1234567890abcdef
-      // device-close: 1234567890abcdee (1 bit diff) but older
-      // device-far: 1234567890abcdec (2 bits diff) but newer
       dynamoMock
         .on(QueryCommand)
         .resolvesOnce({
@@ -665,7 +608,6 @@ describe("tier15SimHashMatch", () => {
       const now = Math.floor(Date.now() / 1000);
       const older = now - 1000;
 
-      // Both have distance 0, prefer the more recent
       dynamoMock
         .on(QueryCommand)
         .resolvesOnce({

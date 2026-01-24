@@ -1,13 +1,10 @@
-// src/handlers/session-get.test.ts
-// AR-67: Tests for session retrieval endpoint
 import { describe, it, expect, beforeEach, vi } from "vitest";
 
-// Set environment variables BEFORE any module imports using vi.hoisted
 vi.hoisted(() => {
   process.env.POWERTOOLS_SERVICE_NAME = "argus-session-get-test";
   process.env.POWERTOOLS_METRICS_NAMESPACE = "argus-test";
   process.env.SESSION_CACHE_TABLE = "test-session-cache";
-  process.env.SESSION_PAYLOAD_TABLE = "test-session-payload"; // AR-XXX: Full payload storage
+  process.env.SESSION_PAYLOAD_TABLE = "test-session-payload";
 });
 
 import { mockClient } from "aws-sdk-client-mock";
@@ -20,13 +17,10 @@ import {
   Context,
 } from "aws-lambda";
 
-// Mock AWS SDK clients
 const dynamoMock = mockClient(DynamoDBClient);
 
-// Import handler after mocking
 import { handler } from "./session-get";
 
-// Helper to cast result (handler always returns structured result)
 const asResult = (result: unknown): APIGatewayProxyStructuredResultV2 =>
   result as APIGatewayProxyStructuredResultV2;
 
@@ -99,7 +93,6 @@ describe("session-get handler", () => {
     updated_at: Date.now(),
   };
 
-  // V3 format payload stored in session payload table
   const createMockV3Payload = (sessionId: string) => ({
     identifiers: {
       session_id: sessionId,
@@ -131,7 +124,6 @@ describe("session-get handler", () => {
     },
   });
 
-  // Helper to create gzipped base64 payload
   const createGzippedPayload = (payload: object): string => {
     const json = JSON.stringify(payload);
     const gzipped = gzipSync(Buffer.from(json));
@@ -141,10 +133,9 @@ describe("session-get handler", () => {
   describe("successful retrieval", () => {
     it("should retrieve a session successfully", async () => {
       const sessionId = "test-session-123";
-      const ttl = Math.floor(Date.now() / 1000) + 3600; // 1 hour from now
+      const ttl = Math.floor(Date.now() / 1000) + 3600;
       const v3Payload = createMockV3Payload(sessionId);
 
-      // Mock both DynamoDB calls: session cache and session payload
       dynamoMock.on(GetItemCommand).callsFake((input) => {
         const tableName = input.TableName;
         if (tableName === "test-session-cache") {
@@ -177,21 +168,16 @@ describe("session-get handler", () => {
       );
 
       const body = JSON.parse(result.body ?? "");
-      // V3 format response structure
-      // Identifiers section
       expect(body.identifiers.session_id).toBe(sessionId);
       expect(body.identifiers.device_id).toBe("device-abc123");
-      // Analysis section
       expect(body.analysis.status).toBe("complete");
       expect(body.analysis.confidence).toBe(0.95);
       expect(body.analysis.match_tier).toBe(1);
       expect(body.analysis.risk_score).toBe(0.2);
       expect(body.analysis.flags).toEqual(["returning_user"]);
       expect(body.analysis.evidence_codes).toEqual(["STABLE_HASH_MATCH"]);
-      // Hashes section (V3)
       expect(body.hashes.stable).toBe("hash-abc123");
       expect(body.hashes.fuzzy).toBe("fuzzy-def456");
-      // Device section
       expect(body.device).toBeDefined();
       // Should NOT include internal fields
       expect(body.analysis.idempotency_key).toBeUndefined();
@@ -217,7 +203,6 @@ describe("session-get handler", () => {
 
       expect(result.statusCode).toBe(200);
       const body = JSON.parse(result.body ?? "");
-      // AR-185: v2 format - status is in analysis section
       expect(body.analysis.status).toBe("pending");
     });
   });
@@ -236,7 +221,7 @@ describe("session-get handler", () => {
 
     it("should return 404 when session is expired", async () => {
       const sessionId = "expired-session";
-      const expiredTtl = Math.floor(Date.now() / 1000) - 3600; // 1 hour ago
+      const expiredTtl = Math.floor(Date.now() / 1000) - 3600;
 
       dynamoMock.on(GetItemCommand).resolves({
         Item: marshall({
@@ -292,7 +277,6 @@ describe("session-get handler", () => {
       const event = createApiEvent(sessionId);
       const result = asResult(await handler(event, mockContext));
 
-      // Should get to DynamoDB lookup (returns 404 for not found, not 400)
       expect(result.statusCode).toBe(404);
     });
   });
@@ -340,7 +324,6 @@ describe("session-get handler", () => {
       const sessionId = "payload-fetch-error";
       const ttl = Math.floor(Date.now() / 1000) + 3600;
 
-      // First call (session cache) succeeds, second call (payload table) throws
       dynamoMock.on(GetItemCommand).callsFake((input) => {
         if (input.TableName === "test-session-cache") {
           return {
@@ -352,14 +335,12 @@ describe("session-get handler", () => {
             }),
           };
         }
-        // Payload table throws
         throw new Error("Payload table unavailable");
       });
 
       const event = createApiEvent(sessionId, "GET", "https://example.com");
       const result = asResult(await handler(event, mockContext));
 
-      // Should succeed with cache-only data (minimal response)
       expect(result.statusCode).toBe(200);
       const body = JSON.parse(result.body ?? "");
       expect(body.analysis.status).toBe("complete");
@@ -370,7 +351,6 @@ describe("session-get handler", () => {
       const sessionId = "payload-validation-error";
       const ttl = Math.floor(Date.now() / 1000) + 3600;
 
-      // Invalid payload structure (missing required fields for validateSessionResponse)
       const invalidPayload = { foo: "bar" };
 
       dynamoMock.on(GetItemCommand).callsFake((input) => {
@@ -384,7 +364,6 @@ describe("session-get handler", () => {
             }),
           };
         }
-        // Payload table returns invalid payload
         return {
           Item: marshall({
             session_id: sessionId,
@@ -397,7 +376,6 @@ describe("session-get handler", () => {
       const event = createApiEvent(sessionId, "GET", "https://example.com");
       const result = asResult(await handler(event, mockContext));
 
-      // Should succeed with cache-only data (validation failure is non-fatal)
       expect(result.statusCode).toBe(200);
       const body = JSON.parse(result.body ?? "");
       expect(body.analysis.status).toBe("complete");

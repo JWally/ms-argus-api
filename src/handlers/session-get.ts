@@ -1,8 +1,3 @@
-// src/handlers/session-get.ts
-// AR-67: Lambda handler for retrieving session match results
-// AR-96: Refactored to use Middy for automatic metrics publishing
-// AR-XXX: V3 response schema with validation
-
 import { Logger } from "@aws-lambda-powertools/logger";
 import { Metrics } from "@aws-lambda-powertools/metrics";
 import { logMetrics } from "@aws-lambda-powertools/metrics/middleware";
@@ -14,8 +9,6 @@ import { validateRequiredEnvVars } from "../helpers/env-validation";
 import { corsMiddleware } from "../helpers/cors-middleware";
 import { jsonErrorHandler } from "../helpers/error-middleware";
 import { createBaseHandler } from "./session-get/base-handler";
-
-// ==================== CONFIGURATION ====================
 
 interface SessionGetEnvConfig {
   SESSION_CACHE_TABLE: string;
@@ -37,24 +30,19 @@ function getEnvConfig(): SessionGetEnvConfig {
   };
 }
 
-// Validate env at cold start
 const envConfig = getEnvConfig();
 
-// Powertools
 const logger = new Logger({ serviceName: envConfig.POWERTOOLS_SERVICE_NAME });
 const metrics = new Metrics({
   namespace: envConfig.POWERTOOLS_METRICS_NAMESPACE,
 });
 
-// AWS SDK clients (reused across invocations)
 const dynamodb = new DynamoDBClient({});
 const cacheService = new DynamoCacheService(dynamodb, {
   tableName: envConfig.SESSION_CACHE_TABLE,
   sessionTtlSeconds: 3600, // Not used for reads
   mutationGateTtlSeconds: 60, // Not used for reads
 });
-
-// ==================== CORE HANDLER ====================
 
 const baseHandler = createBaseHandler({
   dynamodb,
@@ -63,8 +51,6 @@ const baseHandler = createBaseHandler({
   logger,
   metrics,
 });
-
-// ==================== EXPORT WITH MIDDLEWARE ====================
 
 export const handler = middy(baseHandler)
   .use(injectLambdaContext(logger))

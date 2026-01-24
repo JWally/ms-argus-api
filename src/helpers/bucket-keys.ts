@@ -1,7 +1,3 @@
-// src/helpers/bucket-keys.ts
-// Shared bucket key utilities for matching and profile services
-// Single source of truth for Tier 2 bucket key generation
-
 import { fnv1a } from "./hash";
 import { SIMHASH_CONFIG } from "./constants";
 import type { Fingerprint } from "../types/fingerprint";
@@ -116,8 +112,6 @@ export function buildIpUaAnchorKey(fingerprint: Fingerprint): string | null {
   return `ip_ua_anchor#${fingerprint.ip_address}#${uaHash}`;
 }
 
-// ==================== SIMHASH LSH BAND KEYS (Tier 1.5) ====================
-
 /**
  * SimHash band key info for LSH indexing
  */
@@ -145,19 +139,16 @@ export function buildSimHashBandKeys(
 ): SimHashBandKey[] | null {
   if (!fuzzyHash) return null;
 
-  // Normalize: remove 0x prefix if present, ensure lowercase
   const normalized = fuzzyHash.replace(/^0x/i, "").toLowerCase();
 
-  // Validate: must be 16 hex chars (64 bits)
   if (!/^[0-9a-f]{16}$/.test(normalized)) {
     return null;
   }
 
   const bands: SimHashBandKey[] = [];
 
-  // Split into 4 bands of 4 hex chars (16 bits) each
   for (let i = 0; i < SIMHASH_CONFIG.NUM_BANDS; i++) {
-    const startChar = i * 4; // Each band is 4 hex chars
+    const startChar = i * 4;
     const bandValue = normalized.slice(startChar, startChar + 4);
 
     bands.push({
@@ -185,8 +176,6 @@ export function buildSimHashBandSK(
   deviceId: string,
   timestamp: number = Math.floor(Date.now() / 1000),
 ): string {
-  // Invert timestamp: MAX_SAFE_INTEGER - timestamp
-  // This ensures newest entries sort first (smallest SK values)
   const invertedTs = (9999999999999 - timestamp).toString().padStart(13, "0");
   return `t#${invertedTs}#${deviceId}`;
 }

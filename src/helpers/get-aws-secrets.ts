@@ -1,4 +1,3 @@
-// src/services/get-aws-secrets.ts
 import {
   SecretsManagerClient,
   GetSecretValueCommand,

@@ -129,6 +129,53 @@ function randomHex(length: number): string {
   return result;
 }
 
+const DEFAULT_SCREEN_DIMS = "1920x1080";
+const DEFAULT_TIMEZONE = "America/New_York";
+
+function applyEvercookie(fp: Fingerprint, options: FingerprintOptions): void {
+  if (!options.includeEvercookie) return;
+  fp.evercookie_id = options.evercookieId ?? `ev-${uniqueId()}`;
+}
+
+function applyTier1Hashes(fp: Fingerprint, options: FingerprintOptions): void {
+  if (options.includeStableHash) {
+    fp.stable_hash = options.stableHash ?? `stable-${randomHex(32)}`;
+  }
+  if (options.includeFuzzyHash) {
+    fp.fuzzy_hash = options.fuzzyHash ?? `fuzzy-${randomHex(32)}`;
+  }
+}
+
+function applyIpJa4(fp: Fingerprint, options: FingerprintOptions): void {
+  if (!options.includeIpJa4) return;
+  fp.ip_address =
+    options.ipAddress ??
+    `10.0.${Math.floor(Math.random() * 256)}.${Math.floor(Math.random() * 256)}`;
+  fp.ja4 = options.ja4 ?? `t13d1516h2_${randomHex(12)}_${randomHex(12)}`;
+}
+
+function applyGpuScreenTz(fp: Fingerprint, options: FingerprintOptions): void {
+  if (!options.includeGpuScreenTz) return;
+  fp.gpu_renderer = options.gpuRenderer ?? "ANGLE (NVIDIA GeForce RTX 3080)";
+  fp.screen_dims = options.screenDims ?? DEFAULT_SCREEN_DIMS;
+  fp.timezone = options.timezone ?? DEFAULT_TIMEZONE;
+}
+
+function applyAudioCanvas(fp: Fingerprint, options: FingerprintOptions): void {
+  if (!options.includeAudioCanvas) return;
+  fp.audio_hash = options.audioHash ?? `audio-${randomHex(32)}`;
+  fp.canvas_hash = options.canvasHash ?? `canvas-${randomHex(32)}`;
+}
+
+function applyBotSignals(fp: Fingerprint, options: FingerprintOptions): void {
+  if (!options.includeBotSignals) return;
+  fp.user_agent =
+    options.userAgent ??
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36";
+  fp.hardware_concurrency = options.hardwareConcurrency ?? 8;
+  fp.device_memory = options.deviceMemory ?? 16;
+}
+
 /**
  * Generate a fingerprint with specified signals
  */
@@ -136,53 +183,12 @@ export function createFingerprint(
   options: FingerprintOptions = {},
 ): Fingerprint {
   const fingerprint: Fingerprint = {};
-  const id = uniqueId();
-
-  // Tier 0.5: Evercookie
-  if (options.includeEvercookie) {
-    fingerprint.evercookie_id = options.evercookieId ?? `ev-${id}`;
-  }
-
-  // Tier 1: Hash-based
-  if (options.includeStableHash) {
-    fingerprint.stable_hash = options.stableHash ?? `stable-${randomHex(32)}`;
-  }
-  if (options.includeFuzzyHash) {
-    fingerprint.fuzzy_hash = options.fuzzyHash ?? `fuzzy-${randomHex(32)}`;
-  }
-
-  // Tier 2: IP + JA4
-  if (options.includeIpJa4) {
-    fingerprint.ip_address =
-      options.ipAddress ??
-      `10.0.${Math.floor(Math.random() * 256)}.${Math.floor(Math.random() * 256)}`;
-    fingerprint.ja4 =
-      options.ja4 ?? `t13d1516h2_${randomHex(12)}_${randomHex(12)}`;
-  }
-
-  // Tier 2: GPU + Screen + Timezone
-  if (options.includeGpuScreenTz) {
-    fingerprint.gpu_renderer =
-      options.gpuRenderer ?? "ANGLE (NVIDIA GeForce RTX 3080)";
-    fingerprint.screen_dims = options.screenDims ?? "1920x1080";
-    fingerprint.timezone = options.timezone ?? "America/New_York";
-  }
-
-  // Tier 2: Audio + Canvas
-  if (options.includeAudioCanvas) {
-    fingerprint.audio_hash = options.audioHash ?? `audio-${randomHex(32)}`;
-    fingerprint.canvas_hash = options.canvasHash ?? `canvas-${randomHex(32)}`;
-  }
-
-  // Bot detection signals
-  if (options.includeBotSignals) {
-    fingerprint.user_agent =
-      options.userAgent ??
-      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36";
-    fingerprint.hardware_concurrency = options.hardwareConcurrency ?? 8;
-    fingerprint.device_memory = options.deviceMemory ?? 16;
-  }
-
+  applyEvercookie(fingerprint, options);
+  applyTier1Hashes(fingerprint, options);
+  applyIpJa4(fingerprint, options);
+  applyGpuScreenTz(fingerprint, options);
+  applyAudioCanvas(fingerprint, options);
+  applyBotSignals(fingerprint, options);
   return fingerprint;
 }
 
@@ -197,56 +203,57 @@ export function createFingerprintFromPreset(
   return createFingerprint({ ...presetOptions, ...overrides });
 }
 
+export interface DriftOptions {
+  changeIp?: boolean;
+  changeGpu?: boolean;
+  changeScreen?: boolean;
+  changeTimezone?: boolean;
+  changeUserAgent?: boolean;
+}
+
+function driftIp(fp: Fingerprint): void {
+  if (!fp.ip_address) return;
+  const parts = fp.ip_address.split(".");
+  parts[3] = String(Math.floor(Math.random() * 256));
+  fp.ip_address = parts.join(".");
+}
+
+function driftGpu(fp: Fingerprint): void {
+  if (!fp.gpu_renderer) return;
+  fp.gpu_renderer = fp.gpu_renderer.replace("RTX 3080", "RTX 3080 Ti");
+}
+
+function driftScreen(fp: Fingerprint): void {
+  if (!fp.screen_dims) return;
+  fp.screen_dims =
+    fp.screen_dims === DEFAULT_SCREEN_DIMS ? "2560x1440" : DEFAULT_SCREEN_DIMS;
+}
+
+function driftTimezone(fp: Fingerprint): void {
+  if (!fp.timezone) return;
+  fp.timezone =
+    fp.timezone === DEFAULT_TIMEZONE ? "America/Los_Angeles" : DEFAULT_TIMEZONE;
+}
+
+function driftUserAgent(fp: Fingerprint): void {
+  if (!fp.user_agent) return;
+  fp.user_agent = fp.user_agent.replace("537.36", "538.00");
+}
+
 /**
  * Create a "drifted" version of a fingerprint
  * Simulates the same device with some signals changed
  */
 export function createDriftedFingerprint(
   original: Fingerprint,
-  driftOptions: {
-    changeIp?: boolean;
-    changeGpu?: boolean;
-    changeScreen?: boolean;
-    changeTimezone?: boolean;
-    changeUserAgent?: boolean;
-  } = {},
+  driftOptions: DriftOptions = {},
 ): Fingerprint {
   const drifted = { ...original };
-
-  if (driftOptions.changeIp && drifted.ip_address) {
-    // Change last octet (same subnet, different IP)
-    const parts = drifted.ip_address.split(".");
-    parts[3] = String(Math.floor(Math.random() * 256));
-    drifted.ip_address = parts.join(".");
-  }
-
-  if (driftOptions.changeGpu && drifted.gpu_renderer) {
-    // Simulate driver update
-    drifted.gpu_renderer = drifted.gpu_renderer.replace(
-      "RTX 3080",
-      "RTX 3080 Ti",
-    );
-  }
-
-  if (driftOptions.changeScreen && drifted.screen_dims) {
-    // Simulate resolution change
-    drifted.screen_dims =
-      drifted.screen_dims === "1920x1080" ? "2560x1440" : "1920x1080";
-  }
-
-  if (driftOptions.changeTimezone && drifted.timezone) {
-    // Simulate travel
-    drifted.timezone =
-      drifted.timezone === "America/New_York"
-        ? "America/Los_Angeles"
-        : "America/New_York";
-  }
-
-  if (driftOptions.changeUserAgent && drifted.user_agent) {
-    // Simulate browser update
-    drifted.user_agent = drifted.user_agent.replace("537.36", "538.00");
-  }
-
+  if (driftOptions.changeIp) driftIp(drifted);
+  if (driftOptions.changeGpu) driftGpu(drifted);
+  if (driftOptions.changeScreen) driftScreen(drifted);
+  if (driftOptions.changeTimezone) driftTimezone(drifted);
+  if (driftOptions.changeUserAgent) driftUserAgent(drifted);
   return drifted;
 }
 

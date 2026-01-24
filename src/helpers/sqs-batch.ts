@@ -1,6 +1,3 @@
-// src/helpers/sqs-batch.ts
-// Shared SQS batch processing pattern for all worker handlers
-
 import { SQSBatchResponse, SQSBatchItemFailure, SQSRecord } from "aws-lambda";
 import { Logger } from "@aws-lambda-powertools/logger";
 import { Metrics, MetricUnit } from "@aws-lambda-powertools/metrics";

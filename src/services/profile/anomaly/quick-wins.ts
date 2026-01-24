@@ -1,6 +1,3 @@
-// src/services/profile/anomaly/quick-wins.ts
-// AR-142: Quick win anomaly detections using data already in normalized fingerprint
-
 import { Fingerprint } from "../../../types";
 import {
   AnomalySignal,
@@ -40,7 +37,6 @@ export function detectQuickWinAnomalies(
 ): AnomalySignal[] {
   const signals: AnomalySignal[] = [];
 
-  // Lie count detection - navigator API tampering
   if (fingerprint.lie_count !== undefined && fingerprint.lie_count > 0) {
     // Severity scales with lie count: 0.5 base + 0.1 per lie, max 0.9
     const severity = Math.min(0.9, 0.5 + fingerprint.lie_count * 0.1);
@@ -53,7 +49,6 @@ export function detectQuickWinAnomalies(
     );
   }
 
-  // Direct headless detection
   if (fingerprint.is_headless === true) {
     signals.push(
       createSignal("CROSS_FIELD", AnomalyCodes.HEADLESS_DETECTED, 0.9, {

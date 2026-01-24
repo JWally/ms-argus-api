@@ -1,5 +1,4 @@
-// src/helpers/middy-helpers.ts
-import { getAwsSecrets } from "../services/get-aws-secrets";
+import { getAwsSecrets } from "./get-aws-secrets";
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from "aws-lambda";
 import { MiddlewareObj } from "@middy/core";
 import { LRUCache } from "lru-cache";
@@ -35,7 +34,6 @@ export const onWarmup = async () => {
   }
 };
 
-// Global LRU cache for deduplication
 const cache = new LRUCache<string, number>({
   max: DEDUPE_CACHE_MAX_ENTRIES,
   ttl: DEDUPE_CACHE_TTL_MS,
@@ -46,9 +44,8 @@ export const _clearDeduplicateCache = (): void => {
 };
 
 /**
- * Deduplicate middleware using LRU cache
- * Prevents duplicate requests from network retries
- * Simplified - no longer includes tenant ID in key
+ * Deduplicate middleware using LRU cache.
+ * Prevents duplicate requests from network retries.
  */
 export const deduplicateMiddleware = (): MiddlewareObj<
   APIGatewayProxyEvent,

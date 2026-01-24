@@ -1,4 +1,3 @@
-// src/handlers/profile-updater.ts
 import { SQSHandler } from "aws-lambda";
 import { Logger } from "@aws-lambda-powertools/logger";
 import { Metrics } from "@aws-lambda-powertools/metrics";
@@ -13,19 +12,15 @@ import {
 import { createProfileService } from "./profile-updater/config";
 import { processRecord } from "./profile-updater/process-record";
 
-// Validate environment variables at module load (cold start)
 const envConfig = getProfileUpdaterEnv();
 
-// Powertools (using validated config)
 const logger = new Logger({ serviceName: envConfig.POWERTOOLS_SERVICE_NAME });
 const metrics = new Metrics({
   namespace: envConfig.POWERTOOLS_METRICS_NAMESPACE,
 });
 
-// AWS SDK client (reused across invocations)
 const dynamodb = new DynamoDBClient({});
 
-// Create DynamoDB cache service
 const cacheService = new DynamoCacheService(dynamodb, {
   tableName: envConfig.SESSION_CACHE_TABLE,
   sessionTtlSeconds: SESSION_TTL_SECONDS,

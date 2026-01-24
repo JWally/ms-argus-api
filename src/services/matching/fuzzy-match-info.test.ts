@@ -1,6 +1,3 @@
-// src/services/matching/fuzzy-match-info.test.ts
-// AR-XXX: Tests for fuzzy_match_info drift detection feature
-
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import {
@@ -10,13 +7,12 @@ import {
 } from "./tier05-identity";
 import { tier1HashMatch } from "./tier1-hash";
 
-// Mock DynamoDB
 vi.mock("@aws-sdk/client-dynamodb", () => ({
   DynamoDBClient: vi.fn(),
   GetItemCommand: vi.fn(),
 }));
 
-describe("AR-XXX: fuzzy_match_info drift detection", () => {
+describe("fuzzy_match_info drift detection", () => {
   let mockDynamodb: DynamoDBClient;
   const tier1IndexTable = "test-tier1-index";
 
@@ -27,7 +23,6 @@ describe("AR-XXX: fuzzy_match_info drift detection", () => {
 
   describe("tier05PublicKeyLookup", () => {
     it("should include fuzzy_match_info when both hashes are present", async () => {
-      // Mock DynamoDB to return a device with fuzzy_hash
       mockDynamodb.send = vi.fn().mockResolvedValue({
         Item: {
           device_id: { S: "dev_123" },
@@ -41,7 +36,7 @@ describe("AR-XXX: fuzzy_match_info drift detection", () => {
       const result = await tier05PublicKeyLookup(
         deps,
         "pubkey123",
-        "0123456789abcdef", // Same hash = distance 0
+        "0123456789abcdef",
       );
 
       expect(result).not.toBeNull();
@@ -99,7 +94,6 @@ describe("AR-XXX: fuzzy_match_info drift detection", () => {
           device_id: { S: "dev_123" },
           risk_score: { N: "0.3" },
           flags: { L: [] },
-          // No fuzzy_hash stored
         },
       });
 
@@ -147,12 +141,11 @@ describe("AR-XXX: fuzzy_match_info drift detection", () => {
           device_id: { S: "dev_789" },
           risk_score: { N: "0.25" },
           flags: { L: [] },
-          fuzzy_hash: { S: "abcd1234efgh5678" }, // Invalid hex - should return -1 distance
+          fuzzy_hash: { S: "abcd1234efgh5678" },
         },
       });
 
       const deps = { dynamodb: mockDynamodb, tier1IndexTable };
-      // Pass valid hex
       const result = await tier05SigintIdLookup(
         deps,
         "sigint-id",
@@ -193,11 +186,9 @@ describe("AR-XXX: fuzzy_match_info drift detection", () => {
     });
 
     it("should include fuzzy_match_info for fuzzy_hash match", async () => {
-      // First call for stable# - not found
-      // Second call for fuzzy# - found
       mockDynamodb.send = vi
         .fn()
-        .mockResolvedValueOnce({}) // stable# not found
+        .mockResolvedValueOnce({})
         .mockResolvedValueOnce({
           Item: {
             device_id: { S: "dev_fuzzy" },

@@ -1,5 +1,3 @@
-// src/helpers/sqs-batch.test.ts
-
 import { describe, it, expect, vi } from "vitest";
 import { SQSRecord } from "aws-lambda";
 import { processSqsBatch, SqsBatchOptions } from "./sqs-batch";

@@ -1,5 +1,3 @@
-// src/services/profile/index-writers.test.ts
-
 import { describe, it, expect, beforeEach } from "vitest";
 import { mockClient } from "aws-sdk-client-mock";
 import {
@@ -28,7 +26,7 @@ import { Fingerprint } from "./types";
 
 const dynamoMock = mockClient(DynamoDBClient);
 
-describe("AR-150: Tier-gated identity association", () => {
+describe("Tier-gated identity association", () => {
   const ttl = 1705000000;
 
   describe("ASSOCIATION_ALLOWED_EVIDENCE", () => {
@@ -49,7 +47,6 @@ describe("AR-150: Tier-gated identity association", () => {
     });
 
     it("should NOT contain unbounded Tier 2 bucket codes", () => {
-      // These are the viral spreading culprits
       expect(ASSOCIATION_ALLOWED_EVIDENCE).not.toContain("IP_JA4_BUCKET");
       expect(ASSOCIATION_ALLOWED_EVIDENCE).not.toContain(
         "GPU_SCREEN_TZ_BUCKET",
@@ -61,7 +58,6 @@ describe("AR-150: Tier-gated identity association", () => {
     });
 
     it("should contain NEW_DEVICE code", () => {
-      // New devices must create indexes for future lookups to work
       expect(ASSOCIATION_ALLOWED_EVIDENCE).toContain("NEW_DEVICE");
     });
   });
@@ -119,7 +115,6 @@ describe("AR-150: Tier-gated identity association", () => {
         public_key: publicKey,
         evercookie_id: "cookie123",
         sigint_id: "sigint-uuid-123",
-        // Hash fields should be ignored
         stable_hash: "stable123",
         fuzzy_hash: "fuzzy456",
       };
@@ -130,7 +125,6 @@ describe("AR-150: Tier-gated identity association", () => {
       expect(hashKeys).toContain(`pubkey#${publicKey}`);
       expect(hashKeys).toContain("evercookie#cookie123");
       expect(hashKeys).toContain("sigint#sigint-uuid-123");
-      // Should NOT contain hash entries
       expect(hashKeys).not.toContain("stable#stable123");
       expect(hashKeys).not.toContain("fuzzy#fuzzy456");
     });
@@ -166,7 +160,7 @@ describe("AR-150: Tier-gated identity association", () => {
       expect(entries[0]).toEqual({
         hash_key: "fuzzy#fuzzy456",
         device_id: "dev_123",
-        fuzzy_hash: "fuzzy456", // AR-XXX: Now included for drift detection
+        fuzzy_hash: "fuzzy456",
         ttl,
       });
     });
@@ -175,7 +169,6 @@ describe("AR-150: Tier-gated identity association", () => {
       const fingerprint: Fingerprint = {
         stable_hash: "stable123",
         fuzzy_hash: "fuzzy456",
-        // Identity fields should be ignored
         public_key: "MFkwE...",
         evercookie_id: "cookie123",
       };
@@ -185,7 +178,6 @@ describe("AR-150: Tier-gated identity association", () => {
       const hashKeys = entries.map((e) => e.hash_key);
       expect(hashKeys).toContain("stable#stable123");
       expect(hashKeys).toContain("fuzzy#fuzzy456");
-      // Should NOT contain identity entries
       expect(hashKeys).not.toContain("pubkey#MFkwE...");
       expect(hashKeys).not.toContain("evercookie#cookie123");
     });
@@ -203,7 +195,6 @@ describe("AR-150: Tier-gated identity association", () => {
       };
       const entries = buildTier1IndexEntries("dev_123", fingerprint, ttl);
 
-      // Should return all 5 entries
       expect(entries).toHaveLength(5);
       const hashKeys = entries.map((e) => e.hash_key);
       expect(hashKeys).toContain(`pubkey#${publicKey}`);
@@ -214,7 +205,7 @@ describe("AR-150: Tier-gated identity association", () => {
     });
   });
 
-  describe("AR-XXX: fuzzy_hash in index entries for drift detection", () => {
+  describe("fuzzy_hash in index entries for drift detection", () => {
     it("should include fuzzy_hash in buildTier1IndexEntries", () => {
       const fingerprint: Fingerprint = {
         evercookie_id: "cookie123",
@@ -223,7 +214,6 @@ describe("AR-150: Tier-gated identity association", () => {
       };
       const entries = buildTier1IndexEntries("dev_123", fingerprint, ttl);
 
-      // All entries should include the fuzzy_hash
       expect(entries).toHaveLength(3);
       entries.forEach((entry) => {
         expect(entry.fuzzy_hash).toBe("0123456789abcdef");
@@ -269,8 +259,6 @@ describe("AR-150: Tier-gated identity association", () => {
   });
 });
 
-// ==================== ASYNC WRITE OPERATIONS ====================
-
 function createDeps(): IndexWriterDeps {
   return {
     dynamodb: new DynamoDBClient({}),
@@ -311,7 +299,6 @@ describe("batchWriteTier1Indexes", () => {
 
     await batchWriteTier1Indexes(createDeps(), []);
 
-    // Empty array still sends a batch write (0 items clears immediately)
     const calls = dynamoMock.commandCalls(BatchWriteItemCommand);
     expect(calls).toHaveLength(0);
   });
@@ -321,7 +308,6 @@ describe("batchWriteTier1Indexes", () => {
       { hash_key: "stable#abc", device_id: "dev-1", ttl: 1700000000 },
     ];
 
-    // First call returns unprocessed items, second succeeds
     dynamoMock
       .on(BatchWriteItemCommand)
       .resolvesOnce({
@@ -344,7 +330,6 @@ describe("batchWriteTier1Indexes", () => {
       { hash_key: "stable#abc", device_id: "dev-1", ttl: 1700000000 },
     ];
 
-    // Always return unprocessed items
     dynamoMock.on(BatchWriteItemCommand).resolves({
       UnprocessedItems: {
         "test-tier1-index": [
@@ -663,7 +648,6 @@ describe("buildSimHashBandEntries", () => {
     const timestamp = 1700000000;
     const entries = buildSimHashBandEntries("dev-1", fingerprint, timestamp);
 
-    // TTL = timestamp + 90 days * 86400 seconds/day
     const expectedTtl = timestamp + 90 * 86400;
     entries.forEach((entry) => {
       expect(entry.ttl).toBe(expectedTtl);

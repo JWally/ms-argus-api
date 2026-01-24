@@ -1,6 +1,3 @@
-// src/services/profile/anomaly/network.ts
-// AR-144: Network anomaly detection (timezone mismatch)
-
 import { Fingerprint } from "../../../types";
 import { AnomalySignal, AnomalyCodes, createSignal } from "./types";
 
@@ -24,7 +21,6 @@ interface SigintData {
  */
 function getUtcOffsetMinutes(timezone: string): number | undefined {
   try {
-    // Create a date and format it in the given timezone
     const date = new Date();
     const utcDate = new Date(date.toLocaleString("en-US", { timeZone: "UTC" }));
     const tzDate = new Date(
@@ -62,6 +58,7 @@ function detectTimezoneMismatch(
   const hoursDiff = Math.abs(serverOffset - clientOffset) / 60;
   if (hoursDiff < TZ_MISMATCH_THRESHOLD_HOURS) return null;
 
+  // Severity scales with timezone difference: 0.4 base + 0.05 per hour, capped at 0.8
   const severity = Math.min(0.8, 0.4 + hoursDiff * 0.05);
   return createSignal("NETWORK", AnomalyCodes.IP_TIMEZONE_MISMATCH, severity, {
     expected: `Server timezone: ${formatTzOffset(serverTz, serverOffset)}`,
@@ -79,6 +76,9 @@ export function detectNetworkAnomalies(
     return [];
   }
 
-  const signal = detectTimezoneMismatch(sigint.geo.timezone, fingerprint.timezone);
+  const signal = detectTimezoneMismatch(
+    sigint.geo.timezone,
+    fingerprint.timezone,
+  );
   return signal ? [signal] : [];
 }

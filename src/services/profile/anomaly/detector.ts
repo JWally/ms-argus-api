@@ -1,7 +1,3 @@
-// src/services/profile/anomaly/detector.ts
-// AR-141: Simple detector orchestrator - no registry class, just an array of functions
-// AR-158: Replaced console.error with Powertools structured logging and metrics
-
 import { Logger } from "@aws-lambda-powertools/logger";
 import { Metrics, MetricUnit } from "@aws-lambda-powertools/metrics";
 import { Fingerprint } from "../../../types";
@@ -10,7 +6,6 @@ import { detectQuickWinAnomalies } from "./quick-wins";
 import { detectCrossFieldAnomalies } from "./cross-field";
 import { detectNetworkAnomalies } from "./network";
 
-// AR-158: Structured logging for anomaly detection
 const logger = new Logger({
   serviceName: process.env.POWERTOOLS_SERVICE_NAME || "argus-anomaly-detector",
 });
@@ -38,15 +33,12 @@ type DetectorFn = (
 ) => AnomalySignal[];
 
 /**
- * Array of detector functions - add more as phases complete
+ * Array of detector functions
  * Each detector is isolated with try/catch for error resilience
  */
 const detectors: DetectorFn[] = [
-  // Phase 1: Quick wins (AR-142)
   detectQuickWinAnomalies,
-  // Phase 2: Cross-field anomalies (AR-145)
   detectCrossFieldAnomalies,
-  // Phase 3: Network anomalies (AR-144)
   detectNetworkAnomalies,
 ];
 
@@ -69,8 +61,7 @@ export function detectAllAnomalies(
     try {
       signals.push(...detector(fingerprint, raw, sigint));
     } catch (error) {
-      // Log but don't fail - detector errors shouldn't block matching
-      // AR-158: Use structured logging and emit metric for monitoring
+      // Detector errors shouldn't block matching
       logger.error("Anomaly detector failed", {
         error,
         detectorName: detector.name,
@@ -106,7 +97,6 @@ function codeToFlag(code: string): string {
 
 /**
  * Register a new detector function
- * Used by detector modules to add themselves to the detector array
  */
 export function registerDetector(
   detector: (

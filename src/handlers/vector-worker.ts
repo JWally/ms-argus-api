@@ -1,5 +1,3 @@
-// src/handlers/vector-worker.ts
-// Vector search worker Lambda for QDrant integration
 // Runs in the ms-argus-vector VPC to access the internal ALB
 import { SQSHandler } from "aws-lambda";
 import { Logger } from "@aws-lambda-powertools/logger";
@@ -10,19 +8,15 @@ import { QdrantClient } from "../services/vector/qdrant-client";
 import { getVectorWorkerEnv } from "../config/env";
 import { processRecord } from "./vector-worker/process-record";
 
-// Validate environment variables at module load (cold start)
 const envConfig = getVectorWorkerEnv();
 
-// Powertools (using validated config)
 const logger = new Logger({ serviceName: envConfig.POWERTOOLS_SERVICE_NAME });
 const metrics = new Metrics({
   namespace: envConfig.POWERTOOLS_METRICS_NAMESPACE,
 });
 
-// AWS SDK clients (reused across invocations)
 const _dynamodb = new DynamoDBClient({});
 
-// QDrant client (reused across invocations)
 const qdrantClient = new QdrantClient({
   baseUrl: envConfig.QDRANT_URL,
   secretArn: envConfig.QDRANT_SECRET_ARN,

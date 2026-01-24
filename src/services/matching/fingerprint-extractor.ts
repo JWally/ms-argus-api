@@ -38,10 +38,7 @@ function extractIdentifiers(
   if (identifiers.public_key) fp.public_key = identifiers.public_key;
 }
 
-function extractWorkerScope(
-  device: ArgusPayload["device"],
-  fp: Fingerprint,
-) {
+function extractWorkerScope(device: ArgusPayload["device"], fp: Fingerprint) {
   const workerScope = device.workerScope;
   if (!workerScope) return;
 
@@ -57,10 +54,7 @@ function extractWorkerScope(
     fp.timezone = workerScope.timezoneLocation;
 }
 
-function extractGpuFallback(
-  device: ArgusPayload["device"],
-  fp: Fingerprint,
-) {
+function extractGpuFallback(device: ArgusPayload["device"], fp: Fingerprint) {
   if (fp.gpu_renderer) return;
   const gpu = device.canvasWebgl?.gpu as Record<string, unknown> | undefined;
   if (gpu?.compressedGPU && typeof gpu.compressedGPU === "string") {
@@ -92,10 +86,7 @@ const HASH_FIELD_MAP: [keyof ArgusPayload["hashes"], keyof Fingerprint][] = [
   ["clientRects", "client_rects_hash"],
 ];
 
-function extractHashes(
-  hashes: ArgusPayload["hashes"],
-  fp: Fingerprint,
-) {
+function extractHashes(hashes: ArgusPayload["hashes"], fp: Fingerprint) {
   for (const [src, dst] of HASH_FIELD_MAP) {
     if (hashes[src]) (fp as Record<string, unknown>)[dst] = hashes[src];
   }
@@ -111,7 +102,10 @@ function extractWebglExtensions(
   }
 }
 
-function extractTlsFields(tls: NonNullable<ArgusPayload["sigint"]>["tlsFingerprint"], fp: Fingerprint) {
+function extractTlsFields(
+  tls: NonNullable<ArgusPayload["sigint"]>["tlsFingerprint"],
+  fp: Fingerprint,
+) {
   if (!tls) return;
   if (tls.ip) fp.ip_address = tls.ip;
   if (tls.ja3) fp.ja3 = tls.ja3;
@@ -119,10 +113,7 @@ function extractTlsFields(tls: NonNullable<ArgusPayload["sigint"]>["tlsFingerpri
   if (tls.id) fp.sigint_id = tls.id;
 }
 
-function extractSigint(
-  sigint: ArgusPayload["sigint"],
-  fp: Fingerprint,
-) {
+function extractSigint(sigint: ArgusPayload["sigint"], fp: Fingerprint) {
   if (!sigint) return;
   extractTlsFields(sigint.tlsFingerprint, fp);
   extractTcpProbe(sigint, fp);
@@ -130,15 +121,23 @@ function extractSigint(
   extractStun(sigint, fp);
 }
 
-function applyTcpFields(source: Record<string, unknown>, fp: Fingerprint, legacy: boolean) {
+function applyTcpFields(
+  source: Record<string, unknown>,
+  fp: Fingerprint,
+  legacy: boolean,
+) {
   const proxyKey = legacy ? "proxyScore" : "proxy_score";
   const vpnKey = legacy ? "vpnScore" : "vpn_score";
   const rttKey = legacy ? "rttMs" : "tcp_rtt_us";
 
-  if (typeof source[proxyKey] === "number") fp.proxy_score = source[proxyKey] as number;
-  if (typeof source[vpnKey] === "number") fp.vpn_score = source[vpnKey] as number;
+  if (typeof source[proxyKey] === "number")
+    fp.proxy_score = source[proxyKey] as number;
+  if (typeof source[vpnKey] === "number")
+    fp.vpn_score = source[vpnKey] as number;
   if (typeof source[rttKey] === "number") {
-    fp.tcp_rtt_us = legacy ? (source[rttKey] as number) * 1000 : (source[rttKey] as number);
+    fp.tcp_rtt_us = legacy
+      ? (source[rttKey] as number) * 1000
+      : (source[rttKey] as number);
   }
 }
 
@@ -196,16 +195,15 @@ function extractPrivacySignals(
   }
 }
 
-function detectHeadless(headless: Record<string, unknown>): boolean | undefined {
+function detectHeadless(
+  headless: Record<string, unknown>,
+): boolean | undefined {
   if (typeof headless.isHeadless === "boolean") return headless.isHeadless;
   const signals = headless.headless as Record<string, boolean> | undefined;
   return signals ? Object.values(signals).some(Boolean) : undefined;
 }
 
-function extractBotSignals(
-  device: ArgusPayload["device"],
-  fp: Fingerprint,
-) {
+function extractBotSignals(device: ArgusPayload["device"], fp: Fingerprint) {
   const headless = device.headless as Record<string, unknown> | undefined;
   if (headless) {
     const result = detectHeadless(headless);
@@ -214,7 +212,10 @@ function extractBotSignals(
 
   const lies = device.lies as Record<string, unknown> | undefined;
   if (lies) {
-    const count = typeof lies.count === "number" ? lies.count : (lies.totalLies as number | undefined);
+    const count =
+      typeof lies.count === "number"
+        ? lies.count
+        : (lies.totalLies as number | undefined);
     if (typeof count === "number") fp.lie_count = count;
   }
 }

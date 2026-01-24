@@ -1,4 +1,3 @@
-// src/services/matching/matching-service.ts
 import { ulid } from "ulid";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { SQSClient, SendMessageCommand } from "@aws-sdk/client-sqs";
@@ -15,7 +14,6 @@ import {
 } from "../../helpers/constants";
 import { fnv1a } from "../../helpers/hash";
 
-// Tier module imports
 import {
   checkCache as tier0CheckCache,
   writeMatchResult as tier0WriteMatchResult,
@@ -33,7 +31,6 @@ import { tier1HashMatch, Tier1HashDeps } from "./tier1-hash";
 import { tier15SimHashMatch, Tier15SimHashDeps } from "./tier15-simhash";
 import {
   tier2CompoundMatchWithTimeout,
-  loadProfile,
   Tier2CompoundDeps,
 } from "./tier2-compound";
 import {
@@ -83,7 +80,6 @@ export class MatchingService {
   private anchorDeps: SessionAnchorDeps;
 
   constructor(private deps: MatchingServiceDeps) {
-    // Initialize tier-specific dependencies
     this.tier0Deps = { cache: deps.cache };
     this.tier05Deps = {
       dynamodb: deps.dynamodb,
@@ -111,12 +107,10 @@ export class MatchingService {
     };
   }
 
-  /** Check if session is already cached */
   checkCache(sessionId: string): Promise<SessionCacheValue | null> {
     return tier0CheckCache(this.tier0Deps, sessionId);
   }
 
-  /** Apply confidence penalty for privacy browser detection */
   applyPrivacyPenalty(
     result: MatchResult,
     fingerprint: Fingerprint,
@@ -128,35 +122,20 @@ export class MatchingService {
     return { ...result, confidence: Math.max(0, result.confidence - penalty) };
   }
 
-  /** Run Tier 0.5 identity lookups (pubkey, evercookie, sigint) */
   private async runTier05Lookups(
     fingerprint: Fingerprint,
   ): Promise<MatchResult | null> {
     const fuzzyHash = fingerprint.fuzzy_hash;
-
-    if (fingerprint.public_key) {
-      const r = await tier05PublicKeyLookup(
-        this.tier05Deps,
-        fingerprint.public_key,
-        fuzzyHash,
-      );
-      if (r) return r;
-    }
-    if (fingerprint.evercookie_id) {
-      const r = await tier05CookieLookup(
-        this.tier05Deps,
-        fingerprint.evercookie_id,
-        fuzzyHash,
-      );
-      if (r) return r;
-    }
-    if (fingerprint.sigint_id) {
-      const r = await tier05SigintIdLookup(
-        this.tier05Deps,
-        fingerprint.sigint_id,
-        fuzzyHash,
-      );
-      if (r) return r;
+    const lookups: [string | undefined, typeof tier05PublicKeyLookup][] = [
+      [fingerprint.public_key, tier05PublicKeyLookup],
+      [fingerprint.evercookie_id, tier05CookieLookup],
+      [fingerprint.sigint_id, tier05SigintIdLookup],
+    ];
+    for (const [id, fn] of lookups) {
+      if (id) {
+        const r = await fn(this.tier05Deps, id, fuzzyHash);
+        if (r) return r;
+      }
     }
     return null;
   }
@@ -172,7 +151,6 @@ export class MatchingService {
     };
   }
 
-  /** Run tiered matching strategy */
   async runTieredMatching(
     fingerprint: Fingerprint,
   ): Promise<{ result: MatchResult; tier2TimedOut: boolean }> {
@@ -202,69 +180,7 @@ export class MatchingService {
     return { result: this.createNewDevice(), tier2TimedOut: timedOut };
   }
 
-  // Delegate methods to tier modules for backward compatibility
-  // Added optional incomingFuzzyHash for drift detection
-  tier05PublicKeyLookup(
-    publicKey: string,
-    incomingFuzzyHash?: string,
-  ): Promise<MatchResult | null> {
-    return tier05PublicKeyLookup(this.tier05Deps, publicKey, incomingFuzzyHash);
-  }
-
-  tier05CookieLookup(
-    evercookieId: string,
-    incomingFuzzyHash?: string,
-  ): Promise<MatchResult | null> {
-    return tier05CookieLookup(this.tier05Deps, evercookieId, incomingFuzzyHash);
-  }
-
-  tier05SigintIdLookup(
-    sigintId: string,
-    incomingFuzzyHash?: string,
-  ): Promise<MatchResult | null> {
-    return tier05SigintIdLookup(this.tier05Deps, sigintId, incomingFuzzyHash);
-  }
-
-  tier1HashMatch(fingerprint: Fingerprint): Promise<MatchResult | null> {
-    return tier1HashMatch(this.tier1Deps, fingerprint);
-  }
-
-  /** SimHash LSH match for same-browser drift detection */
-  tier15SimHashMatch(fingerprint: Fingerprint): Promise<MatchResult | null> {
-    return tier15SimHashMatch(this.tier15Deps, fingerprint);
-  }
-
-  tier2CompoundMatchWithTimeout(
-    fingerprint: Fingerprint,
-  ): Promise<{ result: MatchResult | null; timedOut: boolean }> {
-    return tier2CompoundMatchWithTimeout(this.tier2Deps, fingerprint);
-  }
-
-  async tier2CompoundMatch(
-    fingerprint: Fingerprint,
-    options?: { abortSignal?: AbortSignal },
-  ): Promise<MatchResult | null> {
-    // Import inline to avoid circular deps
-    const { tier2CompoundMatch } = await import("./tier2-compound");
-    return tier2CompoundMatch(this.tier2Deps, fingerprint, options);
-  }
-
-  sessionAnchorLookup(fingerprint: Fingerprint): Promise<MatchResult | null> {
-    return sessionAnchorLookup(this.anchorDeps, fingerprint);
-  }
-
-  ipUaAnchorLookup(fingerprint: Fingerprint): Promise<MatchResult | null> {
-    return ipUaAnchorLookup(this.anchorDeps, fingerprint);
-  }
-
-  loadProfile(
-    deviceId: string,
-  ): Promise<{ risk_score: number; flags: string[] } | null> {
-    return loadProfile(this.tier2Deps, deviceId);
-  }
-
   createNewDevice(): MatchResult {
-    // Use ULID for time-sortable device IDs
     const deviceId = `dev_${ulid()}`;
     return {
       device_id: deviceId,
@@ -279,7 +195,6 @@ export class MatchingService {
 
   /**
    * Write match result to session cache
-   * Returns boolean indicating if write succeeded
    * @returns true if written, false if skipped (higher confidence exists)
    */
   writeMatchResult(params: {
@@ -293,7 +208,6 @@ export class MatchingService {
 
   /**
    * Write degraded status to session cache
-   * Returns boolean indicating if write succeeded
    * @returns true if written, false if skipped (higher confidence exists)
    */
   writeDegradedResult(

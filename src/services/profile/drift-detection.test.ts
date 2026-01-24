@@ -1,10 +1,7 @@
-// src/services/profile/drift-detection.test.ts
-// AR-168: Unit tests for drift detection logic
 import { describe, it, expect } from "vitest";
 import { hasSignificantDrift } from "./drift-detection";
 import { DeviceProfile, Fingerprint } from "./types";
 
-// Helper to create a base profile with common fields
 function createBaseProfile(): DeviceProfile {
   return {
     device_id: "dev_test123",
@@ -21,11 +18,10 @@ function createBaseProfile(): DeviceProfile {
     risk_score: 0,
     flags: [],
     updated_at: Date.now(),
-    ttl: Math.floor(Date.now() / 1000) + 86400 * 60, // 60 days
+    ttl: Math.floor(Date.now() / 1000) + 86400 * 60,
   };
 }
 
-// Helper to create a base fingerprint matching the profile
 function createMatchingFingerprint(): Fingerprint {
   return {
     stable_hash: "stable_abc",

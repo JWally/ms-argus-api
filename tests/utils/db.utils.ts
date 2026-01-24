@@ -12,6 +12,8 @@ import { marshall, unmarshall } from "@aws-sdk/util-dynamodb";
 import { Fingerprint } from "../../src/types/fingerprint";
 import { createFingerprint, FingerprintPresets } from "./fingerprint.factory";
 
+const TENANT_KEY_CONDITION = "tenant_id = :tid";
+
 /**
  * Test database configuration
  */
@@ -69,7 +71,16 @@ export class TestDbClient {
     const ttl = Math.floor(now / 1000) + 60 * 24 * 60 * 60; // 60 days
     const tier2Ttl = Math.floor(now / 1000) + 7 * 24 * 60 * 60; // 7 days
 
-    // 1. Write profile
+    await this.writeProfile(profile, now, ttl);
+    await this.writeTier1Indexes(profile, ttl);
+    await this.writeTier2Buckets(profile, tier2Ttl);
+  }
+
+  private async writeProfile(
+    profile: SeedDeviceProfile,
+    now: number,
+    ttl: number,
+  ): Promise<void> {
     await this.client.send(
       new PutItemCommand({
         TableName: this.config.profilesTable,
@@ -90,18 +101,27 @@ export class TestDbClient {
         }),
       }),
     );
+  }
 
-    // 2. Write Tier 1 indexes
-    const tier1Writes: Promise<unknown>[] = [];
+  private async writeTier1Indexes(
+    profile: SeedDeviceProfile,
+    ttl: number,
+  ): Promise<void> {
+    const entries: { prefix: string; value: string | undefined }[] = [
+      { prefix: "evercookie", value: profile.fingerprint.evercookie_id },
+      { prefix: "stable", value: profile.fingerprint.stable_hash },
+      { prefix: "fuzzy", value: profile.fingerprint.fuzzy_hash },
+    ];
 
-    if (profile.fingerprint.evercookie_id) {
-      tier1Writes.push(
+    const writes = entries
+      .filter((e) => e.value)
+      .map((e) =>
         this.client.send(
           new PutItemCommand({
             TableName: this.config.tier1IndexTable,
             Item: marshall({
               tenant_id: profile.tenantId,
-              hash_key: `evercookie#${profile.fingerprint.evercookie_id}`,
+              hash_key: `${e.prefix}#${e.value}`,
               device_id: profile.deviceId,
               risk_score: profile.riskScore ?? 0.3,
               flags: profile.flags ?? [],
@@ -110,102 +130,45 @@ export class TestDbClient {
           }),
         ),
       );
-    }
 
-    if (profile.fingerprint.stable_hash) {
-      tier1Writes.push(
-        this.client.send(
-          new PutItemCommand({
-            TableName: this.config.tier1IndexTable,
-            Item: marshall({
-              tenant_id: profile.tenantId,
-              hash_key: `stable#${profile.fingerprint.stable_hash}`,
-              device_id: profile.deviceId,
-              risk_score: profile.riskScore ?? 0.3,
-              flags: profile.flags ?? [],
-              ttl,
-            }),
-          }),
-        ),
-      );
-    }
+    await Promise.all(writes);
+  }
 
-    if (profile.fingerprint.fuzzy_hash) {
-      tier1Writes.push(
-        this.client.send(
-          new PutItemCommand({
-            TableName: this.config.tier1IndexTable,
-            Item: marshall({
-              tenant_id: profile.tenantId,
-              hash_key: `fuzzy#${profile.fingerprint.fuzzy_hash}`,
-              device_id: profile.deviceId,
-              risk_score: profile.riskScore ?? 0.3,
-              flags: profile.flags ?? [],
-              ttl,
-            }),
-          }),
-        ),
-      );
-    }
-
-    await Promise.all(tier1Writes);
-
-    // 3. Write Tier 2 bucket entries
-    const tier2Writes: Promise<unknown>[] = [];
+  private async writeTier2Buckets(
+    profile: SeedDeviceProfile,
+    tier2Ttl: number,
+  ): Promise<void> {
     const fp = profile.fingerprint;
+    const bucketKeys: string[] = [];
 
-    // IP + JA4 bucket
     if (fp.ip_address && fp.ja4) {
-      const bucketKey = `${profile.tenantId}#ip_ja4#${fp.ip_address}#${fp.ja4}`;
-      tier2Writes.push(
-        this.client.send(
-          new PutItemCommand({
-            TableName: this.config.tier2BucketsTable,
-            Item: marshall({
-              bucket_key: bucketKey,
-              device_id: profile.deviceId,
-              ttl: tier2Ttl,
-            }),
-          }),
-        ),
-      );
+      bucketKeys.push(`${profile.tenantId}#ip_ja4#${fp.ip_address}#${fp.ja4}`);
     }
-
-    // GPU + Screen + Timezone bucket
     if (fp.gpu_renderer && fp.screen_dims && fp.timezone) {
-      const bucketKey = `${profile.tenantId}#gpu_screen_tz#${fp.gpu_renderer}#${fp.screen_dims}#${fp.timezone}`;
-      tier2Writes.push(
-        this.client.send(
-          new PutItemCommand({
-            TableName: this.config.tier2BucketsTable,
-            Item: marshall({
-              bucket_key: bucketKey,
-              device_id: profile.deviceId,
-              ttl: tier2Ttl,
-            }),
-          }),
-        ),
+      bucketKeys.push(
+        `${profile.tenantId}#gpu_screen_tz#${fp.gpu_renderer}#${fp.screen_dims}#${fp.timezone}`,
       );
     }
-
-    // Audio + Canvas bucket
     if (fp.audio_hash && fp.canvas_hash) {
-      const bucketKey = `${profile.tenantId}#audio_canvas#${fp.audio_hash}#${fp.canvas_hash}`;
-      tier2Writes.push(
-        this.client.send(
-          new PutItemCommand({
-            TableName: this.config.tier2BucketsTable,
-            Item: marshall({
-              bucket_key: bucketKey,
-              device_id: profile.deviceId,
-              ttl: tier2Ttl,
-            }),
-          }),
-        ),
+      bucketKeys.push(
+        `${profile.tenantId}#audio_canvas#${fp.audio_hash}#${fp.canvas_hash}`,
       );
     }
 
-    await Promise.all(tier2Writes);
+    const writes = bucketKeys.map((bucketKey) =>
+      this.client.send(
+        new PutItemCommand({
+          TableName: this.config.tier2BucketsTable,
+          Item: marshall({
+            bucket_key: bucketKey,
+            device_id: profile.deviceId,
+            ttl: tier2Ttl,
+          }),
+        }),
+      ),
+    );
+
+    await Promise.all(writes);
   }
 
   /**
@@ -219,7 +182,20 @@ export class TestDbClient {
    * Delete a device and all associated indexes
    */
   async deleteDevice(tenantId: string, deviceId: string): Promise<void> {
-    // 1. Get the profile to find associated hashes
+    await this.deleteTier1IndexesForDevice(tenantId, deviceId);
+
+    await this.client.send(
+      new DeleteItemCommand({
+        TableName: this.config.profilesTable,
+        Key: marshall({ tenant_id: tenantId, device_id: deviceId }),
+      }),
+    );
+  }
+
+  private async deleteTier1IndexesForDevice(
+    tenantId: string,
+    deviceId: string,
+  ): Promise<void> {
     const profileResult = await this.client.send(
       new QueryCommand({
         TableName: this.config.profilesTable,
@@ -231,56 +207,24 @@ export class TestDbClient {
       }),
     );
 
-    if (profileResult.Items && profileResult.Items.length > 0) {
-      const profile = unmarshall(profileResult.Items[0]);
+    if (!profileResult.Items || profileResult.Items.length === 0) return;
 
-      // Delete Tier 1 indexes
-      const deletePromises: Promise<unknown>[] = [];
+    const profile = unmarshall(profileResult.Items[0]);
+    const hashKeys = [
+      profile.stable_hash ? `stable#${profile.stable_hash}` : null,
+      profile.fuzzy_hash ? `fuzzy#${profile.fuzzy_hash}` : null,
+    ].filter(Boolean) as string[];
 
-      if (profile.stable_hash) {
-        deletePromises.push(
-          this.client.send(
-            new DeleteItemCommand({
-              TableName: this.config.tier1IndexTable,
-              Key: marshall({
-                tenant_id: tenantId,
-                hash_key: `stable#${profile.stable_hash}`,
-              }),
-            }),
-          ),
-        );
-      }
-
-      if (profile.fuzzy_hash) {
-        deletePromises.push(
-          this.client.send(
-            new DeleteItemCommand({
-              TableName: this.config.tier1IndexTable,
-              Key: marshall({
-                tenant_id: tenantId,
-                hash_key: `fuzzy#${profile.fuzzy_hash}`,
-              }),
-            }),
-          ),
-        );
-      }
-
-      await Promise.all(deletePromises);
-    }
-
-    // 2. Delete profile
-    await this.client.send(
-      new DeleteItemCommand({
-        TableName: this.config.profilesTable,
-        Key: marshall({
-          tenant_id: tenantId,
-          device_id: deviceId,
-        }),
-      }),
+    await Promise.all(
+      hashKeys.map((hashKey) =>
+        this.client.send(
+          new DeleteItemCommand({
+            TableName: this.config.tier1IndexTable,
+            Key: marshall({ tenant_id: tenantId, hash_key: hashKey }),
+          }),
+        ),
+      ),
     );
-
-    // Note: Tier 2 bucket entries will expire via TTL
-    // For immediate cleanup, would need to track bucket keys
   }
 
   /**
@@ -290,104 +234,63 @@ export class TestDbClient {
   async cleanupTenant(
     tenantId: string,
   ): Promise<{ profilesDeleted: number; indexesDeleted: number }> {
-    let profilesDeleted = 0;
-    let indexesDeleted = 0;
-
-    // 1. Delete all profiles for tenant
-    let lastEvaluatedKey: Record<string, unknown> | undefined;
-    do {
-      const result = await this.client.send(
-        new QueryCommand({
-          TableName: this.config.profilesTable,
-          KeyConditionExpression: "tenant_id = :tid",
-          ExpressionAttributeValues: {
-            ":tid": { S: tenantId },
-          },
-          ProjectionExpression: "tenant_id, device_id",
-          ExclusiveStartKey: lastEvaluatedKey as Record<string, { S: string }>,
-        }),
-      );
-
-      if (result.Items && result.Items.length > 0) {
-        // Batch delete profiles (max 25 per batch)
-        const batches = [];
-        for (let i = 0; i < result.Items.length; i += 25) {
-          const batch = result.Items.slice(i, i + 25);
-          batches.push(
-            this.client.send(
-              new BatchWriteItemCommand({
-                RequestItems: {
-                  [this.config.profilesTable]: batch.map((item) => ({
-                    DeleteRequest: {
-                      Key: {
-                        tenant_id: item.tenant_id,
-                        device_id: item.device_id,
-                      },
-                    },
-                  })),
-                },
-              }),
-            ),
-          );
-        }
-        await Promise.all(batches);
-        profilesDeleted += result.Items.length;
-      }
-
-      lastEvaluatedKey = result.LastEvaluatedKey as
-        | Record<string, unknown>
-        | undefined;
-    } while (lastEvaluatedKey);
-
-    // 2. Delete all Tier 1 indexes for tenant
-    lastEvaluatedKey = undefined;
-    do {
-      const result = await this.client.send(
-        new QueryCommand({
-          TableName: this.config.tier1IndexTable,
-          KeyConditionExpression: "tenant_id = :tid",
-          ExpressionAttributeValues: {
-            ":tid": { S: tenantId },
-          },
-          ProjectionExpression: "tenant_id, hash_key",
-          ExclusiveStartKey: lastEvaluatedKey as Record<string, { S: string }>,
-        }),
-      );
-
-      if (result.Items && result.Items.length > 0) {
-        const batches = [];
-        for (let i = 0; i < result.Items.length; i += 25) {
-          const batch = result.Items.slice(i, i + 25);
-          batches.push(
-            this.client.send(
-              new BatchWriteItemCommand({
-                RequestItems: {
-                  [this.config.tier1IndexTable]: batch.map((item) => ({
-                    DeleteRequest: {
-                      Key: {
-                        tenant_id: item.tenant_id,
-                        hash_key: item.hash_key,
-                      },
-                    },
-                  })),
-                },
-              }),
-            ),
-          );
-        }
-        await Promise.all(batches);
-        indexesDeleted += result.Items.length;
-      }
-
-      lastEvaluatedKey = result.LastEvaluatedKey as
-        | Record<string, unknown>
-        | undefined;
-    } while (lastEvaluatedKey);
-
-    // Note: Tier 2 bucket cleanup requires knowing bucket keys or scanning
-    // For test purposes, TTL-based expiration is typically sufficient
-
+    const profilesDeleted = await this.batchDeleteByTenant(
+      tenantId,
+      this.config.profilesTable,
+      "tenant_id, device_id",
+    );
+    const indexesDeleted = await this.batchDeleteByTenant(
+      tenantId,
+      this.config.tier1IndexTable,
+      "tenant_id, hash_key",
+    );
     return { profilesDeleted, indexesDeleted };
+  }
+
+  private async batchDeleteByTenant(
+    tenantId: string,
+    tableName: string,
+    projectionExpression: string,
+  ): Promise<number> {
+    let deleted = 0;
+    let lastEvaluatedKey: Record<string, unknown> | undefined;
+
+    do {
+      const result = await this.client.send(
+        new QueryCommand({
+          TableName: tableName,
+          KeyConditionExpression: TENANT_KEY_CONDITION,
+          ExpressionAttributeValues: { ":tid": { S: tenantId } },
+          ProjectionExpression: projectionExpression,
+          ExclusiveStartKey: lastEvaluatedKey as Record<string, { S: string }>,
+        }),
+      );
+
+      if (result.Items && result.Items.length > 0) {
+        const batches = [];
+        for (let i = 0; i < result.Items.length; i += 25) {
+          batches.push(
+            this.client.send(
+              new BatchWriteItemCommand({
+                RequestItems: {
+                  [tableName]: result.Items.slice(i, i + 25).map((item) => ({
+                    DeleteRequest: { Key: item },
+                  })),
+                },
+              }),
+            ),
+          );
+        }
+        await Promise.all(batches);
+        deleted += result.Items.length;
+      }
+
+      lastEvaluatedKey = result.LastEvaluatedKey as
+        | Record<string, unknown>
+        | undefined;
+    } while (lastEvaluatedKey);
+
+    return deleted;
   }
 
   /**
@@ -421,7 +324,7 @@ export class TestDbClient {
     const result = await this.client.send(
       new QueryCommand({
         TableName: this.config.profilesTable,
-        KeyConditionExpression: "tenant_id = :tid",
+        KeyConditionExpression: TENANT_KEY_CONDITION,
         ExpressionAttributeValues: {
           ":tid": { S: tenantId },
         },

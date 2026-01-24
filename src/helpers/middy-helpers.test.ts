@@ -1,4 +1,3 @@
-// src/helpers/middy-helpers.test.ts
 /* eslint-disable @typescript-eslint/no-explicit-any, @typescript-eslint/no-non-null-assertion */
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { APIGatewayProxyEvent } from "aws-lambda";
@@ -10,12 +9,11 @@ import {
   _clearDeduplicateCache,
 } from "./middy-helpers";
 
-// Mock getAwsSecrets
-vi.mock("../services/get-aws-secrets", () => ({
+vi.mock("./get-aws-secrets", () => ({
   getAwsSecrets: vi.fn(),
 }));
 
-import { getAwsSecrets } from "../services/get-aws-secrets";
+import { getAwsSecrets } from "./get-aws-secrets";
 
 describe("middy-helpers", () => {
   describe("isWarmingUp", () => {
@@ -174,11 +172,9 @@ describe("middy-helpers", () => {
       const middleware = deduplicateMiddleware();
       const request = createMockRequest('{"data": "test"}');
 
-      // First request should pass
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       middleware.before!(request as any);
 
-      // Second identical request should throw
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       expect(() => middleware.before!(request as any)).toThrow(
         /Duplicate request detected/,
@@ -189,11 +185,9 @@ describe("middy-helpers", () => {
       const middleware = deduplicateMiddleware();
       const request = createMockRequest('{"data": "test"}');
 
-      // First request should pass
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       middleware.before!(request as any);
 
-      // Second request should throw with 429 status
       try {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         middleware.before!(request as any);
@@ -218,7 +212,6 @@ describe("middy-helpers", () => {
       const middleware = deduplicateMiddleware();
       const request = createMockRequest(null);
 
-      // Should not throw and not add to cache
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       expect(() => middleware.before!(request as any)).not.toThrow();
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -229,8 +222,6 @@ describe("middy-helpers", () => {
       const middleware = deduplicateMiddleware();
       const request = createMockRequest("");
 
-      // Empty string is falsy, so should skip deduplication
-      // Note: empty string is falsy in JS, so !event.body returns true
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       expect(() => middleware.before!(request as any)).not.toThrow();
     });
@@ -239,11 +230,9 @@ describe("middy-helpers", () => {
       const middleware = deduplicateMiddleware();
       const request = createMockRequest('{"data": "repeat"}');
 
-      // First request passes
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       middleware.before!(request as any);
 
-      // Second request - duplicate count 2
       try {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         middleware.before!(request as any);
@@ -251,7 +240,6 @@ describe("middy-helpers", () => {
         expect((error as Error).message).toBe("Duplicate request detected: 2");
       }
 
-      // Third request - duplicate count 3
       try {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         middleware.before!(request as any);
@@ -277,18 +265,14 @@ describe("middy-helpers", () => {
         internal: {},
       };
 
-      // First request passes
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       middleware.before!(request as any);
 
-      // Second request should be blocked
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       expect(() => middleware.before!(request as any)).toThrow();
 
-      // Clear cache
       _clearDeduplicateCache();
 
-      // Same request should now pass again
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       expect(() => middleware.before!(request as any)).not.toThrow();
     });

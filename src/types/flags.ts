@@ -1,5 +1,3 @@
-// src/types/flags.ts
-
 /**
  * Device flags for risk assessment
  * Used by both matching and profile services
@@ -15,7 +13,7 @@ export const DeviceFlags = {
   HEADLESS_BROWSER: "headless_browser",
   FINGERPRINT_MISMATCH: "fingerprint_mismatch",
   RAPID_REQUESTS: "rapid_requests",
-  // Anomaly detection flags (AR-141)
+  // Anomaly detection flags
   NAVIGATOR_LIES: "navigator_lies",
   LIKELY_PROXY: "likely_proxy",
   LIKELY_VPN: "likely_vpn",

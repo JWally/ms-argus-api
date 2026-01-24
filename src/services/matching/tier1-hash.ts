@@ -1,12 +1,8 @@
-// src/services/matching/tier1-hash.ts
 import { DynamoDBClient, GetItemCommand } from "@aws-sdk/client-dynamodb";
 import { unmarshall } from "@aws-sdk/util-dynamodb";
 import { computeFuzzyMatchInfo } from "../../helpers/hash";
 import { EvidenceCode, Fingerprint, MatchResult } from "./types";
 
-/**
- * Dependencies for tier 1 hash operations
- */
 export interface Tier1HashDeps {
   dynamodb: DynamoDBClient;
   tier1IndexTable: string;
@@ -15,13 +11,12 @@ export interface Tier1HashDeps {
 /**
  * Tier 1: Match by stable or fuzzy hash
  * High confidence - these hashes are computed from multiple signals
- * Now includes fuzzy_match_info for drift detection
+ * Includes fuzzy_match_info for drift detection
  */
 export async function tier1HashMatch(
   deps: Tier1HashDeps,
   fingerprint: Fingerprint,
 ): Promise<MatchResult | null> {
-  // Try stable hash first (higher confidence)
   if (fingerprint.stable_hash) {
     const result = await lookupTier1Index(
       deps,
@@ -36,7 +31,6 @@ export async function tier1HashMatch(
         risk_score: result.risk_score ?? 0.3,
         flags: result.flags ?? [],
         evidence_codes: ["STABLE_HASH_MATCH"] as EvidenceCode[],
-        // Compute drift from stored fuzzy_hash
         fuzzy_match_info: computeFuzzyMatchInfo(
           fingerprint.fuzzy_hash,
           result.fuzzy_hash,
@@ -45,7 +39,6 @@ export async function tier1HashMatch(
     }
   }
 
-  // Try fuzzy hash (slightly lower confidence)
   if (fingerprint.fuzzy_hash) {
     const result = await lookupTier1Index(
       deps,
@@ -60,7 +53,6 @@ export async function tier1HashMatch(
         risk_score: result.risk_score ?? 0.3,
         flags: result.flags ?? [],
         evidence_codes: ["FUZZY_HASH_MATCH"] as EvidenceCode[],
-        // Compute drift from stored fuzzy_hash
         fuzzy_match_info: computeFuzzyMatchInfo(
           fingerprint.fuzzy_hash,
           result.fuzzy_hash,
@@ -72,10 +64,6 @@ export async function tier1HashMatch(
   return null;
 }
 
-/**
- * Lookup a single entry in the Tier 1 index
- * Added fuzzy_hash for drift detection
- */
 async function lookupTier1Index(
   deps: Tier1HashDeps,
   hashKey: string,

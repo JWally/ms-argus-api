@@ -1,16 +1,9 @@
-// src/handlers/matching-worker.test.ts
-// AR-52: Updated to use DynamoDB session cache instead of Redis
-// AR-123: Added tests for NEW_DEVICE_RATE metric
-// AR-148: Added mock for anomaly detection
 import { describe, it, expect, beforeEach, vi } from "vitest";
 
-// AR-123: Mock Powertools Metrics to verify metric emission
-// Must use vi.hoisted to create mock functions before vi.mock runs
 const { mockAddMetric, mockPublishStoredMetrics, mockDetectAllAnomalies } =
   vi.hoisted(() => ({
     mockAddMetric: vi.fn(),
     mockPublishStoredMetrics: vi.fn(),
-    // AR-148: Mock anomaly detection
     mockDetectAllAnomalies: vi.fn().mockReturnValue({
       signals: [],
       aggregateScore: 0,
@@ -18,7 +11,6 @@ const { mockAddMetric, mockPublishStoredMetrics, mockDetectAllAnomalies } =
     }),
   }));
 
-// AR-148: Mock anomaly detection to avoid errors in tests
 vi.mock("../services/profile/anomaly", () => ({
   detectAllAnomalies: mockDetectAllAnomalies,
 }));
@@ -34,13 +26,11 @@ vi.mock("@aws-lambda-powertools/metrics", () => ({
   },
 }));
 
-// Set environment variables BEFORE any module imports using vi.hoisted
-// This ensures env validation passes during module load
 vi.hoisted(() => {
   process.env.POWERTOOLS_SERVICE_NAME = "argus-matching-worker-test";
   process.env.POWERTOOLS_METRICS_NAMESPACE = "argus-test";
   process.env.SESSION_CACHE_TABLE = "test-session-cache";
-  process.env.SESSION_PAYLOAD_TABLE = "test-session-payload"; // AR-XXX: Full payload storage
+  process.env.SESSION_PAYLOAD_TABLE = "test-session-payload";
   process.env.TIER1_INDEX_TABLE = "test-tier1-index";
   process.env.TIER2_BUCKETS_TABLE = "test-tier2-buckets";
   process.env.PROFILES_TABLE = "test-profiles";
@@ -61,12 +51,10 @@ import { FirehoseClient, PutRecordCommand } from "@aws-sdk/client-firehose";
 import { marshall } from "@aws-sdk/util-dynamodb";
 import { SQSEvent, SQSRecord, Context } from "aws-lambda";
 
-// Mock AWS SDK clients
 const dynamoMock = mockClient(DynamoDBClient);
 const sqsMock = mockClient(SQSClient);
 const firehoseMock = mockClient(FirehoseClient);
 
-// Import handler after mocking
 import { handler } from "./matching-worker";
 
 describe("matching-worker handler", () => {
@@ -89,11 +77,9 @@ describe("matching-worker handler", () => {
     dynamoMock.reset();
     sqsMock.reset();
     firehoseMock.reset();
-    // Default: resolve PutItemCommand and PutRecordCommand to avoid unhandled rejections
     dynamoMock.on(PutItemCommand).resolves({});
     firehoseMock.on(PutRecordCommand).resolves({ RecordId: "rec-1" });
     vi.clearAllMocks();
-    // AR-123: Reset metric mocks
     mockAddMetric.mockClear();
     mockPublishStoredMetrics.mockClear();
   });
@@ -122,12 +108,10 @@ describe("matching-worker handler", () => {
     Records: records,
   });
 
-  // V3 payload format
   const createFingerprintPayload = (
     overrides: Record<string, unknown> = {},
   ) => {
     const sessionId = (overrides.session_id as string) || "test-session-123";
-    // Remove session_id from overrides if present (it goes in identifiers)
     const { session_id: _, ...restOverrides } = overrides;
     return {
       identifiers: {
@@ -170,7 +154,6 @@ describe("matching-worker handler", () => {
     it("should process a single record successfully with Tier 1 match", async () => {
       const payload = createFingerprintPayload();
 
-      // Mock Tier 1 index lookup - found existing device
       dynamoMock.on(GetItemCommand).resolves({
         Item: marshall({
           hash_value: "hash-abc123",
@@ -178,7 +161,6 @@ describe("matching-worker handler", () => {
         }),
       });
 
-      // Mock SQS send for profile update
       sqsMock.on(SendMessageCommand).resolves({ MessageId: "profile-msg-1" });
 
       const event = createSQSEvent([createSQSRecord(payload)]);
@@ -187,7 +169,6 @@ describe("matching-worker handler", () => {
       expect(result).toBeDefined();
       expect(result!.batchItemFailures).toHaveLength(0);
 
-      // Verify profile update was queued
       const sqsCalls = sqsMock.commandCalls(SendMessageCommand);
       expect(sqsCalls.length).toBeGreaterThanOrEqual(1);
     });
@@ -218,10 +199,8 @@ describe("matching-worker handler", () => {
       const payload = createFingerprintPayload();
       const sessionId = payload.identifiers.session_id;
 
-      // AR-52: Pre-populate DynamoDB session cache with complete result
       dynamoMock.on(GetItemCommand).callsFake((input) => {
         const key = input.Key;
-        // Return cached session for session cache lookups
         if (key?.cache_key?.S === `session:${sessionId}`) {
           return {
             Item: marshall({
@@ -249,7 +228,6 @@ describe("matching-worker handler", () => {
 
       expect(result!.batchItemFailures).toHaveLength(0);
 
-      // Should not have queued profile update since we had a cache hit
       expect(sqsMock.calls()).toHaveLength(0);
     });
 
@@ -261,7 +239,6 @@ describe("matching-worker handler", () => {
         },
       });
 
-      // Mock no match found in any tier
       dynamoMock.on(GetItemCommand).resolves({});
       dynamoMock.on(QueryCommand).resolves({ Items: [] });
       sqsMock.on(SendMessageCommand).resolves({ MessageId: "msg-1" });
@@ -271,7 +248,6 @@ describe("matching-worker handler", () => {
 
       expect(result!.batchItemFailures).toHaveLength(0);
 
-      // Should have queued profile update for new device
       const sqsCalls = sqsMock.commandCalls(SendMessageCommand);
       expect(sqsCalls.length).toBeGreaterThanOrEqual(1);
     });
@@ -306,15 +282,11 @@ describe("matching-worker handler", () => {
         },
       });
 
-      // AR-52: The session cache check and tier1 lookups both use GetItemCommand
-      // Mock based on the hash_key to simulate success for first record, failure for second
       dynamoMock.on(GetItemCommand).callsFake((input) => {
         const key = input.Key;
-        // Session cache lookups (cache_key starts with "session:")
         if (key?.cache_key?.S?.startsWith("session:")) {
-          return { Item: undefined }; // Cache miss
+          return { Item: undefined };
         }
-        // Tier1 index lookups - success for cookie-success, fail for cookie-fail
         if (key?.hash_key?.S?.includes("cookie-success")) {
           return {
             Item: marshall({
@@ -342,7 +314,6 @@ describe("matching-worker handler", () => {
       expect(result!.batchItemFailures[0].itemIdentifier).toBe("fail-msg");
     });
 
-    // AR-156: Updated - invalid JSON should NOT retry (poison message handling)
     it("should handle invalid JSON in record body without retrying", async () => {
       const event = createSQSEvent([
         {
@@ -355,7 +326,6 @@ describe("matching-worker handler", () => {
 
       // Should NOT be in batch failures (don't retry poison messages)
       expect(result!.batchItemFailures).toHaveLength(0);
-      // Should emit MalformedPayload metric
       expect(mockAddMetric).toHaveBeenCalledWith(
         "MalformedPayload",
         "Count",
@@ -366,13 +336,11 @@ describe("matching-worker handler", () => {
     it("should write degraded status on matching failure", async () => {
       const payload = createFingerprintPayload();
 
-      // Mock matching failure
       dynamoMock.on(GetItemCommand).rejects(new Error("Matching failed"));
 
       const event = createSQSEvent([createSQSRecord(payload)]);
       const result = await handler(event, mockContext, () => {});
 
-      // The record should be marked as failed since matching threw an error
       expect(result!.batchItemFailures).toHaveLength(1);
     });
   });
@@ -386,7 +354,6 @@ describe("matching-worker handler", () => {
         },
       });
 
-      // Mock evercookie lookup success
       dynamoMock.on(GetItemCommand).resolves({
         Item: marshall({
           hash_value: "evercookie-abc123",
@@ -403,7 +370,6 @@ describe("matching-worker handler", () => {
     });
   });
 
-  // AR-71: Warmup message handling
   describe("warmup message handling", () => {
     it("should handle warmup message without processing", async () => {
       const warmupMessage = {
@@ -417,13 +383,10 @@ describe("matching-worker handler", () => {
       ]);
       const result = await handler(event, mockContext, () => {});
 
-      // Should succeed without failures
       expect(result!.batchItemFailures).toHaveLength(0);
 
-      // Should NOT call DynamoDB (no matching work)
       expect(dynamoMock.calls()).toHaveLength(0);
 
-      // Should NOT queue profile updates
       expect(sqsMock.calls()).toHaveLength(0);
     });
 
@@ -434,7 +397,6 @@ describe("matching-worker handler", () => {
       };
       const regularPayload = createFingerprintPayload();
 
-      // Mock Tier 1 match for regular message
       dynamoMock.on(GetItemCommand).resolves({
         Item: marshall({
           hash_value: "hash-abc123",
@@ -450,15 +412,12 @@ describe("matching-worker handler", () => {
 
       const result = await handler(event, mockContext, () => {});
 
-      // Both should succeed
       expect(result!.batchItemFailures).toHaveLength(0);
 
-      // DynamoDB should be called only for regular message
       expect(dynamoMock.calls().length).toBeGreaterThan(0);
     });
   });
 
-  // AR-123: NEW_DEVICE_RATE metric tests
   describe("NEW_DEVICE_RATE metric emission", () => {
     it("should emit NEW_DEVICE_RATE metric when is_new_device=true", async () => {
       const payload = createFingerprintPayload({
@@ -468,7 +427,6 @@ describe("matching-worker handler", () => {
         },
       });
 
-      // Mock no match found in any tier (new device)
       dynamoMock.on(GetItemCommand).resolves({});
       dynamoMock.on(QueryCommand).resolves({ Items: [] });
       sqsMock.on(SendMessageCommand).resolves({ MessageId: "msg-1" });
@@ -476,19 +434,15 @@ describe("matching-worker handler", () => {
       const event = createSQSEvent([createSQSRecord(payload)]);
       await handler(event, mockContext, () => {});
 
-      // Verify NEW_DEVICE_RATE metric was emitted
       expect(mockAddMetric).toHaveBeenCalledWith("NEW_DEVICE_RATE", "Count", 1);
-      // Also verify NewDevice metric (legacy)
       expect(mockAddMetric).toHaveBeenCalledWith("NewDevice", "Count", 1);
     });
 
     it("should NOT emit NEW_DEVICE_RATE when is_new_device=false", async () => {
-      // Create payload without evercookie_id to test Tier1 matching (stable hash)
       const payload = createFingerprintPayload({
-        identifiers: { session_id: "test-session-123" }, // No evercookie_id
+        identifiers: { session_id: "test-session-123" },
       });
 
-      // Mock Tier 1 match (existing device via stable hash)
       dynamoMock.on(GetItemCommand).resolves({
         Item: marshall({
           hash_value: "hash-abc123",
@@ -500,20 +454,15 @@ describe("matching-worker handler", () => {
       const event = createSQSEvent([createSQSRecord(payload)]);
       await handler(event, mockContext, () => {});
 
-      // Verify NEW_DEVICE_RATE metric was NOT emitted
       expect(mockAddMetric).not.toHaveBeenCalledWith(
         "NEW_DEVICE_RATE",
         "Count",
         1,
       );
-      // Verify NewDevice metric was NOT emitted
       expect(mockAddMetric).not.toHaveBeenCalledWith("NewDevice", "Count", 1);
-      // Should have emitted Tier1Hit instead
       expect(mockAddMetric).toHaveBeenCalledWith("Tier1Hit", "Count", 1);
     });
   });
-
-  // ==================== FINGERPRINT EXTRACTION ====================
 
   describe("fingerprint extraction - STUN signals", () => {
     it("should extract publicIp from sigint.stun", async () => {
@@ -765,12 +714,10 @@ describe("matching-worker handler", () => {
     });
   });
 
-  // ==================== MISSING SESSION ID ====================
-
   describe("missing session_id handling", () => {
     it("should skip record without session_id and emit metric", async () => {
       const payload = {
-        identifiers: { evercookie_id: "cookie-123" }, // No session_id
+        identifiers: { evercookie_id: "cookie-123" },
         hashes: { stable: "abc", fuzzy: "def" },
         device: {},
       };
@@ -778,7 +725,6 @@ describe("matching-worker handler", () => {
       const event = createSQSEvent([createSQSRecord(payload)]);
       const result = await handler(event, mockContext, () => {});
 
-      // Should not be in failures (not retried)
       expect(result!.batchItemFailures).toHaveLength(0);
       expect(mockAddMetric).toHaveBeenCalledWith(
         "MissingSessionId",
@@ -787,8 +733,6 @@ describe("matching-worker handler", () => {
       );
     });
   });
-
-  // ==================== SESSION PAYLOAD WRITING ====================
 
   describe("writeSessionPayload", () => {
     it("should write gzipped payload to session payload table on success", async () => {
@@ -811,7 +755,6 @@ describe("matching-worker handler", () => {
 
       expect(result!.batchItemFailures).toHaveLength(0);
 
-      // Verify PutItemCommand was called for session payload
       const putCalls = dynamoMock.commandCalls(PutItemCommand);
       const payloadWrite = putCalls.find(
         (c) => c.args[0].input.TableName === "test-session-payload",
@@ -830,7 +773,6 @@ describe("matching-worker handler", () => {
       dynamoMock.on(GetItemCommand).resolves({
         Item: marshall({ hash_value: "hash-abc123", device_id: "dev-1" }),
       });
-      // Make PutItemCommand fail only for session payload table
       dynamoMock.on(PutItemCommand).callsFake((input) => {
         if (input.TableName === "test-session-payload") {
           throw new Error("DynamoDB write error");
@@ -843,7 +785,6 @@ describe("matching-worker handler", () => {
       const event = createSQSEvent([createSQSRecord(payload)]);
       const result = await handler(event, mockContext, () => {});
 
-      // Should still succeed (writeSessionPayload has try/catch)
       expect(result!.batchItemFailures).toHaveLength(0);
       expect(mockAddMetric).toHaveBeenCalledWith(
         "SessionPayloadWriteError",
@@ -852,8 +793,6 @@ describe("matching-worker handler", () => {
       );
     });
   });
-
-  // ==================== OBSERVATION EMISSION ====================
 
   describe("emitObservation", () => {
     it("should emit observation to Firehose on successful processing", async () => {

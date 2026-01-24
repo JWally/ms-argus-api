@@ -1,6 +1,3 @@
-// src/services/profile/anomaly/quick-wins.test.ts
-// AR-142: Tests for quick win anomaly detectors
-
 import { describe, it, expect } from "vitest";
 import { detectQuickWinAnomalies } from "./quick-wins";
 import { AnomalyCodes } from "./types";
@@ -101,7 +98,6 @@ describe("detectQuickWinAnomalies", () => {
       const proxySignal = signals.find(
         (s) => s.code === AnomalyCodes.HIGH_PROXY_SCORE,
       );
-      // Severity equals proxy_score
       expect(proxySignal?.severity).toBe(0.85);
       expect(proxySignal?.evidence.actual).toBe("proxy_score: 0.85");
     });

@@ -1,5 +1,3 @@
-// src/helpers/sleep.test.ts
-// AR-210: Tests for consolidated sleep utility
 import { describe, it, expect } from "vitest";
 import { sleep } from "./sleep";
 

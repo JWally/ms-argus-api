@@ -1,5 +1,3 @@
-// src/services/cache/dynamo-cache.ts
-// AR-52: DynamoDB-based session cache - replaces Redis
 import {
   DynamoDBClient,
   GetItemCommand,

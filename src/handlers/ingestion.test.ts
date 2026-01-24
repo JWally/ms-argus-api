@@ -1,6 +1,3 @@
-// src/handlers/ingestion.test.ts
-// AR-90: Tests for ingestion handler with binary gzip compression support
-// AR-127: Added warmup middleware tests
 /* eslint-disable @typescript-eslint/no-non-null-assertion */
 
 import { describe, it, expect, beforeEach, vi } from "vitest";
@@ -26,7 +23,6 @@ vi.hoisted(() => {
   process.env.POWERTOOLS_METRICS_NAMESPACE = "argus-test";
   process.env.SQS_QUEUE_URL =
     "https://sqs.us-east-1.amazonaws.com/123456789/test-queue";
-  // AR-139: Payload archiving config
   process.env.PAYLOAD_ARCHIVE_BUCKET = "test-archive-bucket";
   process.env.PAYLOAD_ARCHIVE_SAMPLE_RATE = "1.0";
 });
@@ -40,14 +36,11 @@ import {
   Context,
 } from "aws-lambda";
 
-// Mock AWS SDK clients
 const sqsMock = mockClient(SQSClient);
-const s3Mock = mockClient(S3Client); // AR-139
+const s3Mock = mockClient(S3Client);
 
-// Import handler after mocking
 import { handler, archivePayload } from "./ingestion";
 
-// Helper to cast result
 const asResult = (result: unknown): APIGatewayProxyStructuredResultV2 =>
   result as APIGatewayProxyStructuredResultV2;
 
@@ -70,12 +63,11 @@ describe("ingestion handler", () => {
   beforeEach(() => {
     sqsMock.reset();
     sqsMock.on(SendMessageCommand).resolves({});
-    s3Mock.reset(); // AR-139
-    s3Mock.on(PutObjectCommand).resolves({}); // AR-139
+    s3Mock.reset();
+    s3Mock.on(PutObjectCommand).resolves({});
     vi.clearAllMocks();
   });
 
-  // Helper to create API Gateway event
   const createApiEvent = (
     body: string,
     options: {
@@ -120,7 +112,6 @@ describe("ingestion handler", () => {
     isBase64Encoded: options.isBase64Encoded ?? false,
   });
 
-  // Helper to create valid V3 fingerprint payload
   const createValidPayload = (sessionId = "test-session-123") => ({
     identifiers: {
       session_id: sessionId,
@@ -163,19 +154,16 @@ describe("ingestion handler", () => {
     });
   });
 
-  // Helper: Simulate API Gateway encoding of browser's raw binary gzip
-  // AR-90: Browser sends raw gzip bytes with Content-Type: application/octet-stream
+  // Browser sends raw gzip bytes with Content-Type: application/octet-stream
   // API Gateway receives binary, base64-encodes it, sets isBase64Encoded=true
   // Lambda receives: base64(gzip(json)) with isBase64Encoded=true
   const simulateBinaryGzipBody = (payload: object): string => {
     const jsonString = JSON.stringify(payload);
-    const gzipped = gzipSync(Buffer.from(jsonString)); // Raw gzip bytes
-    return gzipped.toString("base64"); // API Gateway base64 encodes binary
+    const gzipped = gzipSync(Buffer.from(jsonString));
+    return gzipped.toString("base64");
   };
 
-  // ==================== AR-90: BINARY GZIP COMPRESSION TESTS ====================
-  // New simplified flow: browser sends raw gzip bytes, API Gateway base64 encodes once
-  describe("binary gzip compression support (AR-90)", () => {
+  describe("binary gzip compression support", () => {
     it("should decompress binary gzip payload with application/octet-stream", async () => {
       const payload = createValidPayload("binary-gzip-session-1");
       const body = simulateBinaryGzipBody(payload);
@@ -190,7 +178,6 @@ describe("ingestion handler", () => {
 
       expect(result.statusCode).toBe(204);
 
-      // Verify SQS was called with decompressed payload
       const sqsCalls = sqsMock.commandCalls(SendMessageCommand);
       expect(sqsCalls.length).toBe(1);
       const sentBody = JSON.parse(sqsCalls[0].args[0].input.MessageBody!);
@@ -198,12 +185,10 @@ describe("ingestion handler", () => {
     });
 
     it("should handle large binary gzip payload (>64KB uncompressed)", async () => {
-      // Create a payload that would exceed 64KB uncompressed (V3 format)
       const largeData = {
         identifiers: { session_id: "large-binary-payload-session" },
         hashes: { stable: "abc", fuzzy: "def" },
         device: {
-          // Large nested data that compresses well
           canvas2d: { hash: "canvas-hash", data: "x".repeat(30000) },
           canvasWebgl: { hash: "webgl-hash", data: "y".repeat(30000) },
           offlineAudioContext: { hash: "audio-hash", data: "z".repeat(30000) },
@@ -211,10 +196,10 @@ describe("ingestion handler", () => {
       };
 
       const jsonString = JSON.stringify(largeData);
-      expect(jsonString.length).toBeGreaterThan(64 * 1024); // Verify it's > 64KB
+      expect(jsonString.length).toBeGreaterThan(64 * 1024);
 
       const gzipped = gzipSync(Buffer.from(jsonString));
-      expect(gzipped.length).toBeLessThan(64 * 1024); // Verify compressed is < 64KB
+      expect(gzipped.length).toBeLessThan(64 * 1024);
 
       const body = simulateBinaryGzipBody(largeData);
 
@@ -228,7 +213,6 @@ describe("ingestion handler", () => {
 
       expect(result.statusCode).toBe(204);
 
-      // Verify the full payload was sent to SQS
       const sqsCalls = sqsMock.commandCalls(SendMessageCommand);
       const sentBody = JSON.parse(sqsCalls[0].args[0].input.MessageBody!);
       expect(sentBody.identifiers.session_id).toBe(
@@ -238,7 +222,6 @@ describe("ingestion handler", () => {
     });
 
     it("should return 400 for invalid binary gzip data", async () => {
-      // Send garbage bytes that aren't valid gzip
       const invalidData = Buffer.from("this is not gzip data").toString(
         "base64",
       );
@@ -257,7 +240,6 @@ describe("ingestion handler", () => {
     });
 
     it("should return 400 for binary gzip payload with invalid JSON inside", async () => {
-      // Valid gzip but invalid JSON content
       const invalidJson = "{ this is not valid json }";
       const gzipped = gzipSync(Buffer.from(invalidJson));
       const body = gzipped.toString("base64");
@@ -318,7 +300,6 @@ describe("ingestion handler", () => {
 
       const result = asResult(await handler(event, mockContext));
 
-      // Empty payload should fail JSON parsing
       expect(result.statusCode).toBe(400);
     });
 
@@ -326,7 +307,6 @@ describe("ingestion handler", () => {
       const payload = createValidPayload("case-insensitive-binary-session");
       const body = simulateBinaryGzipBody(payload);
 
-      // Test with uppercase "GZIP"
       const event = createApiEvent(body, {
         contentType: "application/octet-stream",
         contentEncoding: "GZIP",
@@ -339,18 +319,17 @@ describe("ingestion handler", () => {
     });
 
     it("should reject binary gzip payload that exceeds size limit after decompression", async () => {
-      // Create a payload that compresses small but decompresses huge (zip bomb defense)
-      // AR-149: Default limit increased to 2MB
+      // Default limit is 2MB
       const hugePayload = {
         session_id: "zipbomb-binary-test",
-        data: "A".repeat(2.5 * 1024 * 1024), // 2.5MB of 'A' characters - exceeds 2MB limit
+        data: "A".repeat(2.5 * 1024 * 1024), // 2.5MB exceeds 2MB limit
       };
 
       const jsonString = JSON.stringify(hugePayload);
-      expect(jsonString.length).toBeGreaterThan(2 * 1024 * 1024); // Verify exceeds limit
+      expect(jsonString.length).toBeGreaterThan(2 * 1024 * 1024);
 
       const gzipped = gzipSync(Buffer.from(jsonString));
-      expect(gzipped.length).toBeLessThan(10 * 1024); // Compresses well
+      expect(gzipped.length).toBeLessThan(10 * 1024);
 
       const body = gzipped.toString("base64");
 
@@ -362,16 +341,12 @@ describe("ingestion handler", () => {
 
       const result = asResult(await handler(event, mockContext));
 
-      // Should reject oversized decompressed content (zip bomb defense)
       expect(result.statusCode).toBe(400);
       const parsedBody = JSON.parse(result.body ?? "");
-      // AR-136: Now includes size limit in message
       expect(parsedBody.error).toContain("exceeds limit");
     });
 
-    // AR-136: ZIP bomb vulnerability tests - streaming decompression with early abort
-    // AR-149: Default limit increased to 2MB
-    it("should include size limit in error message when decompression exceeds limit (AR-136 AC2)", async () => {
+    it("should include size limit in error message when decompression exceeds limit", async () => {
       const hugePayload = {
         session_id: "zipbomb-error-message-test",
         data: "B".repeat(2.5 * 1024 * 1024), // Exceeds 2MB limit
@@ -390,17 +365,13 @@ describe("ingestion handler", () => {
 
       expect(result.statusCode).toBe(400);
       const parsedBody = JSON.parse(result.body ?? "");
-      // AC2: Error message should include size limit
       expect(parsedBody.error).toMatch(/2097152|2MB/); // 2MB or 2097152 bytes
     });
 
-    it("should abort decompression early without allocating full buffer (AR-136 AC1)", async () => {
-      // This test verifies behavior - actual memory behavior tested via integration
-      // Create payload that would expand to several MB
-      // AR-149: Default limit increased to 2MB
+    it("should abort decompression early without allocating full buffer", async () => {
+      // Default limit is 2MB
       const largeExpandingPayload = {
         session_id: "early-abort-test",
-        // Repetitive data compresses well, expands to >2MB
         data: "ABCDEFGHIJ".repeat(300000), // ~3MB of text
       };
 
@@ -417,20 +388,18 @@ describe("ingestion handler", () => {
 
       const result = asResult(await handler(event, mockContext));
 
-      // Should reject with clear error - streaming should abort early
       expect(result.statusCode).toBe(400);
       const parsedBody = JSON.parse(result.body ?? "");
       expect(parsedBody.error).toContain("exceeds");
     });
 
-    it("should successfully decompress payloads just under the limit (AR-136 AC4)", async () => {
-      // AR-149: Default limit increased to 2MB
-      // 1.5MB is safely under 2MB limit - should succeed
+    it("should successfully decompress payloads just under the limit", async () => {
+      // 1.5MB is safely under 2MB limit
       const nearLimitPayload = {
         identifiers: { session_id: "near-limit-success-test" },
         hashes: { stable: "abc", fuzzy: "def" },
         device: {
-          largeData: "X".repeat(1.5 * 1024 * 1024), // 1.5MB, safely under 2MB
+          largeData: "X".repeat(1.5 * 1024 * 1024),
         },
       };
 
@@ -445,24 +414,20 @@ describe("ingestion handler", () => {
 
       const result = asResult(await handler(event, mockContext));
 
-      // Should succeed - payload is under limit
       expect(result.statusCode).toBe(204);
     });
 
     it("should require Content-Encoding: gzip for binary payloads", async () => {
-      // Binary payload without gzip encoding should fail
       const payload = createValidPayload("no-encoding-session");
       const body = simulateBinaryGzipBody(payload);
 
       const event = createApiEvent(body, {
         contentType: "application/octet-stream",
-        // No contentEncoding - should fail
         isBase64Encoded: true,
       });
 
       const result = asResult(await handler(event, mockContext));
 
-      // Should reject - binary without gzip encoding is invalid
       expect(result.statusCode).toBe(400);
     });
   });
@@ -533,10 +498,10 @@ describe("ingestion handler", () => {
     });
 
     it("should return 413 for oversized uncompressed payload", async () => {
-      // AR-149: Default limit increased to 256KB, test with larger payload
+      // 300KB exceeds 256KB default limit
       const oversizedPayload = {
         session_id: "test",
-        data: "x".repeat(300 * 1024), // 300KB > 256KB default limit
+        data: "x".repeat(300 * 1024),
       };
 
       const event = createApiEvent(JSON.stringify(oversizedPayload));
@@ -546,17 +511,14 @@ describe("ingestion handler", () => {
     });
   });
 
-  // AR-127: Warmup middleware tests
-  describe("warmup middleware (AR-127)", () => {
+  describe("warmup middleware", () => {
     it("should short-circuit warmup events with serverless-plugin-warmup source", async () => {
-      // Warmup event from serverless-plugin-warmup
       const warmupEvent = {
         source: "serverless-plugin-warmup",
       } as unknown as APIGatewayProxyEventV2;
 
       const result = await handler(warmupEvent, mockContext);
 
-      // Warmup events return early - no SQS call
       const sqsCalls = sqsMock.commandCalls(SendMessageCommand);
       expect(sqsCalls.length).toBe(0);
 
@@ -570,10 +532,8 @@ describe("ingestion handler", () => {
 
       const result = asResult(await handler(event, mockContext));
 
-      // Normal event should be processed
       expect(result.statusCode).toBe(204);
 
-      // SQS should be called
       const sqsCalls = sqsMock.commandCalls(SendMessageCommand);
       expect(sqsCalls.length).toBe(1);
       const sentBody = JSON.parse(sqsCalls[0].args[0].input.MessageBody!);
@@ -583,20 +543,17 @@ describe("ingestion handler", () => {
     });
 
     it("should not call SQS for warmup events", async () => {
-      // Warmup event
       const warmupEvent = {
         source: "serverless-plugin-warmup",
       } as unknown as APIGatewayProxyEventV2;
 
       await handler(warmupEvent, mockContext);
 
-      // Verify no SQS call was made
       const sqsCalls = sqsMock.commandCalls(SendMessageCommand);
       expect(sqsCalls.length).toBe(0);
     });
   });
 
-  // V3 schema tests - V1/V2 are no longer supported
   describe("v3 schema format", () => {
     it("should accept v3 format payload with sigint", async () => {
       const v3Payload = {
@@ -617,7 +574,6 @@ describe("ingestion handler", () => {
 
       expect(result.statusCode).toBe(204);
 
-      // Verify SQS payload
       const sqsCalls = sqsMock.commandCalls(SendMessageCommand);
       expect(sqsCalls.length).toBe(1);
       const sentBody = JSON.parse(sqsCalls[0].args[0].input.MessageBody!);
@@ -650,7 +606,6 @@ describe("ingestion handler", () => {
 
       expect(result.statusCode).toBe(204);
 
-      // Verify SQS payload preserves structure
       const sqsCalls = sqsMock.commandCalls(SendMessageCommand);
       expect(sqsCalls.length).toBe(1);
       const sentBody = JSON.parse(sqsCalls[0].args[0].input.MessageBody!);
@@ -678,7 +633,6 @@ describe("ingestion handler", () => {
     it.skip("should return 400 for v3 payload missing identifiers.session_id", async () => {
       const invalidV3 = {
         identifiers: {
-          // missing session_id
           evercookie_id: "ec_123",
         },
         hashes: { stable: "a", fuzzy: "b" },
@@ -693,15 +647,13 @@ describe("ingestion handler", () => {
     });
   });
 
-  // AR-139: Payload archiving tests
-  describe("payload archiving (AR-139)", () => {
+  describe("payload archiving", () => {
     it("should archive payload with correct Hive-partitioned S3 key format", async () => {
       const sessionId = "archive-test-session-123";
       const payload = { session_id: sessionId, data: "test-data" };
 
       await archivePayload(sessionId, payload);
 
-      // Verify S3 was called
       const s3Calls = s3Mock.commandCalls(PutObjectCommand);
       expect(s3Calls.length).toBe(1);
 
@@ -721,20 +673,16 @@ describe("ingestion handler", () => {
       const s3Calls = s3Mock.commandCalls(PutObjectCommand);
       expect(s3Calls.length).toBe(1);
 
-      // Verify ContentEncoding is gzip
       expect(s3Calls[0].args[0].input.ContentEncoding).toBe("gzip");
       expect(s3Calls[0].args[0].input.ContentType).toBe("application/json");
 
-      // Verify body is a Buffer (gzipped content)
       expect(s3Calls[0].args[0].input.Body).toBeInstanceOf(Buffer);
     });
 
     it("should log error but not throw when S3 upload fails", async () => {
-      // Make S3 fail
       s3Mock.reset();
       s3Mock.on(PutObjectCommand).rejects(new Error("S3 unavailable"));
 
-      // Should not throw
       await expect(
         archivePayload("error-test-session", { data: "test" }),
       ).resolves.toBeUndefined();
@@ -751,7 +699,6 @@ describe("ingestion handler", () => {
       // Wait a tick for async archive to complete
       await new Promise((resolve) => setTimeout(resolve, 10));
 
-      // S3 should have been called (archive is async but we give it time)
       const s3Calls = s3Mock.commandCalls(PutObjectCommand);
       expect(s3Calls.length).toBeGreaterThanOrEqual(1);
     });

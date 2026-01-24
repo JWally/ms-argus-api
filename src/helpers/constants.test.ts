@@ -1,5 +1,3 @@
-// src/helpers/constants.test.ts
-// AR-210: Tests verify remaining constants after dead code removal
 import { describe, it, expect } from "vitest";
 import {
   SESSION_TTL_SECONDS,
@@ -216,8 +214,6 @@ describe("remaining constants have correct values", () => {
   });
 });
 
-// AR-210: Verify deleted exports are NOT available
-// These should fail after DEV-BOT removes them from constants.ts
 describe("removed exports should not exist", () => {
   it("should not export SECURITY_KEY_NAME", async () => {
     const constants = await import("./constants");

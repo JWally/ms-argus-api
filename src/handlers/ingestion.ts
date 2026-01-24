@@ -1,11 +1,3 @@
-// src/handlers/ingestion.ts
-// AR-52: Lambda ingestion handler replacing Go/ECS service
-// AR-71: Reverted to async (SQS) for scalability at 30B RPY
-// AR-90: Simplified to binary gzip (application/octet-stream)
-// AR-96: Refactored to use middy middleware for cleaner code
-// AR-131: API keys from Secrets Manager instead of env var
-// AR-XXX: V3 payload schema with middy validator
-
 import { Logger } from "@aws-lambda-powertools/logger";
 import { Metrics } from "@aws-lambda-powertools/metrics";
 import { logMetrics } from "@aws-lambda-powertools/metrics/middleware";
@@ -26,12 +18,9 @@ import { binaryGzipBodyParser, jsonBodyParser } from "./ingestion/middleware";
 import { createBaseHandler } from "./ingestion/base-handler";
 import { archivePayload as _archivePayload } from "./ingestion/archive";
 
-// ==================== CONFIGURATION ====================
-
 validateRequiredEnvVars(["SQS_QUEUE_URL"]);
 const SQS_QUEUE_URL = process.env.SQS_QUEUE_URL!;
 
-// AR-139: Payload archiving configuration
 const PAYLOAD_ARCHIVE_BUCKET = process.env.PAYLOAD_ARCHIVE_BUCKET;
 const PAYLOAD_ARCHIVE_SAMPLE_RATE = parseFloat(
   process.env.PAYLOAD_ARCHIVE_SAMPLE_RATE ?? "0",
@@ -55,23 +44,20 @@ export const archivePayload = (sessionId: string, payload: unknown) =>
     metrics,
   });
 
-// AR-149: Configurable body size limits via env vars for dev data collection
+// Configurable body size limits via env vars for dev data collection
 const MAX_BODY_BYTES = parseInt(
   process.env.MAX_BODY_BYTES ?? String(256 * 1024),
   10,
-); // 256KB default (was 64KB)
+); // 256KB default
 const MAX_DECOMPRESSED_BYTES = parseInt(
   process.env.MAX_DECOMPRESSED_BYTES ?? String(2 * 1024 * 1024),
   10,
-); // 2MB default (was 512KB)
+); // 2MB default
 
-// AR-164: CORS configuration for this handler
 const CORS_CONFIG = {
   methods: "POST, OPTIONS",
   headers: "Content-Type, Content-Encoding",
 };
-
-// ==================== CORE HANDLER ====================
 
 const baseHandler = createBaseHandler({
   sqs,
@@ -83,13 +69,11 @@ const baseHandler = createBaseHandler({
   metrics,
 });
 
-// ==================== EXPORT WITH MIDDLEWARE ====================
-
 export const handler = middy(baseHandler)
-  .use(warmup({ onWarmup })) // AR-127: Short-circuit warmup events first
+  .use(warmup({ onWarmup }))
   .use(injectLambdaContext(logger))
-  .use(logMetrics(metrics)) // Auto-publishes metrics on success AND error
-  .use(httpHeaderNormalizer()) // Normalizes header casing
+  .use(logMetrics(metrics))
+  .use(httpHeaderNormalizer())
   .use(
     binaryGzipBodyParser(
       {
@@ -99,7 +83,7 @@ export const handler = middy(baseHandler)
       metrics,
     ),
   )
-  .use(jsonBodyParser(metrics)) // Parse JSON body
+  .use(jsonBodyParser(metrics))
   .use(
     validator({
       eventSchema: transpileSchema({
@@ -110,5 +94,5 @@ export const handler = middy(baseHandler)
       }),
     }),
   )
-  .use(corsMiddleware(CORS_CONFIG)) // AR-164: Shared CORS middleware
-  .use(jsonErrorHandler({ logger, exposeErrors: "all" })); // AR-166: Shared error handler (must be last)
+  .use(corsMiddleware(CORS_CONFIG))
+  .use(jsonErrorHandler({ logger, exposeErrors: "all" }));

@@ -1,5 +1,3 @@
-// src/services/matching/profile-loader.ts
-// AR-157: Extracted shared profile loading logic from tier2-compound and session-anchors
 import { DynamoDBClient, GetItemCommand } from "@aws-sdk/client-dynamodb";
 import { unmarshall } from "@aws-sdk/util-dynamodb";
 
@@ -12,9 +10,6 @@ export interface ProfileLoaderDeps {
   profilesTable: string;
 }
 
-/**
- * Profile data returned from DynamoDB lookup
- */
 export interface ProfileData {
   risk_score: number;
   flags: string[];

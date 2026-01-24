@@ -1,5 +1,3 @@
-// src/helpers/http-error.ts
-
 /**
  * Custom HTTP error class for consistent error handling across handlers.
  * Provides statusCode for HTTP responses and expose flag for error message visibility.

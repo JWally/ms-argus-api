@@ -54,6 +54,13 @@ module.exports = {
       from: { path: "^src/", pathNot: "\\.test\\.ts$" },
       to: { dependencyTypes: ["npm-dev"], pathNot: "^node_modules/@types/" },
     },
+    {
+      name: "matching-service-no-tier-imports",
+      severity: "warn",
+      comment: "MatchingService should use interfaces, not import tier implementations directly.",
+      from: { path: "^src/services/matching/matching-service\\.ts$" },
+      to: { path: "^src/services/matching/tier.*\\.ts$" },
+    },
   ],
   options: {
     doNotFollow: {
