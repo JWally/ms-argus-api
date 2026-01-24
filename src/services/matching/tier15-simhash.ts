@@ -70,7 +70,10 @@ interface ScoredCandidate {
  * - Shadow mode for safe rollout
  * - Percentage rollout for gradual enablement
  */
-function isRolloutEnabled(fingerprint: Fingerprint, flags: ReturnType<typeof getSimHashFlags>): boolean {
+function isRolloutEnabled(
+  fingerprint: Fingerprint,
+  flags: ReturnType<typeof getSimHashFlags>,
+): boolean {
   if (!flags.ENABLED) return false;
   if (flags.ROLLOUT_PERCENT >= 100) return true;
   const bucket = Math.abs(hashCode(fingerprint.fuzzy_hash || "")) % 100;
@@ -83,22 +86,37 @@ function findBestCandidate(
   flags: ReturnType<typeof getSimHashFlags>,
 ): ScoredCandidate | null {
   const candidates = aggregateCandidates(bandResults);
-  metrics.addMetric("SimHash.CandidatesPerQuery", MetricUnit.Count, candidates.size);
+  metrics.addMetric(
+    "SimHash.CandidatesPerQuery",
+    MetricUnit.Count,
+    candidates.size,
+  );
   if (candidates.size === 0) return null;
 
-  const scored = scoreCandidates(candidates, fuzzyHash, flags.HAMMING_THRESHOLD, flags.MAX_CANDIDATES);
+  const scored = scoreCandidates(
+    candidates,
+    fuzzyHash,
+    flags.HAMMING_THRESHOLD,
+    flags.MAX_CANDIDATES,
+  );
   if (scored.length === 0) return null;
 
   const best = scored[0];
   const ageInDays = (Math.floor(Date.now() / 1000) - best.lastSeen) / 86400;
-  if (ageInDays > SIMHASH_CONFIG.RECENCY_WINDOW_DAYS && best.hammingDistance > 1) {
+  if (
+    ageInDays > SIMHASH_CONFIG.RECENCY_WINDOW_DAYS &&
+    best.hammingDistance > 1
+  ) {
     return null;
   }
 
   return best;
 }
 
-function buildSimHashMatchResult(best: ScoredCandidate, fingerprint: Fingerprint): MatchResult {
+function buildSimHashMatchResult(
+  best: ScoredCandidate,
+  fingerprint: Fingerprint,
+): MatchResult {
   const simhash_details: SimHashDetails = {
     incoming_hash: fingerprint.fuzzy_hash!,
     matched_hash: best.fuzzyHash,
@@ -116,8 +134,40 @@ function buildSimHashMatchResult(best: ScoredCandidate, fingerprint: Fingerprint
     flags: [],
     evidence_codes: ["SIMHASH_MATCH"],
     simhash_details,
-    fuzzy_match_info: computeFuzzyMatchInfo(fingerprint.fuzzy_hash, best.fuzzyHash),
+    fuzzy_match_info: computeFuzzyMatchInfo(
+      fingerprint.fuzzy_hash,
+      best.fuzzyHash,
+    ),
   };
+}
+
+function resolveSimHashMatch(
+  best: ScoredCandidate,
+  fingerprint: Fingerprint,
+  flags: ReturnType<typeof getSimHashFlags>,
+): MatchResult | null {
+  metrics.addMetric(
+    "SimHash.HammingDistance",
+    MetricUnit.Count,
+    best.hammingDistance,
+  );
+  metrics.addMetric("SimHash.TierHit", MetricUnit.Count, 1);
+
+  const result = buildSimHashMatchResult(best, fingerprint);
+
+  if (flags.SHADOW_MODE) {
+    logger.info("SimHash shadow mode match", {
+      deviceId: best.deviceId,
+      hammingDistance: best.hammingDistance,
+      bandMatches: best.bandMatches,
+      confidence: result.confidence,
+    });
+    metrics.publishStoredMetrics();
+    return null;
+  }
+
+  metrics.publishStoredMetrics();
+  return result;
 }
 
 export async function tier15SimHashMatch(
@@ -132,7 +182,9 @@ export async function tier15SimHashMatch(
 
   try {
     const startTime = Date.now();
-    const bandResults = await Promise.all(bandKeys.map((band) => queryBand(deps, band)));
+    const bandResults = await Promise.all(
+      bandKeys.map((band) => queryBand(deps, band)),
+    );
     const elapsed = Date.now() - startTime;
 
     if (elapsed > flags.LATENCY_BYPASS_MS) {
@@ -141,30 +193,23 @@ export async function tier15SimHashMatch(
       metrics.publishStoredMetrics();
       return null;
     }
-    metrics.addMetric("SimHash.BandQueryLatencyMs", MetricUnit.Milliseconds, elapsed);
+    metrics.addMetric(
+      "SimHash.BandQueryLatencyMs",
+      MetricUnit.Milliseconds,
+      elapsed,
+    );
 
-    const best = findBestCandidate(bandResults.flat(), fingerprint.fuzzy_hash!, flags);
+    const best = findBestCandidate(
+      bandResults.flat(),
+      fingerprint.fuzzy_hash!,
+      flags,
+    );
     if (!best) {
       metrics.publishStoredMetrics();
       return null;
     }
 
-    metrics.addMetric("SimHash.HammingDistance", MetricUnit.Count, best.hammingDistance);
-    metrics.addMetric("SimHash.TierHit", MetricUnit.Count, 1);
-
-    const result = buildSimHashMatchResult(best, fingerprint);
-
-    if (flags.SHADOW_MODE) {
-      logger.info("SimHash shadow mode match", {
-        deviceId: best.deviceId, hammingDistance: best.hammingDistance,
-        bandMatches: best.bandMatches, confidence: result.confidence,
-      });
-      metrics.publishStoredMetrics();
-      return null;
-    }
-
-    metrics.publishStoredMetrics();
-    return result;
+    return resolveSimHashMatch(best, fingerprint, flags);
   } catch (error) {
     logger.error("SimHash tier error - failing open", { error });
     metrics.addMetric("SimHash.Error", MetricUnit.Count, 1);

@@ -60,43 +60,37 @@ const cacheService = new DynamoCacheService(dynamodb, {
   mutationGateTtlSeconds: 60, // Not used for reads
 });
 
-// ==================== BASE HANDLER ====================
+// ==================== HELPERS ====================
 
-const baseHandler = async (
-  event: APIGatewayProxyEventV2,
-): Promise<APIGatewayProxyResultV2> => {
-  const startTime = Date.now();
-
-  // Handle CORS preflight
+function extractSessionId(event: APIGatewayProxyEventV2): string {
   if (event.requestContext.http.method === "OPTIONS") {
-    return { statusCode: 204 };
+    throw Object.assign(new HttpError(0, ""), { preflight: true });
   }
-
-  // Only allow GET
   if (event.requestContext.http.method !== "GET") {
     throw new HttpError(405, "Method not allowed");
   }
-
-  // Extract session_id from path parameter
   const sessionId = event.pathParameters?.session_id;
   if (!sessionId) {
-    logger.warn("Missing session_id parameter");
     metrics.addMetric("MissingSessionId", MetricUnit.Count, 1);
     throw new HttpError(400, "Missing session_id parameter");
   }
-
-  // Validate session_id format (basic sanitization)
   if (sessionId.length > 128 || !/^[\w-]+$/.test(sessionId)) {
-    logger.warn("Invalid session_id format", { session_id: sessionId });
     metrics.addMetric("InvalidSessionId", MetricUnit.Count, 1);
     throw new HttpError(400, "Invalid session_id format");
   }
+  return sessionId;
+}
 
-  // Look up session in cache (for status check)
-  let session;
+async function lookupSession(sessionId: string) {
   try {
-    session = await cacheService.checkSessionCache(sessionId);
+    const session = await cacheService.checkSessionCache(sessionId);
+    if (!session) {
+      metrics.addMetric("SessionNotFound", MetricUnit.Count, 1);
+      throw new HttpError(404, "Session not found");
+    }
+    return session;
   } catch (error) {
+    if (error instanceof HttpError) throw error;
     logger.error("Failed to retrieve session", {
       error,
       session_id: sessionId,
@@ -104,91 +98,41 @@ const baseHandler = async (
     metrics.addMetric("SessionGetFailed", MetricUnit.Count, 1);
     throw new HttpError(503, "Service temporarily unavailable");
   }
+}
 
-  if (!session) {
-    logger.info("Session not found", { session_id: sessionId });
-    metrics.addMetric("SessionNotFound", MetricUnit.Count, 1);
-    throw new HttpError(404, "Session not found");
-  }
-
-  // Fetch full payload from session payload table
-  let fullPayload: SessionResponse | undefined;
+async function fetchPayload(
+  sessionId: string,
+): Promise<SessionResponse | undefined> {
   try {
-    const payloadResult = await dynamodb.send(
+    const result = await dynamodb.send(
       new GetItemCommand({
         TableName: envConfig.SESSION_PAYLOAD_TABLE,
-        Key: {
-          session_id: { S: sessionId },
-        },
+        Key: { session_id: { S: sessionId } },
       }),
     );
-    if (payloadResult.Item?.payload_gzip_b64?.S) {
-      // Decompress gzipped payload
-      const gzipBuffer = Buffer.from(
-        payloadResult.Item.payload_gzip_b64.S,
-        "base64",
-      );
-      const jsonString = gunzipSync(gzipBuffer).toString("utf-8");
-      const parsed = JSON.parse(jsonString);
-
-      // Validate response structure
-      try {
-        fullPayload = validateSessionResponse(parsed);
-        metrics.addMetric("SessionPayloadFound", MetricUnit.Count, 1);
-      } catch (validationError) {
-        // Log validation error but continue - we'll fall back to cache data
-        logger.error("Session payload failed validation", {
-          error: validationError,
-          session_id: sessionId,
-        });
-        metrics.addMetric(
-          "SessionPayloadValidationFailed",
-          MetricUnit.Count,
-          1,
-        );
-      }
-    }
+    if (!result.Item?.payload_gzip_b64?.S) return undefined;
+    const gzipBuffer = Buffer.from(result.Item.payload_gzip_b64.S, "base64");
+    const parsed = JSON.parse(gunzipSync(gzipBuffer).toString("utf-8"));
+    const validated = validateSessionResponse(parsed);
+    metrics.addMetric("SessionPayloadFound", MetricUnit.Count, 1);
+    return validated;
   } catch (error) {
-    // Log but don't fail - we can still return cache data
-    logger.warn("Failed to fetch session payload", {
+    logger.warn("Failed to fetch/validate session payload", {
       error,
       session_id: sessionId,
     });
     metrics.addMetric("SessionPayloadFetchError", MetricUnit.Count, 1);
+    return undefined;
   }
+}
 
-  // Success - return session data
-  const duration = Date.now() - startTime;
-  logger.info("Session retrieved", {
-    session_id: sessionId,
-    status: session.status,
-    device_id: session.device_id,
-    duration_ms: duration,
-    has_payload: !!fullPayload,
-  });
-  metrics.addMetric("SessionRetrieved", MetricUnit.Count, 1);
-  metrics.addMetric("SessionGetDuration", MetricUnit.Milliseconds, duration);
-
-  // If we have the full validated payload, return it directly
-  if (fullPayload) {
-    return {
-      statusCode: 200,
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(fullPayload),
-    };
-  }
-
-  // Fallback: Session exists in cache but payload not found/invalid
-  // This shouldn't happen in normal operation, but handle gracefully
-  logger.warn("Session payload missing, returning minimal response", {
-    session_id: sessionId,
-  });
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function buildFallbackResponse(
+  session: any,
+  sessionId: string,
+): APIGatewayProxyResultV2 {
   metrics.addMetric("SessionPayloadMissing", MetricUnit.Count, 1);
-
-  // Return minimal response from cache
-  const minimalResponse = {
+  const body = JSON.stringify({
     identifiers: {
       session_id: sessionId,
       device_id: session.device_id || "unknown",
@@ -202,21 +146,53 @@ const baseHandler = async (
       flags: session.flags || [],
       evidence_codes: session.evidence_codes || [],
     },
-    hashes: {
-      stable: "unavailable",
-      fuzzy: "unavailable",
-    },
+    hashes: { stable: "unavailable", fuzzy: "unavailable" },
     device: {},
-  };
-
+  });
   return {
     statusCode: 200,
-    headers: {
-      "Content-Type": "application/json",
-      "X-Argus-Degraded": "true", // Indicate response is degraded
-    },
-    body: JSON.stringify(minimalResponse),
+    headers: { "Content-Type": "application/json", "X-Argus-Degraded": "true" },
+    body,
   };
+}
+
+// ==================== BASE HANDLER ====================
+
+const baseHandler = async (
+  event: APIGatewayProxyEventV2,
+): Promise<APIGatewayProxyResultV2> => {
+  const startTime = Date.now();
+  let sessionId: string;
+  try {
+    sessionId = extractSessionId(event);
+  } catch (error: unknown) {
+    if ((error as { preflight?: boolean }).preflight)
+      return { statusCode: 204 };
+    throw error;
+  }
+
+  const session = await lookupSession(sessionId);
+  const fullPayload = await fetchPayload(sessionId);
+
+  const duration = Date.now() - startTime;
+  logger.info("Session retrieved", {
+    session_id: sessionId,
+    status: session.status,
+    device_id: session.device_id,
+    duration_ms: duration,
+    has_payload: !!fullPayload,
+  });
+  metrics.addMetric("SessionRetrieved", MetricUnit.Count, 1);
+  metrics.addMetric("SessionGetDuration", MetricUnit.Milliseconds, duration);
+
+  if (fullPayload) {
+    return {
+      statusCode: 200,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(fullPayload),
+    };
+  }
+  return buildFallbackResponse(session, sessionId);
 };
 
 // ==================== EXPORT WITH MIDDLEWARE ====================

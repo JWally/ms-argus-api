@@ -20,7 +20,10 @@ import {
   TIER2_CARDINALITY_PENALTY,
   TIER2_STATS_SK,
 } from "../../helpers/constants";
-import { buildBucketKeysWithTypes as buildBucketKeysWithTypesHelper, BucketKeyInfo } from "../../helpers/bucket-keys";
+import {
+  buildBucketKeysWithTypes as buildBucketKeysWithTypesHelper,
+  BucketKeyInfo,
+} from "../../helpers/bucket-keys";
 import { EvidenceCode, Fingerprint, MatchResult } from "./types";
 import { computeFuzzyMatchInfo } from "../../helpers/hash";
 
@@ -88,7 +91,11 @@ export async function tier2CompoundMatchWithTimeout(
 function selectBestCandidate(
   candidates: Map<string, { score: number; evidenceCodes: EvidenceCode[] }>,
 ): { deviceId: string; score: number; evidenceCodes: EvidenceCode[] } | null {
-  let best: { deviceId: string; score: number; evidenceCodes: EvidenceCode[] } | null = null;
+  let best: {
+    deviceId: string;
+    score: number;
+    evidenceCodes: EvidenceCode[];
+  } | null = null;
   for (const [deviceId, data] of candidates) {
     if (!best || data.score > best.score) {
       best = { deviceId, score: data.score, evidenceCodes: data.evidenceCodes };
@@ -104,12 +111,45 @@ function computeTier2Confidence(
   cardinalities: Map<string, number>,
 ): number {
   let confidence = Math.min(0.6 + score * 0.1, 0.85);
-  const highCount = countHighCardinalityBuckets(evidenceCodes, bucketInfos, cardinalities);
+  const highCount = countHighCardinalityBuckets(
+    evidenceCodes,
+    bucketInfos,
+    cardinalities,
+  );
   if (highCount > 0) {
-    const penalty = (highCount / evidenceCodes.length) * TIER2_CARDINALITY_PENALTY;
+    const penalty =
+      (highCount / evidenceCodes.length) * TIER2_CARDINALITY_PENALTY;
     confidence = Math.max(0.3, confidence - penalty);
   }
   return confidence;
+}
+
+async function buildTier2Result(
+  deps: Tier2CompoundDeps,
+  best: { deviceId: string; score: number; evidenceCodes: EvidenceCode[] },
+  fingerprint: Fingerprint,
+  context: { bucketInfos: BucketKeyInfo[]; cardinalities: Map<string, number> },
+): Promise<MatchResult> {
+  const profile = await loadProfile(deps, best.deviceId);
+  const confidence = computeTier2Confidence(
+    best.score,
+    best.evidenceCodes,
+    context.bucketInfos,
+    context.cardinalities,
+  );
+  return {
+    device_id: best.deviceId,
+    confidence,
+    match_tier: 2,
+    is_new_device: false,
+    risk_score: profile?.risk_score ?? 0.4,
+    flags: profile?.flags ?? [],
+    evidence_codes: best.evidenceCodes,
+    fuzzy_match_info: computeFuzzyMatchInfo(
+      fingerprint.fuzzy_hash,
+      profile?.fuzzy_hash,
+    ),
+  };
 }
 
 export async function tier2CompoundMatch(
@@ -138,7 +178,11 @@ export async function tier2CompoundMatch(
   try {
     [results, cardinalities] = await Promise.all([
       Promise.all(queries),
-      fetchBucketCardinalities(deps, bucketInfos.map((i) => i.key), options),
+      fetchBucketCardinalities(
+        deps,
+        bucketInfos.map((i) => i.key),
+        options,
+      ),
     ]);
   } catch (error) {
     if (error instanceof Error && error.name === "AbortError") return null;
@@ -149,19 +193,10 @@ export async function tier2CompoundMatch(
   const best = selectBestCandidate(candidates);
   if (!best) return null;
 
-  const profile = await loadProfile(deps, best.deviceId);
-  const confidence = computeTier2Confidence(best.score, best.evidenceCodes, bucketInfos, cardinalities);
-
-  return {
-    device_id: best.deviceId,
-    confidence,
-    match_tier: 2,
-    is_new_device: false,
-    risk_score: profile?.risk_score ?? 0.4,
-    flags: profile?.flags ?? [],
-    evidence_codes: best.evidenceCodes,
-    fuzzy_match_info: computeFuzzyMatchInfo(fingerprint.fuzzy_hash, profile?.fuzzy_hash),
-  };
+  return buildTier2Result(deps, best, fingerprint, {
+    bucketInfos,
+    cardinalities,
+  });
 }
 
 /**
@@ -251,9 +286,9 @@ function countHighCardinalityBuckets(
  */
 function extractDeviceIds(result: QueryCommandOutput): string[] {
   if (!result.Items || result.Items.length === 0) return [];
-  return result.Items
-    .map((item) => unmarshall(item).device_id as string)
-    .filter((id) => id && id !== TIER2_STATS_SK);
+  return result.Items.map(
+    (item) => unmarshall(item).device_id as string,
+  ).filter((id) => id && id !== TIER2_STATS_SK);
 }
 
 function scoreDeviceCandidatesWithEvidence(
@@ -273,14 +308,23 @@ function scoreDeviceCandidatesWithEvidence(
         existing.score += 1;
         existing.evidenceCodes.add(evidenceCode);
       } else {
-        candidates.set(deviceId, { score: 1, evidenceCodes: new Set([evidenceCode]) });
+        candidates.set(deviceId, {
+          score: 1,
+          evidenceCodes: new Set([evidenceCode]),
+        });
       }
     }
   }
 
-  const resultMap = new Map<string, { score: number; evidenceCodes: EvidenceCode[] }>();
+  const resultMap = new Map<
+    string,
+    { score: number; evidenceCodes: EvidenceCode[] }
+  >();
   for (const [deviceId, data] of candidates) {
-    resultMap.set(deviceId, { score: data.score, evidenceCodes: [...data.evidenceCodes] });
+    resultMap.set(deviceId, {
+      score: data.score,
+      evidenceCodes: [...data.evidenceCodes],
+    });
   }
 
   return resultMap;

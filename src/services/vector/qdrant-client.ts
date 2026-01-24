@@ -287,26 +287,26 @@ export class QdrantClient {
       const data = await response.json();
       return data as T;
     } catch (error) {
-      if (error instanceof QdrantError) {
-        throw error;
-      }
-
-      if (error instanceof Error && error.name === "AbortError") {
-        throw new QdrantError(
-          `QDrant request timed out after ${this.config.timeoutMs}ms`,
-          0,
-          "",
-        );
-      }
-
-      throw new QdrantError(
-        `QDrant request failed: ${error instanceof Error ? error.message : "Unknown error"}`,
-        0,
-        "",
-      );
+      throw this.wrapError(error);
     } finally {
       clearTimeout(timeoutId);
     }
+  }
+
+  private wrapError(error: unknown): QdrantError {
+    if (error instanceof QdrantError) return error;
+    if (error instanceof Error && error.name === "AbortError") {
+      return new QdrantError(
+        `QDrant request timed out after ${this.config.timeoutMs}ms`,
+        0,
+        "",
+      );
+    }
+    return new QdrantError(
+      `QDrant request failed: ${error instanceof Error ? error.message : "Unknown error"}`,
+      0,
+      "",
+    );
   }
 }
 

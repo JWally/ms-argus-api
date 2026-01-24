@@ -81,9 +81,58 @@ export const handler: SQSHandler = async (event) => {
   );
 };
 
-/**
- * Process a single SQS record
- */
+interface ProfileResult {
+  skipped: boolean;
+  reason?: string;
+  tier1Writes?: number;
+  tier2Writes?: number;
+}
+
+function recordSkipMetrics(result: ProfileResult, deviceId: string): void {
+  if (result.reason === "mutation_gate") {
+    metrics.addMetric("MutationGateSkip", MetricUnit.Count, 1);
+    logger.info("Skipping update - recently updated", { device_id: deviceId });
+  } else if (result.reason === "no_drift") {
+    metrics.addMetric("NoDriftSkip", MetricUnit.Count, 1);
+    if (result.tier2Writes) {
+      metrics.addMetric(
+        "Tier2BucketWrites",
+        MetricUnit.Count,
+        result.tier2Writes,
+      );
+    }
+    logger.info("Skipping update - no significant drift", {
+      device_id: deviceId,
+      tier2Writes: result.tier2Writes,
+    });
+  }
+}
+
+function recordWriteMetrics(
+  result: ProfileResult,
+  deviceId: string,
+  duration: number,
+): void {
+  metrics.addMetric("ProfileWrite", MetricUnit.Count, 1);
+  metrics.addMetric(
+    "Tier1IndexWrites",
+    MetricUnit.Count,
+    result.tier1Writes ?? 0,
+  );
+  metrics.addMetric(
+    "Tier2BucketWrites",
+    MetricUnit.Count,
+    result.tier2Writes ?? 0,
+  );
+  metrics.addMetric("ProfileUpdateDuration", MetricUnit.Milliseconds, duration);
+  logger.info("Profile update complete", {
+    device_id: deviceId,
+    duration,
+    tier1Writes: result.tier1Writes,
+    tier2Writes: result.tier2Writes,
+  });
+}
+
 async function processRecord(
   record: SQSRecord,
   service: ProfileService,
@@ -121,45 +170,9 @@ async function processRecord(
   const result = await service.processProfileUpdate(payload);
 
   if (result.skipped) {
-    if (result.reason === "mutation_gate") {
-      metrics.addMetric("MutationGateSkip", MetricUnit.Count, 1);
-      logger.info("Skipping update - recently updated", { device_id });
-    } else if (result.reason === "no_drift") {
-      metrics.addMetric("NoDriftSkip", MetricUnit.Count, 1);
-      if (result.tier2Writes) {
-        metrics.addMetric(
-          "Tier2BucketWrites",
-          MetricUnit.Count,
-          result.tier2Writes,
-        );
-      }
-      logger.info("Skipping update - no significant drift", {
-        device_id,
-        tier2Writes: result.tier2Writes,
-      });
-    }
+    recordSkipMetrics(result, device_id);
     return;
   }
 
-  // Record write metrics
-  metrics.addMetric("ProfileWrite", MetricUnit.Count, 1);
-  metrics.addMetric(
-    "Tier1IndexWrites",
-    MetricUnit.Count,
-    result.tier1Writes ?? 0,
-  );
-  metrics.addMetric(
-    "Tier2BucketWrites",
-    MetricUnit.Count,
-    result.tier2Writes ?? 0,
-  );
-
-  const duration = Date.now() - startTime;
-  metrics.addMetric("ProfileUpdateDuration", MetricUnit.Milliseconds, duration);
-  logger.info("Profile update complete", {
-    device_id,
-    duration,
-    tier1Writes: result.tier1Writes,
-    tier2Writes: result.tier2Writes,
-  });
+  recordWriteMetrics(result, device_id, Date.now() - startTime);
 }

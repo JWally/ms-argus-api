@@ -230,8 +230,12 @@ function hasValidHashes(obj: Record<string, unknown>): boolean {
 export function isArgusPayload(input: unknown): input is ArgusPayload {
   if (!input || typeof input !== "object") return false;
   const obj = input as Record<string, unknown>;
-  return hasValidIdentifiers(obj) && hasValidHashes(obj) &&
-    !!obj.device && typeof obj.device === "object";
+  return (
+    hasValidIdentifiers(obj) &&
+    hasValidHashes(obj) &&
+    !!obj.device &&
+    typeof obj.device === "object"
+  );
 }
 
 // ==================== SESSION RESPONSE TYPES ====================
@@ -273,7 +277,10 @@ export interface SessionResponse {
  * Validate a session response object
  * Throws if invalid
  */
-function requireObject(obj: Record<string, unknown>, field: string): Record<string, unknown> {
+function requireObject(
+  obj: Record<string, unknown>,
+  field: string,
+): Record<string, unknown> {
   const val = obj[field];
   if (!val || typeof val !== "object") {
     throw new Error(`Invalid response: missing ${field}`);
@@ -281,13 +288,22 @@ function requireObject(obj: Record<string, unknown>, field: string): Record<stri
   return val as Record<string, unknown>;
 }
 
-function requireString(obj: Record<string, unknown>, field: string, path: string): void {
+function requireString(
+  obj: Record<string, unknown>,
+  field: string,
+  path: string,
+): void {
   if (!obj[field] || typeof obj[field] !== "string") {
     throw new Error(`Invalid response: missing ${path}`);
   }
 }
 
-function requireType(obj: Record<string, unknown>, field: string, type: string, path: string): void {
+function requireType(
+  obj: Record<string, unknown>,
+  field: string,
+  type: string,
+  path: string,
+): void {
   if (typeof obj[field] !== type) {
     throw new Error(`Invalid response: missing ${path}`);
   }

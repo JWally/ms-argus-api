@@ -2,7 +2,30 @@
 // AR-142: Quick win anomaly detections using data already in normalized fingerprint
 
 import { Fingerprint } from "../../../types";
-import { AnomalySignal, AnomalyCodes, createSignal } from "./types";
+import {
+  AnomalySignal,
+  AnomalyType,
+  AnomalyCodes,
+  createSignal,
+} from "./types";
+
+interface ScoreCheck {
+  score: number | undefined;
+  type: AnomalyType;
+  code: (typeof AnomalyCodes)[keyof typeof AnomalyCodes];
+  field: string;
+  severityMultiplier?: number;
+}
+
+function checkScoreThreshold(check: ScoreCheck): AnomalySignal | null {
+  const { score, type, code, field, severityMultiplier = 1 } = check;
+  if (score === undefined || score <= 0.7) return null;
+  return createSignal(type, code, score * severityMultiplier, {
+    expected: `${field} <= 0.7`,
+    actual: `${field}: ${score.toFixed(2)}`,
+    fields: [field],
+  });
+}
 
 /**
  * Quick win anomaly detections
@@ -41,28 +64,22 @@ export function detectQuickWinAnomalies(
     );
   }
 
-  // Proxy score threshold - high likelihood of proxy usage
-  if (fingerprint.proxy_score !== undefined && fingerprint.proxy_score > 0.7) {
-    signals.push(
-      createSignal("NETWORK", AnomalyCodes.HIGH_PROXY_SCORE, fingerprint.proxy_score, {
-        expected: "proxy_score <= 0.7",
-        actual: `proxy_score: ${fingerprint.proxy_score.toFixed(2)}`,
-        fields: ["proxy_score"],
-      }),
-    );
-  }
+  const proxySignal = checkScoreThreshold({
+    score: fingerprint.proxy_score,
+    type: "NETWORK",
+    code: AnomalyCodes.HIGH_PROXY_SCORE,
+    field: "proxy_score",
+  });
+  if (proxySignal) signals.push(proxySignal);
 
-  // VPN score threshold - lower severity than proxy
-  if (fingerprint.vpn_score !== undefined && fingerprint.vpn_score > 0.7) {
-    // VPN is less suspicious than proxy, so multiply by 0.8
-    signals.push(
-      createSignal("NETWORK", AnomalyCodes.HIGH_VPN_SCORE, fingerprint.vpn_score * 0.8, {
-        expected: "vpn_score <= 0.7",
-        actual: `vpn_score: ${fingerprint.vpn_score.toFixed(2)}`,
-        fields: ["vpn_score"],
-      }),
-    );
-  }
+  const vpnSignal = checkScoreThreshold({
+    score: fingerprint.vpn_score,
+    type: "NETWORK",
+    code: AnomalyCodes.HIGH_VPN_SCORE,
+    field: "vpn_score",
+    severityMultiplier: 0.8,
+  });
+  if (vpnSignal) signals.push(vpnSignal);
 
   return signals;
 }

@@ -197,6 +197,56 @@ async function runMatching(
   }
 }
 
+function buildAnomalySignals(
+  fingerprint: ParsedRecord["fingerprint"],
+  rawPayload: SqsPayload,
+): SessionAnomalySignal[] {
+  const result = detectAllAnomalies(fingerprint, rawPayload.device);
+  return result.signals.map((s) => ({
+    type: s.type,
+    code: s.code,
+    severity: s.severity,
+    evidence: s.evidence,
+  }));
+}
+
+async function persistResults(
+  service: MatchingService,
+  ctx: {
+    sessionId: string;
+    matchResult: MatchResult;
+    idempotencyKey: string;
+    anomalies: SessionAnomalySignal[];
+    rawPayload: SqsPayload;
+    payload: FingerprintPayload;
+  },
+): Promise<void> {
+  const {
+    sessionId,
+    matchResult,
+    idempotencyKey,
+    anomalies,
+    rawPayload,
+    payload,
+  } = ctx;
+  const cacheWritten = await service.writeMatchResult({
+    sessionId,
+    result: matchResult,
+    idempotencyKey,
+    anomalies,
+  });
+  if (!cacheWritten) {
+    metrics.addMetric("SessionCacheWriteSkipped", MetricUnit.Count, 1);
+  }
+  await writeSessionPayload({ sessionId, rawPayload, matchResult, anomalies });
+  await service.queueProfileUpdate(
+    matchResult.device_id,
+    payload,
+    matchResult.is_new_device,
+    matchResult,
+  );
+}
+
 async function processRecord(
   record: SQSRecord,
   service: MatchingService,
@@ -227,35 +277,18 @@ async function processRecord(
     idempotencyKey,
   );
 
-  const anomalyResult = detectAllAnomalies(fingerprint, rawPayload.device);
-  const anomalies: SessionAnomalySignal[] = anomalyResult.signals.map((s) => ({
-    type: s.type,
-    code: s.code,
-    severity: s.severity,
-    evidence: s.evidence,
-  }));
-
-  const cacheWritten = await service.writeMatchResult({
+  const anomalies = buildAnomalySignals(fingerprint, rawPayload);
+  await persistResults(service, {
     sessionId,
-    result: matchResult,
+    matchResult,
     idempotencyKey,
     anomalies,
-  });
-  if (!cacheWritten) {
-    metrics.addMetric("SessionCacheWriteSkipped", MetricUnit.Count, 1);
-  }
-
-  await writeSessionPayload({ sessionId, rawPayload, matchResult, anomalies });
-  await service.queueProfileUpdate(
-    matchResult.device_id,
+    rawPayload,
     payload,
-    matchResult.is_new_device,
-    matchResult,
-  );
+  });
 
   const duration = Date.now() - startTime;
   metrics.addMetric("MatchingDuration", MetricUnit.Milliseconds, duration);
-
   emitObservation({
     sessionId,
     matchResult,
@@ -264,7 +297,6 @@ async function processRecord(
   }).catch(() => {
     /* logged in emitObservation */
   });
-
   logger.info("Matching complete", {
     session_id: sessionId,
     device_id: matchResult.device_id,

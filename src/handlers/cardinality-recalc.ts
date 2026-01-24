@@ -201,63 +201,146 @@ async function updateCardinality(
 /**
  * Process a single bucket with retry logic for throttling
  */
+function isThrottlingError(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    (error.name === "ProvisionedThroughputExceededException" ||
+      error.name === "ThrottlingException")
+  );
+}
+
+async function checkAndCorrectBucket(
+  tableName: string,
+  bucketKey: string,
+  ttl: number,
+): Promise<BucketResult> {
+  const [currentCardinality, actualCount] = await Promise.all([
+    getCurrentCardinality(tableName, bucketKey),
+    countBucketDevices(tableName, bucketKey),
+  ]);
+  const driftCorrected = currentCardinality !== actualCount;
+  if (driftCorrected) {
+    await updateCardinality(tableName, bucketKey, actualCount, ttl);
+  }
+  return {
+    bucketKey,
+    previousCardinality: currentCardinality,
+    actualCardinality: actualCount,
+    driftCorrected,
+  };
+}
+
 async function processBucket(
   tableName: string,
   bucketKey: string,
   ttl: number,
-  maxRetries: number = 3,
+  maxRetries = 3,
 ): Promise<BucketResult> {
-  let attempt = 0;
-
-  while (attempt < maxRetries) {
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
     try {
-      const [currentCardinality, actualCount] = await Promise.all([
-        getCurrentCardinality(tableName, bucketKey),
-        countBucketDevices(tableName, bucketKey),
-      ]);
-
-      const driftCorrected = currentCardinality !== actualCount;
-
-      if (driftCorrected) {
-        await updateCardinality(tableName, bucketKey, actualCount, ttl);
-      }
-
-      return {
-        bucketKey,
-        previousCardinality: currentCardinality,
-        actualCardinality: actualCount,
-        driftCorrected,
-      };
+      return await checkAndCorrectBucket(tableName, bucketKey, ttl);
     } catch (error) {
-      const isThrottling =
-        error instanceof Error &&
-        (error.name === "ProvisionedThroughputExceededException" ||
-          error.name === "ThrottlingException");
-
-      if (isThrottling && attempt < maxRetries - 1) {
-        attempt++;
-        // Exponential backoff: 100ms, 200ms, 400ms
-        await sleep(Math.pow(2, attempt) * 100);
+      if (isThrottlingError(error) && attempt < maxRetries - 1) {
+        await sleep(Math.pow(2, attempt + 1) * 100);
         continue;
       }
       throw error;
     }
   }
-
-  // Should not reach here, but TypeScript needs a return
   throw new Error(
     `Failed to process bucket ${bucketKey} after ${maxRetries} retries`,
   );
 }
 
-/**
- * Cardinality Recalculation Lambda Handler
- * Triggered daily via EventBridge rule
- *
- * Scans all bucket_key partitions in Tier2Buckets table,
- * counts actual device items per bucket, and updates
- * the _stats item's cardinality to match actual count.
- */
+interface RecalcStats {
+  bucketsProcessed: number;
+  bucketsWithDrift: number;
+  totalDriftMagnitude: number;
+  errors: number;
+  pagesProcessed: number;
+}
+
+async function processBucketPage(
+  pageKeys: Set<string>,
+  ctx: { processed: Set<string>; tableName: string; ttl: number },
+  stats: RecalcStats,
+): Promise<void> {
+  const { processed: processedBuckets, tableName, ttl } = ctx;
+  for (const bucketKey of pageKeys) {
+    if (processedBuckets.has(bucketKey)) continue;
+    processedBuckets.add(bucketKey);
+    try {
+      const result = await processBucket(tableName, bucketKey, ttl);
+      stats.bucketsProcessed++;
+      if (result.driftCorrected) {
+        stats.bucketsWithDrift++;
+        stats.totalDriftMagnitude += Math.abs(
+          result.previousCardinality - result.actualCardinality,
+        );
+        logger.info("Corrected bucket cardinality drift", {
+          bucketKey,
+          previousCardinality: result.previousCardinality,
+          actualCardinality: result.actualCardinality,
+        });
+      }
+    } catch (error) {
+      stats.errors++;
+      logger.error("Failed to process bucket", { bucketKey, error });
+    }
+  }
+}
+
+async function processAllBuckets(
+  tableName: string,
+  ttl: number,
+): Promise<RecalcStats> {
+  const stats: RecalcStats = {
+    bucketsProcessed: 0,
+    bucketsWithDrift: 0,
+    totalDriftMagnitude: 0,
+    errors: 0,
+    pagesProcessed: 0,
+  };
+  const ctx = { processed: new Set<string>(), tableName, ttl };
+  for await (const pageKeys of scanBucketKeysPages(tableName)) {
+    stats.pagesProcessed++;
+    await processBucketPage(pageKeys, ctx, stats);
+    logger.info("Completed processing page", {
+      page: stats.pagesProcessed,
+      totalBucketsProcessed: stats.bucketsProcessed,
+      bucketsWithDrift: stats.bucketsWithDrift,
+      errors: stats.errors,
+    });
+  }
+  return stats;
+}
+
+function emitRecalcMetrics(stats: RecalcStats, duration: number): void {
+  metrics.addMetric(
+    "BucketsProcessed",
+    MetricUnit.Count,
+    stats.bucketsProcessed,
+  );
+  metrics.addMetric(
+    "BucketsWithDrift",
+    MetricUnit.Count,
+    stats.bucketsWithDrift,
+  );
+  metrics.addMetric(
+    "TotalDriftMagnitude",
+    MetricUnit.Count,
+    stats.totalDriftMagnitude,
+  );
+  metrics.addMetric("ProcessingErrors", MetricUnit.Count, stats.errors);
+  metrics.addMetric("PagesProcessed", MetricUnit.Count, stats.pagesProcessed);
+  metrics.addMetric("RecalcDuration", MetricUnit.Milliseconds, duration);
+  logger.info("Cardinality recalculation complete", {
+    ...stats,
+    durationMs: duration,
+  });
+}
+
+/** Cardinality Recalculation Lambda Handler - triggered daily via EventBridge */
 export const handler: ScheduledHandler = async (event): Promise<void> => {
   const startTime = Date.now();
   const tableName = envConfig.TIER2_BUCKETS_TABLE;
@@ -267,92 +350,10 @@ export const handler: ScheduledHandler = async (event): Promise<void> => {
     eventSource: event.source,
   });
 
-  // TTL for stats items: 14 days (2x the bucket TTL of 7 days)
   const ttl = Math.floor(Date.now() / 1000) + 14 * 24 * 60 * 60;
-
-  let bucketsProcessed = 0;
-  let bucketsWithDrift = 0;
-  let totalDriftMagnitude = 0;
-  let errors = 0;
-
   try {
-    // Track processed buckets to handle duplicates across scan pages
-    // (A bucket_key can appear multiple times in the scan if it has many device entries)
-    const processedBuckets = new Set<string>();
-    let pagesProcessed = 0;
-
-    // Process bucket keys page by page to reduce memory usage
-    for await (const pageKeys of scanBucketKeysPages(tableName)) {
-      pagesProcessed++;
-
-      // Process each bucket in this page
-      for (const bucketKey of pageKeys) {
-        // Skip if already processed in a previous page
-        if (processedBuckets.has(bucketKey)) {
-          continue;
-        }
-        processedBuckets.add(bucketKey);
-
-        try {
-          const result = await processBucket(tableName, bucketKey, ttl);
-          bucketsProcessed++;
-
-          if (result.driftCorrected) {
-            bucketsWithDrift++;
-            const drift = Math.abs(
-              result.previousCardinality - result.actualCardinality,
-            );
-            totalDriftMagnitude += drift;
-
-            logger.info("Corrected bucket cardinality drift", {
-              bucketKey,
-              previousCardinality: result.previousCardinality,
-              actualCardinality: result.actualCardinality,
-              drift,
-            });
-          }
-        } catch (error) {
-          errors++;
-          logger.error("Failed to process bucket", {
-            bucketKey,
-            error,
-          });
-          // Continue processing other buckets
-        }
-      }
-
-      // Log progress after each page
-      logger.info("Completed processing page", {
-        page: pagesProcessed,
-        totalBucketsProcessed: bucketsProcessed,
-        bucketsWithDrift,
-        errors,
-      });
-    }
-
-    // Emit metrics
-    metrics.addMetric("BucketsProcessed", MetricUnit.Count, bucketsProcessed);
-    metrics.addMetric("BucketsWithDrift", MetricUnit.Count, bucketsWithDrift);
-    metrics.addMetric(
-      "TotalDriftMagnitude",
-      MetricUnit.Count,
-      totalDriftMagnitude,
-    );
-    metrics.addMetric("ProcessingErrors", MetricUnit.Count, errors);
-    // Track pagination metrics
-    metrics.addMetric("PagesProcessed", MetricUnit.Count, pagesProcessed);
-
-    const duration = Date.now() - startTime;
-    metrics.addMetric("RecalcDuration", MetricUnit.Milliseconds, duration);
-
-    logger.info("Cardinality recalculation complete", {
-      bucketsProcessed,
-      bucketsWithDrift,
-      totalDriftMagnitude,
-      errors,
-      pagesProcessed,
-      durationMs: duration,
-    });
+    const stats = await processAllBuckets(tableName, ttl);
+    emitRecalcMetrics(stats, Date.now() - startTime);
   } finally {
     metrics.publishStoredMetrics();
   }

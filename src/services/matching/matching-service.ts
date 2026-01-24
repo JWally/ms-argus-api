@@ -135,58 +135,69 @@ export class MatchingService {
     const fuzzyHash = fingerprint.fuzzy_hash;
 
     if (fingerprint.public_key) {
-      const r = await tier05PublicKeyLookup(this.tier05Deps, fingerprint.public_key, fuzzyHash);
+      const r = await tier05PublicKeyLookup(
+        this.tier05Deps,
+        fingerprint.public_key,
+        fuzzyHash,
+      );
       if (r) return r;
     }
     if (fingerprint.evercookie_id) {
-      const r = await tier05CookieLookup(this.tier05Deps, fingerprint.evercookie_id, fuzzyHash);
+      const r = await tier05CookieLookup(
+        this.tier05Deps,
+        fingerprint.evercookie_id,
+        fuzzyHash,
+      );
       if (r) return r;
     }
     if (fingerprint.sigint_id) {
-      const r = await tier05SigintIdLookup(this.tier05Deps, fingerprint.sigint_id, fuzzyHash);
+      const r = await tier05SigintIdLookup(
+        this.tier05Deps,
+        fingerprint.sigint_id,
+        fuzzyHash,
+      );
       if (r) return r;
     }
     return null;
+  }
+
+  private wrapResult(
+    match: MatchResult,
+    fingerprint: Fingerprint,
+    timedOut = false,
+  ) {
+    return {
+      result: this.applyPrivacyPenalty(match, fingerprint),
+      tier2TimedOut: timedOut,
+    };
   }
 
   /** Run tiered matching strategy */
   async runTieredMatching(
     fingerprint: Fingerprint,
   ): Promise<{ result: MatchResult; tier2TimedOut: boolean }> {
-    // Tier 0.5: Identity lookups
     const tier05Result = await this.runTier05Lookups(fingerprint);
-    if (tier05Result) {
-      return { result: this.applyPrivacyPenalty(tier05Result, fingerprint), tier2TimedOut: false };
-    }
+    if (tier05Result) return this.wrapResult(tier05Result, fingerprint);
 
-    // Tier 1: Strong hash match
     const tier1Result = await tier1HashMatch(this.tier1Deps, fingerprint);
-    if (tier1Result) {
-      return { result: this.applyPrivacyPenalty(tier1Result, fingerprint), tier2TimedOut: false };
-    }
+    if (tier1Result) return this.wrapResult(tier1Result, fingerprint);
 
-    // Tier 1.5: SimHash LSH match
     const tier15Result = await tier15SimHashMatch(this.tier15Deps, fingerprint);
-    if (tier15Result) {
-      return { result: this.applyPrivacyPenalty(tier15Result, fingerprint), tier2TimedOut: false };
-    }
+    if (tier15Result) return this.wrapResult(tier15Result, fingerprint);
 
-    // Tier 2: Compound filter match (with timeout)
     const { result: tier2Result, timedOut } =
       await tier2CompoundMatchWithTimeout(this.tier2Deps, fingerprint);
-    if (tier2Result) {
-      return { result: this.applyPrivacyPenalty(tier2Result, fingerprint), tier2TimedOut: timedOut };
-    }
+    if (tier2Result) return this.wrapResult(tier2Result, fingerprint, timedOut);
 
-    // Anchor lookups
-    const sessionResult = await sessionAnchorLookup(this.anchorDeps, fingerprint);
-    if (sessionResult) {
-      return { result: this.applyPrivacyPenalty(sessionResult, fingerprint), tier2TimedOut: timedOut };
-    }
+    const sessionResult = await sessionAnchorLookup(
+      this.anchorDeps,
+      fingerprint,
+    );
+    if (sessionResult)
+      return this.wrapResult(sessionResult, fingerprint, timedOut);
+
     const ipUaResult = await ipUaAnchorLookup(this.anchorDeps, fingerprint);
-    if (ipUaResult) {
-      return { result: this.applyPrivacyPenalty(ipUaResult, fingerprint), tier2TimedOut: timedOut };
-    }
+    if (ipUaResult) return this.wrapResult(ipUaResult, fingerprint, timedOut);
 
     return { result: this.createNewDevice(), tier2TimedOut: timedOut };
   }

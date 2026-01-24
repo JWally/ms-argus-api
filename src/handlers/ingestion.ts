@@ -168,79 +168,74 @@ const streamingGunzip = async (
  * AR-136: Uses streaming decompression to abort early on ZIP bombs
  * Validates isBase64Encoded flag and enforces byte limits
  */
+function validateBinaryPrereqs(event: APIGatewayProxyEventV2): void {
+  const contentEncoding = (
+    event.headers["content-encoding"] ?? ""
+  ).toLowerCase();
+  if (!contentEncoding.includes("gzip")) {
+    metrics.addMetric("MissingGzipEncoding", MetricUnit.Count, 1);
+    throw new HttpError(400, "Binary payload requires Content-Encoding: gzip");
+  }
+  if (!event.isBase64Encoded) {
+    throw new HttpError(
+      400,
+      "Binary payload must be base64-encoded by API Gateway",
+    );
+  }
+}
+
+function decodeAndValidateGzip(rawBody: string): Buffer {
+  const gzipBuffer = Buffer.from(rawBody, "base64");
+  if (gzipBuffer.length > MAX_BODY_BYTES) {
+    metrics.addMetric("PayloadTooLarge", MetricUnit.Count, 1);
+    throw new HttpError(413, "Compressed payload too large");
+  }
+  if (
+    gzipBuffer.length < 2 ||
+    gzipBuffer[0] !== 0x1f ||
+    gzipBuffer[1] !== 0x8b
+  ) {
+    metrics.addMetric("GzipDecompressionFailed", MetricUnit.Count, 1);
+    throw new HttpError(400, "Invalid gzip data");
+  }
+  return gzipBuffer;
+}
+
+async function decompressPayload(event: APIGatewayProxyEventV2): Promise<void> {
+  validateBinaryPrereqs(event);
+  const gzipBuffer = decodeAndValidateGzip(event.body ?? "");
+  try {
+    const decompressed = await streamingGunzip(
+      gzipBuffer,
+      MAX_DECOMPRESSED_BYTES,
+    );
+    event.body = decompressed.toString("utf-8");
+    metrics.addMetric("BinaryGzipPayloadReceived", MetricUnit.Count, 1);
+  } catch (err) {
+    if (err instanceof HttpError) throw err;
+    metrics.addMetric("GzipDecompressionFailed", MetricUnit.Count, 1);
+    const message =
+      err instanceof Error && err.message.includes("exceeds limit")
+        ? err.message
+        : "Failed to decompress gzip payload";
+    throw new HttpError(400, message);
+  }
+}
+
 const binaryGzipBodyParser =
   (): middy.MiddlewareObj<APIGatewayProxyEventV2> => ({
     before: async (request) => {
       const { event } = request;
       const contentType = (event.headers["content-type"] ?? "").toLowerCase();
-      const contentEncoding = (
-        event.headers["content-encoding"] ?? ""
-      ).toLowerCase();
-      const rawBody = event.body ?? "";
-
-      // Non-binary path: validate size in bytes (not string length)
       if (!contentType.startsWith("application/octet-stream")) {
-        if (Buffer.byteLength(rawBody, "utf8") > MAX_BODY_BYTES) {
+        if (Buffer.byteLength(event.body ?? "", "utf8") > MAX_BODY_BYTES) {
           metrics.addMetric("PayloadTooLarge", MetricUnit.Count, 1);
           throw new HttpError(413, "Request entity too large");
         }
-        // AR-171: Track JSON payload format for adoption monitoring
         metrics.addMetric("JsonPayloadReceived", MetricUnit.Count, 1);
         return;
       }
-
-      // Binary path: require gzip encoding
-      if (!contentEncoding.includes("gzip")) {
-        metrics.addMetric("MissingGzipEncoding", MetricUnit.Count, 1);
-        throw new HttpError(
-          400,
-          "Binary payload requires Content-Encoding: gzip",
-        );
-      }
-
-      // Validate isBase64Encoded flag (API Gateway sets this for binary)
-      if (!event.isBase64Encoded) {
-        throw new HttpError(
-          400,
-          "Binary payload must be base64-encoded by API Gateway",
-        );
-      }
-
-      // Decode base64 and validate actual compressed byte size
-      const gzipBuffer = Buffer.from(rawBody, "base64");
-      if (gzipBuffer.length > MAX_BODY_BYTES) {
-        metrics.addMetric("PayloadTooLarge", MetricUnit.Count, 1);
-        throw new HttpError(413, "Compressed payload too large");
-      }
-
-      // Validate gzip magic bytes (0x1f 0x8b)
-      if (
-        gzipBuffer.length < 2 ||
-        gzipBuffer[0] !== 0x1f ||
-        gzipBuffer[1] !== 0x8b
-      ) {
-        metrics.addMetric("GzipDecompressionFailed", MetricUnit.Count, 1);
-        throw new HttpError(400, "Invalid gzip data");
-      }
-
-      // AR-136: Streaming decompress with early abort (zip bomb defense)
-      try {
-        const decompressed = await streamingGunzip(
-          gzipBuffer,
-          MAX_DECOMPRESSED_BYTES,
-        );
-        event.body = decompressed.toString("utf-8");
-        metrics.addMetric("BinaryGzipPayloadReceived", MetricUnit.Count, 1);
-      } catch (err) {
-        if (err instanceof HttpError) throw err;
-        metrics.addMetric("GzipDecompressionFailed", MetricUnit.Count, 1);
-        // Preserve error message for size limit errors (AC2)
-        const message =
-          err instanceof Error && err.message.includes("exceeds limit")
-            ? err.message
-            : "Failed to decompress gzip payload";
-        throw new HttpError(400, message);
-      }
+      await decompressPayload(event);
     },
   });
 
@@ -306,10 +301,8 @@ const baseHandler = async (
   const payload = event.parsedBody as ArgusPayload;
   const sessionId = getSessionId(payload);
 
-  // Build SQS message payload - pass through the entire payload with metadata
   const sqsPayload = {
     ...payload,
-    // Include headers and metadata
     _headers: {
       "User-Agent": event.headers["user-agent"],
       "Accept-Language": event.headers["accept-language"],
@@ -318,7 +311,6 @@ const baseHandler = async (
     _timestamp: Date.now(),
   };
 
-  // Send to SQS
   try {
     await sqs.send(
       new SendMessageCommand({
@@ -327,20 +319,14 @@ const baseHandler = async (
       }),
     );
   } catch (err) {
-    logger.error("SQS send failed", {
-      error: err,
-      session_id: sessionId,
-    });
+    logger.error("SQS send failed", { error: err, session_id: sessionId });
     metrics.addMetric("SqsSendFailed", MetricUnit.Count, 1);
     throw new HttpError(503, "Service temporarily unavailable");
   }
 
-  // AR-139: Archive raw payload (async fire-and-forget, does not block response)
   archivePayload(sessionId, payload).catch(() => {
-    // Error already logged in archivePayload
+    /* logged in archivePayload */
   });
-
-  // Success metrics
   metrics.addMetric("RequestQueued", MetricUnit.Count, 1);
   metrics.addMetric(
     "IngestionDuration",

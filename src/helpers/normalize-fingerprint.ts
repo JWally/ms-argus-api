@@ -104,7 +104,10 @@ export function normalizeFingerprint(
   return result;
 }
 
-function applyTlsOverrides(tls: NonNullable<SigintData["tlsFingerprint"]>, fp: Fingerprint) {
+function applyTlsOverrides(
+  tls: NonNullable<SigintData["tlsFingerprint"]>,
+  fp: Fingerprint,
+) {
   const sigintId = sanitizeString(tls.id);
   if (sigintId) fp.sigint_id = sigintId;
   const ja3 = sanitizeString(tls.ja3);
@@ -115,7 +118,10 @@ function applyTlsOverrides(tls: NonNullable<SigintData["tlsFingerprint"]>, fp: F
   if (ip) fp.ip_address = ip;
 }
 
-function applyTcpOverrides(tcp: NonNullable<SigintData["tcpProbe"]>, fp: Fingerprint) {
+function applyTcpOverrides(
+  tcp: NonNullable<SigintData["tcpProbe"]>,
+  fp: Fingerprint,
+) {
   const rttMs = toValidPositiveNumber(tcp.rttMs);
   if (rttMs !== undefined) fp.tcp_rtt_us = Math.round(rttMs * 1000);
   const proxyScore = toValidScore(tcp.proxyScore);

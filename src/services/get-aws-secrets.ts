@@ -41,6 +41,40 @@ let client: SecretsManagerClient | null = null;
 let cachedSecrets: VersionedSecrets | null = null;
 let cacheTimestamp = 0;
 
+function parseSecretResponse(
+  secret: VersionedSecrets | LegacySecrets,
+): VersionedSecrets {
+  if ("current" in secret && secret.current) {
+    return {
+      version: typeof secret.version === "number" ? secret.version : 1,
+      current: {
+        ENCRYPTION_KEY: secret.current.ENCRYPTION_KEY,
+        HMAC_KEY: secret.current.HMAC_KEY,
+      },
+      previous: secret.previous
+        ? {
+            ENCRYPTION_KEY: secret.previous.ENCRYPTION_KEY,
+            HMAC_KEY: secret.previous.HMAC_KEY,
+          }
+        : undefined,
+    };
+  }
+  const legacy = secret as LegacySecrets;
+  const missingKeys = AWS_SECRETS_REQUIRED_KEYS.filter(
+    (key) => !legacy[key as keyof LegacySecrets],
+  );
+  if (missingKeys.length > 0) {
+    throw new Error(`Missing required keys: ${missingKeys.join(", ")}`);
+  }
+  return {
+    version: 1,
+    current: {
+      ENCRYPTION_KEY: legacy.ENCRYPTION_KEY,
+      HMAC_KEY: legacy.HMAC_KEY,
+    },
+  };
+}
+
 /**
  * Retrieves versioned secrets from AWS Secrets Manager with caching.
  * Supports both current and previous keys for seamless key rotation.
@@ -68,41 +102,7 @@ export const getVersionedSecrets = async (): Promise<VersionedSecrets> => {
     const secret = JSON.parse(data.SecretString!) as
       | VersionedSecrets
       | LegacySecrets;
-
-    // Handle versioned format (new structure)
-    if ("current" in secret && secret.current) {
-      cachedSecrets = {
-        version: typeof secret.version === "number" ? secret.version : 1,
-        current: {
-          ENCRYPTION_KEY: secret.current.ENCRYPTION_KEY,
-          HMAC_KEY: secret.current.HMAC_KEY,
-        },
-        previous: secret.previous
-          ? {
-              ENCRYPTION_KEY: secret.previous.ENCRYPTION_KEY,
-              HMAC_KEY: secret.previous.HMAC_KEY,
-            }
-          : undefined,
-      };
-    } else {
-      // Handle legacy flat format (backwards compatibility)
-      const legacySecret = secret as LegacySecrets;
-      const missingKeys = AWS_SECRETS_REQUIRED_KEYS.filter(
-        (key) => !legacySecret[key as keyof LegacySecrets],
-      );
-      if (missingKeys.length > 0) {
-        throw new Error(`Missing required keys: ${missingKeys.join(", ")}`);
-      }
-
-      cachedSecrets = {
-        version: 1,
-        current: {
-          ENCRYPTION_KEY: legacySecret.ENCRYPTION_KEY,
-          HMAC_KEY: legacySecret.HMAC_KEY,
-        },
-      };
-    }
-
+    cachedSecrets = parseSecretResponse(secret);
     cacheTimestamp = Date.now();
     return cachedSecrets;
   } catch (error) {
