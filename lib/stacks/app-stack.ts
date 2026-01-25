@@ -130,6 +130,23 @@ export class ArgusApiStack extends cdk.Stack {
     });
 
     // =========================================================================
+    // VECTOR WORKER (Optional - for QDrant integration)
+    // =========================================================================
+    // Only deploy if vectorEnvironment is specified
+    // Runs in ms-argus-vector VPC to access internal ALB
+    // Created before WorkersConstruct so we can pass the vector queue
+
+    let vectorWorker: VectorWorkerConstruct | undefined;
+    if (vectorEnvironment) {
+      vectorWorker = new VectorWorkerConstruct(this, "VectorWorker", {
+        stackName,
+        stage,
+        alarmsTopic,
+        vectorEnvironment,
+      });
+    }
+
+    // =========================================================================
     // COMPUTE LAYER
     // =========================================================================
 
@@ -165,23 +182,9 @@ export class ArgusApiStack extends cdk.Stack {
       sessionPayloadTable: dynamodb.sessionPayloadTable, // AR-XXX: Full payload for gRPC stub
       observationsDeliveryStreamName:
         analytics.deliveryStream.deliveryStreamName!, // AR-57
+      // Vector queue for Qdrant embeddings (enabled)
+      vectorQueue: vectorWorker?.vectorQueue,
     });
-
-    // =========================================================================
-    // VECTOR WORKER (Optional - for QDrant integration)
-    // =========================================================================
-    // Only deploy if vectorEnvironment is specified
-    // Runs in ms-argus-vector VPC to access internal ALB
-
-    let vectorWorker: VectorWorkerConstruct | undefined;
-    if (vectorEnvironment) {
-      vectorWorker = new VectorWorkerConstruct(this, "VectorWorker", {
-        stackName,
-        stage,
-        alarmsTopic,
-        vectorEnvironment,
-      });
-    }
 
     // =========================================================================
     // AR-71: WARMUP RULE - Keep SQS polling pipeline warm
@@ -330,6 +333,21 @@ export class ArgusApiStack extends cdk.Stack {
         description: "SQS ARN for vector operations queue",
         exportName: `${stackName}-vector-queue-arn`,
       });
+
+      // Vector test API outputs (experimental)
+      if (vectorWorker.vectorTestApi) {
+        new cdk.CfnOutput(this, "VectorTestApiEndpoint", {
+          value: vectorWorker.vectorTestApi.apiEndpoint,
+          description: "Vector test API endpoint (experimental)",
+        });
+      }
+
+      if (vectorWorker.vectorTestFunction) {
+        new cdk.CfnOutput(this, "VectorTestFunctionArn", {
+          value: vectorWorker.vectorTestFunction.functionArn,
+          description: "Vector test Lambda ARN",
+        });
+      }
     }
   }
 }

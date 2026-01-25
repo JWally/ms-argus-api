@@ -28,7 +28,10 @@ export interface MatchingWorkerEnvConfig extends BaseEnvConfig {
 /**
  * Environment configuration for the Profile Updater Lambda
  */
-export type ProfileUpdaterEnvConfig = BaseEnvConfig;
+export interface ProfileUpdaterEnvConfig extends BaseEnvConfig {
+  /** Optional: SQS queue URL for vector operations. If set, enables vector upserts. */
+  VECTOR_QUEUE_URL?: string;
+}
 
 /**
  * Environment configuration for the Vector Worker Lambda
@@ -104,6 +107,7 @@ export function getProfileUpdaterEnv(): ProfileUpdaterEnvConfig {
       "TIER2_BUCKETS_TABLE",
     ],
     "argus-profile",
+    ["VECTOR_QUEUE_URL"], // Optional - enables vector upserts when set
   );
 }
 

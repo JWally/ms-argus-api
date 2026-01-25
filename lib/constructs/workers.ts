@@ -34,6 +34,8 @@ interface WorkersConstructProps {
   sessionCacheTable: dynamodb.ITable; // AR-52: Replaces Redis
   sessionPayloadTable: dynamodb.ITable; // AR-XXX: Full payload for gRPC stub
   observationsDeliveryStreamName: string; // AR-57: Firehose for observations
+  /** Optional: Vector queue for Qdrant upserts. When provided, profile-updater queues embeddings. */
+  vectorQueue?: sqs.IQueue;
 }
 
 /**
@@ -72,6 +74,7 @@ export class WorkersConstruct extends Construct {
       sessionCacheTable,
       sessionPayloadTable,
       observationsDeliveryStreamName,
+      vectorQueue,
     } = props;
 
     // Secrets Manager reference
@@ -181,6 +184,8 @@ export class WorkersConstruct extends Construct {
         TIER2_BUCKETS_TABLE: tier2BucketsTable.tableName,
         // AR-XXX: SimHash LSH Tier 1.5 - writes band entries when enabled
         SIMHASH_ENABLED: "true",
+        // Optional: Vector queue for Qdrant embeddings (feature flag)
+        ...(vectorQueue && { VECTOR_QUEUE_URL: vectorQueue.queueUrl }),
       },
     });
 
@@ -201,6 +206,11 @@ export class WorkersConstruct extends Construct {
     tier2BucketsTable.grantReadWriteData(this.profileUpdater);
     sessionCacheTable.grantReadWriteData(this.profileUpdater); // AR-52
     profileQueue.grantConsumeMessages(this.profileUpdater);
+
+    // Optional: Grant send permission to vector queue for Qdrant embeddings
+    if (vectorQueue) {
+      vectorQueue.grantSendMessages(this.profileUpdater);
+    }
 
     // =====================================
     // AR-130: CARDINALITY RECALCULATION LAMBDA

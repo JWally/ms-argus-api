@@ -109,3 +109,33 @@ export function createWorkerEnv(
     LOG_LEVEL: "INFO",
   };
 }
+
+/**
+ * Creates Lambda configuration for functions that use the Qdrant client.
+ * Uses CommonJS format to avoid ESM compatibility issues with the Qdrant client.
+ *
+ * @param options - Optional configuration overrides
+ * @returns Partial NodejsFunction props to spread
+ */
+export function createVectorLambdaConfig(
+  options: BaseLambdaConfigOptions = {},
+): Partial<lambdaNode.NodejsFunctionProps> {
+  const { tracing = true, keepNames = true } = options;
+
+  const bundling: lambdaNode.BundlingOptions = {
+    minify: true,
+    sourceMap: true,
+    target: "node20",
+    // Use CJS format for Qdrant client compatibility
+    format: lambdaNode.OutputFormat.CJS,
+    mainFields: ["main", "module"],
+    ...(keepNames && { keepNames: true }),
+  };
+
+  return {
+    runtime: lambda.Runtime.NODEJS_20_X,
+    architecture: lambda.Architecture.ARM_64,
+    bundling,
+    ...(tracing && { tracing: lambda.Tracing.ACTIVE }),
+  };
+}

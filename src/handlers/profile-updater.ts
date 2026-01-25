@@ -18,6 +18,7 @@
 import { SQSHandler } from "aws-lambda";
 import { Logger } from "@aws-lambda-powertools/logger";
 import { Metrics } from "@aws-lambda-powertools/metrics";
+import { SQSClient } from "@aws-sdk/client-sqs";
 import { processSqsBatch } from "../helpers/sqs-batch";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoCacheService } from "../services/cache";
@@ -43,6 +44,11 @@ const cacheService = new DynamoCacheService(dynamodb, {
   sessionTtlSeconds: SESSION_TTL_SECONDS,
   mutationGateTtlSeconds: MUTATION_GATE_TTL_SECONDS,
 });
+
+// Optional: SQS client for vector queue
+// Only initialized if VECTOR_QUEUE_URL is set
+const sqsClient = envConfig.VECTOR_QUEUE_URL ? new SQSClient({}) : null;
+const vectorQueueUrl = envConfig.VECTOR_QUEUE_URL;
 
 /**
  * AWS Lambda handler for the profile updater.
@@ -71,7 +77,13 @@ export const handler: SQSHandler = async (event) => {
   const service = createProfileService({ dynamodb, cacheService, envConfig });
   return processSqsBatch(
     event.Records,
-    (record) => processRecord(record, service, { logger, metrics }),
+    (record) =>
+      processRecord(record, service, {
+        logger,
+        metrics,
+        sqsClient,
+        vectorQueueUrl,
+      }),
     {
       metrics,
       logger,

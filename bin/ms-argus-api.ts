@@ -22,8 +22,8 @@ new ArgusApiStack(app, "ms-argus-api-dev-jw", {
   region: PIPELINE_HOME_REGION,
   account: AWS_ACCOUNT_ID,
   synthesizer,
-  // Connect to ms-argus-vector-dev-jw (exports use config.name="qa")
-  vectorEnvironment: "qa",
+  // Connect to ms-argus-vector stack (SSM params at /argus-vector/{stage}/...)
+  vectorEnvironment: "dev-jw",
 });
 
 // /////////////////////////////////
