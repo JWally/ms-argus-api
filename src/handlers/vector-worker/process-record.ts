@@ -1,3 +1,9 @@
+/**
+ * @fileoverview SQS record processing for the vector worker.
+ * Handles vector search and upsert operations via Qdrant.
+ * @module handlers/vector-worker/process-record
+ */
+
 import { SQSRecord } from "aws-lambda";
 import { Logger } from "@aws-lambda-powertools/logger";
 import { Metrics, MetricUnit } from "@aws-lambda-powertools/metrics";
@@ -13,6 +19,27 @@ import type {
   VectorUpsertMessage,
 } from "./types";
 
+/**
+ * Processes a single SQS record containing a vector operation request.
+ *
+ * Handles three message types:
+ * - **warmup**: Keeps the Lambda warm, no-op
+ * - **search**: Queries Qdrant for similar vectors
+ * - **upsert**: Inserts or updates a device vector
+ *
+ * Invalid or unknown message types are logged and skipped without failing.
+ *
+ * @param record - SQS record containing a VectorMessage
+ * @param deps - Service dependencies
+ * @param deps.qdrantClient - Qdrant vector database client
+ * @param deps.logger - Logger for operation tracking
+ * @param deps.metrics - Metrics for CloudWatch
+ *
+ * @example
+ * ```typescript
+ * await processRecord(record, { qdrantClient, logger, metrics });
+ * ```
+ */
 export async function processRecord(
   record: SQSRecord,
   deps: { qdrantClient: QdrantClient; logger: Logger; metrics: Metrics },
@@ -61,6 +88,17 @@ export async function processRecord(
   );
 }
 
+/**
+ * Handles a vector search request.
+ *
+ * Queries Qdrant for vectors similar to the provided vector and logs results.
+ * Currently logs results but doesn't persist them - TODO for callback implementation.
+ *
+ * @param message - Search request with vector and parameters
+ * @param deps - Service dependencies
+ *
+ * @internal
+ */
 async function handleSearch(
   message: VectorSearchMessage,
   deps: { qdrantClient: QdrantClient; logger: Logger; metrics: Metrics },
@@ -95,6 +133,17 @@ async function handleSearch(
   // TODO: Write results to session cache or callback queue
 }
 
+/**
+ * Handles a vector upsert request.
+ *
+ * Inserts or updates a device's vector representation in Qdrant.
+ * Used for future vector-based similarity matching (Tier 3).
+ *
+ * @param message - Upsert request with device ID, vector, and optional payload
+ * @param deps - Service dependencies
+ *
+ * @internal
+ */
 async function handleUpsert(
   message: VectorUpsertMessage,
   deps: { qdrantClient: QdrantClient; logger: Logger; metrics: Metrics },

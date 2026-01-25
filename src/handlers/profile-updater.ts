@@ -1,3 +1,20 @@
+/**
+ * @fileoverview Profile Updater Lambda Handler.
+ *
+ * Consumes profile update messages from SQS and persists device profiles
+ * and matching indexes to DynamoDB. Implements mutation gating to reduce
+ * unnecessary writes for frequently-seen devices.
+ *
+ * Responsibilities:
+ * - Update device profiles with latest fingerprint data
+ * - Detect fingerprint drift (significant changes over time)
+ * - Compute and update risk flags
+ * - Maintain Tier1 (hash) and Tier2 (bucket) indexes
+ * - Manage SimHash band entries for fuzzy matching
+ *
+ * @module handlers/profile-updater
+ */
+
 import { SQSHandler } from "aws-lambda";
 import { Logger } from "@aws-lambda-powertools/logger";
 import { Metrics } from "@aws-lambda-powertools/metrics";
@@ -28,9 +45,27 @@ const cacheService = new DynamoCacheService(dynamodb, {
 });
 
 /**
- * Profile Updater Lambda Handler
- * Writes device profiles and indexes to DynamoDB
- * Implements mutation gating to reduce unnecessary writes
+ * AWS Lambda handler for the profile updater.
+ *
+ * Triggered by SQS messages queued by the matching worker after successful
+ * device matching. Each message contains a device ID, fingerprint, and
+ * matching metadata to persist.
+ *
+ * Processing flow:
+ * 1. Check mutation gate (skip if recently updated)
+ * 2. Load existing profile (if any)
+ * 3. Detect fingerprint drift
+ * 4. Compute risk flags
+ * 5. Write profile and indexes
+ * 6. Set mutation gate
+ *
+ * Uses partial batch failure reporting for reliable processing.
+ *
+ * @param event - SQS event containing profile update records
+ * @returns SQS batch response with partial failures
+ *
+ * @see {@link ProfileService} for profile persistence logic
+ * @see {@link createProfileService} for service configuration
  */
 export const handler: SQSHandler = async (event) => {
   const service = createProfileService({ dynamodb, cacheService, envConfig });

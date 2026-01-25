@@ -1,3 +1,13 @@
+/**
+ * @fileoverview Application-wide constants and configuration values.
+ *
+ * Contains TTLs, limits, thresholds, and feature flag accessors used
+ * throughout the Argus fingerprinting system. Constants are organized
+ * by domain (caching, matching, profiles, SimHash).
+ *
+ * @module helpers/constants
+ */
+
 /** Cache duration for AWS Secrets: 15 minutes (900,000ms) */
 export const KEY_CACHE_DURATION: number = 1000 * 60 * 15;
 

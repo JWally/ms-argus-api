@@ -1,3 +1,10 @@
+/**
+ * @fileoverview SQS record parsing utilities for the matching worker.
+ * Handles deserialization, validation, and normalization of fingerprint payloads
+ * received from the ingestion queue.
+ * @module handlers/matching-worker/parse-record
+ */
+
 import { SQSRecord } from "aws-lambda";
 import { Logger } from "@aws-lambda-powertools/logger";
 import { Metrics, MetricUnit } from "@aws-lambda-powertools/metrics";
@@ -6,21 +13,64 @@ import { extractFingerprint } from "../../services/matching/fingerprint-extracto
 import { isWarmupMessage } from "../../helpers/is-warmup";
 import type { ArgusPayload } from "../../helpers/payload-schema";
 
-// V3 Payload from ingestion handler (ArgusPayload + metadata)
-// Supports both V2 "network" and V3 "sigint" field names
+/**
+ * Extended payload structure received from the ingestion handler via SQS.
+ * Extends the base ArgusPayload with internal metadata fields and provides
+ * backward compatibility for V2 "network" field naming.
+ *
+ * @interface SqsPayload
+ * @extends ArgusPayload
+ */
 export interface SqsPayload extends ArgusPayload {
+  /** HTTP headers from the original request, prefixed with underscore to indicate internal metadata */
   _headers?: Record<string, string>;
+  /** Unix timestamp (ms) when the payload was ingested */
   _timestamp?: number;
-  network?: ArgusPayload["sigint"]; // V2 compat
+  /** V2 compatibility: maps to V3 "sigint" field for older clients */
+  network?: ArgusPayload["sigint"];
 }
 
+/**
+ * Successfully parsed and normalized SQS record ready for matching.
+ *
+ * @interface ParsedRecord
+ */
 export interface ParsedRecord {
+  /** Original payload with V2→V3 normalization applied */
   rawPayload: SqsPayload;
+  /** Unique session identifier extracted from identifiers.session_id */
   sessionId: string;
+  /** Extracted fingerprint signals for device matching */
   fingerprint: ReturnType<typeof extractFingerprint>;
+  /** Normalized payload structure for the matching service */
   payload: FingerprintPayload;
 }
 
+/**
+ * Parses and validates an SQS record containing a fingerprint payload.
+ *
+ * Performs the following operations:
+ * 1. Detects and handles warmup messages (returns null)
+ * 2. Parses JSON body with error handling
+ * 3. Normalizes V2 "network" field to V3 "sigint"
+ * 4. Validates required session_id presence
+ * 5. Extracts fingerprint signals for matching
+ *
+ * @param record - Raw SQS record from the Lambda event
+ * @param deps - Dependencies for logging and metrics
+ * @param deps.logger - Logger instance for debug/error output
+ * @param deps.metrics - Metrics instance for CloudWatch metrics
+ * @returns Parsed record ready for matching, or null if the record should be skipped
+ *          (warmup message, malformed JSON, or missing session_id)
+ *
+ * @example
+ * ```typescript
+ * const parsed = parseSqsRecord(record, { logger, metrics });
+ * if (parsed) {
+ *   await matchingService.match(parsed.payload);
+ * }
+ * ```
+ */
 export function parseSqsRecord(
   record: SQSRecord,
   deps: { logger: Logger; metrics: Metrics },

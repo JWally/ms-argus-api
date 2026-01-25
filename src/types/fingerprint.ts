@@ -1,6 +1,23 @@
 /**
- * Fingerprint data from the client
- * Used by both matching and profile services
+ * @fileoverview Core fingerprint type definition.
+ * Defines the structure of browser/device fingerprint data collected from clients.
+ * @module types/fingerprint
+ */
+
+/**
+ * Fingerprint data collected from a client browser or device.
+ *
+ * Contains multiple signals used for device identification across the matching tiers:
+ * - **Hashes**: Stable, fuzzy, canvas, WebGL, audio - for hash-based matching
+ * - **Network**: IP, JA3/JA4 TLS fingerprints, RTT, proxy/VPN scores
+ * - **Identity**: Public key, evercookie, sigint ID, favicon cache ID
+ * - **Privacy**: Privacy browser detection, incognito mode
+ * - **Structural**: Engine-level signals that can't be randomized
+ *
+ * Used by both matching services (to identify devices) and profile services
+ * (to track device characteristics over time).
+ *
+ * @interface Fingerprint
  */
 export interface Fingerprint {
   stable_hash?: string;

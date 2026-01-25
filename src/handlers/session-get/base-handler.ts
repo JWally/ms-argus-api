@@ -1,3 +1,9 @@
+/**
+ * @fileoverview Base handler factory for session retrieval endpoint.
+ * Creates the core handler logic for GET /v1/session/{session_id}.
+ * @module handlers/session-get/base-handler
+ */
+
 import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from "aws-lambda";
 import { Logger } from "@aws-lambda-powertools/logger";
 import { Metrics, MetricUnit } from "@aws-lambda-powertools/metrics";
@@ -10,6 +16,11 @@ import {
   buildFallbackResponse,
 } from "./session-ops";
 
+/**
+ * Dependencies required by the session-get handler.
+ *
+ * @interface HandlerDeps
+ */
 interface HandlerDeps {
   dynamodb: DynamoDBClient;
   cacheService: DynamoCacheService;
@@ -18,6 +29,23 @@ interface HandlerDeps {
   metrics: Metrics;
 }
 
+/**
+ * Emits CloudWatch metrics and structured logs for a session retrieval.
+ *
+ * Records:
+ * - SessionRetrieved count
+ * - SessionGetDuration latency
+ * - Structured log with session details
+ *
+ * @param params - Metrics data
+ * @param params.session - Retrieved session data
+ * @param params.sessionId - Session identifier
+ * @param params.duration - Handler execution time in ms
+ * @param params.hasPayload - Whether full payload was available
+ * @param deps - Handler dependencies with metrics instance
+ *
+ * @internal
+ */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function emitSessionMetrics(
   params: {
@@ -43,6 +71,33 @@ function emitSessionMetrics(
   );
 }
 
+/**
+ * Factory function that creates the base session-get handler.
+ *
+ * The returned handler:
+ * 1. Extracts and validates the session ID from path parameters
+ * 2. Looks up the session in the cache
+ * 3. Attempts to fetch the full payload from the payload table
+ * 4. Returns full payload if available, or degraded response if not
+ *
+ * @param deps - Handler dependencies
+ * @returns Async handler function for API Gateway
+ *
+ * @example
+ * ```typescript
+ * const baseHandler = createBaseHandler({
+ *   dynamodb,
+ *   cacheService,
+ *   payloadTable: "session-payloads",
+ *   logger,
+ *   metrics,
+ * });
+ *
+ * export const handler = middy(baseHandler)
+ *   .use(corsMiddleware({ methods: "GET, OPTIONS", headers: "Content-Type" }))
+ *   .use(jsonErrorHandler({ logger }));
+ * ```
+ */
 export function createBaseHandler(deps: HandlerDeps) {
   return async (
     event: APIGatewayProxyEventV2,

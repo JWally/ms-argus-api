@@ -1,3 +1,17 @@
+/**
+ * @fileoverview Matching service module exports.
+ *
+ * Provides device fingerprint matching across multiple tiers:
+ * - **Tier 0**: Session cache lookup (instant, 100% confidence)
+ * - **Tier 0.5**: Identity matching (public key, cookies, sigint ID)
+ * - **Tier 1**: Hash-based matching (stable_hash exact match)
+ * - **Tier 1.5**: SimHash fuzzy matching (fuzzy_hash locality-sensitive)
+ * - **Tier 2**: Compound matching (UA/IP bucket + scoring)
+ * - **Tier 3**: Vector similarity search (future, via Qdrant)
+ *
+ * @module services/matching
+ */
+
 export * from "./types";
 
 export * from "./matching-service";

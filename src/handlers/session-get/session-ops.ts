@@ -1,3 +1,9 @@
+/**
+ * @fileoverview Session retrieval operations for the session-get handler.
+ * Provides session ID extraction, cache lookup, payload fetching, and response building.
+ * @module handlers/session-get/session-ops
+ */
+
 import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from "aws-lambda";
 import { Logger } from "@aws-lambda-powertools/logger";
 import { Metrics, MetricUnit } from "@aws-lambda-powertools/metrics";
@@ -10,6 +16,32 @@ import {
   type SessionResponse,
 } from "../../helpers/payload-schema";
 
+/**
+ * Extracts and validates the session ID from the API Gateway event.
+ *
+ * Handles:
+ * - OPTIONS preflight requests (throws special error with preflight flag)
+ * - Method validation (only GET allowed)
+ * - Session ID presence and format validation
+ *
+ * @param event - API Gateway proxy event
+ * @param metrics - Metrics instance for tracking validation failures
+ * @returns Validated session ID string
+ *
+ * @throws {HttpError} with preflight=true for OPTIONS requests
+ * @throws {HttpError} 405 for non-GET methods
+ * @throws {HttpError} 400 for missing or invalid session ID format
+ *
+ * @example
+ * ```typescript
+ * try {
+ *   const sessionId = extractSessionId(event, metrics);
+ * } catch (error) {
+ *   if ((error as any).preflight) return { statusCode: 204 };
+ *   throw error;
+ * }
+ * ```
+ */
 export function extractSessionId(
   event: APIGatewayProxyEventV2,
   metrics: Metrics,
@@ -32,6 +64,25 @@ export function extractSessionId(
   return sessionId;
 }
 
+/**
+ * Looks up a session in the DynamoDB cache.
+ *
+ * @param sessionId - Session identifier to look up
+ * @param deps - Service dependencies
+ * @param deps.cacheService - DynamoDB cache service instance
+ * @param deps.logger - Logger for error output
+ * @param deps.metrics - Metrics for tracking lookup outcomes
+ * @returns Cached session data if found
+ *
+ * @throws {HttpError} 404 if session not found in cache
+ * @throws {HttpError} 503 if cache lookup fails due to service error
+ *
+ * @example
+ * ```typescript
+ * const session = await lookupSession(sessionId, { cacheService, logger, metrics });
+ * console.log(session.device_id, session.status);
+ * ```
+ */
 export async function lookupSession(
   sessionId: string,
   deps: { cacheService: DynamoCacheService; logger: Logger; metrics: Metrics },
@@ -54,6 +105,29 @@ export async function lookupSession(
   }
 }
 
+/**
+ * Fetches the full session payload from DynamoDB.
+ *
+ * The payload is stored gzip-compressed and base64-encoded to reduce storage costs.
+ * This function handles decompression and JSON parsing, then validates the response
+ * schema before returning.
+ *
+ * @param sessionId - Session identifier to fetch payload for
+ * @param deps - Service dependencies
+ * @param deps.dynamodb - DynamoDB client instance
+ * @param deps.payloadTable - Table name for session payloads
+ * @param deps.logger - Logger for warning on failures
+ * @param deps.metrics - Metrics for tracking fetch outcomes
+ * @returns Full session response if found and valid, undefined otherwise
+ *
+ * @example
+ * ```typescript
+ * const payload = await fetchPayload(sessionId, deps);
+ * if (payload) {
+ *   return { statusCode: 200, body: JSON.stringify(payload) };
+ * }
+ * ```
+ */
 export async function fetchPayload(
   sessionId: string,
   deps: {
@@ -86,6 +160,26 @@ export async function fetchPayload(
   }
 }
 
+/**
+ * Builds a degraded response when the full session payload is unavailable.
+ *
+ * Returns a minimal response using only the cached session data. The response
+ * includes an X-Argus-Degraded header to indicate incomplete data. This ensures
+ * clients always receive a response even if the payload table is unavailable.
+ *
+ * @param session - Cached session data (minimal fields)
+ * @param sessionId - Session identifier for the response
+ * @param metrics - Metrics for tracking degraded responses
+ * @returns API Gateway response with degraded session data
+ *
+ * @example
+ * ```typescript
+ * const payload = await fetchPayload(sessionId, deps);
+ * if (!payload) {
+ *   return buildFallbackResponse(session, sessionId, metrics);
+ * }
+ * ```
+ */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function buildFallbackResponse(
   session: any,
