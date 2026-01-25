@@ -4,6 +4,10 @@ import type { Fingerprint } from "../../types";
 /**
  * Extract flat fingerprint fields from V3 payload.
  * Pure transformation: no AWS calls, no side effects.
+ * Normalizes the nested V3 payload structure into a flat fingerprint object.
+ * @param payload - The V3 Argus payload from the client
+ * @param headers - Optional HTTP headers for IP fallback extraction
+ * @returns Flat fingerprint object with all extracted signals
  */
 export function extractFingerprint(
   payload: ArgusPayload,
@@ -30,6 +34,11 @@ export function extractFingerprint(
   return fingerprint;
 }
 
+/**
+ * Extract identity signals (evercookie, public key) from identifiers section
+ * @param identifiers - The identifiers section from the payload
+ * @param fp - The fingerprint object to populate
+ */
 function extractIdentifiers(
   identifiers: ArgusPayload["identifiers"],
   fp: Fingerprint,
@@ -38,6 +47,12 @@ function extractIdentifiers(
   if (identifiers.public_key) fp.public_key = identifiers.public_key;
 }
 
+/**
+ * Extract device info from worker scope (userAgent, hardware, GPU, timezone)
+ * Worker scope provides more reliable values than navigator in some cases
+ * @param device - The device section from the payload
+ * @param fp - The fingerprint object to populate
+ */
 function extractWorkerScope(device: ArgusPayload["device"], fp: Fingerprint) {
   const workerScope = device.workerScope;
   if (!workerScope) return;
@@ -54,6 +69,11 @@ function extractWorkerScope(device: ArgusPayload["device"], fp: Fingerprint) {
     fp.timezone = workerScope.timezoneLocation;
 }
 
+/**
+ * Extract GPU renderer from canvas WebGL if not already set from worker scope
+ * @param device - The device section from the payload
+ * @param fp - The fingerprint object to populate
+ */
 function extractGpuFallback(device: ArgusPayload["device"], fp: Fingerprint) {
   if (fp.gpu_renderer) return;
   const gpu = device.canvasWebgl?.gpu as Record<string, unknown> | undefined;
@@ -62,6 +82,11 @@ function extractGpuFallback(device: ArgusPayload["device"], fp: Fingerprint) {
   }
 }
 
+/**
+ * Extract screen dimensions as "widthxheight" string
+ * @param device - The device section from the payload
+ * @param fp - The fingerprint object to populate
+ */
 function extractScreen(device: ArgusPayload["device"], fp: Fingerprint) {
   const screen = device.screen;
   if (!screen) return;
@@ -71,6 +96,10 @@ function extractScreen(device: ArgusPayload["device"], fp: Fingerprint) {
   }
 }
 
+/**
+ * Mapping of source hash fields to fingerprint fields
+ * Each tuple maps [sourceField, targetField]
+ */
 const HASH_FIELD_MAP: [keyof ArgusPayload["hashes"], keyof Fingerprint][] = [
   ["canvas2d", "canvas_hash"],
   ["canvasWebgl", "webgl_hash"],
@@ -86,12 +115,22 @@ const HASH_FIELD_MAP: [keyof ArgusPayload["hashes"], keyof Fingerprint][] = [
   ["clientRects", "client_rects_hash"],
 ];
 
+/**
+ * Extract all hash fields (canvas, webgl, audio, etc.) from hashes section
+ * @param hashes - The hashes section from the payload
+ * @param fp - The fingerprint object to populate
+ */
 function extractHashes(hashes: ArgusPayload["hashes"], fp: Fingerprint) {
   for (const [src, dst] of HASH_FIELD_MAP) {
     if (hashes[src]) (fp as Record<string, unknown>)[dst] = hashes[src];
   }
 }
 
+/**
+ * Extract count of WebGL extensions supported by the device
+ * @param device - The device section from the payload
+ * @param fp - The fingerprint object to populate
+ */
 function extractWebglExtensions(
   device: ArgusPayload["device"],
   fp: Fingerprint,
@@ -102,6 +141,11 @@ function extractWebglExtensions(
   }
 }
 
+/**
+ * Extract TLS fingerprint fields (IP, JA3, JA4, sigint ID)
+ * @param tls - The TLS fingerprint section from sigint
+ * @param fp - The fingerprint object to populate
+ */
 function extractTlsFields(
   tls: NonNullable<ArgusPayload["sigint"]>["tlsFingerprint"],
   fp: Fingerprint,
@@ -113,6 +157,11 @@ function extractTlsFields(
   if (tls.id) fp.sigint_id = tls.id;
 }
 
+/**
+ * Extract signal intelligence data (TLS, TCP, favicon cache, STUN)
+ * @param sigint - The sigint section from the payload
+ * @param fp - The fingerprint object to populate
+ */
 function extractSigint(sigint: ArgusPayload["sigint"], fp: Fingerprint) {
   if (!sigint) return;
   extractTlsFields(sigint.tlsFingerprint, fp);
@@ -121,6 +170,13 @@ function extractSigint(sigint: ArgusPayload["sigint"], fp: Fingerprint) {
   extractStun(sigint, fp);
 }
 
+/**
+ * Apply TCP fingerprint fields to the fingerprint
+ * Handles both legacy (camelCase) and modern (snake_case) field names
+ * @param source - Source object containing TCP fields
+ * @param fp - The fingerprint object to populate
+ * @param legacy - Whether to use legacy field names
+ */
 function applyTcpFields(
   source: Record<string, unknown>,
   fp: Fingerprint,
@@ -141,6 +197,11 @@ function applyTcpFields(
   }
 }
 
+/**
+ * Extract TCP probe data (proxy score, VPN score, RTT)
+ * @param sigint - The sigint section from the payload
+ * @param fp - The fingerprint object to populate
+ */
 function extractTcpProbe(
   sigint: NonNullable<ArgusPayload["sigint"]>,
   fp: Fingerprint,
@@ -151,6 +212,11 @@ function extractTcpProbe(
   applyTcpFields(rttFp || tcp, fp, !rttFp);
 }
 
+/**
+ * Extract STUN protocol data (public and local IPs from WebRTC)
+ * @param sigint - The sigint section from the payload
+ * @param fp - The fingerprint object to populate
+ */
 function extractStun(
   sigint: NonNullable<ArgusPayload["sigint"]>,
   fp: Fingerprint,
@@ -165,6 +231,12 @@ function extractStun(
   if (typeof localIp === "string") fp.stun_local_ip = localIp;
 }
 
+/**
+ * Extract IP address from X-Forwarded-For header as fallback
+ * Only used if IP wasn't extracted from TLS fingerprint
+ * @param headers - HTTP headers from the request
+ * @param fp - The fingerprint object to populate
+ */
 function extractIpFallback(
   headers: Record<string, string> | undefined,
   fp: Fingerprint,
@@ -174,6 +246,11 @@ function extractIpFallback(
   if (clientIp) fp.ip_address = clientIp;
 }
 
+/**
+ * Extract privacy browser and private browsing mode signals
+ * @param device - The device section from the payload
+ * @param fp - The fingerprint object to populate
+ */
 function extractPrivacySignals(
   device: ArgusPayload["device"],
   fp: Fingerprint,
@@ -195,6 +272,11 @@ function extractPrivacySignals(
   }
 }
 
+/**
+ * Detect if browser is running in headless mode
+ * @param headless - The headless detection section
+ * @returns True if headless detected, false if not, undefined if unknown
+ */
 function detectHeadless(
   headless: Record<string, unknown>,
 ): boolean | undefined {
@@ -203,6 +285,11 @@ function detectHeadless(
   return signals ? Object.values(signals).some(Boolean) : undefined;
 }
 
+/**
+ * Extract bot detection signals (headless browser, lie count)
+ * @param device - The device section from the payload
+ * @param fp - The fingerprint object to populate
+ */
 function extractBotSignals(device: ArgusPayload["device"], fp: Fingerprint) {
   const headless = device.headless as Record<string, unknown> | undefined;
   if (headless) {

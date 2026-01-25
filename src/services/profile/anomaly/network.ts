@@ -1,23 +1,30 @@
+/**
+ * Network anomaly detection.
+ *
+ * Detects anomalies in network-level signals such as timezone mismatches
+ * between server-side geo-IP and client-reported values. These indicate
+ * potential VPN/proxy usage or location spoofing.
+ * @module
+ */
 import { Fingerprint } from "../../../types";
 import { AnomalySignal, AnomalyCodes, createSignal } from "./types";
 
-/**
- * Minimum timezone offset difference (in hours) to flag
- */
+/** Minimum timezone offset difference (in hours) to flag as anomaly. */
 const TZ_MISMATCH_THRESHOLD_HOURS = 3;
 
-/**
- * SigintData structure for network signals
- */
+/** SigintData structure for network signals. */
 interface SigintData {
+  /** Geographic data from IP lookup */
   geo?: {
+    /** IANA timezone from IP geolocation */
     timezone?: string;
   };
 }
 
 /**
  * Get UTC offset in minutes for a timezone
- * Returns undefined if timezone is invalid
+ * @param timezone - IANA timezone string (e.g., "America/New_York")
+ * @returns Offset in minutes, or undefined if timezone is invalid
  */
 function getUtcOffsetMinutes(timezone: string): number | undefined {
   try {
@@ -40,11 +47,23 @@ function getUtcOffsetMinutes(timezone: string): number | undefined {
  * @param sigint - Signal intelligence data with geo
  * @returns Array of anomaly signals
  */
+/**
+ * Format timezone with UTC offset for display
+ * @param tz - Timezone string
+ * @param offset - UTC offset in minutes
+ * @returns Formatted string like "America/New_York (UTC-5)"
+ */
 function formatTzOffset(tz: string, offset: number): string {
   const sign = offset >= 0 ? "+" : "";
   return `${tz} (UTC${sign}${(offset / 60).toFixed(0)})`;
 }
 
+/**
+ * Detect timezone mismatch between server geo-IP and client reported timezone
+ * @param serverTz - Server-side timezone from geo-IP lookup
+ * @param clientTz - Client-reported timezone from JavaScript
+ * @returns Anomaly signal if significant mismatch detected, null otherwise
+ */
 function detectTimezoneMismatch(
   serverTz: string,
   clientTz: string,
@@ -67,6 +86,13 @@ function detectTimezoneMismatch(
   });
 }
 
+/**
+ * Detect network-related anomalies (timezone mismatches)
+ * @param fingerprint - Normalized fingerprint with client timezone
+ * @param _raw - Raw payload (unused for network detection)
+ * @param sigint - Signal intelligence data with geo-IP timezone
+ * @returns Array of detected network anomaly signals
+ */
 export function detectNetworkAnomalies(
   fingerprint: Fingerprint,
   _raw?: unknown,

@@ -11,9 +11,15 @@ export interface BucketKeyInfo {
   evidenceCode: EvidenceCode;
 }
 
+/**
+ * Definition of a compound bucket type
+ */
 interface BucketDef {
+  /** Prefix for the bucket key (e.g., "ip_ja4") */
   prefix: string;
+  /** Fingerprint fields that compose this bucket */
   fields: (keyof Fingerprint)[];
+  /** Evidence code to assign when this bucket matches */
   evidenceCode: EvidenceCode;
 }
 
@@ -53,6 +59,8 @@ const BUCKET_DEFS: BucketDef[] = [
 /**
  * Build compound bucket keys with their evidence code types
  * Used for Tier 2 matching and evidence tracking
+ * @param fingerprint - Fingerprint to build keys from
+ * @returns Array of bucket key info with evidence codes
  */
 export function buildBucketKeysWithTypes(
   fingerprint: Fingerprint,
@@ -75,6 +83,8 @@ export function buildBucketKeysWithTypes(
 /**
  * Build compound bucket keys for Tier 2 matching
  * Returns just the key strings without evidence codes
+ * @param fingerprint - Fingerprint to build keys from
+ * @returns Array of bucket key strings
  */
 export function buildBucketKeys(fingerprint: Fingerprint): string[] {
   return buildBucketKeysWithTypes(fingerprint).map((info) => info.key);

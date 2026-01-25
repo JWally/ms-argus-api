@@ -1,17 +1,38 @@
+/**
+ * Cardinality recalculation orchestration.
+ *
+ * Coordinates scanning all tier-2 buckets and recalculating their
+ * cardinality values to correct any drift from failed updates.
+ * @module
+ */
 import { Logger } from "@aws-lambda-powertools/logger";
 import { Metrics, MetricUnit } from "@aws-lambda-powertools/metrics";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { scanBucketKeysPages } from "./dynamo-ops";
 import { processBucket } from "./bucket-processor";
 
+/** Statistics from a cardinality recalculation run. */
 export interface RecalcStats {
+  /** Total buckets processed */
   bucketsProcessed: number;
+  /** Buckets where drift was detected and corrected */
   bucketsWithDrift: number;
+  /** Sum of absolute cardinality differences corrected */
   totalDriftMagnitude: number;
+  /** Number of buckets that failed processing */
   errors: number;
+  /** Number of DynamoDB scan pages processed */
   pagesProcessed: number;
 }
 
+/**
+ * Process a page of bucket keys from scan results.
+ *
+ * @param pageKeys - Set of bucket keys from current scan page
+ * @param ctx - Processing context with deduplication set
+ * @param stats - Stats object to update
+ * @param deps - DynamoDB client and logger
+ */
 async function processBucketPage(
   pageKeys: Set<string>,
   ctx: { processed: Set<string>; tableName: string; ttl: number },
@@ -47,6 +68,18 @@ async function processBucketPage(
   }
 }
 
+/**
+ * Scan and process all tier-2 buckets for cardinality drift.
+ *
+ * Iterates through all bucket keys using paginated scans, checking
+ * each bucket's cardinality against actual device count. Deduplicates
+ * bucket keys across pages to avoid reprocessing.
+ *
+ * @param tableName - Tier-2 buckets DynamoDB table name
+ * @param ttl - TTL for updated cardinality records
+ * @param deps - DynamoDB client and logger
+ * @returns Statistics from the recalculation run
+ */
 export async function processAllBuckets(
   tableName: string,
   ttl: number,
@@ -73,6 +106,13 @@ export async function processAllBuckets(
   return stats;
 }
 
+/**
+ * Emit CloudWatch metrics for recalculation run.
+ *
+ * @param stats - Statistics from the recalculation
+ * @param duration - Total duration in milliseconds
+ * @param deps - Metrics and logger dependencies
+ */
 export function emitRecalcMetrics(
   stats: RecalcStats,
   duration: number,

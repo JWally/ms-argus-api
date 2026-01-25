@@ -1,16 +1,37 @@
+/**
+ * Profile updater SQS record processing.
+ *
+ * Handles profile update messages from the matching worker, applying
+ * mutation gating and drift detection before persisting profile changes.
+ * @module
+ */
 import { SQSRecord } from "aws-lambda";
 import { Logger } from "@aws-lambda-powertools/logger";
 import { Metrics, MetricUnit } from "@aws-lambda-powertools/metrics";
 import { ProfileService, ProfileUpdatePayload } from "../../services/profile";
 import { normalizeFingerprint } from "../../helpers/normalize-fingerprint";
 
+/** Result of processing a profile update request. */
 export interface ProfileResult {
+  /** Whether the update was skipped */
   skipped: boolean;
+  /** Reason for skipping: 'mutation_gate' or 'no_drift' */
   reason?: string;
+  /** Number of tier-1 index writes performed */
   tier1Writes?: number;
+  /** Number of tier-2 bucket writes performed */
   tier2Writes?: number;
 }
 
+/**
+ * Record metrics when profile update is skipped.
+ *
+ * Emits appropriate CloudWatch metric based on skip reason.
+ *
+ * @param result - Profile update result with skip reason
+ * @param deviceId - Device ID for logging context
+ * @param deps - Logger and metrics dependencies
+ */
 function recordSkipMetrics(
   result: ProfileResult,
   deviceId: string,
@@ -37,6 +58,16 @@ function recordSkipMetrics(
   }
 }
 
+/**
+ * Record metrics after successful profile write.
+ *
+ * Emits index write counts and duration to CloudWatch.
+ *
+ * @param result - Profile update result with write counts
+ * @param deviceId - Device ID for logging context
+ * @param duration - Processing duration in milliseconds
+ * @param deps - Logger and metrics dependencies
+ */
 function recordWriteMetrics(
   result: ProfileResult,
   deviceId: string,
@@ -67,6 +98,17 @@ function recordWriteMetrics(
   });
 }
 
+/**
+ * Process a single profile update SQS record.
+ *
+ * Parses the payload, normalizes the fingerprint, and delegates to
+ * ProfileService. Handles mutation gating (skips recently updated profiles)
+ * and drift detection (skips when no significant changes detected).
+ *
+ * @param record - SQS record containing profile update payload
+ * @param service - Profile service instance
+ * @param deps - Logger and metrics dependencies
+ */
 export async function processRecord(
   record: SQSRecord,
   service: ProfileService,

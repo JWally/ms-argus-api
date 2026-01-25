@@ -1,11 +1,21 @@
+/**
+ * Fingerprint normalization and sanitization.
+ *
+ * Cleans incoming fingerprint data by stripping nested objects (to prevent
+ * DynamoDB marshalling errors with large numbers) and applying signal
+ * intelligence overrides from ms-argus-web.
+ * @module
+ */
 import type { Fingerprint } from "../types/fingerprint";
 import type { SigintData } from "../types/matching";
 
+/** Maximum allowed string length to prevent DoS via large payloads. */
 const MAX_STRING_LENGTH = 8192;
 
 /**
  * Safely coerce a value to a valid positive number.
- * Returns undefined if the value cannot be coerced or is invalid.
+ * @param val - Value to coerce
+ * @returns Number if valid, undefined otherwise
  */
 function toValidNumber(val: unknown): number | undefined {
   if (val === undefined || val === null) return undefined;
@@ -15,8 +25,9 @@ function toValidNumber(val: unknown): number | undefined {
 }
 
 /**
- * Safely coerce a value to a valid positive integer.
- * Returns undefined if the value is negative, NaN, or Infinity.
+ * Safely coerce a value to a valid positive number.
+ * @param val - Value to coerce
+ * @returns Positive number if valid, undefined if negative/invalid
  */
 function toValidPositiveNumber(val: unknown): number | undefined {
   const num = toValidNumber(val);
@@ -26,7 +37,8 @@ function toValidPositiveNumber(val: unknown): number | undefined {
 
 /**
  * Validate and sanitize a string value.
- * Returns undefined for empty/whitespace strings, sanitizes null bytes, truncates long strings.
+ * @param val - Value to sanitize
+ * @returns Sanitized string, or undefined if empty/invalid
  */
 function sanitizeString(val: unknown): string | undefined {
   if (typeof val !== "string") return undefined;
@@ -43,6 +55,8 @@ function sanitizeString(val: unknown): string | undefined {
 
 /**
  * Validate a score is in the 0-1 range.
+ * @param val - Value to validate
+ * @returns Number if in valid range, undefined otherwise
  */
 function toValidScore(val: unknown): number | undefined {
   const num = toValidNumber(val);
@@ -89,6 +103,11 @@ export function normalizeFingerprint(
   return result;
 }
 
+/**
+ * Apply TLS fingerprint overrides to fingerprint
+ * @param tls - TLS fingerprint data from sigint
+ * @param fp - Fingerprint to modify
+ */
 function applyTlsOverrides(
   tls: NonNullable<SigintData["tlsFingerprint"]>,
   fp: Fingerprint,
@@ -103,6 +122,11 @@ function applyTlsOverrides(
   if (ip) fp.ip_address = ip;
 }
 
+/**
+ * Apply TCP probe overrides to fingerprint
+ * @param tcp - TCP probe data from sigint
+ * @param fp - Fingerprint to modify
+ */
 function applyTcpOverrides(
   tcp: NonNullable<SigintData["tcpProbe"]>,
   fp: Fingerprint,
@@ -115,6 +139,11 @@ function applyTcpOverrides(
   if (vpnScore !== undefined) fp.vpn_score = vpnScore;
 }
 
+/**
+ * Apply all sigint overrides (TLS, TCP, favicon) to fingerprint
+ * @param sigint - Signal intelligence data
+ * @param fp - Fingerprint to modify
+ */
 function applySigintOverrides(sigint: SigintData, fp: Fingerprint) {
   if (sigint.tlsFingerprint && typeof sigint.tlsFingerprint === "object") {
     applyTlsOverrides(sigint.tlsFingerprint, fp);

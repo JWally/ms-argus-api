@@ -41,6 +41,14 @@ export interface VectorWorkerEnvConfig {
   POWERTOOLS_METRICS_NAMESPACE: string;
 }
 
+/**
+ * Build environment configuration with validation
+ * @param required - Required environment variable names
+ * @param serviceName - Default service name for Powertools
+ * @param optional - Optional environment variable names
+ * @returns Validated environment configuration
+ * @throws Error if required variables are missing
+ */
 function buildEnvConfig<T>(
   required: readonly string[],
   serviceName: string,
@@ -62,6 +70,11 @@ function buildEnvConfig<T>(
   return result as T;
 }
 
+/**
+ * Get and validate environment configuration for Matching Worker
+ * @returns Validated MatchingWorkerEnvConfig
+ * @throws Error if required environment variables are missing
+ */
 export function getMatchingWorkerEnv(): MatchingWorkerEnvConfig {
   return buildEnvConfig<MatchingWorkerEnvConfig>(
     [
@@ -77,6 +90,11 @@ export function getMatchingWorkerEnv(): MatchingWorkerEnvConfig {
   );
 }
 
+/**
+ * Get and validate environment configuration for Profile Updater
+ * @returns Validated ProfileUpdaterEnvConfig
+ * @throws Error if required environment variables are missing
+ */
 export function getProfileUpdaterEnv(): ProfileUpdaterEnvConfig {
   return buildEnvConfig<ProfileUpdaterEnvConfig>(
     [
@@ -89,6 +107,11 @@ export function getProfileUpdaterEnv(): ProfileUpdaterEnvConfig {
   );
 }
 
+/**
+ * Get and validate environment configuration for Vector Worker
+ * @returns Validated VectorWorkerEnvConfig
+ * @throws Error if required environment variables are missing
+ */
 export function getVectorWorkerEnv(): VectorWorkerEnvConfig {
   return buildEnvConfig<VectorWorkerEnvConfig>(
     ["QDRANT_URL", "QDRANT_SECRET_ARN"],

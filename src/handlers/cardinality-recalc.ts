@@ -9,12 +9,22 @@ import {
   emitRecalcMetrics,
 } from "./cardinality-recalc/orchestrator";
 
+/**
+ * Environment configuration for cardinality recalculation
+ */
 interface CardinalityRecalcEnvConfig {
+  /** DynamoDB table name for tier 2 buckets */
   TIER2_BUCKETS_TABLE: string;
+  /** Powertools service name for logging */
   POWERTOOLS_SERVICE_NAME: string;
+  /** Powertools metrics namespace */
   POWERTOOLS_METRICS_NAMESPACE: string;
 }
 
+/**
+ * Get and validate environment configuration
+ * @returns Validated environment configuration
+ */
 function getCardinalityRecalcEnv(): CardinalityRecalcEnvConfig {
   validateRequiredEnvVars(["TIER2_BUCKETS_TABLE"]);
 

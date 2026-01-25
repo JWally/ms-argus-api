@@ -1,3 +1,10 @@
+/**
+ * AWS Secrets Manager integration for cryptographic keys.
+ *
+ * Provides cached access to encryption and HMAC keys from Secrets Manager,
+ * supporting key rotation with current/previous key pairs.
+ * @module
+ */
 import {
   SecretsManagerClient,
   GetSecretValueCommand,
@@ -12,24 +19,31 @@ import {
 const logger = new Logger({ serviceName: "argus-secrets" });
 
 /**
- * Versioned secrets structure
- * Supports key rotation without split-brain issues
+ * Versioned secrets structure supporting key rotation.
+ *
+ * Contains current keys and optionally previous keys to allow
+ * seamless rotation without split-brain issues.
  */
 export interface VersionedSecrets {
+  /** Schema version number */
   version: number;
+  /** Current active keys */
   current: {
+    /** AES-256-GCM encryption key (base64) */
     ENCRYPTION_KEY: string;
+    /** HMAC-SHA256 signing key (base64) */
     HMAC_KEY: string;
   };
+  /** Previous keys for rotation grace period */
   previous?: {
+    /** Previous encryption key */
     ENCRYPTION_KEY: string;
+    /** Previous HMAC key */
     HMAC_KEY: string;
   };
 }
 
-/**
- * Legacy flat secrets structure (for backwards compatibility)
- */
+/** Legacy flat secrets structure (for backwards compatibility). */
 interface LegacySecrets {
   ENCRYPTION_KEY: string;
   HMAC_KEY: string;
@@ -40,6 +54,11 @@ let client: SecretsManagerClient | null = null;
 let cachedSecrets: VersionedSecrets | null = null;
 let cacheTimestamp = 0;
 
+/**
+ * Parse secret response into versioned format, handling both new and legacy structures
+ * @param secret - Raw secret data from Secrets Manager
+ * @returns Normalized versioned secrets structure
+ */
 function parseSecretResponse(
   secret: VersionedSecrets | LegacySecrets,
 ): VersionedSecrets {
@@ -75,8 +94,14 @@ function parseSecretResponse(
 }
 
 /**
- * Retrieves versioned secrets from AWS Secrets Manager with caching.
+ * Retrieve versioned secrets from AWS Secrets Manager with caching.
+ *
  * Supports both current and previous keys for seamless key rotation.
+ * Results are cached for KEY_CACHE_DURATION to reduce API calls.
+ *
+ * @returns VersionedSecrets with current and optionally previous key sets
+ * @throws Error if SECRET_KEY_ARN is not set
+ * @throws Error if Secrets Manager request fails
  */
 export const getVersionedSecrets = async (): Promise<VersionedSecrets> => {
   const secretKeyArn = process.env.SECRET_KEY_ARN;
@@ -111,8 +136,12 @@ export const getVersionedSecrets = async (): Promise<VersionedSecrets> => {
 };
 
 /**
- * Legacy function for backwards compatibility.
- * Returns only the current keys in flat format.
+ * Retrieve secrets in legacy flat format.
+ *
+ * Returns only the current keys for backwards compatibility with
+ * code that doesn't need rotation support.
+ *
+ * @returns Object with ENCRYPTION_KEY and HMAC_KEY strings
  */
 export const getAwsSecrets = async (): Promise<Record<string, string>> => {
   const versioned = await getVersionedSecrets();
@@ -122,6 +151,9 @@ export const getAwsSecrets = async (): Promise<Record<string, string>> => {
   };
 };
 
+/**
+ * Clear the secrets cache (for testing purposes)
+ */
 export const clearCache = (): void => {
   cachedSecrets = null;
   cacheTimestamp = 0;

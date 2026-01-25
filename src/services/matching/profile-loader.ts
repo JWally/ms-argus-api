@@ -2,23 +2,36 @@ import { DynamoDBClient, GetItemCommand } from "@aws-sdk/client-dynamodb";
 import { unmarshall } from "@aws-sdk/util-dynamodb";
 
 /**
- * Minimal dependencies for loading a profile
- * Both Tier2CompoundDeps and SessionAnchorDeps satisfy this interface
+ * Minimal dependencies for loading a profile.
+ *
+ * Both Tier2CompoundDeps and SessionAnchorDeps satisfy this interface.
  */
 export interface ProfileLoaderDeps {
+  /** DynamoDB client for profile queries */
   dynamodb: DynamoDBClient;
+  /** Profiles table name */
   profilesTable: string;
 }
 
+/** Core profile data returned from loader. */
 export interface ProfileData {
+  /** Device risk score (0.0 to 1.0) */
   risk_score: number;
+  /** Array of risk flags for the device */
   flags: string[];
+  /** SimHash fuzzy hash for drift detection */
   fuzzy_hash?: string;
 }
 
 /**
- * Load device profile from DynamoDB
- * Returns risk_score and flags for the device, or null if not found
+ * Load device profile from DynamoDB.
+ *
+ * Retrieves risk_score, flags, and fuzzy_hash for a device. Returns null
+ * if the device has no existing profile.
+ *
+ * @param deps - DynamoDB client and table name
+ * @param deviceId - Device ID to load profile for
+ * @returns Profile data if found, null otherwise
  */
 export async function loadProfile(
   deps: ProfileLoaderDeps,

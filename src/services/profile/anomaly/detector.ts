@@ -1,3 +1,11 @@
+/**
+ * Anomaly detection orchestrator.
+ *
+ * Coordinates multiple anomaly detectors to identify suspicious patterns
+ * in fingerprint data. Uses a registry pattern for extensibility with
+ * error isolation so individual detector failures don't block matching.
+ * @module
+ */
 import { Logger } from "@aws-lambda-powertools/logger";
 import { Metrics, MetricUnit } from "@aws-lambda-powertools/metrics";
 import { Fingerprint } from "../../../types";
@@ -13,18 +21,20 @@ const metrics = new Metrics({
   namespace: process.env.POWERTOOLS_METRICS_NAMESPACE || "Argus",
 });
 
-/**
- * Sigint data structure for network anomaly detection
- */
+/** Sigint data structure for network anomaly detection. */
 interface SigintData {
+  /** Geographic data from IP lookup */
   geo?: {
+    /** Timezone from IP geolocation */
     timezone?: string;
   };
 }
 
 /**
- * Detector function signature
- * Takes fingerprint, optional raw payload, and optional sigint data
+ * Detector function signature.
+ *
+ * Takes fingerprint, optional raw payload, and optional sigint data.
+ * Must return array of anomaly signals (can be empty).
  */
 type DetectorFn = (
   fingerprint: Fingerprint,
@@ -33,8 +43,10 @@ type DetectorFn = (
 ) => AnomalySignal[];
 
 /**
- * Array of detector functions
- * Each detector is isolated with try/catch for error resilience
+ * Registered detector functions.
+ *
+ * Each detector is isolated with try/catch for error resilience.
+ * Detectors are called in registration order.
  */
 const detectors: DetectorFn[] = [
   detectQuickWinAnomalies,
@@ -45,10 +57,10 @@ const detectors: DetectorFn[] = [
 /**
  * Run all registered anomaly detectors
  * Errors in individual detectors are caught and logged, not propagated
- *
  * @param fingerprint - Normalized fingerprint data
  * @param raw - Raw payload with nested structure (for cross-field checks)
  * @param sigint - Signal intelligence data (for network checks)
+ * @returns Aggregated anomaly result with signals, score, and suggested flags
  */
 export function detectAllAnomalies(
   fingerprint: Fingerprint,
@@ -80,6 +92,8 @@ export function detectAllAnomalies(
 /**
  * Compute aggregate anomaly score from signals
  * Sums severities and caps at 1.0
+ * @param signals - Array of anomaly signals
+ * @returns Aggregate score between 0.0 and 1.0
  */
 function computeAggregateScore(signals: AnomalySignal[]): number {
   if (signals.length === 0) return 0;
@@ -90,6 +104,8 @@ function computeAggregateScore(signals: AnomalySignal[]): number {
 /**
  * Convert anomaly code to flag name
  * Uses lowercase with underscores to match DeviceFlags pattern
+ * @param code - Anomaly code (e.g., "WORKER_MISMATCH")
+ * @returns Flag name (e.g., "worker_mismatch")
  */
 function codeToFlag(code: string): string {
   return code.toLowerCase();
@@ -97,6 +113,8 @@ function codeToFlag(code: string): string {
 
 /**
  * Register a new detector function
+ * Detectors are called in registration order
+ * @param detector - Detector function that returns anomaly signals
  */
 export function registerDetector(
   detector: (
@@ -110,6 +128,7 @@ export function registerDetector(
 
 /**
  * Get count of registered detectors (for testing)
+ * @returns Number of registered detector functions
  */
 export function getDetectorCount(): number {
   return detectors.length;

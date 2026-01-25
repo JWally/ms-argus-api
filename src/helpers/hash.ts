@@ -78,6 +78,9 @@ export function hammingDistance(hash1: string, hash2: string): number {
 /**
  * Compute fuzzy match info for drift detection
  * Computes Hamming distance between incoming and stored fuzzy_hash
+ * @param incomingHash - Incoming fuzzy hash from request
+ * @param storedHash - Stored fuzzy hash from profile
+ * @returns FuzzyMatchInfo if both hashes present, undefined otherwise
  */
 export function computeFuzzyMatchInfo(
   incomingHash: string | undefined,

@@ -6,14 +6,27 @@ import {
   createSignal,
 } from "./types";
 
+/**
+ * Configuration for a score threshold check
+ */
 interface ScoreCheck {
+  /** Score value to check (undefined treated as 0) */
   score: number | undefined;
+  /** Type of anomaly to create */
   type: AnomalyType;
+  /** Anomaly code to use */
   code: (typeof AnomalyCodes)[keyof typeof AnomalyCodes];
+  /** Field name for reporting */
   field: string;
+  /** Optional multiplier for severity (default 1) */
   severityMultiplier?: number;
 }
 
+/**
+ * Check if a score exceeds threshold and create anomaly signal
+ * @param check - Score check configuration
+ * @returns Anomaly signal if score > 0.7, null otherwise
+ */
 function checkScoreThreshold(check: ScoreCheck): AnomalySignal | null {
   const { score, type, code, field, severityMultiplier = 1 } = check;
   if (score === undefined || score <= 0.7) return null;
@@ -31,6 +44,8 @@ function checkScoreThreshold(check: ScoreCheck): AnomalySignal | null {
  * - is_headless: Direct headless browser detection
  * - proxy_score: High proxy likelihood
  * - vpn_score: VPN usage detection
+ * @param fingerprint - Normalized fingerprint with lie_count, is_headless, proxy_score, vpn_score
+ * @returns Array of detected anomaly signals
  */
 export function detectQuickWinAnomalies(
   fingerprint: Fingerprint,

@@ -197,13 +197,17 @@ export const payloadJsonSchema = {
 
 /**
  * Extract session_id from a validated payload
+ * @param payload - Validated Argus payload
+ * @returns Session ID string
  */
 export function getSessionId(payload: ArgusPayload): string {
   return payload.identifiers.session_id;
 }
 
 /**
- * Type guard for ArgusPayload (use after middy validation)
+ * Check if object has valid identifiers section
+ * @param obj - Object to check
+ * @returns True if identifiers section is valid
  */
 function hasValidIdentifiers(obj: Record<string, unknown>): boolean {
   if (!obj.identifiers || typeof obj.identifiers !== "object") return false;
@@ -211,12 +215,22 @@ function hasValidIdentifiers(obj: Record<string, unknown>): boolean {
   return typeof ids.session_id === "string";
 }
 
+/**
+ * Check if object has valid hashes section
+ * @param obj - Object to check
+ * @returns True if hashes section is valid
+ */
 function hasValidHashes(obj: Record<string, unknown>): boolean {
   if (!obj.hashes || typeof obj.hashes !== "object") return false;
   const hashes = obj.hashes as Record<string, unknown>;
   return typeof hashes.stable === "string" && typeof hashes.fuzzy === "string";
 }
 
+/**
+ * Type guard for ArgusPayload (use after middy validation)
+ * @param input - Unknown input to validate
+ * @returns True if input is a valid ArgusPayload
+ */
 export function isArgusPayload(input: unknown): input is ArgusPayload {
   if (!input || typeof input !== "object") return false;
   const obj = input as Record<string, unknown>;
@@ -262,8 +276,12 @@ export interface SessionResponse {
 }
 
 /**
- * Validate a session response object
- * Throws if invalid
+ * Require a field of a specific type in an object
+ * @param obj - Object to check
+ * @param field - Field name to require
+ * @param type - Expected type ("string", "number", "object")
+ * @param path - Optional path for error messages
+ * @throws Error if field is missing or wrong type
  */
 function requireField(
   obj: Record<string, unknown>,
@@ -279,6 +297,12 @@ function requireField(
   }
 }
 
+/**
+ * Validate a session response object
+ * @param response - Unknown response to validate
+ * @returns Validated SessionResponse
+ * @throws Error if response is invalid
+ */
 export function validateSessionResponse(response: unknown): SessionResponse {
   if (!response || typeof response !== "object") {
     throw new Error("Invalid response: not an object");

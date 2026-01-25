@@ -5,15 +5,25 @@ import {
 } from "@aws-sdk/client-dynamodb";
 import { sleep } from "./sleep";
 
+/**
+ * Parameters for batch write with retry
+ */
 export interface BatchWriteParams {
+  /** DynamoDB table name */
   tableName: string;
+  /** Array of write requests to execute */
   items: WriteRequest[];
+  /** Entity name for error messages */
   entityName: string;
+  /** Maximum retry attempts (default 3) */
   maxRetries?: number;
 }
 
 /**
  * Batch write to DynamoDB with exponential backoff retry for unprocessed items.
+ * @param client - DynamoDB client instance
+ * @param params - Batch write parameters
+ * @throws Error if items remain unprocessed after max retries
  */
 export async function batchWriteWithRetry(
   client: DynamoDBClient,

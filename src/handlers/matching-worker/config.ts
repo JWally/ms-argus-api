@@ -1,3 +1,10 @@
+/**
+ * Matching worker service initialization and configuration.
+ *
+ * Creates the MatchingService instance with all required dependencies
+ * and configuration derived from environment variables.
+ * @module
+ */
 import {
   MatchingService,
   MatchingServiceConfig,
@@ -9,6 +16,12 @@ import { DynamoCacheService } from "../../services/cache";
 import { SESSION_TTL_SECONDS, TIER2_TIMEOUT_MS } from "../../helpers/constants";
 import type { MatchingWorkerEnvConfig } from "../../config/env";
 
+/**
+ * Build matching service configuration from environment config.
+ *
+ * @param envConfig - Environment configuration
+ * @returns Matching service configuration
+ */
 function getConfig(envConfig: MatchingWorkerEnvConfig): MatchingServiceConfig {
   return {
     tier1IndexTable: envConfig.TIER1_INDEX_TABLE,
@@ -20,6 +33,15 @@ function getConfig(envConfig: MatchingWorkerEnvConfig): MatchingServiceConfig {
   };
 }
 
+/**
+ * Create a configured MatchingService instance.
+ *
+ * Factory function that wires up all service dependencies including
+ * DynamoDB, SQS, and cache service with configuration from environment.
+ *
+ * @param deps - AWS clients, cache service, and environment config
+ * @returns Configured MatchingService instance
+ */
 export function createMatchingService(deps: {
   dynamodb: DynamoDBClient;
   sqs: SQSClient;

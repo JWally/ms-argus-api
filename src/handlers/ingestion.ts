@@ -35,6 +35,11 @@ const metrics = new Metrics({
 });
 const sqs = new SQSClient({});
 
+/**
+ * Archive a payload to S3 for debugging and analysis
+ * @param sessionId - Session identifier for the archive key
+ * @param payload - Payload to archive
+ */
 export const archivePayload = (sessionId: string, payload: unknown) =>
   _archivePayload(sessionId, payload, {
     s3,

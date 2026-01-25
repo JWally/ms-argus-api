@@ -28,10 +28,17 @@ const metrics = new Metrics({
   namespace: process.env.POWERTOOLS_METRICS_NAMESPACE || "Argus",
 });
 
+/**
+ * Dependencies for Tier 2 compound matching operations
+ */
 export interface Tier2CompoundDeps {
+  /** DynamoDB client instance */
   dynamodb: DynamoDBClient;
+  /** Name of the tier 2 buckets table */
   tier2BucketsTable: string;
+  /** Name of the profiles table */
   profilesTable: string;
+  /** Timeout in milliseconds for tier 2 queries */
   tier2TimeoutMs: number;
 }
 
@@ -72,10 +79,10 @@ export async function tier2CompoundMatchWithTimeout(
 }
 
 /**
- * Tier 2: Match by compound signal buckets
- * Lower confidence - relies on multiple weak signals
- * Uses Query with adjacency list pattern (bucket_key, device_id)
- * Applies cardinality penalty for high-traffic buckets
+ * Select the best candidate from scored devices
+ * Requires minimum score of 2 (device must match in 2+ buckets)
+ * @param candidates - Map of device IDs to scores and evidence codes
+ * @returns Best candidate if score >= 2, null otherwise
  */
 function selectBestCandidate(
   candidates: Map<string, { score: number; evidenceCodes: EvidenceCode[] }>,
@@ -93,6 +100,15 @@ function selectBestCandidate(
   return best && best.score >= 2 ? best : null;
 }
 
+/**
+ * Compute confidence score for tier 2 match
+ * Applies penalty for high-cardinality buckets to reduce false positives
+ * @param score - Number of matching buckets
+ * @param evidenceCodes - Evidence codes from matched buckets
+ * @param bucketInfos - Bucket key information for matched buckets
+ * @param cardinalities - Cardinality counts for each bucket
+ * @returns Confidence score between 0.3 and 0.85
+ */
 function computeTier2Confidence(
   score: number,
   evidenceCodes: EvidenceCode[],
@@ -113,6 +129,15 @@ function computeTier2Confidence(
   return confidence;
 }
 
+/**
+ * Build complete match result from tier 2 candidate
+ * Loads profile for risk score and flags, computes confidence with cardinality penalty
+ * @param deps - Dependencies including DynamoDB client and table names
+ * @param best - Best matching candidate with score and evidence
+ * @param fingerprint - The incoming fingerprint for fuzzy match info
+ * @param context - Bucket info and cardinality data for confidence calculation
+ * @returns Complete match result
+ */
 async function buildTier2Result(
   deps: Tier2CompoundDeps,
   best: { deviceId: string; score: number; evidenceCodes: EvidenceCode[] },
@@ -141,6 +166,15 @@ async function buildTier2Result(
   };
 }
 
+/**
+ * Tier 2: Match by compound signal buckets
+ * Lower confidence - relies on multiple weak signals (IP+JA4, GPU+screen+tz, etc.)
+ * Uses Query with adjacency list pattern (bucket_key, device_id)
+ * @param deps - Dependencies including DynamoDB client and table names
+ * @param fingerprint - The fingerprint to match
+ * @param options - Optional abort signal for timeout cancellation
+ * @returns Match result if device found in 2+ buckets, null otherwise
+ */
 export async function tier2CompoundMatch(
   deps: Tier2CompoundDeps,
   fingerprint: Fingerprint,
@@ -246,6 +280,11 @@ async function fetchBucketCardinalities(
 
 /**
  * Count how many matched buckets exceed the cardinality threshold
+ * High-cardinality buckets indicate less unique matches, reducing confidence
+ * @param evidenceCodes - Evidence codes from the match
+ * @param bucketInfos - Bucket key info with evidence codes
+ * @param cardinalities - Cardinality counts per bucket
+ * @returns Number of buckets exceeding the threshold
  */
 function countHighCardinalityBuckets(
   evidenceCodes: EvidenceCode[],
@@ -265,6 +304,12 @@ function countHighCardinalityBuckets(
   return count;
 }
 
+/**
+ * Extract device IDs from a DynamoDB query result
+ * Filters out stats entries (TIER2_STATS_SK)
+ * @param result - DynamoDB query result
+ * @returns Array of device IDs
+ */
 function extractDeviceIds(result: QueryCommandOutput): string[] {
   if (!result.Items || result.Items.length === 0) return [];
   return result.Items.map(
@@ -272,6 +317,12 @@ function extractDeviceIds(result: QueryCommandOutput): string[] {
   ).filter((id) => id && id !== TIER2_STATS_SK);
 }
 
+/**
+ * Score device candidates by counting bucket matches and collecting evidence
+ * @param results - DynamoDB query results from bucket queries
+ * @param bucketInfos - Bucket key info with evidence codes
+ * @returns Map of device IDs to scores and evidence codes
+ */
 function scoreDeviceCandidatesWithEvidence(
   results: QueryCommandOutput[],
   bucketInfos: BucketKeyInfo[],

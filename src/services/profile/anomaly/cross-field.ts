@@ -1,32 +1,49 @@
+/**
+ * Cross-field anomaly detection.
+ *
+ * Detects inconsistencies between Navigator and Worker scope properties.
+ * Spoofed browsers often modify navigator values but forget to modify
+ * the corresponding values in Worker scopes, creating detectable mismatches.
+ * @module
+ */
 import { Fingerprint } from "../../../types";
 import { AnomalySignal, AnomalyCodes, createSignal } from "./types";
 
-/**
- * Environment scope with comparable fields
- */
+/** Environment scope with fields that should match across contexts. */
 interface EnvironmentScope {
+  /** User agent string */
   userAgent?: string;
+  /** Platform identifier (e.g., "Win32") */
   platform?: string;
+  /** Number of logical CPU cores */
   hardwareConcurrency?: number;
+  /** Allow additional properties */
   [key: string]: unknown;
 }
 
 /**
- * Worker scope structure from web library
- * Contains scopes for different worker types
+ * Worker scope structure from web library.
+ *
+ * Contains scopes for different worker types captured by ms-argus-web.
  */
 interface WorkerScopeData extends EnvironmentScope {
+  /** Worker scopes by type */
   scopes?: {
+    /** Main thread scope (reference) */
     main?: EnvironmentScope;
+    /** Dedicated worker scope */
     web?: EnvironmentScope;
+    /** Shared worker scope (null if unavailable) */
     shared?: EnvironmentScope | null;
+    /** Service worker scope ("unavailable" string if blocked) */
     service?: EnvironmentScope | string;
   };
 }
 
 /**
- * Device payload structure (V3 format from ms-argus-web)
- * The device section is passed directly from matching-worker (rawPayload.device)
+ * Device payload structure (V3 format from ms-argus-web).
+ *
+ * The device section is passed directly from matching-worker (rawPayload.device).
  * Structure:
  * - navigator: main thread navigator
  * - workerScope.scopes.web: dedicated worker
@@ -34,8 +51,11 @@ interface WorkerScopeData extends EnvironmentScope {
  * - workerScope.scopes.service: service worker ("unavailable" if blocked)
  */
 interface DevicePayload {
+  /** Main thread navigator properties */
   navigator?: EnvironmentScope;
+  /** Worker scope data */
   workerScope?: WorkerScopeData;
+  /** Allow additional properties */
   [key: string]: unknown;
 }
 
@@ -72,6 +92,12 @@ const COMPARABLE_FIELDS: {
   },
 ];
 
+/**
+ * Truncate a value for display in anomaly details
+ * @param value - Value to truncate
+ * @param maxLen - Maximum string length (default 50)
+ * @returns Truncated string representation
+ */
 function truncate(value: unknown, maxLen: number = 50): string {
   if (value === undefined || value === null) return "(undefined)";
   const str = String(value);
@@ -87,16 +113,31 @@ function truncate(value: unknown, maxLen: number = 50): string {
  * - workerScope.scopes.shared (shared worker, null if unavailable)
  * - workerScope.scopes.service (service worker, "unavailable" if blocked)
  */
+/**
+ * Type guard to check if a value is a valid environment scope object
+ * @param val - Value to check
+ * @returns True if value is an object (not null)
+ */
 function isObjectScope(val: unknown): val is EnvironmentScope {
   return val !== null && typeof val === "object";
 }
 
+/**
+ * Check if an environment scope has comparable fields for anomaly detection
+ * @param ws - Environment scope to check
+ * @returns True if scope has userAgent, platform, or hardwareConcurrency
+ */
 function hasComparableFields(ws: EnvironmentScope): boolean {
   return (
     !ws.scopes && !!(ws.userAgent || ws.platform || ws.hardwareConcurrency)
   );
 }
 
+/**
+ * Extract worker scopes from device payload into environments map
+ * @param device - Device payload containing workerScope data
+ * @param environments - Map to populate with worker environments
+ */
 function extractWorkerScopes(
   device: DevicePayload,
   environments: Map<EnvironmentName, EnvironmentScope>,
@@ -118,6 +159,11 @@ function extractWorkerScopes(
   }
 }
 
+/**
+ * Extract all available environment scopes from device payload
+ * @param device - Device payload containing navigator and workerScope
+ * @returns Map of environment names to their scopes
+ */
 function extractEnvironments(
   device: DevicePayload,
 ): Map<EnvironmentName, EnvironmentScope> {
@@ -133,6 +179,11 @@ function extractEnvironments(
 
 /**
  * Compare two environments and return mismatches
+ * @param env1Name - Name of the first environment
+ * @param env1 - First environment scope
+ * @param env2Name - Name of the second environment
+ * @param env2 - Second environment scope
+ * @returns Array of anomaly signals for detected mismatches
  */
 function compareEnvironments(
   env1Name: EnvironmentName,
@@ -175,9 +226,8 @@ function compareEnvironments(
  * - Shared Workers (workerScope.scopes.shared)
  * - Service Workers (workerScope.scopes.service)
  * - Generic workerScope (legacy/fallback for older payloads)
- *
- * @param fingerprint - Normalized fingerprint (not used directly, but matches detector signature)
- * @param raw - Device payload from V3 format (rawPayload.device from matching-worker)
+ * @param fingerprint - Normalized fingerprint (matches detector signature)
+ * @param raw - Device payload from V3 format (rawPayload.device)
  * @returns Array of anomaly signals for detected mismatches
  */
 export function detectCrossFieldAnomalies(

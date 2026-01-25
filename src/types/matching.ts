@@ -1,8 +1,17 @@
+/**
+ * Matching service types.
+ *
+ * Core type definitions for the device matching pipeline including
+ * evidence codes, session cache values, and match results.
+ * @module
+ */
 import type { Fingerprint } from "./fingerprint";
 
 /**
  * Evidence codes explaining which signals contributed to a match decision.
+ *
  * Used for observability, debugging, and support escalations.
+ * Each code indicates which matching tier and signal produced the match.
  */
 export type EvidenceCode =
   | "EVERCOOKIE_MATCH" // T0.5: Matched on evercookie ID
@@ -21,36 +30,52 @@ export type EvidenceCode =
   | "IP_UA_ANCHOR_BUCKET" // T2: Matched in IP+UA with 3min validity
   | "NEW_DEVICE"; // No match found, new device created
 
-/**
- * Anomaly signal exposed in session response
- */
+/** Anomaly signal exposed in session response. */
 export interface SessionAnomalySignal {
+  /** Category of anomaly detected */
   type: "CROSS_FIELD" | "NETWORK" | "HARDWARE" | "IDENTITY";
+  /** Specific anomaly code (e.g., "SCREEN_CSS_MISMATCH") */
   code: string;
+  /** Severity score from 0.0 (info) to 1.0 (critical) */
   severity: number;
+  /** Evidence explaining the anomaly */
   evidence: {
+    /** Expected value based on other signals */
     expected: string;
+    /** Actual value observed */
     actual: string;
+    /** Fields involved in cross-field anomalies */
     fields?: string[];
   };
 }
 
-/**
- * Session cache value stored in DynamoDB
- */
+/** Session cache value stored in DynamoDB. */
 export interface SessionCacheValue {
+  /** Processing status: pending, complete, or degraded */
   status: "pending" | "complete" | "degraded";
+  /** Matched device ID (empty string if degraded) */
   device_id: string;
+  /** Device risk score (0.0 to 1.0) */
   risk_score: number;
+  /** Match confidence (0.0 to 1.0) */
   confidence: number;
+  /** Matching tier that produced the result (-1 if failed) */
   match_tier: number;
+  /** Timestamp for cache versioning */
   match_version: number;
+  /** Idempotency key to detect duplicate requests */
   idempotency_key: string;
+  /** Risk flags for the device */
   flags: string[];
+  /** Evidence codes showing how match was made */
   evidence_codes: EvidenceCode[];
+  /** Anomalies detected during matching */
   anomalies?: SessionAnomalySignal[];
+  /** SimHash details for tier 1.5 matches */
   simhash_details?: SimHashDetails;
+  /** Fuzzy hash comparison info */
   fuzzy_match_info?: FuzzyMatchInfo;
+  /** Last update timestamp (epoch ms) */
   updated_at: number;
 }
 
@@ -142,40 +167,54 @@ export interface FuzzyMatchInfo {
   similarity: number;
 }
 
-/**
- * Result of device matching
- */
+/** Result of device matching. */
 export interface MatchResult {
+  /** Matched or newly created device ID */
   device_id: string;
+  /** Match confidence (0.0 to 1.0) */
   confidence: number;
+  /** Matching tier that produced the result */
   match_tier: number;
+  /** True if device was just created */
   is_new_device: boolean;
+  /** Device risk score (0.0 to 1.0) */
   risk_score: number;
+  /** Risk flags for the device */
   flags: string[];
+  /** Evidence codes showing how match was made */
   evidence_codes: EvidenceCode[];
+  /** SimHash details for tier 1.5 matches */
   simhash_details?: SimHashDetails;
+  /** Fuzzy hash comparison info */
   fuzzy_match_info?: FuzzyMatchInfo;
 }
 
 /**
  * Tier 1 index entry.
+ *
  * Includes fuzzy_hash for drift detection at match time.
  */
 export interface Tier1IndexEntry {
+  /** Index key (prefixed hash, e.g., "stable#abc123") */
   hash_key: string;
+  /** Device ID this hash maps to */
   device_id: string;
+  /** Cached risk score for fast response */
   risk_score?: number;
+  /** Cached flags for fast response */
   flags?: string[];
   /** Device's fuzzy_hash at time of index write, for drift comparison */
   fuzzy_hash?: string;
+  /** TTL timestamp (epoch seconds) */
   ttl: number;
 }
 
-/**
- * Tier 2 bucket entry
- */
+/** Tier 2 bucket entry for compound matching. */
 export interface Tier2BucketEntry {
+  /** Bucket key (hash of compound signals) */
   bucket_key: string;
+  /** Device IDs in this bucket */
   device_ids: string[];
+  /** TTL timestamp (epoch seconds) */
   ttl: number;
 }

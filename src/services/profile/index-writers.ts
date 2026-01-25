@@ -87,6 +87,14 @@ const INDEX_FIELDS: {
   { field: "fuzzy_hash", prefix: "fuzzy#", group: "hash" },
 ];
 
+/**
+ * Build Tier 1 index entries for a device
+ * @param deviceId - The device ID to index
+ * @param fingerprint - The fingerprint containing index values
+ * @param ttl - TTL timestamp for DynamoDB expiration
+ * @param filter - Optional filter to build only identity or hash indexes
+ * @returns Array of index entries to write
+ */
 function buildIndexEntries(
   deviceId: string,
   fingerprint: Fingerprint,
@@ -104,6 +112,13 @@ function buildIndexEntries(
     }));
 }
 
+/**
+ * Build all Tier 1 index entries (both identity and hash)
+ * @param deviceId - The device ID to index
+ * @param fingerprint - The fingerprint containing index values
+ * @param ttl - TTL timestamp for DynamoDB expiration
+ * @returns Array of all index entries to write
+ */
 export function buildTier1IndexEntries(
   deviceId: string,
   fingerprint: Fingerprint,
@@ -112,6 +127,13 @@ export function buildTier1IndexEntries(
   return buildIndexEntries(deviceId, fingerprint, ttl);
 }
 
+/**
+ * Build identity index entries only (evercookie, sigint, public key)
+ * @param deviceId - The device ID to index
+ * @param fingerprint - The fingerprint containing identity values
+ * @param ttl - TTL timestamp for DynamoDB expiration
+ * @returns Array of identity index entries to write
+ */
 export function buildIdentityIndexEntries(
   deviceId: string,
   fingerprint: Fingerprint,
@@ -120,6 +142,13 @@ export function buildIdentityIndexEntries(
   return buildIndexEntries(deviceId, fingerprint, ttl, "identity");
 }
 
+/**
+ * Build hash index entries only (stable hash, fuzzy hash)
+ * @param deviceId - The device ID to index
+ * @param fingerprint - The fingerprint containing hash values
+ * @param ttl - TTL timestamp for DynamoDB expiration
+ * @returns Array of hash index entries to write
+ */
 export function buildHashIndexEntries(
   deviceId: string,
   fingerprint: Fingerprint,
@@ -131,6 +160,9 @@ export function buildHashIndexEntries(
 /**
  * Batch write Tier 1 index entries with retry logic for unprocessed items
  * Uses removeUndefinedValues to handle optional fuzzy_hash
+ * @param deps - Dependencies including DynamoDB client and table names
+ * @param entries - Index entries to write
+ * @param maxRetries - Maximum retry attempts for unprocessed items (default 3)
  */
 export async function batchWriteTier1Indexes(
   deps: IndexWriterDeps,
@@ -152,6 +184,9 @@ export async function batchWriteTier1Indexes(
 
 /**
  * Batch write Tier 2 bucket entries with retry logic for unprocessed items
+ * @param deps - Dependencies including DynamoDB client and table names
+ * @param entries - Bucket entries to write
+ * @param maxRetries - Maximum retry attempts for unprocessed items (default 3)
  */
 export async function batchWriteTier2Buckets(
   deps: IndexWriterDeps,
@@ -179,6 +214,9 @@ export async function batchWriteTier2Buckets(
  * Increment cardinality counters for Tier 2 buckets
  * Uses UpdateItem with ADD for atomic increment
  * Stats items use "_stats" as sort key to distinguish from device entries
+ * @param deps - Dependencies including DynamoDB client and table names
+ * @param bucketKeys - Array of bucket keys to increment
+ * @param ttl - TTL timestamp for the stats entries
  */
 export async function incrementBucketCardinalities(
   deps: IndexWriterDeps,
@@ -215,6 +253,9 @@ export async function incrementBucketCardinalities(
  * Used for both session anchors and IP+UA anchors.
  * Stores created_at for application-side validity check.
  * Uses SESSION_ANCHOR_CLEANUP_TTL for DynamoDB TTL cleanup.
+ * @param deps - Dependencies including DynamoDB client and table names
+ * @param bucketKey - The anchor bucket key
+ * @param deviceId - The device ID to anchor
  */
 export async function writeAnchorBucket(
   deps: IndexWriterDeps,
@@ -288,6 +329,9 @@ export function buildSimHashBandEntries(
 /**
  * Batch write SimHash LSH band entries with retry logic
  * Uses tier2BucketsTable with special PK format for band entries
+ * @param deps - Dependencies including DynamoDB client and table names
+ * @param entries - SimHash band entries to write
+ * @param maxRetries - Maximum retry attempts for unprocessed items (default 3)
  */
 export async function batchWriteSimHashBands(
   deps: IndexWriterDeps,

@@ -51,14 +51,27 @@ export const RISK_WEIGHTS = {
  * Detect bot-like signals in fingerprint
  * Returns array of detected bot flags
  */
+
+/** User agent patterns that indicate bot/crawler traffic */
 const BOT_UA_PATTERNS = ["bot", "crawler", "spider", "headless"];
 
+/**
+ * Check if user agent matches known bot patterns
+ * @param ua - User agent string to check
+ * @returns True if bot pattern detected
+ */
 function hasBotUserAgent(ua: string | undefined): boolean {
   if (!ua) return false;
   const lower = ua.toLowerCase();
   return BOT_UA_PATTERNS.some((pattern) => lower.includes(pattern));
 }
 
+/**
+ * Detect bot-like signals in a fingerprint
+ * Checks GPU renderer (SwiftShader), screen size, user agent, and hardware specs
+ * @param fingerprint - The fingerprint to analyze
+ * @returns Array of detected bot flag strings
+ */
 export function detectBotSignals(fingerprint: Fingerprint): string[] {
   const flags: string[] = [];
 
@@ -85,12 +98,26 @@ export function detectBotSignals(fingerprint: Fingerprint): string[] {
   return [...new Set(flags)];
 }
 
+/**
+ * Context for flag computation
+ */
 export interface FlagContext {
+  /** Whether this is a newly created device */
   isNewDevice: boolean;
+  /** Whether significant drift was detected from existing profile */
   hasDrift: boolean;
+  /** Raw payload for cross-field anomaly detection */
   raw?: unknown;
 }
 
+/**
+ * Compute all flags for a device based on fingerprint and history
+ * Combines bot detection, anomaly detection, drift detection, and rate limiting
+ * @param fingerprint - The current fingerprint
+ * @param existingProfile - Existing device profile (null for new devices)
+ * @param ctx - Context including new device flag, drift flag, and raw payload
+ * @returns Array of flag strings (deduplicated)
+ */
 export function computeFlags(
   fingerprint: Fingerprint,
   existingProfile: DeviceProfile | null,

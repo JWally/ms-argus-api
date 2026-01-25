@@ -10,13 +10,24 @@ import { corsMiddleware } from "../helpers/cors-middleware";
 import { jsonErrorHandler } from "../helpers/error-middleware";
 import { createBaseHandler } from "./session-get/base-handler";
 
+/**
+ * Environment configuration for session-get handler
+ */
 interface SessionGetEnvConfig {
+  /** DynamoDB table for session cache */
   SESSION_CACHE_TABLE: string;
+  /** DynamoDB table for session payloads */
   SESSION_PAYLOAD_TABLE: string;
+  /** Powertools service name */
   POWERTOOLS_SERVICE_NAME: string;
+  /** Powertools metrics namespace */
   POWERTOOLS_METRICS_NAMESPACE: string;
 }
 
+/**
+ * Get and validate environment configuration
+ * @returns Validated environment configuration
+ */
 function getEnvConfig(): SessionGetEnvConfig {
   validateRequiredEnvVars(["SESSION_CACHE_TABLE", "SESSION_PAYLOAD_TABLE"]);
 

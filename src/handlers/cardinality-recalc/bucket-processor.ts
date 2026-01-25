@@ -1,3 +1,10 @@
+/**
+ * Tier-2 bucket cardinality processing.
+ *
+ * Handles individual bucket cardinality recalculation with retry logic
+ * and exponential backoff for throttling scenarios.
+ * @module
+ */
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { sleep } from "../../helpers/sleep";
 import {
@@ -6,15 +13,26 @@ import {
   updateCardinality,
 } from "./dynamo-ops";
 
+/** Result of processing a single bucket's cardinality. */
 interface BucketResult {
+  /** Bucket key that was processed */
   bucketKey: string;
+  /** Cardinality value before recalculation */
   previousCardinality: number;
+  /** Actual device count from scan */
   actualCardinality: number;
+  /** Whether drift was detected and corrected */
   driftCorrected: boolean;
 }
 
 export type { BucketResult };
 
+/**
+ * Check if error is a DynamoDB throttling error.
+ *
+ * @param error - Error to check
+ * @returns True if throttling error
+ */
 function isThrottlingError(error: unknown): boolean {
   return (
     error instanceof Error &&
@@ -23,6 +41,14 @@ function isThrottlingError(error: unknown): boolean {
   );
 }
 
+/**
+ * Check bucket cardinality and correct if drifted.
+ *
+ * @param ctx - Table name and DynamoDB client
+ * @param bucketKey - Bucket key to check
+ * @param ttl - TTL for cardinality record
+ * @returns Bucket result with drift status
+ */
 async function checkAndCorrectBucket(
   ctx: { tableName: string; dynamodb: DynamoDBClient },
   bucketKey: string,
@@ -48,6 +74,19 @@ async function checkAndCorrectBucket(
   };
 }
 
+/**
+ * Process a bucket with exponential backoff retry.
+ *
+ * Attempts to check and correct bucket cardinality with automatic
+ * retry on throttling. Backoff doubles on each retry (200ms, 400ms, 800ms).
+ *
+ * @param ctx - Table name and DynamoDB client
+ * @param bucketKey - Bucket key to process
+ * @param ttl - TTL for cardinality record
+ * @param maxRetries - Maximum retry attempts (default 3)
+ * @returns Bucket result with drift status
+ * @throws Error after max retries exhausted
+ */
 export async function processBucket(
   ctx: { tableName: string; dynamodb: DynamoDBClient },
   bucketKey: string,

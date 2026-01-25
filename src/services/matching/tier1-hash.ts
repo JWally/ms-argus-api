@@ -3,8 +3,13 @@ import { unmarshall } from "@aws-sdk/util-dynamodb";
 import { computeFuzzyMatchInfo } from "../../helpers/hash";
 import { EvidenceCode, Fingerprint, MatchResult } from "./types";
 
+/**
+ * Dependencies for Tier 1 hash matching operations
+ */
 export interface Tier1HashDeps {
+  /** DynamoDB client instance */
   dynamodb: DynamoDBClient;
+  /** Name of the Tier 1 index table */
   tier1IndexTable: string;
 }
 
@@ -12,6 +17,9 @@ export interface Tier1HashDeps {
  * Tier 1: Match by stable or fuzzy hash
  * High confidence - these hashes are computed from multiple signals
  * Includes fuzzy_match_info for drift detection
+ * @param deps - Dependencies including DynamoDB client and table name
+ * @param fingerprint - The fingerprint containing stable_hash and/or fuzzy_hash
+ * @returns Match result if hash match found, null otherwise
  */
 export async function tier1HashMatch(
   deps: Tier1HashDeps,
@@ -64,6 +72,12 @@ export async function tier1HashMatch(
   return null;
 }
 
+/**
+ * Look up a device by hash key in the Tier 1 index table
+ * @param deps - Dependencies including DynamoDB client and table name
+ * @param hashKey - The prefixed hash key (e.g., "stable#abc123" or "fuzzy#xyz789")
+ * @returns Device data if found, null otherwise
+ */
 async function lookupTier1Index(
   deps: Tier1HashDeps,
   hashKey: string,

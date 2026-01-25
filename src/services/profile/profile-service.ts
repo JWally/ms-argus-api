@@ -87,12 +87,18 @@ export class ProfileService {
   /**
    * Atomically try to acquire the mutation gate for a device
    * Uses DynamoDB conditional write to avoid TOCTOU race condition
-   * Returns true if gate was acquired (we should update), false if already held
+   * @param deviceId - The device ID to acquire the gate for
+   * @returns True if gate was acquired (we should update), false if already held
    */
   tryAcquireMutationGate(deviceId: string): Promise<boolean> {
     return this.deps.cache.tryAcquireMutationGate(deviceId);
   }
 
+  /**
+   * Load existing device profile from DynamoDB
+   * @param deviceId - The device ID to load
+   * @returns Device profile if found, null otherwise
+   */
   async loadExistingProfile(deviceId: string): Promise<DeviceProfile | null> {
     const result = await this.deps.dynamodb.send(
       new GetItemCommand({
@@ -105,6 +111,8 @@ export class ProfileService {
 
   /**
    * Update device profile in DynamoDB
+   * Computes flags, risk score, and manages last_seen timestamps
+   * @param params - Profile update parameters including device ID, fingerprint, and context
    */
   async updateProfile(params: UpdateProfileParams): Promise<void> {
     const {
@@ -162,6 +170,10 @@ export class ProfileService {
    * evidence_codes contains at least one code in ASSOCIATION_ALLOWED_EVIDENCE.
    *
    * This prevents viral spreading of device_ids from low-confidence Tier 2 matches.
+   * @param deviceId - The device ID to index
+   * @param fingerprint - The fingerprint containing hash and identity values
+   * @param evidenceCodes - Evidence codes from the match (determines if identity indexes are written)
+   * @returns Number of index entries written
    */
   async updateTier1IndexesWithEvidence(
     deviceId: string,
@@ -198,6 +210,9 @@ export class ProfileService {
    * Update Tier 2 buckets (compound filter matching)
    * Uses shorter TTL (7 days) to prevent bucket accumulation
    * Also increments cardinality counters for each bucket
+   * @param deviceId - The device ID to add to buckets
+   * @param fingerprint - The fingerprint containing bucket signals
+   * @returns Number of bucket entries written
    */
   async updateTier2Buckets(
     deviceId: string,
@@ -223,6 +238,12 @@ export class ProfileService {
     return bucketEntries.length;
   }
 
+  /**
+   * Write an anchor bucket entry for ephemeral matching
+   * @param deviceId - The device ID to anchor
+   * @param bucketKey - The bucket key, or null if signals are missing
+   * @returns True if written, false if skipped (null bucket key)
+   */
   private async writeAnchor(
     deviceId: string,
     bucketKey: string | null,
@@ -232,6 +253,12 @@ export class ProfileService {
     return true;
   }
 
+  /**
+   * Update session anchor bucket for short-lived matching
+   * @param deviceId - The device ID to anchor
+   * @param fingerprint - The fingerprint containing anchor signals
+   * @returns True if anchor was written, false if required signals missing
+   */
   async updateSessionAnchorBucket(
     deviceId: string,
     fingerprint: Fingerprint,
@@ -239,6 +266,12 @@ export class ProfileService {
     return this.writeAnchor(deviceId, buildSessionAnchorKey(fingerprint));
   }
 
+  /**
+   * Update IP+UserAgent anchor bucket for very short-lived matching
+   * @param deviceId - The device ID to anchor
+   * @param fingerprint - The fingerprint containing IP and user agent
+   * @returns True if anchor was written, false if required signals missing
+   */
   async updateIpUaAnchorBucket(
     deviceId: string,
     fingerprint: Fingerprint,
@@ -249,6 +282,9 @@ export class ProfileService {
   /**
    * Update SimHash LSH band entries for Tier 1.5 matching
    * Only writes if SimHash tier is enabled via feature flag
+   * @param deviceId - The device ID to index
+   * @param fingerprint - The fingerprint containing fuzzy_hash
+   * @returns Number of band entries written (0 if disabled or no hash)
    */
   async updateSimHashBands(
     deviceId: string,
@@ -274,6 +310,12 @@ export class ProfileService {
     return bandEntries.length;
   }
 
+  /**
+   * Update all bucket types (session anchor, IP+UA anchor, tier 2)
+   * @param deviceId - The device ID to add to buckets
+   * @param fingerprint - The fingerprint containing bucket signals
+   * @returns Number of tier 2 bucket entries written
+   */
   private async updateBuckets(
     deviceId: string,
     fingerprint: Fingerprint,
@@ -285,7 +327,9 @@ export class ProfileService {
 
   /**
    * Process a complete profile update (orchestration method)
-   * Returns object indicating what was done
+   * Handles mutation gating, drift detection, and all index updates
+   * @param payload - Profile update payload with device ID, fingerprint, and context
+   * @returns Result indicating what was done (skipped/written counts)
    */
   async processProfileUpdate(
     payload: ProfileUpdatePayload,
