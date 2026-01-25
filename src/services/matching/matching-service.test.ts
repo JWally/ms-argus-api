@@ -130,7 +130,7 @@ describe("MatchingService", () => {
 
   describe("checkCache", () => {
     it("should return null when session is not cached", async () => {
-      const result = await service.checkCache("unknown-session");
+      const result = await service.cache.checkSessionCache("unknown-session");
       expect(result).toBeNull();
     });
 
@@ -151,7 +151,7 @@ describe("MatchingService", () => {
 
       mockCache._setSession(sessionId, cachedValue);
 
-      const result = await service.checkCache(sessionId);
+      const result = await service.cache.checkSessionCache(sessionId);
       expect(result).not.toBeNull();
       expect(result?.status).toBe("complete");
       expect(result?.device_id).toBe("dev_123");

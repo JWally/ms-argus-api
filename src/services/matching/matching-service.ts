@@ -2,12 +2,7 @@ import { ulid } from "ulid";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { SQSClient, SendMessageCommand } from "@aws-sdk/client-sqs";
 import { DynamoCacheService } from "../cache";
-import {
-  Fingerprint,
-  FingerprintPayload,
-  MatchResult,
-  SessionCacheValue,
-} from "./types";
+import { Fingerprint, FingerprintPayload, MatchResult } from "./types";
 import {
   PRIVACY_BROWSER_PENALTY,
   PRIVATE_BROWSING_PENALTY,
@@ -106,13 +101,9 @@ export class MatchingService {
     };
   }
 
-  /**
-   * Check if a session result exists in the cache
-   * @param sessionId - The session identifier to look up
-   * @returns Cached session value if found, null otherwise
-   */
-  checkCache(sessionId: string): Promise<SessionCacheValue | null> {
-    return this.deps.cache.checkSessionCache(sessionId);
+  /** Exposes the cache service for direct session lookups */
+  get cache(): DynamoCacheService {
+    return this.deps.cache;
   }
 
   /**

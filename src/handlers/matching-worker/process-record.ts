@@ -20,14 +20,31 @@ import { recordTierMetric } from "./metrics";
 import { emitObservation } from "./observation";
 import { writeSessionPayload } from "./session";
 
+/** Dependencies required for processing SQS records in the matching worker. */
 export interface ProcessRecordDeps {
+  /** Logger instance for structured logging */
   logger: Logger;
+  /** Metrics client for CloudWatch metrics */
   metrics: Metrics;
+  /** DynamoDB client for session payload persistence */
   dynamodb: DynamoDBClient;
+  /** Firehose client for observation streaming */
   firehose: FirehoseClient;
+  /** Environment configuration for the matching worker */
   envConfig: MatchingWorkerEnvConfig;
 }
 
+/**
+ * Execute tiered matching and write degraded result on error.
+ *
+ * Runs the full matching pipeline through the MatchingService. If matching
+ * fails, writes a degraded result to prevent reprocessing and rethrows.
+ *
+ * @param service - Matching service instance
+ * @param params - Session ID, fingerprint, and idempotency key
+ * @param deps - Logger and metrics dependencies
+ * @returns Match result and tier2 timeout flag
+ */
 async function runMatching(
   service: MatchingService,
   params: {
@@ -66,6 +83,15 @@ async function runMatching(
   }
 }
 
+/**
+ * Extract anomaly signals from fingerprint and device data.
+ *
+ * Runs all anomaly detectors and transforms results into session signals.
+ *
+ * @param fingerprint - Normalized fingerprint data
+ * @param rawPayload - Raw SQS payload containing device info
+ * @returns Array of anomaly signals for the session
+ */
 function buildAnomalySignals(
   fingerprint: ParsedRecord["fingerprint"],
   rawPayload: SqsPayload,
@@ -79,6 +105,16 @@ function buildAnomalySignals(
   }));
 }
 
+/**
+ * Persist matching results to cache, session table, and profile queue.
+ *
+ * Writes the match result to session cache, stores the full session payload
+ * in DynamoDB, and queues a profile update message for the matched device.
+ *
+ * @param service - Matching service instance
+ * @param ctx - Session context with match result and anomalies
+ * @param deps - Handler dependencies
+ */
 async function persistResults(
   service: MatchingService,
   ctx: {
@@ -125,6 +161,15 @@ async function persistResults(
   );
 }
 
+/**
+ * Log duration metrics and emit observation record.
+ *
+ * Records matching duration to CloudWatch and sends an observation
+ * record to Firehose for analytics. Observation emission is fire-and-forget.
+ *
+ * @param params - Session ID, match result, timeout flag, and duration
+ * @param deps - Handler dependencies
+ */
 function emitCompletionMetrics(
   params: {
     sessionId: string;
@@ -163,6 +208,17 @@ function emitCompletionMetrics(
   });
 }
 
+/**
+ * Process a single SQS record through the matching pipeline.
+ *
+ * Main entry point for the matching worker. Parses the record, checks cache
+ * for duplicates, runs tiered matching, detects anomalies, persists results,
+ * and emits metrics. Short-circuits on cache hit or parse failure.
+ *
+ * @param record - SQS record containing fingerprint payload
+ * @param service - Matching service instance
+ * @param deps - Handler dependencies
+ */
 export async function processRecord(
   record: SQSRecord,
   service: MatchingService,
@@ -177,7 +233,7 @@ export async function processRecord(
   deps.logger.info("Processing fingerprint", { session_id: sessionId });
   const idempotencyKey = generateIdempotencyKey(sessionId, fingerprint);
 
-  const cached = await service.checkCache(sessionId);
+  const cached = await service.cache.checkSessionCache(sessionId);
   if (cached && cached.status === "complete") {
     deps.logger.info("Cache hit - already processed", {
       session_id: sessionId,
