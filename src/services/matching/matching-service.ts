@@ -15,7 +15,6 @@ import {
 import { fnv1a } from "../../helpers/hash";
 
 import {
-  checkCache as tier0CheckCache,
   writeMatchResult as tier0WriteMatchResult,
   writeDegradedResult as tier0WriteDegradedResult,
   Tier0CacheDeps,
@@ -107,10 +106,22 @@ export class MatchingService {
     };
   }
 
+  /**
+   * Check if a session result exists in the cache
+   * @param sessionId - The session identifier to look up
+   * @returns Cached session value if found, null otherwise
+   */
   checkCache(sessionId: string): Promise<SessionCacheValue | null> {
-    return tier0CheckCache(this.tier0Deps, sessionId);
+    return this.deps.cache.checkSessionCache(sessionId);
   }
 
+  /**
+   * Apply confidence penalty for privacy-enhanced browsers
+   * Reduces confidence score when privacy browser or private browsing is detected
+   * @param result - The match result to adjust
+   * @param fingerprint - The fingerprint containing privacy signals
+   * @returns Adjusted match result with reduced confidence if applicable
+   */
   applyPrivacyPenalty(
     result: MatchResult,
     fingerprint: Fingerprint,
@@ -122,6 +133,11 @@ export class MatchingService {
     return { ...result, confidence: Math.max(0, result.confidence - penalty) };
   }
 
+  /**
+   * Run Tier 0.5 identity lookups (public key, evercookie, sigint)
+   * @param fingerprint - The fingerprint containing identity signals
+   * @returns Match result if an identity match is found, null otherwise
+   */
   private async runTier05Lookups(
     fingerprint: Fingerprint,
   ): Promise<MatchResult | null> {
@@ -140,6 +156,13 @@ export class MatchingService {
     return null;
   }
 
+  /**
+   * Wrap a match result with privacy penalty applied and timeout flag
+   * @param match - The raw match result
+   * @param fingerprint - The fingerprint for privacy penalty calculation
+   * @param timedOut - Whether tier 2 matching timed out
+   * @returns Wrapped result with adjusted confidence and timeout flag
+   */
   private wrapResult(
     match: MatchResult,
     fingerprint: Fingerprint,
@@ -151,6 +174,12 @@ export class MatchingService {
     };
   }
 
+  /**
+   * Run the full tiered matching pipeline
+   * Executes tiers in order: 0.5 (identity) → 1 (hash) → 1.5 (simhash) → 2 (compound) → anchors → new device
+   * @param fingerprint - The fingerprint to match against existing devices
+   * @returns Match result and flag indicating if tier 2 timed out
+   */
   async runTieredMatching(
     fingerprint: Fingerprint,
   ): Promise<{ result: MatchResult; tier2TimedOut: boolean }> {
@@ -180,6 +209,10 @@ export class MatchingService {
     return { result: this.createNewDevice(), tier2TimedOut: timedOut };
   }
 
+  /**
+   * Create a new device result with a fresh device ID
+   * @returns Match result for a newly created device
+   */
   createNewDevice(): MatchResult {
     const deviceId = `dev_${ulid()}`;
     return {
@@ -217,6 +250,13 @@ export class MatchingService {
     return tier0WriteDegradedResult(this.tier0Deps, sessionId, idempotencyKey);
   }
 
+  /**
+   * Queue a profile update to SQS for async processing
+   * @param deviceId - The device ID to update
+   * @param payload - The fingerprint payload with sigint and TLS data
+   * @param isNewDevice - Whether this is a newly created device
+   * @param matchResult - Optional match result for tier-gated identity association
+   */
   async queueProfileUpdate(
     deviceId: string,
     payload: FingerprintPayload,
@@ -245,7 +285,13 @@ export class MatchingService {
   }
 }
 
-/** Generate idempotency key from session and fingerprint data */
+/**
+ * Generate idempotency key from session and fingerprint data
+ * Used to deduplicate concurrent requests for the same session
+ * @param sessionId - The session identifier
+ * @param fingerprint - The fingerprint containing hash values
+ * @returns FNV-1a hash of the combined session and fingerprint data
+ */
 export function generateIdempotencyKey(
   sessionId: string,
   fingerprint: Fingerprint,

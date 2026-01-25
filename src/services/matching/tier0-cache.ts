@@ -1,21 +1,20 @@
+/**
+ * Tier 0 session cache operations.
+ *
+ * Provides fast session-level caching to deduplicate requests and serve
+ * cached results for already-processed sessions.
+ * @module
+ */
 import { DynamoCacheService } from "../cache";
 import { MatchResult, SessionCacheValue, SessionAnomalySignal } from "./types";
 
+/** Dependencies for tier-0 cache operations. */
 export interface Tier0CacheDeps {
+  /** DynamoDB cache service instance */
   cache: DynamoCacheService;
 }
 
-export function checkCache(
-  deps: Tier0CacheDeps,
-  sessionId: string,
-): Promise<SessionCacheValue | null> {
-  return deps.cache.checkSessionCache(sessionId);
-}
-
-/**
- * Write match result to session cache
- * @returns true if written, false if skipped (existing value has higher confidence)
- */
+/** Parameters for writing a match result to cache. */
 export interface WriteMatchResultParams {
   sessionId: string;
   result: MatchResult;
@@ -23,6 +22,17 @@ export interface WriteMatchResultParams {
   anomalies?: SessionAnomalySignal[];
 }
 
+/**
+ * Write match result to session cache.
+ *
+ * Stores the complete match result including device ID, confidence,
+ * and anomalies. Uses conditional write to only update if confidence
+ * is higher than any existing cached value.
+ *
+ * @param deps - Cache service dependency
+ * @param params - Session ID, match result, idempotency key, and anomalies
+ * @returns True if written, false if skipped due to higher existing confidence
+ */
 export async function writeMatchResult(
   deps: Tier0CacheDeps,
   params: WriteMatchResultParams,
@@ -49,8 +59,16 @@ export async function writeMatchResult(
 }
 
 /**
- * Write degraded status to cache when matching fails
- * @returns true if written, false if skipped (existing value has higher confidence)
+ * Write degraded status to cache when matching fails.
+ *
+ * Records a placeholder result indicating matching failed. This prevents
+ * the session from being reprocessed and returns a degraded response
+ * to callers. Uses conditional write to avoid overwriting valid results.
+ *
+ * @param deps - Cache service dependency
+ * @param sessionId - Session ID to mark as degraded
+ * @param idempotencyKey - Idempotency key for the request
+ * @returns True if written, false if skipped due to existing valid result
  */
 export async function writeDegradedResult(
   deps: Tier0CacheDeps,

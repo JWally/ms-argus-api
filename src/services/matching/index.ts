@@ -17,7 +17,6 @@ export * from "./types";
 export * from "./matching-service";
 
 export {
-  checkCache,
   writeMatchResult,
   writeDegradedResult,
   type Tier0CacheDeps,
@@ -49,7 +48,10 @@ export {
 export {
   sessionAnchorLookup,
   ipUaAnchorLookup,
-  buildSessionAnchorKey,
-  buildIpUaAnchorKey,
   type SessionAnchorDeps,
 } from "./session-anchors";
+
+export {
+  buildSessionAnchorKey,
+  buildIpUaAnchorKey,
+} from "../../helpers/bucket-keys";

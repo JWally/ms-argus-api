@@ -9,10 +9,12 @@ import { marshall } from "@aws-sdk/util-dynamodb";
 import {
   sessionAnchorLookup,
   ipUaAnchorLookup,
-  buildSessionAnchorKey,
-  buildIpUaAnchorKey,
   SessionAnchorDeps,
 } from "./session-anchors";
+import {
+  buildSessionAnchorKey,
+  buildIpUaAnchorKey,
+} from "../../helpers/bucket-keys";
 import type { Fingerprint } from "../../types";
 
 const dynamoMock = mockClient(DynamoDBClient);
