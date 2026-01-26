@@ -7,6 +7,7 @@
 import { SQSRecord } from "aws-lambda";
 import { Logger } from "@aws-lambda-powertools/logger";
 import { Metrics, MetricUnit } from "@aws-lambda-powertools/metrics";
+import { SQSClient, SendMessageCommand } from "@aws-sdk/client-sqs";
 import {
   QdrantClient,
   VectorSearchRequest,
@@ -18,6 +19,14 @@ import type {
   VectorSearchMessage,
   VectorUpsertMessage,
 } from "./types";
+
+interface ProcessRecordDeps {
+  qdrantClient: QdrantClient;
+  sqs: SQSClient;
+  vectorResultsQueueUrl?: string;
+  logger: Logger;
+  metrics: Metrics;
+}
 
 /**
  * Processes a single SQS record containing a vector operation request.
@@ -42,7 +51,7 @@ import type {
  */
 export async function processRecord(
   record: SQSRecord,
-  deps: { qdrantClient: QdrantClient; logger: Logger; metrics: Metrics },
+  deps: ProcessRecordDeps,
 ): Promise<void> {
   const startTime = Date.now();
 
@@ -91,8 +100,8 @@ export async function processRecord(
 /**
  * Handles a vector search request.
  *
- * Queries Qdrant for vectors similar to the provided vector and logs results.
- * Currently logs results but doesn't persist them - TODO for callback implementation.
+ * Queries Qdrant for vectors similar to the provided vector, then publishes
+ * results to the vector-results SQS queue for persistence to DynamoDB.
  *
  * @param message - Search request with vector and parameters
  * @param deps - Service dependencies
@@ -101,7 +110,7 @@ export async function processRecord(
  */
 async function handleSearch(
   message: VectorSearchMessage,
-  deps: { qdrantClient: QdrantClient; logger: Logger; metrics: Metrics },
+  deps: ProcessRecordDeps,
 ): Promise<void> {
   deps.logger.info("Processing vector search", {
     session_id: message.session_id,
@@ -130,7 +139,30 @@ async function handleSearch(
     top_score: results[0]?.score,
   });
 
-  // TODO: Write results to session cache or callback queue
+  // Publish results to vector-results queue for persistence
+  if (deps.vectorResultsQueueUrl && message.session_id) {
+    await deps.sqs.send(
+      new SendMessageCommand({
+        QueueUrl: deps.vectorResultsQueueUrl,
+        MessageBody: JSON.stringify({
+          session_id: message.session_id,
+          results: results.map((r) => ({
+            id: r.id,
+            score: r.score,
+            payload: r.payload,
+          })),
+          collection: message.collection,
+          timestamp: Date.now(),
+        }),
+      }),
+    );
+
+    deps.metrics.addMetric("VectorResultsPublished", MetricUnit.Count, 1);
+    deps.logger.info("Vector results published to queue", {
+      session_id: message.session_id,
+      result_count: results.length,
+    });
+  }
 }
 
 /**
@@ -146,7 +178,7 @@ async function handleSearch(
  */
 async function handleUpsert(
   message: VectorUpsertMessage,
-  deps: { qdrantClient: QdrantClient; logger: Logger; metrics: Metrics },
+  deps: ProcessRecordDeps,
 ): Promise<void> {
   deps.logger.info("Processing vector upsert", {
     device_id: message.device_id,

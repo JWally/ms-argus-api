@@ -10,11 +10,11 @@ export {
   FingerprintPayload,
   MatchResult,
   Tier1IndexEntry,
-  Tier2BucketEntry,
   EvidenceCode,
   SessionAnomalySignal,
   SimHashDetails,
   FuzzyMatchInfo,
+  VectorMatchDetails,
 } from "../../types";
 
 export type { EvidenceCode as EvidenceCodeType } from "../../types";

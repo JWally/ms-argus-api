@@ -143,6 +143,8 @@ export class ArgusApiStack extends cdk.Stack {
         stage,
         alarmsTopic,
         vectorEnvironment,
+        // Pass vector results queue for publishing search results
+        vectorResultsQueue: queues.vectorResultsQueue,
       });
     }
 
@@ -162,6 +164,7 @@ export class ArgusApiStack extends cdk.Stack {
       matchingQueue: queues.matchingQueue,
       sessionCacheTable: dynamodb.sessionCacheTable,
       sessionPayloadTable: dynamodb.sessionPayloadTable, // AR-XXX: Full payload for gRPC stub
+      vectorResultsTable: dynamodb.vectorResultsTable, // Vector search results
       alarmsTopic,
       payloadArchiveBucket: analytics.payloadArchiveBucket,
       config: stageConfig,
@@ -180,10 +183,16 @@ export class ArgusApiStack extends cdk.Stack {
       tier2BucketsTable: dynamodb.tier2BucketsTable,
       sessionCacheTable: dynamodb.sessionCacheTable,
       sessionPayloadTable: dynamodb.sessionPayloadTable, // AR-XXX: Full payload for gRPC stub
+      vectorResultsTable: dynamodb.vectorResultsTable, // Vector search results
       observationsDeliveryStreamName:
         analytics.deliveryStream.deliveryStreamName!, // AR-57
       // Vector queue for Qdrant embeddings (enabled)
       vectorQueue: vectorWorker?.vectorQueue,
+      // Vector results queue for search result writes
+      vectorResultsQueue: queues.vectorResultsQueue,
+      // Vector worker ARN for Tier 2 vector search (replaces compound buckets)
+      vectorWorkerArn: vectorWorker?.vectorWorker.functionArn,
+      vectorCollection: "fingerprints",
     });
 
     // =========================================================================
@@ -283,6 +292,16 @@ export class ArgusApiStack extends cdk.Stack {
       description: "DynamoDB session cache table name",
     });
 
+    new cdk.CfnOutput(this, "VectorResultsTableName", {
+      value: dynamodb.vectorResultsTable.tableName,
+      description: "DynamoDB vector results table name",
+    });
+
+    new cdk.CfnOutput(this, "VectorResultsQueueUrl", {
+      value: queues.vectorResultsQueue.queueUrl,
+      description: "SQS URL for vector results queue",
+    });
+
     new cdk.CfnOutput(this, "MatchingWorkerArn", {
       value: workers.matchingWorker.functionArn,
       description: "Matching worker Lambda ARN",
@@ -293,11 +312,13 @@ export class ArgusApiStack extends cdk.Stack {
       description: "Profile updater Lambda ARN",
     });
 
-    // AR-130: Cardinality recalculation Lambda output
-    new cdk.CfnOutput(this, "CardinalityRecalcArn", {
-      value: workers.cardinalityRecalc.functionArn,
-      description: "Cardinality recalculation Lambda ARN",
-    });
+    // Vector results writer Lambda output (if enabled)
+    if (workers.vectorResultsWriter) {
+      new cdk.CfnOutput(this, "VectorResultsWriterArn", {
+        value: workers.vectorResultsWriter.functionArn,
+        description: "Vector results writer Lambda ARN",
+      });
+    }
 
     // AR-57: Analytics outputs
     new cdk.CfnOutput(this, "ObservationsBucketName", {

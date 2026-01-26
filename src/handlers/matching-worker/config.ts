@@ -12,6 +12,9 @@ import {
 } from "../../services/matching";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { SQSClient } from "@aws-sdk/client-sqs";
+import { LambdaClient } from "@aws-sdk/client-lambda";
+import { Logger } from "@aws-lambda-powertools/logger";
+import { Metrics } from "@aws-lambda-powertools/metrics";
 import { DynamoCacheService } from "../../services/cache";
 import { SESSION_TTL_SECONDS, TIER2_TIMEOUT_MS } from "../../helpers/constants";
 import type { MatchingWorkerEnvConfig } from "../../config/env";
@@ -30,6 +33,9 @@ function getConfig(envConfig: MatchingWorkerEnvConfig): MatchingServiceConfig {
     profileQueueUrl: envConfig.PROFILE_QUEUE_URL,
     sessionTtlSeconds: SESSION_TTL_SECONDS,
     tier2TimeoutMs: TIER2_TIMEOUT_MS,
+    // Vector search configuration (optional)
+    vectorWorkerArn: envConfig.VECTOR_WORKER_ARN,
+    vectorCollection: envConfig.VECTOR_COLLECTION,
   };
 }
 
@@ -37,22 +43,30 @@ function getConfig(envConfig: MatchingWorkerEnvConfig): MatchingServiceConfig {
  * Create a configured MatchingService instance.
  *
  * Factory function that wires up all service dependencies including
- * DynamoDB, SQS, and cache service with configuration from environment.
+ * DynamoDB, SQS, Lambda (for vector search), and cache service
+ * with configuration from environment.
  *
- * @param deps - AWS clients, cache service, and environment config
+ * @param deps - AWS clients, cache service, logger, metrics, and environment config
  * @returns Configured MatchingService instance
  */
 export function createMatchingService(deps: {
   dynamodb: DynamoDBClient;
   sqs: SQSClient;
+  lambda?: LambdaClient;
   cacheService: DynamoCacheService;
   envConfig: MatchingWorkerEnvConfig;
+  logger?: Logger;
+  metrics?: Metrics;
 }): MatchingService {
   const serviceDeps: MatchingServiceDeps = {
     dynamodb: deps.dynamodb,
     sqs: deps.sqs,
     cache: deps.cacheService,
     config: getConfig(deps.envConfig),
+    // Vector search dependencies (optional)
+    lambda: deps.lambda,
+    logger: deps.logger,
+    metrics: deps.metrics,
   };
   return new MatchingService(serviceDeps);
 }

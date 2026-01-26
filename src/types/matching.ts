@@ -20,14 +20,10 @@ export type EvidenceCode =
   | "STABLE_HASH_MATCH" // T1: Matched on stable fingerprint hash
   | "FUZZY_HASH_MATCH" // T1: Matched on fuzzy fingerprint hash
   | "SIMHASH_MATCH" // T1.5: Matched via SimHash LSH (fuzzy_hash Hamming distance)
-  | "IP_JA4_BUCKET" // T2: Matched in IP+JA4 bucket
-  | "GPU_SCREEN_TZ_BUCKET" // T2: Matched in GPU+Screen+Timezone bucket
-  | "AUDIO_CANVAS_BUCKET" // T2: Matched in Audio+Canvas bucket
-  | "MATHS_WINDOW_BUCKET" // T2: Matched in Maths+WindowFeatures bucket
-  | "HTML_CSS_BUCKET" // T2: Matched in HtmlElement+CSS bucket
-  | "WEBGL_STRUCT_BUCKET" // T2: Matched in WebGL+Extensions+SVG bucket
-  | "SESSION_ANCHOR_BUCKET" // T2: Matched in IP+UA+Screen with 10min validity
-  | "IP_UA_ANCHOR_BUCKET" // T2: Matched in IP+UA with 3min validity
+  | "SESSION_ANCHOR_BUCKET" // Anchor: Matched in IP+UA+Screen with 10min validity
+  | "IP_UA_ANCHOR_BUCKET" // Anchor: Matched in IP+UA with 3min validity
+  | "VECTOR_SIMILARITY" // T2: Matched via Qdrant vector similarity
+  | "HIGH_SIMILARITY" // T2: Vector similarity score >= 0.9
   | "NEW_DEVICE"; // No match found, new device created
 
 /** Anomaly signal exposed in session response. */
@@ -75,6 +71,8 @@ export interface SessionCacheValue {
   simhash_details?: SimHashDetails;
   /** Fuzzy hash comparison info */
   fuzzy_match_info?: FuzzyMatchInfo;
+  /** Vector match details for Tier 2 Qdrant matches */
+  vector_match_details?: VectorMatchDetails;
   /** Last update timestamp (epoch ms) */
   updated_at: number;
 }
@@ -167,6 +165,25 @@ export interface FuzzyMatchInfo {
   similarity: number;
 }
 
+/**
+ * Vector match details for Tier 2 Qdrant matches.
+ * Exposes similarity scores and candidate distribution for transparency.
+ */
+export interface VectorMatchDetails {
+  /** Raw similarity score from Qdrant (0.0 to 1.0) */
+  similarity_score: number;
+  /** Total candidates found above threshold */
+  candidates_in_range: number;
+  /** Score of 2nd best candidate, if exists (for gap analysis) */
+  runner_up_score: number | null;
+  /** Top N candidate scores for distribution analysis */
+  top_scores: number[];
+  /** Embedding dimension used */
+  embedding_dimension: number;
+  /** Primary features that drove this match (highest weighted) */
+  primary_match_features: string[];
+}
+
 /** Result of device matching. */
 export interface MatchResult {
   /** Matched or newly created device ID */
@@ -187,6 +204,8 @@ export interface MatchResult {
   simhash_details?: SimHashDetails;
   /** Fuzzy hash comparison info */
   fuzzy_match_info?: FuzzyMatchInfo;
+  /** Vector match details for Tier 2 Qdrant matches */
+  vector_match_details?: VectorMatchDetails;
 }
 
 /**
@@ -205,16 +224,6 @@ export interface Tier1IndexEntry {
   flags?: string[];
   /** Device's fuzzy_hash at time of index write, for drift comparison */
   fuzzy_hash?: string;
-  /** TTL timestamp (epoch seconds) */
-  ttl: number;
-}
-
-/** Tier 2 bucket entry for compound matching. */
-export interface Tier2BucketEntry {
-  /** Bucket key (hash of compound signals) */
-  bucket_key: string;
-  /** Device IDs in this bucket */
-  device_ids: string[];
   /** TTL timestamp (epoch seconds) */
   ttl: number;
 }

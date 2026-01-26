@@ -23,6 +23,10 @@ export interface MatchingWorkerEnvConfig extends BaseEnvConfig {
   PROFILE_QUEUE_URL: string;
   SESSION_PAYLOAD_TABLE: string;
   OBSERVATIONS_STREAM_NAME?: string; // Optional - analytics may not be deployed in all envs
+  /** Optional: Vector worker Lambda ARN for Tier 2 vector search */
+  VECTOR_WORKER_ARN?: string;
+  /** Optional: Qdrant collection name for fingerprint vectors */
+  VECTOR_COLLECTION?: string;
 }
 
 /**
@@ -40,6 +44,18 @@ export interface ProfileUpdaterEnvConfig extends BaseEnvConfig {
 export interface VectorWorkerEnvConfig {
   QDRANT_URL: string;
   QDRANT_SECRET_ARN: string;
+  POWERTOOLS_SERVICE_NAME: string;
+  POWERTOOLS_METRICS_NAMESPACE: string;
+  /** Optional: SQS queue URL for vector results. If set, publishes search results. */
+  VECTOR_RESULTS_QUEUE_URL?: string;
+}
+
+/**
+ * Environment configuration for the Vector Results Writer Lambda
+ * Consumes from vector-results SQS queue, writes to DynamoDB
+ */
+export interface VectorResultsWriterEnvConfig {
+  VECTOR_RESULTS_TABLE: string;
   POWERTOOLS_SERVICE_NAME: string;
   POWERTOOLS_METRICS_NAMESPACE: string;
 }
@@ -89,7 +105,7 @@ export function getMatchingWorkerEnv(): MatchingWorkerEnvConfig {
       "PROFILE_QUEUE_URL",
     ],
     "argus-matching",
-    ["OBSERVATIONS_STREAM_NAME"],
+    ["OBSERVATIONS_STREAM_NAME", "VECTOR_WORKER_ARN", "VECTOR_COLLECTION"],
   );
 }
 
@@ -120,5 +136,18 @@ export function getVectorWorkerEnv(): VectorWorkerEnvConfig {
   return buildEnvConfig<VectorWorkerEnvConfig>(
     ["QDRANT_URL", "QDRANT_SECRET_ARN"],
     "argus-vector-worker",
+    ["VECTOR_RESULTS_QUEUE_URL"],
+  );
+}
+
+/**
+ * Get and validate environment configuration for Vector Results Writer
+ * @returns Validated VectorResultsWriterEnvConfig
+ * @throws Error if required environment variables are missing
+ */
+export function getVectorResultsWriterEnv(): VectorResultsWriterEnvConfig {
+  return buildEnvConfig<VectorResultsWriterEnvConfig>(
+    ["VECTOR_RESULTS_TABLE"],
+    "argus-vector-results-writer",
   );
 }

@@ -8,6 +8,7 @@ import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from "aws-lambda";
 import { Logger } from "@aws-lambda-powertools/logger";
 import { Metrics, MetricUnit } from "@aws-lambda-powertools/metrics";
 import { DynamoDBClient, GetItemCommand } from "@aws-sdk/client-dynamodb";
+import { unmarshall } from "@aws-sdk/util-dynamodb";
 import { gunzipSync } from "zlib";
 import { DynamoCacheService } from "../../services/cache/dynamo-cache";
 import { HttpError } from "../../helpers/http-error";
@@ -209,4 +210,76 @@ export function buildFallbackResponse(
     headers: { "Content-Type": "application/json", "X-Argus-Degraded": "true" },
     body,
   };
+}
+
+/**
+ * Result from a vector search
+ */
+export interface VectorResult {
+  id: string;
+  score: number;
+  payload?: Record<string, unknown>;
+}
+
+/**
+ * Vector results stored in DynamoDB
+ */
+export interface VectorResultsData {
+  session_id: string;
+  results: VectorResult[];
+  collection: string;
+  result_count: number;
+  top_score: number | null;
+  created_at: number;
+}
+
+/**
+ * Fetches vector search results from DynamoDB.
+ *
+ * Vector results are written by the vector-results-writer Lambda after
+ * vector searches complete. Results have a 5-minute TTL.
+ *
+ * @param sessionId - Session identifier to fetch results for
+ * @param deps - Service dependencies
+ * @param deps.dynamodb - DynamoDB client instance
+ * @param deps.vectorResultsTable - Table name for vector results
+ * @param deps.logger - Logger for warning on failures
+ * @param deps.metrics - Metrics for tracking fetch outcomes
+ * @returns Vector results if found, undefined otherwise
+ */
+export async function fetchVectorResults(
+  sessionId: string,
+  deps: {
+    dynamodb: DynamoDBClient;
+    vectorResultsTable: string;
+    logger: Logger;
+    metrics: Metrics;
+  },
+): Promise<VectorResultsData | undefined> {
+  try {
+    const result = await deps.dynamodb.send(
+      new GetItemCommand({
+        TableName: deps.vectorResultsTable,
+        Key: { session_id: { S: sessionId } },
+      }),
+    );
+
+    if (!result.Item) {
+      deps.metrics.addMetric("VectorResultsNotFound", MetricUnit.Count, 1);
+      return undefined;
+    }
+
+    // Unmarshall the DynamoDB item to native JavaScript types
+    const item = unmarshall(result.Item) as VectorResultsData;
+
+    deps.metrics.addMetric("VectorResultsFound", MetricUnit.Count, 1);
+    return item;
+  } catch (error) {
+    deps.logger.warn("Failed to fetch vector results", {
+      error,
+      session_id: sessionId,
+    });
+    deps.metrics.addMetric("VectorResultsFetchError", MetricUnit.Count, 1);
+    return undefined;
+  }
 }

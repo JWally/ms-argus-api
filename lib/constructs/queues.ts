@@ -24,6 +24,8 @@ export class QueuesConstruct extends Construct {
   public readonly matchingDlq: sqs.Queue;
   public readonly profileQueue: sqs.Queue;
   public readonly profileDlq: sqs.Queue;
+  public readonly vectorResultsQueue: sqs.Queue;
+  public readonly vectorResultsDlq: sqs.Queue;
 
   constructor(scope: Construct, id: string, props: QueuesConstructProps) {
     super(scope, id);
@@ -67,6 +69,24 @@ export class QueuesConstruct extends Construct {
       },
     });
 
+    // Dead Letter Queue for vector results failures
+    this.vectorResultsDlq = new sqs.Queue(this, "VectorResultsDLQ", {
+      queueName: `${stackName}-vector-results-dlq`,
+      retentionPeriod: Duration.days(14),
+    });
+
+    // Vector results queue - receives search results from vector worker
+    // Consumed by vector-results-writer Lambda, writes to DynamoDB
+    this.vectorResultsQueue = new sqs.Queue(this, "VectorResultsQueue", {
+      queueName: `${stackName}-vector-results`,
+      visibilityTimeout: config.sqs.visibilityTimeout,
+      retentionPeriod: config.sqs.retentionPeriod,
+      deadLetterQueue: {
+        queue: this.vectorResultsDlq,
+        maxReceiveCount: config.sqs.maxReceiveCount,
+      },
+    });
+
     // Alarms - AR-44: Pass config for thresholds
     this.createQueueAlarms(
       this.matchingQueue,
@@ -80,8 +100,19 @@ export class QueuesConstruct extends Construct {
       alarmsTopic,
       config.alarms.queue,
     );
+    this.createQueueAlarms(
+      this.vectorResultsQueue,
+      "VectorResults",
+      alarmsTopic,
+      config.alarms.queue,
+    );
     this.createDlqAlarms(this.matchingDlq, "MatchingDLQ", alarmsTopic);
     this.createDlqAlarms(this.profileDlq, "ProfileDLQ", alarmsTopic);
+    this.createDlqAlarms(
+      this.vectorResultsDlq,
+      "VectorResultsDLQ",
+      alarmsTopic,
+    );
   }
 
   private createQueueAlarms(

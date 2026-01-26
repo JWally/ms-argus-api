@@ -213,7 +213,8 @@ function emitCompletionMetrics(
  *
  * Main entry point for the matching worker. Parses the record, checks cache
  * for duplicates, runs tiered matching, detects anomalies, persists results,
- * and emits metrics. Short-circuits on cache hit or parse failure.
+ * upserts device vector (if configured), and emits metrics.
+ * Short-circuits on cache hit or parse failure.
  *
  * @param record - SQS record containing fingerprint payload
  * @param service - Matching service instance
@@ -255,6 +256,15 @@ export async function processRecord(
     { sessionId, matchResult, idempotencyKey, anomalies, rawPayload, payload },
     deps,
   );
+
+  // Upsert device vector to Qdrant (fire-and-forget, non-blocking)
+  // This keeps the vector database in sync with the device profile
+  service.upsertVector(matchResult.device_id, fingerprint).catch((error) => {
+    deps.logger.warn("Vector upsert failed", {
+      error,
+      device_id: matchResult.device_id,
+    });
+  });
 
   const duration = Date.now() - startTime;
   emitCompletionMetrics(

@@ -1,6 +1,9 @@
 import { ulid } from "ulid";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { SQSClient, SendMessageCommand } from "@aws-sdk/client-sqs";
+import { LambdaClient } from "@aws-sdk/client-lambda";
+import { Logger } from "@aws-lambda-powertools/logger";
+import { Metrics } from "@aws-lambda-powertools/metrics";
 import { DynamoCacheService } from "../cache";
 import { Fingerprint, FingerprintPayload, MatchResult } from "./types";
 import {
@@ -24,9 +27,10 @@ import {
 import { tier1HashMatch, Tier1HashDeps } from "./tier1-hash";
 import { tier15SimHashMatch, Tier15SimHashDeps } from "./tier15-simhash";
 import {
-  tier2CompoundMatchWithTimeout,
-  Tier2CompoundDeps,
-} from "./tier2-compound";
+  tier2VectorMatchWithTimeout,
+  upsertDeviceVector,
+  Tier2VectorDeps,
+} from "./tier2-vector";
 import {
   sessionAnchorLookup,
   ipUaAnchorLookup,
@@ -43,6 +47,10 @@ export interface MatchingServiceConfig {
   profileQueueUrl: string;
   sessionTtlSeconds: number;
   tier2TimeoutMs: number;
+  /** Optional: Vector worker Lambda ARN for Tier 2 vector search */
+  vectorWorkerArn?: string;
+  /** Optional: Qdrant collection name for fingerprint vectors */
+  vectorCollection?: string;
 }
 
 /**
@@ -53,6 +61,12 @@ export interface MatchingServiceDeps {
   sqs: SQSClient;
   cache: DynamoCacheService;
   config: MatchingServiceConfig;
+  /** Optional: Lambda client for vector search (required if vectorWorkerArn set) */
+  lambda?: LambdaClient;
+  /** Logger for vector operations */
+  logger?: Logger;
+  /** Metrics for vector operations */
+  metrics?: Metrics;
 }
 
 /**
@@ -62,7 +76,8 @@ export interface MatchingServiceDeps {
  * - Tier 0.5: Evercookie/cookie lookup, public key, sigint
  * - Tier 1: Strong hash match (stable_hash, fuzzy_hash)
  * - Tier 1.5: SimHash LSH match (fuzzy_hash drift detection)
- * - Tier 2: Compound filter match (ip+ja4, gpu+screen+tz, etc)
+ * - Tier 2: Vector similarity match (Qdrant)
+ * - Session anchors: IP+UA+Screen, IP+UA fallback
  * - New Device: Create new device_id
  */
 export class MatchingService {
@@ -70,8 +85,10 @@ export class MatchingService {
   private tier05Deps: Tier05IdentityDeps;
   private tier1Deps: Tier1HashDeps;
   private tier15Deps: Tier15SimHashDeps;
-  private tier2Deps: Tier2CompoundDeps;
+  private tier2VectorDeps: Tier2VectorDeps | null;
   private anchorDeps: SessionAnchorDeps;
+  /** Whether vector search is enabled for Tier 2 */
+  private readonly useVectorSearch: boolean;
 
   constructor(private deps: MatchingServiceDeps) {
     this.tier0Deps = { cache: deps.cache };
@@ -88,17 +105,34 @@ export class MatchingService {
       dynamodb: deps.dynamodb,
       tier2BucketsTable: deps.config.tier2BucketsTable,
     };
-    this.tier2Deps = {
-      dynamodb: deps.dynamodb,
-      tier2BucketsTable: deps.config.tier2BucketsTable,
-      profilesTable: deps.config.profilesTable,
-      tier2TimeoutMs: deps.config.tier2TimeoutMs,
-    };
     this.anchorDeps = {
       dynamodb: deps.dynamodb,
       tier2BucketsTable: deps.config.tier2BucketsTable,
       profilesTable: deps.config.profilesTable,
     };
+
+    // Configure vector search if ARN is provided
+    this.useVectorSearch = !!(
+      deps.config.vectorWorkerArn &&
+      deps.config.vectorCollection &&
+      deps.lambda &&
+      deps.logger &&
+      deps.metrics
+    );
+
+    if (this.useVectorSearch) {
+      this.tier2VectorDeps = {
+        lambda: deps.lambda!,
+        dynamodb: deps.dynamodb,
+        vectorWorkerArn: deps.config.vectorWorkerArn!,
+        collection: deps.config.vectorCollection!,
+        profilesTable: deps.config.profilesTable,
+        logger: deps.logger!,
+        metrics: deps.metrics!,
+      };
+    } else {
+      this.tier2VectorDeps = null;
+    }
   }
 
   /** Exposes the cache service for direct session lookups */
@@ -167,7 +201,7 @@ export class MatchingService {
 
   /**
    * Run the full tiered matching pipeline
-   * Executes tiers in order: 0.5 (identity) → 1 (hash) → 1.5 (simhash) → 2 (compound) → anchors → new device
+   * Executes tiers in order: 0.5 (identity) → 1 (hash) → 1.5 (simhash) → 2 (vector OR compound) → anchors → new device
    * @param fingerprint - The fingerprint to match against existing devices
    * @returns Match result and flag indicating if tier 2 timed out
    */
@@ -183,9 +217,20 @@ export class MatchingService {
     const tier15Result = await tier15SimHashMatch(this.tier15Deps, fingerprint);
     if (tier15Result) return this.wrapResult(tier15Result, fingerprint);
 
-    const { result: tier2Result, timedOut } =
-      await tier2CompoundMatchWithTimeout(this.tier2Deps, fingerprint);
-    if (tier2Result) return this.wrapResult(tier2Result, fingerprint, timedOut);
+    // Tier 2: Vector similarity search (requires vector infrastructure)
+    let tier2Result: MatchResult | null = null;
+    let timedOut = false;
+
+    if (this.useVectorSearch && this.tier2VectorDeps) {
+      const vectorResult = await tier2VectorMatchWithTimeout(
+        this.tier2VectorDeps,
+        fingerprint,
+      );
+      tier2Result = vectorResult.result;
+      timedOut = vectorResult.timedOut;
+      if (tier2Result)
+        return this.wrapResult(tier2Result, fingerprint, timedOut);
+    }
 
     const sessionResult = await sessionAnchorLookup(
       this.anchorDeps,
@@ -273,6 +318,26 @@ export class MatchingService {
         }),
       }),
     );
+  }
+
+  /**
+   * Upsert a device's vector embedding to Qdrant.
+   * Called after matching to store/update the device's fingerprint vector.
+   * No-op if vector search is not configured.
+   *
+   * @param deviceId - Device ID to upsert
+   * @param fingerprint - Fingerprint to compute embedding from
+   * @returns true if upsert succeeded or vector not configured, false on error
+   */
+  async upsertVector(
+    deviceId: string,
+    fingerprint: Fingerprint,
+  ): Promise<boolean> {
+    if (!this.useVectorSearch || !this.tier2VectorDeps) {
+      return true; // Vector not configured, skip silently
+    }
+
+    return upsertDeviceVector(this.tier2VectorDeps, deviceId, fingerprint);
   }
 }
 

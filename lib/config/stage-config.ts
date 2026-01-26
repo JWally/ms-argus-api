@@ -40,9 +40,6 @@ export interface StageConfig {
     sessionGet: {
       memorySize: number; // API handler - session retrieval (simple read, minimal CPU)
     };
-    cardinalityRecalc: {
-      memorySize: number; // Scheduled - batch processing (scan/query heavy)
-    };
     vectorWorker: {
       memorySize: number; // VPC Lambda - QDrant vector operations
       timeout: Duration;
@@ -133,9 +130,6 @@ const devConfig: StageConfig = {
     sessionGet: {
       memorySize: 256, // Simple DynamoDB read
     },
-    cardinalityRecalc: {
-      memorySize: 256, // Scan-heavy but not CPU-intensive
-    },
     vectorWorker: {
       memorySize: 512, // Network I/O to QDrant
       timeout: Duration.seconds(30),
@@ -218,9 +212,6 @@ const prodConfig: StageConfig = {
     },
     sessionGet: {
       memorySize: 256, // Simple DynamoDB read
-    },
-    cardinalityRecalc: {
-      memorySize: 512, // Higher in prod for faster batch processing
     },
     vectorWorker: {
       memorySize: 512, // Network I/O to QDrant

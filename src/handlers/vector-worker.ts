@@ -1,28 +1,38 @@
 /**
  * @fileoverview Vector Worker Lambda Handler.
  *
- * Processes vector operations via Qdrant for Tier 3 similarity matching.
+ * Processes vector operations via Qdrant for similarity matching.
  * Runs in a dedicated VPC (ms-argus-vector) with access to the internal
  * Qdrant ALB endpoint.
+ *
+ * Supports two invocation modes:
+ * 1. **SQS Events**: Async batch processing (original Tier 3 flow)
+ * 2. **Direct Invocation**: Sync Lambda-to-Lambda calls (Tier 2 replacement)
  *
  * Operations:
  * - **search**: Find devices with similar fingerprint embeddings
  * - **upsert**: Store/update device fingerprint vectors
  *
- * This enables future ML-based matching for devices where traditional
- * fingerprinting is insufficient (e.g., heavily randomized browsers).
- *
  * @module handlers/vector-worker
  */
 
-import { SQSHandler } from "aws-lambda";
+import { SQSEvent, SQSBatchResponse, Context } from "aws-lambda";
 import { Logger } from "@aws-lambda-powertools/logger";
-import { Metrics } from "@aws-lambda-powertools/metrics";
+import { Metrics, MetricUnit } from "@aws-lambda-powertools/metrics";
 import { processSqsBatch } from "../helpers/sqs-batch";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
+import { SQSClient } from "@aws-sdk/client-sqs";
 import { QdrantClient } from "../services/vector/qdrant-client";
 import { getVectorWorkerEnv } from "../config/env";
 import { processRecord } from "./vector-worker/process-record";
+import {
+  handleSyncInvoke,
+  isSyncInvokeRequest,
+} from "./vector-worker/sync-handler";
+import type {
+  SyncInvokeRequest,
+  SyncInvokeResponse,
+} from "./vector-worker/types";
 
 const envConfig = getVectorWorkerEnv();
 
@@ -32,6 +42,7 @@ const metrics = new Metrics({
 });
 
 const _dynamodb = new DynamoDBClient({});
+const sqs = new SQSClient({});
 
 const qdrantClient = new QdrantClient({
   baseUrl: envConfig.QDRANT_URL,
@@ -42,26 +53,45 @@ const qdrantClient = new QdrantClient({
 /**
  * AWS Lambda handler for the vector worker.
  *
- * Triggered by SQS messages requesting vector operations. The worker
- * communicates with Qdrant via HTTP through a VPC-internal ALB.
+ * Supports two invocation patterns:
  *
- * Message types:
- * - `search`: Query for similar vectors, return matches
- * - `upsert`: Insert or update a device's vector
- * - `warmup`: Keep-alive message, no operation
+ * 1. **SQS Event** (async): Triggered by SQS messages for batch processing.
+ *    Results are published to the vector-results queue for persistence.
  *
- * Uses partial batch failure reporting for reliable processing.
+ * 2. **Direct Invocation** (sync): Called directly by matching-worker via
+ *    Lambda invoke. Returns results immediately for Tier 2 replacement.
+ *    Request format: `{ action: "search" | "upsert", ... }`
  *
- * @param event - SQS event containing vector operation records
- * @returns SQS batch response with partial failures
+ * @param event - SQS event or sync invoke request
+ * @param context - Lambda context
+ * @returns SQS batch response or sync invoke response
  *
- * @see {@link processRecord} for message handling logic
- * @see {@link QdrantClient} for vector database operations
+ * @see {@link processRecord} for SQS message handling
+ * @see {@link handleSyncInvoke} for direct invocation handling
  */
-export const handler: SQSHandler = async (event) => {
+export async function handler(
+  event: SQSEvent | SyncInvokeRequest,
+  _context: Context,
+): Promise<SQSBatchResponse | SyncInvokeResponse> {
+  // Check if this is a sync invoke (direct Lambda-to-Lambda call)
+  if (isSyncInvokeRequest(event)) {
+    logger.info("Processing sync invoke request", { action: event.action });
+    metrics.addMetric("SyncInvokeRequest", MetricUnit.Count, 1);
+    return handleSyncInvoke(event, { qdrantClient, logger, metrics });
+  }
+
+  // Otherwise, process as SQS event (original async flow)
+  logger.info("Processing SQS batch", { recordCount: event.Records?.length });
   return processSqsBatch(
     event.Records,
-    (record) => processRecord(record, { qdrantClient, logger, metrics }),
+    (record) =>
+      processRecord(record, {
+        qdrantClient,
+        sqs,
+        vectorResultsQueueUrl: envConfig.VECTOR_RESULTS_QUEUE_URL,
+        logger,
+        metrics,
+      }),
     {
       metrics,
       logger,
@@ -69,4 +99,4 @@ export const handler: SQSHandler = async (event) => {
       errorMetric: "VectorOperationError",
     },
   );
-};
+}

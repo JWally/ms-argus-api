@@ -6,8 +6,8 @@
  * - **Tier 0.5**: Identity matching (public key, cookies, sigint ID)
  * - **Tier 1**: Hash-based matching (stable_hash exact match)
  * - **Tier 1.5**: SimHash fuzzy matching (fuzzy_hash locality-sensitive)
- * - **Tier 2**: Compound matching (UA/IP bucket + scoring)
- * - **Tier 3**: Vector similarity search (future, via Qdrant)
+ * - **Tier 2**: Vector similarity search (Qdrant)
+ * - **Session anchors**: IP+UA+Screen, IP+UA fallback
  *
  * @module services/matching
  */
@@ -40,10 +40,10 @@ export {
 } from "./profile-loader";
 
 export {
-  tier2CompoundMatch,
-  tier2CompoundMatchWithTimeout,
-  type Tier2CompoundDeps,
-} from "./tier2-compound";
+  tier2VectorMatchWithTimeout,
+  upsertDeviceVector,
+  type Tier2VectorDeps,
+} from "./tier2-vector";
 
 export {
   sessionAnchorLookup,

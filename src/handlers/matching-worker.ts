@@ -6,7 +6,7 @@
  * - Tier 0.5: Identity signals (public key, cookies, sigint ID)
  * - Tier 1: Stable hash exact match
  * - Tier 1.5: SimHash fuzzy match (locality-sensitive hashing)
- * - Tier 2: Compound bucket matching (UA + IP + scoring)
+ * - Tier 2: Vector similarity match (if configured) OR compound bucket matching
  *
  * Results are written to the session cache for retrieval by session-get,
  * and observations are emitted to Firehose for analytics.
@@ -20,6 +20,7 @@ import { Metrics } from "@aws-lambda-powertools/metrics";
 import { processSqsBatch } from "../helpers/sqs-batch";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { SQSClient } from "@aws-sdk/client-sqs";
+import { LambdaClient } from "@aws-sdk/client-lambda";
 import { FirehoseClient } from "@aws-sdk/client-firehose";
 import { DynamoCacheService } from "../services/cache";
 import { getMatchingWorkerEnv } from "../config/env";
@@ -40,6 +41,8 @@ const metrics = new Metrics({
 const dynamodb = new DynamoDBClient({});
 const sqs = new SQSClient({});
 const firehose = new FirehoseClient({});
+// Lambda client for vector-worker invocation (Tier 2 vector search)
+const lambda = envConfig.VECTOR_WORKER_ARN ? new LambdaClient({}) : undefined;
 
 const cacheService = new DynamoCacheService(dynamodb, {
   tableName: envConfig.SESSION_CACHE_TABLE,
@@ -55,10 +58,11 @@ const cacheService = new DynamoCacheService(dynamodb, {
  *
  * Processing flow:
  * 1. Parse and validate SQS record
- * 2. Run multi-tier matching algorithm
+ * 2. Run multi-tier matching algorithm (uses vector search if configured)
  * 3. Write result to session cache
- * 4. Emit observation to Firehose (optional)
- * 5. Queue profile update message
+ * 4. Upsert device vector to Qdrant (if vector search enabled)
+ * 5. Emit observation to Firehose (optional)
+ * 6. Queue profile update message
  *
  * Uses partial batch failure reporting - failed records are retried,
  * successful records are not reprocessed.
@@ -73,8 +77,11 @@ export const handler: SQSHandler = async (event) => {
   const service = createMatchingService({
     dynamodb,
     sqs,
+    lambda,
     cacheService,
     envConfig,
+    logger,
+    metrics,
   });
   const deps = { logger, metrics, dynamodb, firehose, envConfig };
   return processSqsBatch(

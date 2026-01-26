@@ -4,7 +4,6 @@ import {
   DynamoDBClient,
   GetItemCommand,
   QueryCommand,
-  BatchGetItemCommand,
 } from "@aws-sdk/client-dynamodb";
 import { SQSClient, SendMessageCommand } from "@aws-sdk/client-sqs";
 import { marshall } from "@aws-sdk/util-dynamodb";
@@ -20,15 +19,12 @@ import {
   tier05SigintIdLookup,
   tier1HashMatch,
   tier15SimHashMatch,
-  tier2CompoundMatch,
-  tier2CompoundMatchWithTimeout,
   sessionAnchorLookup,
   ipUaAnchorLookup,
   loadProfile,
   type Tier05IdentityDeps,
   type Tier1HashDeps,
   type Tier15SimHashDeps,
-  type Tier2CompoundDeps,
   type SessionAnchorDeps,
   type ProfileLoaderDeps,
 } from ".";
@@ -90,7 +86,6 @@ describe("MatchingService", () => {
   let tier05Deps: Tier05IdentityDeps;
   let tier1Deps: Tier1HashDeps;
   let _tier15Deps: Tier15SimHashDeps;
-  let tier2Deps: Tier2CompoundDeps;
   let _anchorDeps: SessionAnchorDeps;
   let profileDeps: ProfileLoaderDeps;
 
@@ -106,12 +101,6 @@ describe("MatchingService", () => {
     tier05Deps = { dynamodb, tier1IndexTable: testConfig.tier1IndexTable };
     tier1Deps = { dynamodb, tier1IndexTable: testConfig.tier1IndexTable };
     _tier15Deps = { dynamodb, tier2BucketsTable: testConfig.tier2BucketsTable };
-    tier2Deps = {
-      dynamodb,
-      tier2BucketsTable: testConfig.tier2BucketsTable,
-      profilesTable: testConfig.profilesTable,
-      tier2TimeoutMs: testConfig.tier2TimeoutMs,
-    };
     _anchorDeps = {
       dynamodb,
       tier2BucketsTable: testConfig.tier2BucketsTable,
@@ -387,266 +376,6 @@ describe("MatchingService", () => {
     });
   });
 
-  describe("tier2CompoundMatch", () => {
-    it("should return null when no buckets match", async () => {
-      dynamoMock.on(QueryCommand).resolves({ Items: [] });
-
-      const fingerprint: Fingerprint = {
-        ip_address: "1.2.3.4",
-        ja4: "ja4hash",
-      };
-
-      const result = await tier2CompoundMatch(tier2Deps, fingerprint);
-      expect(result).toBeNull();
-    });
-
-    it("should return null when only one bucket matches (need 2+)", async () => {
-      dynamoMock.on(QueryCommand).resolves({
-        Items: [
-          marshall({
-            bucket_key: "ip_ja4#1.2.3.4#ja4hash",
-            device_id: "dev_single",
-          }),
-        ],
-      });
-
-      const fingerprint: Fingerprint = {
-        ip_address: "1.2.3.4",
-        ja4: "ja4hash",
-      };
-
-      const result = await tier2CompoundMatch(tier2Deps, fingerprint);
-      expect(result).toBeNull();
-    });
-
-    it("should return match when device appears in 2+ buckets", async () => {
-      dynamoMock
-        .on(QueryCommand, { TableName: testConfig.tier2BucketsTable })
-        .resolves({
-          Items: [
-            marshall({ bucket_key: "bucket1", device_id: "dev_match" }),
-            marshall({ bucket_key: "bucket1", device_id: "dev_other" }),
-          ],
-        });
-
-      dynamoMock
-        .on(GetItemCommand, { TableName: testConfig.profilesTable })
-        .resolves({
-          Item: marshall({
-            device_id: "dev_match",
-            risk_score: 0.35,
-            flags: ["suspicious"],
-          }),
-        });
-
-      const fingerprint: Fingerprint = {
-        ip_address: "1.2.3.4",
-        ja4: "ja4hash",
-        audio_hash: "audio",
-        canvas_hash: "canvas",
-      };
-
-      const result = await tier2CompoundMatch(tier2Deps, fingerprint);
-
-      expect(result).not.toBeNull();
-      expect(result?.match_tier).toBe(2);
-      expect(result?.confidence).toBeGreaterThanOrEqual(0.6);
-      expect(result?.confidence).toBeLessThanOrEqual(0.85);
-    });
-  });
-
-  describe("tier2CompoundMatchWithTimeout", () => {
-    it("should return timedOut=true if matching takes too long", async () => {
-      dynamoMock.on(QueryCommand).callsFake(async () => {
-        await new Promise((resolve) => setTimeout(resolve, 200));
-        return { Items: [] };
-      });
-
-      const fingerprint: Fingerprint = {
-        ip_address: "1.2.3.4",
-        ja4: "ja4hash",
-      };
-
-      const { result, timedOut } = await tier2CompoundMatchWithTimeout(
-        tier2Deps,
-        fingerprint,
-      );
-      expect(result).toBeNull();
-      expect(timedOut).toBe(true);
-    });
-
-    it("should return timedOut=false when matching completes in time", async () => {
-      dynamoMock.on(QueryCommand).resolves({ Items: [] });
-
-      const fingerprint: Fingerprint = {
-        ip_address: "1.2.3.4",
-        ja4: "ja4hash",
-      };
-
-      const { result, timedOut } = await tier2CompoundMatchWithTimeout(
-        tier2Deps,
-        fingerprint,
-      );
-      expect(result).toBeNull();
-      expect(timedOut).toBe(false);
-    });
-
-    it("should handle AbortError gracefully in tier2CompoundMatch", async () => {
-      const abortController = new AbortController();
-      abortController.abort();
-
-      dynamoMock.on(QueryCommand).callsFake(() => {
-        const error = new Error("The operation was aborted");
-        error.name = "AbortError";
-        throw error;
-      });
-
-      const fingerprint: Fingerprint = {
-        ip_address: "1.2.3.4",
-        ja4: "ja4hash",
-      };
-
-      const result = await tier2CompoundMatch(tier2Deps, fingerprint, {
-        abortSignal: abortController.signal,
-      });
-      expect(result).toBeNull();
-    });
-
-    it("should propagate non-abort errors in tier2CompoundMatch", async () => {
-      const dbError = new Error("DynamoDB error");
-      dbError.name = "ServiceUnavailable";
-      dynamoMock.on(QueryCommand).rejects(dbError);
-
-      const fingerprint: Fingerprint = {
-        ip_address: "1.2.3.4",
-        ja4: "ja4hash",
-      };
-
-      await expect(tier2CompoundMatch(tier2Deps, fingerprint)).rejects.toThrow(
-        "DynamoDB error",
-      );
-    });
-  });
-
-  describe("tier2CompoundMatch with cardinality tracking", () => {
-    it("should penalize confidence for high-cardinality buckets", async () => {
-      dynamoMock
-        .on(QueryCommand, { TableName: testConfig.tier2BucketsTable })
-        .resolves({
-          Items: [marshall({ device_id: "device-123" })],
-        });
-
-      dynamoMock.on(BatchGetItemCommand).resolves({
-        Responses: {
-          [testConfig.tier2BucketsTable]: [
-            marshall({
-              bucket_key: "ip_ja4#1.2.3.4#ja4hash",
-              cardinality: 1000,
-            }),
-            marshall({
-              bucket_key: "gpu_screen_tz#GPU#1920x1080#America/New_York",
-              cardinality: 800,
-            }),
-          ],
-        },
-      });
-
-      dynamoMock
-        .on(GetItemCommand, { TableName: testConfig.profilesTable })
-        .resolves({
-          Item: marshall({ risk_score: 0.4, flags: [] }),
-        });
-
-      const fingerprint: Fingerprint = {
-        ip_address: "1.2.3.4",
-        ja4: "ja4hash",
-        gpu_renderer: "GPU",
-        screen_dims: "1920x1080",
-        timezone: "America/New_York",
-      };
-
-      const result = await tier2CompoundMatch(tier2Deps, fingerprint);
-
-      expect(result).not.toBeNull();
-      expect(result?.match_tier).toBe(2);
-      expect(result?.confidence).toBeLessThan(0.8);
-      expect(result?.confidence).toBeGreaterThanOrEqual(0.3);
-    });
-
-    it("should not penalize confidence for low-cardinality buckets", async () => {
-      dynamoMock
-        .on(QueryCommand, { TableName: testConfig.tier2BucketsTable })
-        .resolves({
-          Items: [marshall({ device_id: "device-123" })],
-        });
-
-      dynamoMock.on(BatchGetItemCommand).resolves({
-        Responses: {
-          [testConfig.tier2BucketsTable]: [
-            marshall({
-              bucket_key: "ip_ja4#1.2.3.4#ja4hash",
-              cardinality: 50,
-            }),
-            marshall({
-              bucket_key: "gpu_screen_tz#GPU#1920x1080#America/New_York",
-              cardinality: 100,
-            }),
-          ],
-        },
-      });
-
-      dynamoMock
-        .on(GetItemCommand, { TableName: testConfig.profilesTable })
-        .resolves({
-          Item: marshall({ risk_score: 0.4, flags: [] }),
-        });
-
-      const fingerprint: Fingerprint = {
-        ip_address: "1.2.3.4",
-        ja4: "ja4hash",
-        gpu_renderer: "GPU",
-        screen_dims: "1920x1080",
-        timezone: "America/New_York",
-      };
-
-      const result = await tier2CompoundMatch(tier2Deps, fingerprint);
-
-      expect(result).not.toBeNull();
-      expect(result?.match_tier).toBe(2);
-      expect(result?.confidence).toBe(0.8);
-    });
-
-    it("should fail open when cardinality fetch fails", async () => {
-      dynamoMock
-        .on(QueryCommand, { TableName: testConfig.tier2BucketsTable })
-        .resolves({
-          Items: [marshall({ device_id: "device-123" })],
-        });
-
-      dynamoMock.on(BatchGetItemCommand).rejects(new Error("DynamoDB error"));
-
-      dynamoMock
-        .on(GetItemCommand, { TableName: testConfig.profilesTable })
-        .resolves({
-          Item: marshall({ risk_score: 0.4, flags: [] }),
-        });
-
-      const fingerprint: Fingerprint = {
-        ip_address: "1.2.3.4",
-        ja4: "ja4hash",
-        gpu_renderer: "GPU",
-        screen_dims: "1920x1080",
-        timezone: "America/New_York",
-      };
-
-      const result = await tier2CompoundMatch(tier2Deps, fingerprint);
-
-      expect(result).not.toBeNull();
-      expect(result?.match_tier).toBe(2);
-      expect(result?.confidence).toBe(0.8);
-    });
-  });
-
   describe("loadProfile", () => {
     it("should return null when profile not found", async () => {
       dynamoMock.on(GetItemCommand).resolves({ Item: undefined });
@@ -787,10 +516,7 @@ describe("MatchingService", () => {
         is_new_device: false,
         risk_score: 0.5,
         flags: [] as string[],
-        evidence_codes: [
-          "IP_JA4_BUCKET",
-          "GPU_SCREEN_TZ_BUCKET",
-        ] as EvidenceCode[],
+        evidence_codes: ["VECTOR_SIMILARITY"] as EvidenceCode[],
       };
 
       const fingerprint: Fingerprint = {
@@ -972,26 +698,6 @@ describe("MatchingService", () => {
       expect(tier2TimedOut).toBe(false);
     });
 
-    it("should track tier2TimedOut when Tier 2 times out", async () => {
-      dynamoMock.on(GetItemCommand).resolves({ Item: undefined });
-      dynamoMock.on(QueryCommand).callsFake(async () => {
-        await new Promise((resolve) => setTimeout(resolve, 200));
-        return { Items: [] };
-      });
-
-      const fingerprint: Fingerprint = {
-        stable_hash: "unknown",
-        ip_address: "1.2.3.4",
-        ja4: "ja4hash",
-      };
-
-      const { result, tier2TimedOut } =
-        await service.runTieredMatching(fingerprint);
-
-      expect(result.is_new_device).toBe(true);
-      expect(tier2TimedOut).toBe(true);
-    });
-
     it("should match via ipUaAnchor when session anchor misses", async () => {
       const now = Date.now();
 
@@ -1107,7 +813,7 @@ describe("MatchingService", () => {
         match_version: Date.now(),
         idempotency_key: "old",
         flags: [],
-        evidence_codes: ["IP_JA4_BUCKET", "GPU_SCREEN_TZ_BUCKET"],
+        evidence_codes: ["VECTOR_SIMILARITY"],
         updated_at: Date.now(),
       };
       mockCache._setSession("session123", existing);
@@ -1240,9 +946,8 @@ describe("MatchingService", () => {
         risk_score: 0.3,
         flags: [],
         evidence_codes: [
-          "IP_JA4_BUCKET",
-          "GPU_SCREEN_TZ_BUCKET",
-          "AUDIO_CANVAS_BUCKET",
+          "VECTOR_SIMILARITY",
+          "HIGH_SIMILARITY",
         ] as EvidenceCode[],
       };
 
@@ -1256,8 +961,8 @@ describe("MatchingService", () => {
       const messageBody = JSON.parse(input.MessageBody);
 
       expect(messageBody.match_tier).toBe(2);
-      expect(messageBody.evidence_codes).toHaveLength(3);
-      expect(messageBody.evidence_codes).toContain("IP_JA4_BUCKET");
+      expect(messageBody.evidence_codes).toHaveLength(2);
+      expect(messageBody.evidence_codes).toContain("VECTOR_SIMILARITY");
     });
 
     it("should work without matchResult for backward compatibility", async () => {

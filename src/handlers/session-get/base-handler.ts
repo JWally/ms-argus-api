@@ -13,38 +13,24 @@ import {
   extractSessionId,
   lookupSession,
   fetchPayload,
+  fetchVectorResults,
   buildFallbackResponse,
 } from "./session-ops";
 
 /**
  * Dependencies required by the session-get handler.
- *
- * @interface HandlerDeps
  */
 interface HandlerDeps {
   dynamodb: DynamoDBClient;
   cacheService: DynamoCacheService;
   payloadTable: string;
+  vectorResultsTable?: string;
   logger: Logger;
   metrics: Metrics;
 }
 
 /**
  * Emits CloudWatch metrics and structured logs for a session retrieval.
- *
- * Records:
- * - SessionRetrieved count
- * - SessionGetDuration latency
- * - Structured log with session details
- *
- * @param params - Metrics data
- * @param params.session - Retrieved session data
- * @param params.sessionId - Session identifier
- * @param params.duration - Handler execution time in ms
- * @param params.hasPayload - Whether full payload was available
- * @param deps - Handler dependencies with metrics instance
- *
- * @internal
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function emitSessionMetrics(
@@ -54,7 +40,7 @@ function emitSessionMetrics(
     duration: number;
     hasPayload: boolean;
   },
-  deps: HandlerDeps,
+  deps: Pick<HandlerDeps, "logger" | "metrics">,
 ): void {
   deps.logger.info("Session retrieved", {
     session_id: params.sessionId,
@@ -71,32 +57,25 @@ function emitSessionMetrics(
   );
 }
 
+/** Build success response with optional vector results */
+function buildSuccessResponse(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  fullPayload: any,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  vectorResults?: any,
+): APIGatewayProxyResultV2 {
+  const response = vectorResults
+    ? { ...fullPayload, vector_results: vectorResults }
+    : fullPayload;
+  return {
+    statusCode: 200,
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(response),
+  };
+}
+
 /**
  * Factory function that creates the base session-get handler.
- *
- * The returned handler:
- * 1. Extracts and validates the session ID from path parameters
- * 2. Looks up the session in the cache
- * 3. Attempts to fetch the full payload from the payload table
- * 4. Returns full payload if available, or degraded response if not
- *
- * @param deps - Handler dependencies
- * @returns Async handler function for API Gateway
- *
- * @example
- * ```typescript
- * const baseHandler = createBaseHandler({
- *   dynamodb,
- *   cacheService,
- *   payloadTable: "session-payloads",
- *   logger,
- *   metrics,
- * });
- *
- * export const handler = middy(baseHandler)
- *   .use(corsMiddleware({ methods: "GET, OPTIONS", headers: "Content-Type" }))
- *   .use(jsonErrorHandler({ logger }));
- * ```
  */
 export function createBaseHandler(deps: HandlerDeps) {
   return async (
@@ -117,12 +96,23 @@ export function createBaseHandler(deps: HandlerDeps) {
       logger: deps.logger,
       metrics: deps.metrics,
     });
+
     const fullPayload = await fetchPayload(sessionId, {
       dynamodb: deps.dynamodb,
       payloadTable: deps.payloadTable,
       logger: deps.logger,
       metrics: deps.metrics,
     });
+
+    let vectorResults;
+    if (deps.vectorResultsTable) {
+      vectorResults = await fetchVectorResults(sessionId, {
+        dynamodb: deps.dynamodb,
+        vectorResultsTable: deps.vectorResultsTable,
+        logger: deps.logger,
+        metrics: deps.metrics,
+      });
+    }
 
     emitSessionMetrics(
       {
@@ -135,11 +125,7 @@ export function createBaseHandler(deps: HandlerDeps) {
     );
 
     if (fullPayload) {
-      return {
-        statusCode: 200,
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(fullPayload),
-      };
+      return buildSuccessResponse(fullPayload, vectorResults);
     }
     return buildFallbackResponse(session, sessionId, deps.metrics);
   };

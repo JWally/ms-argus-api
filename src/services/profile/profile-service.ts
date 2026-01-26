@@ -12,8 +12,6 @@ import {
   buildIdentityIndexEntries,
   buildHashIndexEntries,
   batchWriteTier1Indexes,
-  batchWriteTier2Buckets,
-  incrementBucketCardinalities,
   writeAnchorBucket,
   buildSimHashBandEntries,
   batchWriteSimHashBands,
@@ -21,7 +19,6 @@ import {
   ASSOCIATION_ALLOWED_EVIDENCE,
 } from "./index-writers";
 import {
-  buildBucketKeys,
   buildSessionAnchorKey,
   buildIpUaAnchorKey,
 } from "../../helpers/bucket-keys";
@@ -65,7 +62,6 @@ interface ProfileUpdateResult {
   skipped: boolean;
   reason?: "mutation_gate" | "no_drift";
   tier1Writes?: number;
-  tier2Writes?: number;
   simhashBandWrites?: number;
 }
 
@@ -207,38 +203,6 @@ export class ProfileService {
   }
 
   /**
-   * Update Tier 2 buckets (compound filter matching)
-   * Uses shorter TTL (7 days) to prevent bucket accumulation
-   * Also increments cardinality counters for each bucket
-   * @param deviceId - The device ID to add to buckets
-   * @param fingerprint - The fingerprint containing bucket signals
-   * @returns Number of bucket entries written
-   */
-  async updateTier2Buckets(
-    deviceId: string,
-    fingerprint: Fingerprint,
-  ): Promise<number> {
-    const ttlSeconds = this.deps.config.tier2BucketTtlDays * 24 * 60 * 60;
-    const ttl = Math.floor(Date.now() / 1000) + ttlSeconds;
-
-    const bucketKeys = buildBucketKeys(fingerprint);
-    if (bucketKeys.length === 0) {
-      return 0;
-    }
-
-    const bucketEntries = bucketKeys.map((bucketKey) => ({
-      bucket_key: bucketKey,
-      device_id: deviceId,
-      ttl,
-    }));
-
-    await batchWriteTier2Buckets(this.indexWriterDeps, bucketEntries);
-    await incrementBucketCardinalities(this.indexWriterDeps, bucketKeys, ttl);
-
-    return bucketEntries.length;
-  }
-
-  /**
    * Write an anchor bucket entry for ephemeral matching
    * @param deviceId - The device ID to anchor
    * @param bucketKey - The bucket key, or null if signals are missing
@@ -311,18 +275,16 @@ export class ProfileService {
   }
 
   /**
-   * Update all bucket types (session anchor, IP+UA anchor, tier 2)
+   * Update anchor buckets (session anchor, IP+UA anchor)
    * @param deviceId - The device ID to add to buckets
    * @param fingerprint - The fingerprint containing bucket signals
-   * @returns Number of tier 2 bucket entries written
    */
-  private async updateBuckets(
+  private async updateAnchorBuckets(
     deviceId: string,
     fingerprint: Fingerprint,
-  ): Promise<number> {
+  ): Promise<void> {
     await this.updateSessionAnchorBucket(deviceId, fingerprint);
     await this.updateIpUaAnchorBucket(deviceId, fingerprint);
-    return this.updateTier2Buckets(deviceId, fingerprint);
   }
 
   /**
@@ -353,11 +315,11 @@ export class ProfileService {
       existingProfile !== null &&
       hasSignificantDrift(existingProfile, fingerprint);
 
-    // Anchors + tier2 are always refreshed regardless of drift
-    const tier2Writes = await this.updateBuckets(device_id, fingerprint);
+    // Anchors are always refreshed regardless of drift
+    await this.updateAnchorBuckets(device_id, fingerprint);
 
     if (existingProfile && !hasDrift) {
-      return { skipped: true, reason: "no_drift", tier2Writes };
+      return { skipped: true, reason: "no_drift" };
     }
 
     await this.updateProfile({
@@ -383,7 +345,6 @@ export class ProfileService {
     return {
       skipped: false,
       tier1Writes,
-      tier2Writes,
       simhashBandWrites,
     };
   }

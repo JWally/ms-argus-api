@@ -1,13 +1,11 @@
 import {
   DynamoDBClient,
   PutItemCommand,
-  UpdateItemCommand,
   WriteRequest,
 } from "@aws-sdk/client-dynamodb";
 import { marshall } from "@aws-sdk/util-dynamodb";
 import { Fingerprint } from "./types";
 import {
-  TIER2_STATS_SK,
   SESSION_ANCHOR_CLEANUP_TTL_SECONDS,
   SIMHASH_CONFIG,
 } from "../../helpers/constants";
@@ -21,17 +19,13 @@ import { batchWriteWithRetry } from "../../helpers/batch-write";
  * Evidence codes that permit identity association
  *
  * Only these match types should create identity indexes (pubkey#, evercookie#, sigint#).
- * Tier 2 unbounded matches (IP_JA4_BUCKET, GPU_SCREEN_TZ_BUCKET, etc.) are excluded
- * to prevent viral spreading of device_ids across unrelated users.
  *
  * Includes:
  * - Tier 0.5: Identity matches (PUBLIC_KEY_MATCH, EVERCOOKIE_MATCH, SIGINT_ID_MATCH)
  * - Tier 1: Hash matches (STABLE_HASH_MATCH, FUZZY_HASH_MATCH)
+ * - Tier 1.5: SimHash LSH matches (SIMHASH_MATCH)
  * - Time-bounded anchors: SESSION_ANCHOR_BUCKET (10min), IP_UA_ANCHOR_BUCKET (3min)
  * - NEW_DEVICE: First time seeing this device, must create indexes for future lookups
- *
- * Excludes:
- * - Tier 2 unbounded: IP_JA4_BUCKET, GPU_SCREEN_TZ_BUCKET, AUDIO_CANVAS_BUCKET, etc.
  */
 export const ASSOCIATION_ALLOWED_EVIDENCE: readonly string[] = [
   "PUBLIC_KEY_MATCH",
@@ -54,15 +48,6 @@ export interface Tier1IndexEntry {
   device_id: string;
   /** Device's fuzzy_hash at time of index write, for drift comparison */
   fuzzy_hash?: string;
-  ttl: number;
-}
-
-/**
- * Type for Tier 2 bucket entry
- */
-export interface Tier2BucketEntry {
-  bucket_key: string;
-  device_id: string;
   ttl: number;
 }
 
@@ -180,72 +165,6 @@ export async function batchWriteTier1Indexes(
     entityName: "Tier1 index",
     maxRetries,
   });
-}
-
-/**
- * Batch write Tier 2 bucket entries with retry logic for unprocessed items
- * @param deps - Dependencies including DynamoDB client and table names
- * @param entries - Bucket entries to write
- * @param maxRetries - Maximum retry attempts for unprocessed items (default 3)
- */
-export async function batchWriteTier2Buckets(
-  deps: IndexWriterDeps,
-  entries: Tier2BucketEntry[],
-  maxRetries: number = 3,
-): Promise<void> {
-  const items: WriteRequest[] = entries.map((entry) => ({
-    PutRequest: {
-      Item: {
-        bucket_key: { S: entry.bucket_key },
-        device_id: { S: entry.device_id },
-        ttl: { N: String(entry.ttl) },
-      },
-    },
-  }));
-  await batchWriteWithRetry(deps.dynamodb, {
-    tableName: deps.tier2BucketsTable,
-    items,
-    entityName: "Tier2 bucket",
-    maxRetries,
-  });
-}
-
-/**
- * Increment cardinality counters for Tier 2 buckets
- * Uses UpdateItem with ADD for atomic increment
- * Stats items use "_stats" as sort key to distinguish from device entries
- * @param deps - Dependencies including DynamoDB client and table names
- * @param bucketKeys - Array of bucket keys to increment
- * @param ttl - TTL timestamp for the stats entries
- */
-export async function incrementBucketCardinalities(
-  deps: IndexWriterDeps,
-  bucketKeys: string[],
-  ttl: number,
-): Promise<void> {
-  const tableName = deps.tier2BucketsTable;
-
-  const updates = bucketKeys.map((bucketKey) =>
-    deps.dynamodb.send(
-      new UpdateItemCommand({
-        TableName: tableName,
-        Key: {
-          bucket_key: { S: bucketKey },
-          device_id: { S: TIER2_STATS_SK },
-        },
-        UpdateExpression: "ADD cardinality :inc SET #ttl = :ttl",
-        ExpressionAttributeNames: {
-          "#ttl": "ttl",
-        },
-        ExpressionAttributeValues: {
-          ":inc": { N: "1" },
-          ":ttl": { N: String(ttl) },
-        },
-      }),
-    ),
-  );
-
-  await Promise.all(updates);
 }
 
 /**

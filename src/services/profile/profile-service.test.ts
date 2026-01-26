@@ -5,7 +5,6 @@ import {
   GetItemCommand,
   PutItemCommand,
   BatchWriteItemCommand,
-  UpdateItemCommand,
 } from "@aws-sdk/client-dynamodb";
 import { marshall } from "@aws-sdk/util-dynamodb";
 import {
@@ -537,167 +536,6 @@ describe("ProfileService", () => {
     });
   });
 
-  describe("updateTier2Buckets", () => {
-    it("should use BatchWriteItem for reliability", async () => {
-      dynamoMock.on(BatchWriteItemCommand).resolves({});
-
-      const fingerprint: Fingerprint = {
-        ip_address: "10.0.0.1",
-        ja4: "ja4hash",
-      };
-
-      const count = await service.updateTier2Buckets("dev_123", fingerprint);
-
-      expect(count).toBe(1);
-
-      const calls = dynamoMock
-        .commandCalls(BatchWriteItemCommand)
-        .filter(
-          (call) =>
-            call.args[0].input.RequestItems?.[testConfig.tier2BucketsTable],
-        );
-      expect(calls).toHaveLength(1);
-
-      const requestItems =
-        calls[0].args[0].input.RequestItems?.[testConfig.tier2BucketsTable];
-      expect(requestItems).toHaveLength(1);
-      expect(requestItems?.[0].PutRequest?.Item?.bucket_key?.S).toContain(
-        "ip_ja4",
-      );
-      expect(requestItems?.[0].PutRequest?.Item?.device_id?.S).toBe("dev_123");
-    });
-
-    it("should batch multiple bucket entries together", async () => {
-      dynamoMock.on(BatchWriteItemCommand).resolves({});
-
-      const fingerprint: Fingerprint = {
-        ip_address: "10.0.0.1",
-        ja4: "ja4",
-        audio_hash: "audio",
-        canvas_hash: "canvas",
-      };
-
-      const count = await service.updateTier2Buckets("dev_123", fingerprint);
-
-      expect(count).toBe(2);
-
-      const calls = dynamoMock
-        .commandCalls(BatchWriteItemCommand)
-        .filter(
-          (call) =>
-            call.args[0].input.RequestItems?.[testConfig.tier2BucketsTable],
-        );
-      expect(calls).toHaveLength(1);
-
-      const requestItems =
-        calls[0].args[0].input.RequestItems?.[testConfig.tier2BucketsTable];
-      expect(requestItems).toHaveLength(2);
-    });
-
-    it("should set tier2 bucket TTL to 7 days", async () => {
-      dynamoMock.on(BatchWriteItemCommand).resolves({});
-
-      const fingerprint: Fingerprint = {
-        ip_address: "10.0.0.1",
-        ja4: "ja4hash",
-      };
-
-      await service.updateTier2Buckets("dev_123", fingerprint);
-
-      const calls = dynamoMock
-        .commandCalls(BatchWriteItemCommand)
-        .filter(
-          (call) =>
-            call.args[0].input.RequestItems?.[testConfig.tier2BucketsTable],
-        );
-      expect(calls).toHaveLength(1);
-
-      const requestItems =
-        calls[0].args[0].input.RequestItems?.[testConfig.tier2BucketsTable];
-      const ttlValue = Number(requestItems?.[0].PutRequest?.Item?.ttl?.N);
-      const expectedTtl =
-        Math.floor(Date.now() / 1000) +
-        testConfig.tier2BucketTtlDays * 24 * 60 * 60;
-      // Allow 5 second tolerance for test execution time
-      expect(ttlValue).toBeGreaterThanOrEqual(expectedTtl - 5);
-      expect(ttlValue).toBeLessThanOrEqual(expectedTtl + 5);
-    });
-
-    it("should retry on unprocessed items", async () => {
-      dynamoMock
-        .on(BatchWriteItemCommand)
-        .resolvesOnce({
-          UnprocessedItems: {
-            [testConfig.tier2BucketsTable]: [
-              {
-                PutRequest: {
-                  Item: {
-                    bucket_key: { S: "ip_ja4#10.0.0.1#ja4" },
-                    device_id: { S: "dev_123" },
-                    ttl: { N: "123456789" },
-                  },
-                },
-              },
-            ],
-          },
-        })
-        .resolves({});
-
-      const fingerprint: Fingerprint = {
-        ip_address: "10.0.0.1",
-        ja4: "ja4",
-      };
-
-      await service.updateTier2Buckets("dev_123", fingerprint);
-
-      const calls = dynamoMock
-        .commandCalls(BatchWriteItemCommand)
-        .filter(
-          (call) =>
-            call.args[0].input.RequestItems?.[testConfig.tier2BucketsTable],
-        );
-      expect(calls).toHaveLength(2);
-    });
-
-    it("should return 0 when no bucket keys to write", async () => {
-      const fingerprint: Fingerprint = {
-        stable_hash: "abc",
-      };
-
-      const count = await service.updateTier2Buckets("dev_123", fingerprint);
-
-      expect(count).toBe(0);
-      expect(dynamoMock.commandCalls(BatchWriteItemCommand)).toHaveLength(0);
-    });
-
-    it("should increment bucket cardinality counters", async () => {
-      dynamoMock.on(BatchWriteItemCommand).resolves({});
-      dynamoMock.on(UpdateItemCommand).resolves({});
-
-      const fingerprint: Fingerprint = {
-        ip_address: "10.0.0.1",
-        ja4: "ja4hash",
-        audio_hash: "audio",
-        canvas_hash: "canvas",
-      };
-
-      await service.updateTier2Buckets("dev_123", fingerprint);
-
-      const updateCalls = dynamoMock.commandCalls(UpdateItemCommand);
-      expect(updateCalls).toHaveLength(2);
-
-      for (const call of updateCalls) {
-        expect(call.args[0].input.UpdateExpression).toContain(
-          "ADD cardinality",
-        );
-        expect(call.args[0].input.ExpressionAttributeValues?.[":inc"]?.N).toBe(
-          "1",
-        );
-        expect(call.args[0].input.Key?.device_id?.S).toBe("_stats");
-      }
-    });
-  });
-
   describe("processProfileUpdate", () => {
     it("should skip when mutation gate is active", async () => {
       mockCache._setGate("dev_gated");
@@ -771,7 +609,6 @@ describe("ProfileService", () => {
 
       expect(result.skipped).toBe(false);
       expect(result.tier1Writes).toBe(2);
-      expect(result.tier2Writes).toBe(1);
       expect(mockCache.tryAcquireMutationGate).toHaveBeenCalledWith("dev_new");
     });
 

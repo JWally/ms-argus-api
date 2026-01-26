@@ -29,6 +29,8 @@ interface VectorWorkerConstructProps {
    * Typically matches the stage (e.g., 'dev', 'prod')
    */
   vectorEnvironment: string;
+  /** Optional: SQS queue for vector results. When provided, publishes search results. */
+  vectorResultsQueue?: sqs.IQueue;
 }
 
 /**
@@ -54,7 +56,13 @@ export class VectorWorkerConstruct extends Construct {
   constructor(scope: Construct, id: string, props: VectorWorkerConstructProps) {
     super(scope, id);
 
-    const { stackName, stage, alarmsTopic, vectorEnvironment } = props;
+    const {
+      stackName,
+      stage,
+      alarmsTopic,
+      vectorEnvironment,
+      vectorResultsQueue,
+    } = props;
     const config = getStageConfig(stage);
 
     // =========================================================================
@@ -162,6 +170,10 @@ export class VectorWorkerConstruct extends Construct {
         ...createWorkerEnv(stage, stackName, `${stackName}-vector-worker`),
         QDRANT_URL: qdrantRestEndpoint,
         QDRANT_SECRET_ARN: qdrantSecretArn,
+        // Vector results queue for publishing search results
+        ...(vectorResultsQueue && {
+          VECTOR_RESULTS_QUEUE_URL: vectorResultsQueue.queueUrl,
+        }),
       },
     });
 
@@ -196,6 +208,11 @@ export class VectorWorkerConstruct extends Construct {
 
     // Grant SQS permissions
     this.vectorQueue.grantConsumeMessages(this.vectorWorker);
+
+    // Grant permission to send to vector results queue (for publishing search results)
+    if (vectorResultsQueue) {
+      vectorResultsQueue.grantSendMessages(this.vectorWorker);
+    }
 
     // =========================================================================
     // VECTOR TEST ENDPOINT (Experimental)

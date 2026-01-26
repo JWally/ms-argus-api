@@ -28,6 +28,8 @@ interface HttpApiConstructProps {
   sessionCacheTable: dynamodb.ITable;
   /** AR-XXX: Full payload table for gRPC stub */
   sessionPayloadTable: dynamodb.ITable;
+  /** Optional: Vector results table for async vector search results */
+  vectorResultsTable?: dynamodb.ITable;
   alarmsTopic: sns.ITopic;
   /** AR-139: S3 bucket for payload archiving */
   payloadArchiveBucket: s3.IBucket;
@@ -64,6 +66,7 @@ export class HttpApiConstruct extends Construct {
       matchingQueue,
       sessionCacheTable,
       sessionPayloadTable,
+      vectorResultsTable,
       alarmsTopic,
       payloadArchiveBucket,
       config,
@@ -132,6 +135,10 @@ export class HttpApiConstruct extends Construct {
           SESSION_CACHE_TABLE: sessionCacheTable.tableName,
           // AR-XXX: Full payload table for gRPC stub
           SESSION_PAYLOAD_TABLE: sessionPayloadTable.tableName,
+          // Vector results table for async vector search results
+          ...(vectorResultsTable && {
+            VECTOR_RESULTS_TABLE: vectorResultsTable.tableName,
+          }),
         },
       },
     );
@@ -139,6 +146,9 @@ export class HttpApiConstruct extends Construct {
     // Grant DynamoDB read permissions
     sessionCacheTable.grantReadData(this.sessionGetFunction);
     sessionPayloadTable.grantReadData(this.sessionGetFunction);
+    if (vectorResultsTable) {
+      vectorResultsTable.grantReadData(this.sessionGetFunction);
+    }
 
     // HTTP API Gateway
     this.api = new apigatewayv2.HttpApi(this, "HttpApi", {

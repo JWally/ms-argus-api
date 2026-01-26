@@ -4,22 +4,18 @@ import {
   DynamoDBClient,
   BatchWriteItemCommand,
   PutItemCommand,
-  UpdateItemCommand,
 } from "@aws-sdk/client-dynamodb";
 import {
   buildTier1IndexEntries,
   buildIdentityIndexEntries,
   buildHashIndexEntries,
   batchWriteTier1Indexes,
-  batchWriteTier2Buckets,
-  incrementBucketCardinalities,
   writeAnchorBucket,
   buildSimHashBandEntries,
   batchWriteSimHashBands,
   ASSOCIATION_ALLOWED_EVIDENCE,
   type IndexWriterDeps,
   type Tier1IndexEntry,
-  type Tier2BucketEntry,
   type SimHashBandEntry,
 } from "./index-writers";
 import { Fingerprint } from "./types";
@@ -362,163 +358,6 @@ describe("batchWriteTier1Indexes", () => {
       calls[0].args[0].input.RequestItems!["test-tier1-index"]![0].PutRequest!
         .Item!;
     expect(item.fuzzy_hash).toBeUndefined();
-  });
-});
-
-describe("batchWriteTier2Buckets", () => {
-  beforeEach(() => {
-    dynamoMock.reset();
-  });
-
-  it("writes bucket entries with correct attributes", async () => {
-    dynamoMock.on(BatchWriteItemCommand).resolves({ UnprocessedItems: {} });
-
-    const entries: Tier2BucketEntry[] = [
-      {
-        bucket_key: "ip_ja4#1.2.3.4#ja4hash",
-        device_id: "dev-1",
-        ttl: 1700000000,
-      },
-    ];
-
-    await batchWriteTier2Buckets(createDeps(), entries);
-
-    const calls = dynamoMock.commandCalls(BatchWriteItemCommand);
-    expect(calls).toHaveLength(1);
-    const item =
-      calls[0].args[0].input.RequestItems!["test-tier2-buckets"]![0].PutRequest!
-        .Item!;
-    expect(item.bucket_key.S).toBe("ip_ja4#1.2.3.4#ja4hash");
-    expect(item.device_id.S).toBe("dev-1");
-    expect(item.ttl.N).toBe("1700000000");
-  });
-
-  it("retries unprocessed items", async () => {
-    const entries: Tier2BucketEntry[] = [
-      { bucket_key: "ip_ja4#key", device_id: "dev-1", ttl: 1700000000 },
-    ];
-
-    dynamoMock
-      .on(BatchWriteItemCommand)
-      .resolvesOnce({
-        UnprocessedItems: {
-          "test-tier2-buckets": [
-            { PutRequest: { Item: { bucket_key: { S: "ip_ja4#key" } } } },
-          ],
-        },
-      })
-      .resolvesOnce({ UnprocessedItems: {} });
-
-    await batchWriteTier2Buckets(createDeps(), entries);
-
-    expect(dynamoMock.commandCalls(BatchWriteItemCommand)).toHaveLength(2);
-  });
-
-  it("throws after max retries exceeded", async () => {
-    const entries: Tier2BucketEntry[] = [
-      { bucket_key: "ip_ja4#key", device_id: "dev-1", ttl: 1700000000 },
-    ];
-
-    dynamoMock.on(BatchWriteItemCommand).resolves({
-      UnprocessedItems: {
-        "test-tier2-buckets": [
-          { PutRequest: { Item: { bucket_key: { S: "ip_ja4#key" } } } },
-        ],
-      },
-    });
-
-    await expect(
-      batchWriteTier2Buckets(createDeps(), entries, 2),
-    ).rejects.toThrow("Failed to write 1 Tier2 bucket items after 2 retries");
-  });
-
-  it("succeeds on first attempt when no unprocessed items", async () => {
-    dynamoMock.on(BatchWriteItemCommand).resolves({ UnprocessedItems: {} });
-
-    const entries: Tier2BucketEntry[] = [
-      { bucket_key: "key1", device_id: "dev-1", ttl: 1700000000 },
-      { bucket_key: "key2", device_id: "dev-2", ttl: 1700000000 },
-    ];
-
-    await batchWriteTier2Buckets(createDeps(), entries);
-
-    expect(dynamoMock.commandCalls(BatchWriteItemCommand)).toHaveLength(1);
-  });
-});
-
-describe("incrementBucketCardinalities", () => {
-  beforeEach(() => {
-    dynamoMock.reset();
-  });
-
-  it("sends UpdateItem for each bucket key", async () => {
-    dynamoMock.on(UpdateItemCommand).resolves({});
-
-    const bucketKeys = [
-      "ip_ja4#1.2.3.4#ja4",
-      "gpu_screen_tz#nvidia#1920x1080#EST",
-    ];
-    await incrementBucketCardinalities(createDeps(), bucketKeys, 1700000000);
-
-    const calls = dynamoMock.commandCalls(UpdateItemCommand);
-    expect(calls).toHaveLength(2);
-  });
-
-  it("uses _stats as sort key", async () => {
-    dynamoMock.on(UpdateItemCommand).resolves({});
-
-    await incrementBucketCardinalities(
-      createDeps(),
-      ["ip_ja4#key"],
-      1700000000,
-    );
-
-    const call = dynamoMock.commandCalls(UpdateItemCommand)[0];
-    expect(call.args[0].input.Key!.device_id.S).toBe("_stats");
-  });
-
-  it("uses ADD expression for atomic increment", async () => {
-    dynamoMock.on(UpdateItemCommand).resolves({});
-
-    await incrementBucketCardinalities(
-      createDeps(),
-      ["ip_ja4#key"],
-      1700000000,
-    );
-
-    const call = dynamoMock.commandCalls(UpdateItemCommand)[0];
-    expect(call.args[0].input.UpdateExpression).toContain(
-      "ADD cardinality :inc",
-    );
-    expect(call.args[0].input.ExpressionAttributeValues![":inc"].N).toBe("1");
-  });
-
-  it("sets TTL on stats entry", async () => {
-    dynamoMock.on(UpdateItemCommand).resolves({});
-
-    await incrementBucketCardinalities(createDeps(), ["key1"], 1700000000);
-
-    const call = dynamoMock.commandCalls(UpdateItemCommand)[0];
-    expect(call.args[0].input.ExpressionAttributeValues![":ttl"].N).toBe(
-      "1700000000",
-    );
-  });
-
-  it("handles empty bucket keys array", async () => {
-    dynamoMock.on(UpdateItemCommand).resolves({});
-
-    await incrementBucketCardinalities(createDeps(), [], 1700000000);
-
-    expect(dynamoMock.commandCalls(UpdateItemCommand)).toHaveLength(0);
-  });
-
-  it("executes all updates in parallel", async () => {
-    dynamoMock.on(UpdateItemCommand).resolves({});
-
-    const keys = ["key1", "key2", "key3"];
-    await incrementBucketCardinalities(createDeps(), keys, 1700000000);
-
-    expect(dynamoMock.commandCalls(UpdateItemCommand)).toHaveLength(3);
   });
 });
 

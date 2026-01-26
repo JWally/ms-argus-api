@@ -18,6 +18,8 @@ interface SessionGetEnvConfig {
   SESSION_CACHE_TABLE: string;
   /** DynamoDB table for session payloads */
   SESSION_PAYLOAD_TABLE: string;
+  /** DynamoDB table for vector results (optional) */
+  VECTOR_RESULTS_TABLE?: string;
   /** Powertools service name */
   POWERTOOLS_SERVICE_NAME: string;
   /** Powertools metrics namespace */
@@ -34,6 +36,7 @@ function getEnvConfig(): SessionGetEnvConfig {
   return {
     SESSION_CACHE_TABLE: process.env.SESSION_CACHE_TABLE!,
     SESSION_PAYLOAD_TABLE: process.env.SESSION_PAYLOAD_TABLE!,
+    VECTOR_RESULTS_TABLE: process.env.VECTOR_RESULTS_TABLE,
     POWERTOOLS_SERVICE_NAME:
       process.env.POWERTOOLS_SERVICE_NAME ?? "argus-session-get",
     POWERTOOLS_METRICS_NAMESPACE:
@@ -59,6 +62,7 @@ const baseHandler = createBaseHandler({
   dynamodb,
   cacheService,
   payloadTable: envConfig.SESSION_PAYLOAD_TABLE,
+  vectorResultsTable: envConfig.VECTOR_RESULTS_TABLE,
   logger,
   metrics,
 });
