@@ -265,6 +265,7 @@ export interface SessionResponseAnalysis {
   }>;
   simhash_details?: Record<string, unknown>;
   fuzzy_match_info?: Record<string, unknown>;
+  vector_match_details?: Record<string, unknown>;
 }
 
 export interface SessionResponse {

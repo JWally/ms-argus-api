@@ -51,6 +51,7 @@ export async function writeMatchResult(
     anomalies: anomalies?.length ? anomalies : undefined,
     simhash_details: result.simhash_details,
     fuzzy_match_info: result.fuzzy_match_info,
+    vector_match_details: result.vector_match_details,
     updated_at: Date.now(),
   };
 

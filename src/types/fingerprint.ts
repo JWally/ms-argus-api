@@ -67,6 +67,13 @@ export interface Fingerprint {
   // STUN/WebRTC discovered IPs
   stun_public_ip?: string;
   stun_local_ip?: string;
+  // Autonomous System Number (network identity signal)
+  asn?: number;
+  // Timezone offset in minutes from UTC
+  timezone_offset?: number;
+  // TCP tuning parameters (network fingerprint)
+  snd_mss?: number;
+  pmtu?: number;
 
   // Structural fingerprint signals: stable "structural anchors" based on browser
   // engine internals that cannot be randomized without breaking website functionality.

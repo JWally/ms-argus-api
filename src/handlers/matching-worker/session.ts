@@ -66,6 +66,9 @@ function buildSessionResponseData(params: {
   if (matchResult.fuzzy_match_info) {
     analysis.fuzzy_match_info = matchResult.fuzzy_match_info;
   }
+  if (matchResult.vector_match_details) {
+    analysis.vector_match_details = matchResult.vector_match_details;
+  }
 
   return {
     identifiers,

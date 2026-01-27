@@ -59,7 +59,7 @@ describe("computeEmbedding", () => {
   it("includes version number", () => {
     const result = computeEmbedding(baseFingerprint);
     expect(result.version).toBe(EMBEDDING_VERSION);
-    expect(result.version).toBe(2);
+    expect(result.version).toBe(3);
   });
 
   it("produces deterministic output for same input", () => {
@@ -99,8 +99,9 @@ describe("computeEmbedding", () => {
 
   it("pads remaining dimensions with zeros", () => {
     const result = computeEmbedding(baseFingerprint);
-    // Reserved section (192-255) should be zeros
-    const reserved = result.vector.slice(192);
+    // Reserved section (198-255) should be zeros
+    // Structure: 48+48+32+32+22+16 = 198 used dims
+    const reserved = result.vector.slice(198);
     expect(reserved.every((v) => v === 0)).toBe(true);
   });
 });
@@ -110,12 +111,12 @@ describe("areEmbeddingsCompatible", () => {
     const a: EmbeddingResult = {
       vector: new Array(256).fill(0),
       dimensions: 256,
-      version: 2,
+      version: 3,
     };
     const b: EmbeddingResult = {
       vector: new Array(256).fill(0),
       dimensions: 256,
-      version: 2,
+      version: 3,
     };
     expect(areEmbeddingsCompatible(a, b)).toBe(true);
   });
@@ -124,12 +125,12 @@ describe("areEmbeddingsCompatible", () => {
     const a: EmbeddingResult = {
       vector: new Array(256).fill(0),
       dimensions: 256,
-      version: 1,
+      version: 2,
     };
     const b: EmbeddingResult = {
       vector: new Array(256).fill(0),
       dimensions: 256,
-      version: 2,
+      version: 3,
     };
     expect(areEmbeddingsCompatible(a, b)).toBe(false);
   });
@@ -138,12 +139,12 @@ describe("areEmbeddingsCompatible", () => {
     const a: EmbeddingResult = {
       vector: new Array(128).fill(0),
       dimensions: 128,
-      version: 2,
+      version: 3,
     };
     const b: EmbeddingResult = {
       vector: new Array(256).fill(0),
       dimensions: 256,
-      version: 2,
+      version: 3,
     };
     expect(areEmbeddingsCompatible(a, b)).toBe(false);
   });

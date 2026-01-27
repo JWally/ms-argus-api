@@ -10,3 +10,4 @@ export * from "./dynamodb";
 export * from "./workers";
 export * from "./http-api";
 export * from "./vector-worker";
+export * from "./vpc";

@@ -36,13 +36,14 @@ interface VectorWorkerConstructProps {
 /**
  * Vector Worker Lambda for QDrant integration
  *
- * This Lambda runs in the ms-argus-vector VPC to access the internal ALB.
+ * This Lambda runs in the shared VPC (from ms-argus-infra) to access the
+ * QDrant service internal ALB (deployed by ms-argus-vector).
  * It processes vector operations (search, upsert) from an SQS queue.
  *
  * Cross-stack dependencies (via SSM Parameter Store):
- * - VPC ID from: /argus-vector/{env}/vpc-id
- * - Qdrant URL from: /argus-vector/{env}/qdrant-url
- * - Secret ARN from: /argus-vector/{env}/qdrant-secret-arn
+ * - VPC ID from ms-argus-infra: /argus/{env}/vpc-id
+ * - Qdrant URL from ms-argus-vector: /argus-vector/{env}/qdrant-url
+ * - Secret ARN from ms-argus-vector: /argus-vector/{env}/qdrant-secret-arn
  */
 export class VectorWorkerConstruct extends Construct {
   public readonly vectorWorker: lambda.NodejsFunction;
@@ -66,17 +67,16 @@ export class VectorWorkerConstruct extends Construct {
     const config = getStageConfig(stage);
 
     // =========================================================================
-    // CROSS-STACK IMPORTS FROM MS-ARGUS-VECTOR (via SSM Parameter Store)
+    // CROSS-STACK IMPORTS (via SSM Parameter Store)
     // =========================================================================
 
-    // Read Qdrant connection info from SSM parameters
-    // These are set by ms-argus-vector stack at deploy time
-    const ssmPrefix = `/argus-vector/${vectorEnvironment}`;
+    // VPC comes from ms-argus-infra (shared VPC)
+    const infraSsmPrefix = `/argus/${vectorEnvironment}`;
 
     // Use valueFromLookup for synth-time resolution (needed for VPC lookup)
     const vectorVpcId = ssm.StringParameter.valueFromLookup(
       this,
-      `${ssmPrefix}/vpc-id`,
+      `${infraSsmPrefix}/vpc-id`,
     );
 
     // Import VPC using the ID from SSM
@@ -85,15 +85,18 @@ export class VectorWorkerConstruct extends Construct {
       vpcId: vectorVpcId,
     });
 
+    // QDrant connection info comes from ms-argus-vector
+    const vectorSsmPrefix = `/argus-vector/${vectorEnvironment}`;
+
     // Read Qdrant URL and secret ARN from SSM
     // Use valueForStringParameter for deploy-time resolution (works with tokens)
     const qdrantRestEndpoint = ssm.StringParameter.valueForStringParameter(
       this,
-      `${ssmPrefix}/qdrant-url`,
+      `${vectorSsmPrefix}/qdrant-url`,
     );
     const qdrantSecretArn = ssm.StringParameter.valueForStringParameter(
       this,
-      `${ssmPrefix}/qdrant-secret-arn`,
+      `${vectorSsmPrefix}/qdrant-secret-arn`,
     );
 
     // Create IAM policy for Qdrant secret access
