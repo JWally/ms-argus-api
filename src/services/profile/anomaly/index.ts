@@ -12,3 +12,18 @@ export {
   detectStatisticalAnomalies,
   type StatisticalContext,
 } from "./statistical";
+export {
+  fetchNetworkBaselineContext,
+  detectNetworkBaselineAnomalies,
+  type NetworkBaselineDetectorContext,
+} from "./network-baseline-detector";
+export {
+  computeShannonScore,
+  computeConfidence,
+  computeBlendedScore,
+  getBucket,
+  extractDeviceType,
+  TLS_RATIO_BUCKETS,
+  MSS_BUCKETS,
+  type RawSigintData,
+} from "./network-baseline";

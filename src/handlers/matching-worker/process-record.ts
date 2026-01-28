@@ -11,7 +11,9 @@ import {
 import {
   detectAllAnomalies,
   fetchStatisticalContext,
+  fetchNetworkBaselineContext,
   type StatisticalContext,
+  type NetworkBaselineDetectorContext,
 } from "../../services/profile/anomaly";
 import type { SessionAnomalySignal } from "../../types";
 import type { MatchingWorkerEnvConfig } from "../../config/env";
@@ -95,18 +97,21 @@ async function runMatching(
  * @param fingerprint - Normalized fingerprint data
  * @param rawPayload - Raw SQS payload containing device info
  * @param statisticalContext - Pre-fetched statistical context for frequency-based detection
+ * @param networkBaselineContext - Pre-fetched network baseline context for ASN-based detection
  * @returns Array of anomaly signals for the session
  */
 function buildAnomalySignals(
   fingerprint: ParsedRecord["fingerprint"],
   rawPayload: SqsPayload,
   statisticalContext: StatisticalContext | null,
+  networkBaselineContext: NetworkBaselineDetectorContext | null,
 ): SessionAnomalySignal[] {
   const result = detectAllAnomalies(
     fingerprint,
     rawPayload.device,
     undefined,
     statisticalContext,
+    networkBaselineContext,
   );
   return result.signals.map((s) => ({
     type: s.type,
@@ -261,13 +266,18 @@ export async function processRecord(
     deps,
   );
 
-  // Fetch statistical context for anomaly detection (async, non-blocking on failure)
-  const statisticalContext = await fetchStatisticalContext(fingerprint);
+  // Fetch statistical and network baseline contexts in parallel
+  // These are non-blocking on failure - detectors return empty signals if context is null
+  const [statisticalContext, networkBaselineContext] = await Promise.all([
+    fetchStatisticalContext(fingerprint),
+    fetchNetworkBaselineContext(fingerprint, rawPayload.sigint),
+  ]);
 
   const anomalies = buildAnomalySignals(
     fingerprint,
     rawPayload,
     statisticalContext,
+    networkBaselineContext,
   );
   await persistResults(
     service,

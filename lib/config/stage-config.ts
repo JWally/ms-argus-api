@@ -117,6 +117,13 @@ export interface StageConfig {
     scoreThreshold: number;
     // Minimum distinct combos required before statistical detection activates
     distinctThreshold: number;
+    // Network baseline anomaly detection settings
+    networkBaseline: {
+      // Whether network baseline detection is enabled
+      enabled: boolean;
+      // Score threshold for flagging anomalies (0.5 = 50% normalized surprise)
+      threshold: number;
+    };
   };
 }
 
@@ -209,6 +216,11 @@ const devConfig: StageConfig = {
     ttlSeconds: 172800, // 48 hours
     scoreThreshold: 0.01, // 1% - combo appears less than 1% of expected = suspicious
     distinctThreshold: 50, // Need at least 50 distinct combos before detection activates
+    // Network baseline: enabled for dev testing
+    networkBaseline: {
+      enabled: true,
+      threshold: 0.5, // 50% normalized surprise triggers anomaly
+    },
   },
 };
 
@@ -303,6 +315,11 @@ const prodConfig: StageConfig = {
     ttlSeconds: 172800, // 48 hours
     scoreThreshold: 0.01, // 1% - combo appears less than 1% of expected = suspicious
     distinctThreshold: 50, // Need at least 50 distinct combos before detection activates
+    // Network baseline: disabled initially for shadow mode deployment
+    networkBaseline: {
+      enabled: false, // Enable after validating in dev
+      threshold: 0.5, // 50% normalized surprise triggers anomaly
+    },
   },
 };
 

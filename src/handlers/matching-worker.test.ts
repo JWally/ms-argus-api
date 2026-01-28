@@ -5,6 +5,7 @@ const {
   mockPublishStoredMetrics,
   mockDetectAllAnomalies,
   mockFetchStatisticalContext,
+  mockFetchNetworkBaselineContext,
 } = vi.hoisted(() => ({
   mockAddMetric: vi.fn(),
   mockPublishStoredMetrics: vi.fn(),
@@ -14,11 +15,13 @@ const {
     suggestedFlags: [],
   }),
   mockFetchStatisticalContext: vi.fn().mockResolvedValue(null),
+  mockFetchNetworkBaselineContext: vi.fn().mockResolvedValue(null),
 }));
 
 vi.mock("../services/profile/anomaly", () => ({
   detectAllAnomalies: mockDetectAllAnomalies,
   fetchStatisticalContext: mockFetchStatisticalContext,
+  fetchNetworkBaselineContext: mockFetchNetworkBaselineContext,
 }));
 
 vi.mock("@aws-lambda-powertools/metrics", () => ({
@@ -89,6 +92,7 @@ describe("matching-worker handler", () => {
     mockAddMetric.mockClear();
     mockPublishStoredMetrics.mockClear();
     mockFetchStatisticalContext.mockClear();
+    mockFetchNetworkBaselineContext.mockClear();
   });
 
   const createSQSRecord = (

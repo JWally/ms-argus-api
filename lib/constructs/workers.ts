@@ -191,6 +191,13 @@ export class WorkersConstruct extends Construct {
           STATISTICAL_DISTINCT_THRESHOLD: String(
             stageConfig?.valkey.distinctThreshold ?? 50,
           ),
+          // Network baseline anomaly detection
+          NETWORK_BASELINE_ENABLED: String(
+            stageConfig?.valkey.networkBaseline?.enabled ?? false,
+          ),
+          NETWORK_BASELINE_THRESHOLD: String(
+            stageConfig?.valkey.networkBaseline?.threshold ?? 0.5,
+          ),
         }),
       },
     });
