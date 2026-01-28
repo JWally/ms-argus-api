@@ -1,7 +1,15 @@
 /**
- * @fileoverview Cache service module exports.
- * Provides DynamoDB-backed caching for session data and mutation gates.
+ * Cache services for ms-argus-api.
  * @module services/cache
  */
 
-export { DynamoCacheService, DynamoCacheConfig } from "./dynamo-cache";
+export { DynamoCacheService, type DynamoCacheConfig } from "./dynamo-cache";
+
+export {
+  recordAndGetStats,
+  isValkeyEnabled,
+  closeClient,
+  type StatisticalData,
+} from "./valkey-client";
+
+export { extractUaFamily } from "./ua-parser";

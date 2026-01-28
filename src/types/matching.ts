@@ -29,7 +29,7 @@ export type EvidenceCode =
 /** Anomaly signal exposed in session response. */
 export interface SessionAnomalySignal {
   /** Category of anomaly detected */
-  type: "CROSS_FIELD" | "NETWORK" | "HARDWARE" | "IDENTITY";
+  type: "CROSS_FIELD" | "NETWORK" | "HARDWARE" | "IDENTITY" | "STATISTICAL";
   /** Specific anomaly code (e.g., "SCREEN_CSS_MISMATCH") */
   code: string;
   /** Severity score from 0.0 (info) to 1.0 (critical) */

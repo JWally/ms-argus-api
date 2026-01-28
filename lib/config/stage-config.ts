@@ -104,6 +104,20 @@ export interface StageConfig {
       maxCapacityMultiplier: number; // Max capacity as multiplier of base (e.g., 2 = 200%)
     };
   };
+
+  // Valkey (ElastiCache Serverless) configuration for statistical anomaly detection
+  valkey: {
+    // Whether Valkey is enabled for this stage
+    enabled: boolean;
+    // Maximum data storage in GiB (ElastiCache Serverless billing unit)
+    maxDataStorageGiB: number;
+    // TTL for statistical keys in seconds (default 48h = 172800)
+    ttlSeconds: number;
+    // Score threshold below which combo is considered suspicious (0.01 = 1%)
+    scoreThreshold: number;
+    // Minimum distinct combos required before statistical detection activates
+    distinctThreshold: number;
+  };
 }
 
 /**
@@ -186,6 +200,15 @@ const devConfig: StageConfig = {
       targetUtilizationPercent: 70,
       maxCapacityMultiplier: 2,
     },
+  },
+
+  // Valkey - enabled in dev for statistical anomaly detection testing
+  valkey: {
+    enabled: true,
+    maxDataStorageGiB: 1, // Minimal storage for dev (~$6/mo)
+    ttlSeconds: 172800, // 48 hours
+    scoreThreshold: 0.01, // 1% - combo appears less than 1% of expected = suspicious
+    distinctThreshold: 50, // Need at least 50 distinct combos before detection activates
   },
 };
 
@@ -271,6 +294,15 @@ const prodConfig: StageConfig = {
       targetUtilizationPercent: 70,
       maxCapacityMultiplier: 2,
     },
+  },
+
+  // Valkey - enabled in prod for statistical anomaly detection
+  valkey: {
+    enabled: true,
+    maxDataStorageGiB: 5, // Higher capacity for prod (~$12/mo)
+    ttlSeconds: 172800, // 48 hours
+    scoreThreshold: 0.01, // 1% - combo appears less than 1% of expected = suspicious
+    distinctThreshold: 50, // Need at least 50 distinct combos before detection activates
   },
 };
 

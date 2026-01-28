@@ -18,6 +18,8 @@ import { WorkersConstruct } from "../constructs/workers";
 import { CloudFrontWafConstruct } from "../constructs/cloudfront";
 import { AnalyticsConstruct } from "../constructs/analytics";
 import { VectorWorkerConstruct } from "../constructs/vector-worker";
+import { ValkeyConstruct } from "../constructs/valkey";
+import { ArgusVpc } from "../constructs/vpc";
 import { getStageConfig } from "../config";
 
 interface ArgusApiStackProps extends cdk.StackProps {
@@ -149,6 +151,38 @@ export class ArgusApiStack extends cdk.Stack {
     }
 
     // =========================================================================
+    // STAGE CONFIG
+    // =========================================================================
+    // AR-160: Get stage config for Lambda memory tuning and Valkey settings
+    const stageConfig = getStageConfig(stage);
+
+    // =========================================================================
+    // VALKEY (Optional - for statistical anomaly detection)
+    // =========================================================================
+    // ElastiCache Serverless with Valkey engine for tracking fingerprint combo frequencies
+    // Uses HyperLogLog for cardinality estimation
+    // Only deploy if valkey.enabled in stage config
+
+    let valkey: ValkeyConstruct | undefined;
+    let argusVpc: ArgusVpc | undefined;
+
+    if (stageConfig.valkey.enabled) {
+      // Import shared VPC from ms-argus-infra
+      argusVpc = new ArgusVpc(this, "ArgusVpc", {
+        environment,
+      });
+
+      valkey = new ValkeyConstruct(this, "Valkey", {
+        stackName,
+        stage,
+        stageConfig,
+        alarmsTopic,
+        vpc: argusVpc.vpc,
+        lambdaSecurityGroup: argusVpc.lambdaSecurityGroup,
+      });
+    }
+
+    // =========================================================================
     // COMPUTE LAYER
     // =========================================================================
 
@@ -157,7 +191,6 @@ export class ArgusApiStack extends cdk.Stack {
     // AR-71: Reverted to async (SQS) for scalability
     // AR-139: Payload archiving
     // AR-160: Pass stage config for Lambda memory tuning
-    const stageConfig = getStageConfig(stage);
     const httpApi = new HttpApiConstruct(this, "HttpApi", {
       stackName,
       stage,
@@ -170,7 +203,7 @@ export class ArgusApiStack extends cdk.Stack {
       config: stageConfig,
     });
 
-    // Worker Lambdas (no VPC - access DynamoDB/SQS via IAM)
+    // Worker Lambdas (VPC optional - needed for Valkey access)
     const workers = new WorkersConstruct(this, "Workers", {
       stackName,
       stage,
@@ -193,6 +226,12 @@ export class ArgusApiStack extends cdk.Stack {
       // Vector worker ARN for Tier 2 vector search (replaces compound buckets)
       vectorWorkerArn: vectorWorker?.vectorWorker.functionArn,
       vectorCollection: "fingerprints",
+      // Valkey configuration for statistical anomaly detection
+      valkeyEndpoint: valkey?.endpoint,
+      valkeySecurityGroup: valkey?.securityGroup,
+      vpc: argusVpc?.vpc,
+      lambdaSecurityGroup: argusVpc?.lambdaSecurityGroup,
+      stageConfig,
     });
 
     // =========================================================================
@@ -336,6 +375,14 @@ export class ArgusApiStack extends cdk.Stack {
       value: analytics.payloadArchiveBucket.bucketName,
       description: "S3 bucket for payload archives",
     });
+
+    // Valkey outputs (conditional)
+    if (valkey) {
+      new cdk.CfnOutput(this, "ValkeyEndpoint", {
+        value: valkey.endpoint,
+        description: "ElastiCache Serverless (Valkey) endpoint",
+      });
+    }
 
     // Vector worker outputs (conditional)
     if (vectorWorker) {

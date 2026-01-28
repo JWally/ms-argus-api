@@ -8,7 +8,11 @@ import {
   generateIdempotencyKey,
   MatchResult,
 } from "../../services/matching";
-import { detectAllAnomalies } from "../../services/profile/anomaly";
+import {
+  detectAllAnomalies,
+  fetchStatisticalContext,
+  type StatisticalContext,
+} from "../../services/profile/anomaly";
 import type { SessionAnomalySignal } from "../../types";
 import type { MatchingWorkerEnvConfig } from "../../config/env";
 import {
@@ -90,13 +94,20 @@ async function runMatching(
  *
  * @param fingerprint - Normalized fingerprint data
  * @param rawPayload - Raw SQS payload containing device info
+ * @param statisticalContext - Pre-fetched statistical context for frequency-based detection
  * @returns Array of anomaly signals for the session
  */
 function buildAnomalySignals(
   fingerprint: ParsedRecord["fingerprint"],
   rawPayload: SqsPayload,
+  statisticalContext: StatisticalContext | null,
 ): SessionAnomalySignal[] {
-  const result = detectAllAnomalies(fingerprint, rawPayload.device);
+  const result = detectAllAnomalies(
+    fingerprint,
+    rawPayload.device,
+    undefined,
+    statisticalContext,
+  );
   return result.signals.map((s) => ({
     type: s.type,
     code: s.code,
@@ -250,7 +261,14 @@ export async function processRecord(
     deps,
   );
 
-  const anomalies = buildAnomalySignals(fingerprint, rawPayload);
+  // Fetch statistical context for anomaly detection (async, non-blocking on failure)
+  const statisticalContext = await fetchStatisticalContext(fingerprint);
+
+  const anomalies = buildAnomalySignals(
+    fingerprint,
+    rawPayload,
+    statisticalContext,
+  );
   await persistResults(
     service,
     { sessionId, matchResult, idempotencyKey, anomalies, rawPayload, payload },

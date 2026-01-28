@@ -13,6 +13,10 @@ import { AnomalySignal, AnomalyResult } from "./types";
 import { detectQuickWinAnomalies } from "./quick-wins";
 import { detectCrossFieldAnomalies } from "./cross-field";
 import { detectNetworkAnomalies } from "./network";
+import {
+  detectStatisticalAnomalies,
+  type StatisticalContext,
+} from "./statistical";
 
 const logger = new Logger({
   serviceName: process.env.POWERTOOLS_SERVICE_NAME || "argus-anomaly-detector",
@@ -60,12 +64,14 @@ const detectors: DetectorFn[] = [
  * @param fingerprint - Normalized fingerprint data
  * @param raw - Raw payload with nested structure (for cross-field checks)
  * @param sigint - Signal intelligence data (for network checks)
+ * @param statisticalContext - Pre-fetched statistical context (for statistical checks)
  * @returns Aggregated anomaly result with signals, score, and suggested flags
  */
 export function detectAllAnomalies(
   fingerprint: Fingerprint,
   raw?: unknown,
   sigint?: SigintData,
+  statisticalContext?: StatisticalContext | null,
 ): AnomalyResult {
   const signals: AnomalySignal[] = [];
 
@@ -80,6 +86,14 @@ export function detectAllAnomalies(
       });
       metrics.addMetric("AnomalyDetectorError", MetricUnit.Count, 1);
     }
+  }
+
+  // Run statistical detection with pre-fetched context
+  try {
+    signals.push(...detectStatisticalAnomalies(statisticalContext ?? null));
+  } catch (error) {
+    logger.error("Statistical anomaly detector failed", { error });
+    metrics.addMetric("AnomalyDetectorError", MetricUnit.Count, 1);
   }
 
   return {

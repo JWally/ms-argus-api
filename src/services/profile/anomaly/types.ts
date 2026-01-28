@@ -1,7 +1,12 @@
 /**
  * Type of anomaly detected
  */
-export type AnomalyType = "CROSS_FIELD" | "NETWORK" | "HARDWARE" | "IDENTITY";
+export type AnomalyType =
+  | "CROSS_FIELD"
+  | "NETWORK"
+  | "HARDWARE"
+  | "IDENTITY"
+  | "STATISTICAL";
 
 /**
  * Anomaly codes as const object for type-safe lookup
@@ -19,6 +24,8 @@ export const AnomalyCodes = {
   HEADLESS_DETECTED: "HEADLESS_DETECTED",
   HIGH_PROXY_SCORE: "HIGH_PROXY_SCORE",
   HIGH_VPN_SCORE: "HIGH_VPN_SCORE",
+  // Statistical anomalies
+  RARE_FINGERPRINT_COMBO: "RARE_FINGERPRINT_COMBO",
 } as const;
 
 export type AnomalyCode = (typeof AnomalyCodes)[keyof typeof AnomalyCodes];

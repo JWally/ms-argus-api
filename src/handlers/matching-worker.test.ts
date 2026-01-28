@@ -1,18 +1,24 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 
-const { mockAddMetric, mockPublishStoredMetrics, mockDetectAllAnomalies } =
-  vi.hoisted(() => ({
-    mockAddMetric: vi.fn(),
-    mockPublishStoredMetrics: vi.fn(),
-    mockDetectAllAnomalies: vi.fn().mockReturnValue({
-      signals: [],
-      aggregateScore: 0,
-      suggestedFlags: [],
-    }),
-  }));
+const {
+  mockAddMetric,
+  mockPublishStoredMetrics,
+  mockDetectAllAnomalies,
+  mockFetchStatisticalContext,
+} = vi.hoisted(() => ({
+  mockAddMetric: vi.fn(),
+  mockPublishStoredMetrics: vi.fn(),
+  mockDetectAllAnomalies: vi.fn().mockReturnValue({
+    signals: [],
+    aggregateScore: 0,
+    suggestedFlags: [],
+  }),
+  mockFetchStatisticalContext: vi.fn().mockResolvedValue(null),
+}));
 
 vi.mock("../services/profile/anomaly", () => ({
   detectAllAnomalies: mockDetectAllAnomalies,
+  fetchStatisticalContext: mockFetchStatisticalContext,
 }));
 
 vi.mock("@aws-lambda-powertools/metrics", () => ({
@@ -82,6 +88,7 @@ describe("matching-worker handler", () => {
     vi.clearAllMocks();
     mockAddMetric.mockClear();
     mockPublishStoredMetrics.mockClear();
+    mockFetchStatisticalContext.mockClear();
   });
 
   const createSQSRecord = (
