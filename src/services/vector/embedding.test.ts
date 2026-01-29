@@ -8,6 +8,7 @@ import {
   EMBEDDING_DIMENSIONS,
   EMBEDDING_VERSION,
   areEmbeddingsCompatible,
+  assessEmbeddingQuality,
   type EmbeddingResult,
 } from "./embedding";
 import type { Fingerprint } from "../../types/fingerprint";
@@ -153,5 +154,130 @@ describe("areEmbeddingsCompatible", () => {
 describe("EMBEDDING_DIMENSIONS", () => {
   it("is 256", () => {
     expect(EMBEDDING_DIMENSIONS).toBe(256);
+  });
+});
+
+describe("assessEmbeddingQuality", () => {
+  it("accepts full fingerprint with all signals", () => {
+    const fullFingerprint: Fingerprint = {
+      stable_hash: "abc123",
+      fuzzy_hash: "def456",
+      maths_hash: "hash1",
+      window_features_hash: "hash2",
+      html_element_hash: "hash3",
+      css_hash: "hash4",
+      svg_hash: "hash5",
+      intl_hash: "hash6",
+      canvas_hash: "canvas",
+      webgl_hash: "webgl",
+      audio_hash: "audio",
+      hardware_concurrency: 8,
+      device_memory: 16,
+      screen_dims: "1920x1080",
+      user_agent: "Mozilla/5.0 Chrome/120",
+    };
+
+    const result = assessEmbeddingQuality(fullFingerprint);
+    expect(result.acceptable).toBe(true);
+    expect(result.score).toBeGreaterThan(0.5);
+    expect(result.structuralCount).toBe(6);
+    expect(result.renderingCount).toBe(3);
+    expect(result.hardwareCount).toBe(4);
+  });
+
+  it("rejects skinny fingerprint missing structural hashes", () => {
+    // Simulates the minimal V3 payloads from automation tests
+    const skinnyFingerprint: Fingerprint = {
+      stable_hash: "abc123",
+      fuzzy_hash: "def456",
+      canvas_hash: "canvas",
+      webgl_hash: "webgl",
+      audio_hash: "audio",
+      // Missing: maths_hash, window_features_hash, html_element_hash, css_hash, svg_hash, intl_hash
+      hardware_concurrency: 8,
+      screen_dims: "1920x1080",
+    };
+
+    const result = assessEmbeddingQuality(skinnyFingerprint);
+    expect(result.acceptable).toBe(false);
+    expect(result.structuralCount).toBe(0);
+    expect(result.reason).toContain("structural");
+  });
+
+  it("rejects fingerprint missing identity hashes", () => {
+    const noIdentity: Fingerprint = {
+      // Missing stable_hash and fuzzy_hash
+      maths_hash: "hash1",
+      window_features_hash: "hash2",
+      html_element_hash: "hash3",
+      css_hash: "hash4",
+      canvas_hash: "canvas",
+      hardware_concurrency: 8,
+      screen_dims: "1920x1080",
+      user_agent: "Mozilla/5.0",
+    };
+
+    const result = assessEmbeddingQuality(noIdentity);
+    expect(result.acceptable).toBe(false);
+    expect(result.reason).toContain("identity");
+  });
+
+  it("accepts privacy browser with strong structural but no rendering", () => {
+    // Brave browser blocks canvas/audio/webgl but we can still match on structural
+    const braveFingerprint: Fingerprint = {
+      stable_hash: "abc123",
+      fuzzy_hash: "def456",
+      maths_hash: "hash1",
+      window_features_hash: "hash2",
+      html_element_hash: "hash3",
+      css_hash: "hash4",
+      svg_hash: "hash5",
+      intl_hash: "hash6",
+      // No rendering hashes (blocked by Brave)
+      hardware_concurrency: 8,
+      device_memory: 16,
+      screen_dims: "1920x1080",
+      user_agent: "Mozilla/5.0 Chrome/120",
+      privacy_browser: "brave",
+    };
+
+    const result = assessEmbeddingQuality(braveFingerprint);
+    // Should pass because structural count >= 4 compensates for missing rendering
+    expect(result.acceptable).toBe(true);
+    expect(result.structuralCount).toBe(6);
+    expect(result.renderingCount).toBe(0);
+  });
+
+  it("rejects fingerprint with insufficient hardware signals", () => {
+    const noHardware: Fingerprint = {
+      stable_hash: "abc123",
+      fuzzy_hash: "def456",
+      maths_hash: "hash1",
+      window_features_hash: "hash2",
+      html_element_hash: "hash3",
+      canvas_hash: "canvas",
+      // Missing: hardware_concurrency, device_memory, screen_dims, user_agent
+    };
+
+    const result = assessEmbeddingQuality(noHardware);
+    expect(result.acceptable).toBe(false);
+    expect(result.hardwareCount).toBe(0);
+    expect(result.reason).toContain("hardware");
+  });
+
+  it("calculates quality score as ratio of present signals", () => {
+    const partialFingerprint: Fingerprint = {
+      stable_hash: "abc123",
+      fuzzy_hash: "def456",
+      maths_hash: "hash1",
+      window_features_hash: "hash2",
+      canvas_hash: "canvas",
+      hardware_concurrency: 8,
+      user_agent: "Mozilla/5.0",
+    };
+
+    const result = assessEmbeddingQuality(partialFingerprint);
+    // 2 identity + 2 structural + 1 rendering + 2 hardware = 7 out of 15 max
+    expect(result.score).toBeCloseTo(7 / 15, 2);
   });
 });

@@ -368,3 +368,129 @@ export function areEmbeddingsCompatible(
 ): boolean {
   return a.version === b.version && a.dimensions === b.dimensions;
 }
+
+/**
+ * Quality assessment result for a fingerprint.
+ */
+export interface EmbeddingQualityResult {
+  /** Whether the fingerprint meets minimum quality threshold for embedding */
+  acceptable: boolean;
+  /** Quality score from 0-1 (percentage of expected signals present) */
+  score: number;
+  /** Count of structural hashes present (maths, css, svg, etc.) */
+  structuralCount: number;
+  /** Count of rendering hashes present (canvas, webgl, audio) */
+  renderingCount: number;
+  /** Count of hardware signals present */
+  hardwareCount: number;
+  /** Reason for rejection if not acceptable */
+  reason?: string;
+}
+
+/**
+ * Minimum thresholds for acceptable embedding quality.
+ *
+ * Fingerprints below these thresholds will produce sparse embeddings
+ * that could pollute the vector index with false similarity matches.
+ */
+const QUALITY_THRESHOLDS = {
+  /** Minimum structural hashes required (out of 6: maths, window, html, css, svg, intl) */
+  minStructuralHashes: 2,
+  /** Minimum rendering hashes required (out of 3: canvas, webgl, audio) */
+  minRenderingHashes: 1,
+  /** Minimum hardware signals required (out of 4: concurrency, memory, screen, user_agent) */
+  minHardwareSignals: 2,
+  /** Overall minimum score (0-1) */
+  minOverallScore: 0.3,
+};
+
+/**
+ * Assess fingerprint quality for embedding.
+ *
+ * Checks that the fingerprint has sufficient data to produce a meaningful
+ * embedding. Sparse fingerprints (e.g., from minimal test payloads) can
+ * pollute the vector index with false similarity matches.
+ *
+ * @param fingerprint - Fingerprint to assess
+ * @returns Quality assessment with score and acceptability
+ */
+export function assessEmbeddingQuality(
+  fingerprint: Fingerprint,
+): EmbeddingQualityResult {
+  // Count structural hashes (most important for embedding quality)
+  const structuralHashes = [
+    fingerprint.maths_hash,
+    fingerprint.window_features_hash,
+    fingerprint.html_element_hash,
+    fingerprint.css_hash,
+    fingerprint.svg_hash,
+    fingerprint.intl_hash,
+  ];
+  const structuralCount = structuralHashes.filter(Boolean).length;
+
+  // Count rendering hashes
+  const renderingHashes = [
+    fingerprint.canvas_hash,
+    fingerprint.webgl_hash,
+    fingerprint.audio_hash,
+  ];
+  const renderingCount = renderingHashes.filter(Boolean).length;
+
+  // Count hardware signals
+  const hardwareSignals = [
+    fingerprint.hardware_concurrency,
+    fingerprint.device_memory,
+    fingerprint.screen_dims,
+    fingerprint.user_agent,
+  ];
+  const hardwareCount = hardwareSignals.filter(
+    (v) => v !== undefined && v !== null,
+  ).length;
+
+  // Check identity hashes (required)
+  const hasIdentity = !!fingerprint.stable_hash && !!fingerprint.fuzzy_hash;
+
+  // Calculate overall score
+  const maxSignals = 6 + 3 + 4 + 2; // structural + rendering + hardware + identity
+  const presentSignals =
+    structuralCount +
+    renderingCount +
+    hardwareCount +
+    (fingerprint.stable_hash ? 1 : 0) +
+    (fingerprint.fuzzy_hash ? 1 : 0);
+  const score = presentSignals / maxSignals;
+
+  // Determine acceptability
+  let acceptable = true;
+  let reason: string | undefined;
+
+  if (!hasIdentity) {
+    acceptable = false;
+    reason = "Missing identity hashes (stable_hash or fuzzy_hash)";
+  } else if (structuralCount < QUALITY_THRESHOLDS.minStructuralHashes) {
+    acceptable = false;
+    reason = `Insufficient structural hashes: ${structuralCount}/${QUALITY_THRESHOLDS.minStructuralHashes} required`;
+  } else if (
+    renderingCount < QUALITY_THRESHOLDS.minRenderingHashes &&
+    structuralCount < 4
+  ) {
+    // Allow low rendering if structural is strong (e.g., Brave browser)
+    acceptable = false;
+    reason = `Insufficient rendering hashes: ${renderingCount}/${QUALITY_THRESHOLDS.minRenderingHashes} required (or need 4+ structural)`;
+  } else if (hardwareCount < QUALITY_THRESHOLDS.minHardwareSignals) {
+    acceptable = false;
+    reason = `Insufficient hardware signals: ${hardwareCount}/${QUALITY_THRESHOLDS.minHardwareSignals} required`;
+  } else if (score < QUALITY_THRESHOLDS.minOverallScore) {
+    acceptable = false;
+    reason = `Overall quality score too low: ${(score * 100).toFixed(0)}% < ${QUALITY_THRESHOLDS.minOverallScore * 100}%`;
+  }
+
+  return {
+    acceptable,
+    score,
+    structuralCount,
+    renderingCount,
+    hardwareCount,
+    reason,
+  };
+}

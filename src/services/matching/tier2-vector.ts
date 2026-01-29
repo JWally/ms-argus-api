@@ -18,7 +18,7 @@ import {
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { Logger } from "@aws-lambda-powertools/logger";
 import { Metrics, MetricUnit } from "@aws-lambda-powertools/metrics";
-import { computeEmbedding } from "../vector/embedding";
+import { computeEmbedding, assessEmbeddingQuality } from "../vector/embedding";
 import { loadProfile } from "./profile-loader";
 import { computeFuzzyMatchInfo } from "../../helpers/hash";
 import type {
@@ -360,6 +360,12 @@ function computeVectorConfidence(score: number): number {
 
 /**
  * Upsert a device's vector embedding to Qdrant.
+ *
+ * Includes a quality gate to prevent sparse/incomplete fingerprints from
+ * polluting the vector index. Fingerprints missing critical signals
+ * (structural hashes, rendering data, hardware info) will be rejected.
+ *
+ * @returns true if upsert succeeded, false if skipped or failed
  */
 export async function upsertDeviceVector(
   deps: Pick<
@@ -369,6 +375,31 @@ export async function upsertDeviceVector(
   deviceId: string,
   fingerprint: Fingerprint,
 ): Promise<boolean> {
+  // Quality gate: reject sparse fingerprints that would pollute the index
+  const quality = assessEmbeddingQuality(fingerprint);
+  if (!quality.acceptable) {
+    deps.logger.info("Skipping vector upsert - fingerprint quality too low", {
+      device_id: deviceId,
+      quality_score: quality.score.toFixed(2),
+      structural_count: quality.structuralCount,
+      rendering_count: quality.renderingCount,
+      hardware_count: quality.hardwareCount,
+      reason: quality.reason,
+    });
+    deps.metrics.addMetric(
+      "VectorUpsertSkippedLowQuality",
+      MetricUnit.Count,
+      1,
+    );
+    return false;
+  }
+
+  deps.metrics.addMetric(
+    "VectorEmbeddingQualityScore",
+    MetricUnit.Count,
+    Math.round(quality.score * 100),
+  );
+
   const embeddingResult = computeEmbedding(fingerprint);
 
   const upsertRequest: SyncUpsertRequest = {
