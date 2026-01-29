@@ -90,7 +90,23 @@ export class AnalyticsConstruct extends Construct {
           ],
         },
         {
-          id: "ExpireAfter90Days",
+          id: "ExpireHighQualityAfter90Days",
+          expiration: Duration.days(90),
+          tagFilters: {
+            quality: "high",
+          },
+        },
+        {
+          // Low-quality payloads (skinny test payloads) expire after 7 days
+          id: "ExpireLowQualityAfter7Days",
+          expiration: Duration.days(7),
+          tagFilters: {
+            quality: "low",
+          },
+        },
+        {
+          // Fallback: untagged payloads expire after 90 days
+          id: "ExpireUntaggedAfter90Days",
           expiration: Duration.days(90),
         },
       ],

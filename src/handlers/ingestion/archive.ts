@@ -11,6 +11,44 @@ import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 import { gzipSync } from "zlib";
 
 /**
+ * Structural hash keys that indicate a high-quality payload.
+ * Skinny test payloads are missing these.
+ */
+const STRUCTURAL_HASH_KEYS = [
+  "maths",
+  "windowFeatures",
+  "htmlElementVersion",
+  "css",
+  "svg",
+  "intl",
+  "features",
+  "clientRects",
+  "consoleErrors",
+];
+
+/**
+ * Check if a raw payload has sufficient quality for long-term retention.
+ * Skinny payloads (from automation tests) lack structural hashes.
+ */
+function isHighQualityPayload(payload: unknown): boolean {
+  if (!payload || typeof payload !== "object") return false;
+
+  const p = payload as Record<string, unknown>;
+
+  // Check for hashes object with structural keys
+  const hashes = p.hashes as Record<string, unknown> | undefined;
+  if (!hashes) return false;
+
+  // Count structural hashes present
+  const structuralCount = STRUCTURAL_HASH_KEYS.filter(
+    (key) => typeof hashes[key] === "string" && hashes[key],
+  ).length;
+
+  // Require at least 3 structural hashes for high quality
+  return structuralCount >= 3;
+}
+
+/**
  * Archive a payload to S3 based on sampling rate.
  *
  * Stores payloads in Hive-partitioned format (year/month/day/hour) with
@@ -50,6 +88,10 @@ export const archivePayload = async (
     const key = `year=${year}/month=${month}/day=${day}/hour=${hour}/${sessionId}.json.gz`;
     const body = gzipSync(Buffer.from(JSON.stringify(payload)));
 
+    // Tag payloads based on quality for lifecycle management
+    const highQuality = isHighQualityPayload(payload);
+    const qualityTag = highQuality ? "high" : "low";
+
     await deps.s3.send(
       new PutObjectCommand({
         Bucket: deps.bucket,
@@ -57,10 +99,16 @@ export const archivePayload = async (
         Body: body,
         ContentType: "application/json",
         ContentEncoding: "gzip",
+        Tagging: `quality=${qualityTag}`,
       }),
     );
 
     deps.metrics.addMetric("PayloadArchived", MetricUnit.Count, 1);
+    deps.metrics.addMetric(
+      highQuality ? "PayloadArchivedHighQuality" : "PayloadArchivedLowQuality",
+      MetricUnit.Count,
+      1,
+    );
   } catch (err) {
     deps.logger.warn("Payload archive failed", {
       error: err,
