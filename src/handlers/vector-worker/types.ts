@@ -164,10 +164,55 @@ export interface SyncErrorResponse {
   code: "COLLECTION_NOT_FOUND" | "QDRANT_ERROR" | "INVALID_REQUEST" | "UNKNOWN";
 }
 
+// ============================================================================
+// Admin Operations (for data clearing/maintenance)
+// ============================================================================
+
+/**
+ * Request to list all collections.
+ */
+export interface SyncListCollectionsRequest {
+  action: "list_collections";
+}
+
+/**
+ * Response with list of collections.
+ */
+export interface SyncListCollectionsResponse {
+  success: true;
+  collections: Array<{
+    name: string;
+    points_count: number;
+    vectors_count: number;
+  }>;
+  duration_ms: number;
+}
+
+/**
+ * Request to delete a collection.
+ */
+export interface SyncDeleteCollectionRequest {
+  action: "delete_collection";
+  collection: string;
+}
+
+/**
+ * Response from collection deletion.
+ */
+export interface SyncDeleteCollectionResponse {
+  success: true;
+  collection: string;
+  duration_ms: number;
+}
+
 /**
  * Union of all sync invocation request types.
  */
-export type SyncInvokeRequest = SyncSearchRequest | SyncUpsertRequest;
+export type SyncInvokeRequest =
+  | SyncSearchRequest
+  | SyncUpsertRequest
+  | SyncListCollectionsRequest
+  | SyncDeleteCollectionRequest;
 
 /**
  * Union of all sync invocation response types.
@@ -175,4 +220,6 @@ export type SyncInvokeRequest = SyncSearchRequest | SyncUpsertRequest;
 export type SyncInvokeResponse =
   | SyncSearchResponse
   | SyncUpsertResponse
+  | SyncListCollectionsResponse
+  | SyncDeleteCollectionResponse
   | SyncErrorResponse;

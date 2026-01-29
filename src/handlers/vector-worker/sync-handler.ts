@@ -17,6 +17,8 @@ import type {
   SyncInvokeResponse,
   SyncSearchRequest,
   SyncUpsertRequest,
+  SyncListCollectionsRequest,
+  SyncDeleteCollectionRequest,
   VectorMatchResult,
 } from "./types";
 
@@ -115,7 +117,10 @@ export async function handleSyncInvoke(
       );
     }
 
-    if (request.auto_create_collection) {
+    if (
+      (request.action === "search" || request.action === "upsert") &&
+      request.auto_create_collection
+    ) {
       await ensureCollectionExists(request.collection, deps);
     }
 
@@ -124,6 +129,12 @@ export async function handleSyncInvoke(
     }
     if (request.action === "upsert") {
       return await handleSyncUpsert(request, startTime, deps);
+    }
+    if (request.action === "list_collections") {
+      return await handleListCollections(request, startTime, deps);
+    }
+    if (request.action === "delete_collection") {
+      return await handleDeleteCollection(request, startTime, deps);
     }
     return errorResponse(
       `Unknown action: ${(request as { action: string }).action}`,
@@ -134,7 +145,9 @@ export async function handleSyncInvoke(
     deps.metrics.addMetric("SyncInvokeError", MetricUnit.Count, 1);
 
     if (error instanceof QdrantError) {
-      return handleQdrantError(error, request.collection);
+      const collection =
+        "collection" in request ? (request.collection as string) : "unknown";
+      return handleQdrantError(error, collection);
     }
     return errorResponse(
       error instanceof Error ? error.message : "Unknown error",
@@ -315,6 +328,74 @@ async function ensureCollectionExists(
       throw error;
     }
   }
+}
+
+/**
+ * Handle list collections request (admin operation).
+ */
+async function handleListCollections(
+  _request: SyncListCollectionsRequest,
+  startTime: number,
+  deps: SyncHandlerDeps,
+): Promise<SyncInvokeResponse> {
+  deps.logger.info("Listing all collections");
+
+  const collectionNames = await deps.qdrantClient.listCollections();
+  const collections = [];
+
+  for (const name of collectionNames) {
+    try {
+      const info = await deps.qdrantClient.getCollectionInfo(name);
+      collections.push({
+        name,
+        points_count: info.points_count,
+        vectors_count: info.vectors_count,
+      });
+    } catch {
+      collections.push({ name, points_count: 0, vectors_count: 0 });
+    }
+  }
+
+  const duration = Date.now() - startTime;
+  deps.metrics.addMetric("ListCollectionsComplete", MetricUnit.Count, 1);
+
+  deps.logger.info("Listed collections", {
+    count: collections.length,
+    duration_ms: duration,
+  });
+
+  return {
+    success: true,
+    collections,
+    duration_ms: duration,
+  };
+}
+
+/**
+ * Handle delete collection request (admin operation).
+ */
+async function handleDeleteCollection(
+  request: SyncDeleteCollectionRequest,
+  startTime: number,
+  deps: SyncHandlerDeps,
+): Promise<SyncInvokeResponse> {
+  deps.logger.info("Deleting collection", { collection: request.collection });
+
+  await deps.qdrantClient.deleteCollection(request.collection);
+
+  const duration = Date.now() - startTime;
+  deps.metrics.addMetric("DeleteCollectionComplete", MetricUnit.Count, 1);
+
+  deps.logger.info("Collection deleted", {
+    collection: request.collection,
+    duration_ms: duration,
+  });
+
+  return {
+    success: true,
+    collection: request.collection,
+    duration_ms: duration,
+  };
 }
 
 /**

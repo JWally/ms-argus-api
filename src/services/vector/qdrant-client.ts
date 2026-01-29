@@ -212,6 +212,45 @@ export class QdrantClient {
   }
 
   /**
+   * Delete an entire collection
+   * @param collection - Name of the collection to delete
+   */
+  async deleteCollection(collection: string): Promise<void> {
+    const client = await this.getClient();
+    await client.deleteCollection(collection);
+  }
+
+  /**
+   * List all collections
+   * @returns Array of collection names
+   */
+  async listCollections(): Promise<string[]> {
+    const client = await this.getClient();
+    const response = await client.getCollections();
+    return response.collections.map((c) => c.name);
+  }
+
+  /**
+   * Get collection info including point count
+   * @param collection - Name of the collection
+   * @returns Collection info with points_count
+   */
+  async getCollectionInfo(
+    collection: string,
+  ): Promise<{ points_count: number; vectors_count: number }> {
+    const client = await this.getClient();
+    const info = await client.getCollection(collection);
+    return {
+      points_count: info.points_count ?? 0,
+      // indexed_vectors_count is the actual field name in newer Qdrant versions
+      vectors_count:
+        (info as { indexed_vectors_count?: number }).indexed_vectors_count ??
+        info.points_count ??
+        0,
+    };
+  }
+
+  /**
    * Get or create the Qdrant client instance
    * @returns Configured Qdrant client
    */
