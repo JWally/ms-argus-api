@@ -198,6 +198,13 @@ export class WorkersConstruct extends Construct {
           NETWORK_BASELINE_THRESHOLD: String(
             stageConfig?.valkey.networkBaseline?.threshold ?? 0.5,
           ),
+          // Statistical v2 anomaly detection (Shannon scoring)
+          STATISTICAL_V2_ENABLED: String(
+            stageConfig?.valkey.statisticalV2?.enabled ?? false,
+          ),
+          STATISTICAL_V2_THRESHOLD: String(
+            stageConfig?.valkey.statisticalV2?.threshold ?? 0.6,
+          ),
         }),
       },
     });

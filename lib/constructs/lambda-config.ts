@@ -28,6 +28,9 @@ export const BASE_BUNDLING_CONFIG: lambdaNode.BundlingOptions = {
   target: "node20",
   format: lambdaNode.OutputFormat.ESM,
   mainFields: ["module", "main"],
+  // Polyfill require() for dependencies that use CJS dynamic requires of Node builtins
+  banner:
+    "import { createRequire } from 'module'; const require = createRequire(import.meta.url);",
   esbuildArgs: {
     "--tree-shaking": "true",
   },
@@ -158,6 +161,8 @@ export function createValkeyLambdaConfig(
     target: "node20",
     format: lambdaNode.OutputFormat.ESM,
     mainFields: ["module", "main"],
+    banner:
+      "import { createRequire } from 'module'; const require = createRequire(import.meta.url);",
     // ioredis uses dynamic require for Node.js builtins - mark them external
     // so they're resolved at runtime rather than bundled
     nodeModules: ["ioredis"],

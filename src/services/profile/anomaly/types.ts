@@ -27,6 +27,10 @@ export const AnomalyCodes = {
   HIGH_VPN_SCORE: "HIGH_VPN_SCORE",
   // Statistical anomalies
   RARE_FINGERPRINT_COMBO: "RARE_FINGERPRINT_COMBO",
+  // Statistical v2 anomalies (Shannon scoring)
+  RARE_JA4_FOR_UA: "RARE_JA4_FOR_UA",
+  RARE_H2_FOR_UA: "RARE_H2_FOR_UA",
+  RARE_GPU_FOR_PLATFORM: "RARE_GPU_FOR_PLATFORM",
 } as const;
 
 export type AnomalyCode = (typeof AnomalyCodes)[keyof typeof AnomalyCodes];

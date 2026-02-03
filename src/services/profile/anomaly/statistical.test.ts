@@ -4,7 +4,6 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 vi.mock("../../cache", () => ({
   recordAndGetStats: vi.fn(),
   isValkeyEnabled: vi.fn(),
-  extractUaFamily: vi.fn(),
 }));
 
 // Mock powertools
@@ -31,17 +30,12 @@ import {
   fetchStatisticalContext,
   detectStatisticalAnomalies,
 } from "./statistical";
-import {
-  recordAndGetStats,
-  isValkeyEnabled,
-  extractUaFamily,
-} from "../../cache";
+import { recordAndGetStats, isValkeyEnabled } from "../../cache";
 import type { StatisticalContext } from "./statistical";
 
 describe("statistical anomaly detection", () => {
   const mockIsValkeyEnabled = vi.mocked(isValkeyEnabled);
   const mockRecordAndGetStats = vi.mocked(recordAndGetStats);
-  const mockExtractUaFamily = vi.mocked(extractUaFamily);
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -90,20 +84,21 @@ describe("statistical anomaly detection", () => {
 
     it("should fetch stats and compute score", async () => {
       mockIsValkeyEnabled.mockReturnValue(true);
-      mockExtractUaFamily.mockReturnValue("Chrome");
       mockRecordAndGetStats.mockResolvedValue({
         total: 1000,
         comboCount: 5,
         distinct: 200,
       });
 
+      const userAgent = "Mozilla/5.0 Chrome/120";
       const result = await fetchStatisticalContext({
-        user_agent: "Mozilla/5.0 Chrome/120",
+        user_agent: userAgent,
         ja4: "t13d1516h2_abc",
       });
 
       expect(result).not.toBeNull();
-      expect(result!.uaFamily).toBe("Chrome");
+      // uaFamily is now the full user-agent string (matches ja4db approach)
+      expect(result!.uaFamily).toBe(userAgent);
       expect(result!.ja4).toBe("t13d1516h2_abc");
       expect(result!.stats.total).toBe(1000);
       expect(result!.stats.comboCount).toBe(5);

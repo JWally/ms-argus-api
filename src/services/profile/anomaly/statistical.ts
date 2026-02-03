@@ -18,7 +18,6 @@ import { Fingerprint } from "../../../types";
 import {
   recordAndGetStats,
   isValkeyEnabled,
-  extractUaFamily,
   type StatisticalData,
 } from "../../cache";
 import { AnomalySignal, AnomalyCodes, createSignal } from "./types";
@@ -80,7 +79,8 @@ export async function fetchStatisticalContext(
     return null;
   }
 
-  const uaFamily = extractUaFamily(user_agent);
+  // Use full user-agent string for grouping (matches ja4db approach)
+  const uaFamily = user_agent;
   const stats = await recordAndGetStats(uaFamily, ja4);
 
   // Compute score: combo_count / expected

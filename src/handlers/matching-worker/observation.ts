@@ -10,6 +10,24 @@ import { FirehoseClient, PutRecordCommand } from "@aws-sdk/client-firehose";
 import type { MatchResult } from "../../services/matching";
 
 /**
+ * Observation record structure matching Glue table schema.
+ * Used for Firehose -> S3 -> Athena analytics pipeline.
+ */
+export interface ObservationRecord {
+  timestamp: number;
+  session_id: string;
+  tenant_id: string;
+  device_id: string;
+  match_tier: number;
+  confidence: number;
+  is_new_device: boolean;
+  risk_score: number;
+  evidence_codes: string[];
+  tier2_timed_out: boolean;
+  processing_duration_ms: number;
+}
+
+/**
  * Emits a matching observation record to Kinesis Firehose for analytics.
  *
  * Observations are used for:
@@ -57,14 +75,18 @@ export async function emitObservation(
     return;
   }
 
-  const observation = {
+  const observation: ObservationRecord = {
+    timestamp: Date.now(),
     session_id: params.sessionId,
+    tenant_id: "", // Deprecated field, kept for schema compatibility
     device_id: params.matchResult.device_id,
     match_tier: params.matchResult.match_tier,
+    confidence: params.matchResult.confidence,
     is_new_device: params.matchResult.is_new_device,
+    risk_score: params.matchResult.risk_score,
+    evidence_codes: params.matchResult.evidence_codes,
     tier2_timed_out: params.tier2TimedOut,
-    duration_ms: params.durationMs,
-    timestamp: new Date().toISOString(),
+    processing_duration_ms: params.durationMs,
   };
 
   try {

@@ -21,6 +21,10 @@ import {
   detectNetworkBaselineAnomalies,
   type NetworkBaselineDetectorContext,
 } from "./network-baseline-detector";
+import {
+  detectStatisticalAnomaliesV2,
+  type StatisticalContextV2,
+} from "./statistical-v2";
 
 const logger = new Logger({
   serviceName: process.env.POWERTOOLS_SERVICE_NAME || "argus-anomaly-detector",
@@ -70,6 +74,7 @@ const detectors: DetectorFn[] = [
  * @param sigint - Signal intelligence data (for network checks)
  * @param statisticalContext - Pre-fetched statistical context (for statistical checks)
  * @param networkBaselineContext - Pre-fetched network baseline context (for ASN-based checks)
+ * @param statisticalContextV2 - Pre-fetched statistical v2 context (Shannon scoring)
  * @returns Aggregated anomaly result with signals, score, and suggested flags
  */
 export function detectAllAnomalies(
@@ -78,6 +83,7 @@ export function detectAllAnomalies(
   sigint?: SigintData,
   statisticalContext?: StatisticalContext | null,
   networkBaselineContext?: NetworkBaselineDetectorContext | null,
+  statisticalContextV2?: StatisticalContextV2 | null,
 ): AnomalyResult {
   const signals: AnomalySignal[] = [];
 
@@ -109,6 +115,14 @@ export function detectAllAnomalies(
     );
   } catch (error) {
     logger.error("Network baseline anomaly detector failed", { error });
+    metrics.addMetric("AnomalyDetectorError", MetricUnit.Count, 1);
+  }
+
+  // Run statistical v2 detection with pre-fetched context (Shannon scoring)
+  try {
+    signals.push(...detectStatisticalAnomaliesV2(statisticalContextV2 ?? null));
+  } catch (error) {
+    logger.error("Statistical v2 anomaly detector failed", { error });
     metrics.addMetric("AnomalyDetectorError", MetricUnit.Count, 1);
   }
 

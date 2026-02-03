@@ -124,6 +124,17 @@ export interface StageConfig {
       // Score threshold for flagging anomalies (0.5 = 50% normalized surprise)
       threshold: number;
     };
+    // Statistical v2: Shannon scoring with dual-layer fingerprints (JA4 + H2)
+    statisticalV2: {
+      // Whether statistical v2 detection is enabled
+      enabled: boolean;
+      // Score threshold for flagging anomalies (0.6 = 60% surprise)
+      threshold: number;
+      // Sample thresholds for tiered TTLs [low, high]
+      tierThresholds: [number, number];
+      // TTLs in seconds for [cold, warm, hot] tiers
+      tierTTLs: [number, number, number];
+    };
   };
 }
 
@@ -220,6 +231,13 @@ const devConfig: StageConfig = {
     networkBaseline: {
       enabled: true,
       threshold: 0.5, // 50% normalized surprise triggers anomaly
+    },
+    // Statistical v2: enabled for dev testing
+    statisticalV2: {
+      enabled: true,
+      threshold: 0.6, // 60% surprise triggers anomaly
+      tierThresholds: [1000, 20000], // [warm threshold, hot threshold]
+      tierTTLs: [3 * 3600, 24 * 3600, 90 * 24 * 3600], // [3h, 24h, 90d]
     },
   },
 };
@@ -319,6 +337,13 @@ const prodConfig: StageConfig = {
     networkBaseline: {
       enabled: false, // Enable after validating in dev
       threshold: 0.5, // 50% normalized surprise triggers anomaly
+    },
+    // Statistical v2: disabled in prod (shadow mode)
+    statisticalV2: {
+      enabled: false, // Enable after validating in dev
+      threshold: 0.6, // 60% surprise triggers anomaly
+      tierThresholds: [1000, 20000], // [warm threshold, hot threshold]
+      tierTTLs: [3 * 3600, 24 * 3600, 90 * 24 * 3600], // [3h, 24h, 90d]
     },
   },
 };

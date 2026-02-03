@@ -418,3 +418,232 @@ export function isNetworkBaselineEnabled(): boolean {
     process.env.NETWORK_BASELINE_ENABLED === "true"
   );
 }
+
+// ============================================================================
+// Statistical V2 Operations (Shannon Scoring + Tiered TTLs)
+// ============================================================================
+
+/** Statistical v2 data for a single fingerprint type */
+export interface StatisticalV2Data {
+  /** Count for this fingerprint within the UA family */
+  count: number;
+  /** Total observations for this UA family */
+  total: number;
+  /** Count across all UA families (global) */
+  globalCount: number;
+  /** Total global observations */
+  globalTotal: number;
+}
+
+/**
+ * Get tiered TTL based on observation count.
+ *
+ * Higher-traffic fingerprints get longer TTLs (they're more stable):
+ * - >= 20,000: 90 days (hot tier - well-established)
+ * - >= 1,000: 24 hours (warm tier - moderate traffic)
+ * - < 1,000: 3 hours (cold tier - low traffic, may be anomalous)
+ *
+ * @param count - Number of observations for this fingerprint
+ * @returns TTL in seconds
+ */
+export function getTieredTTL(count: number): number {
+  if (count >= 20_000) return 90 * 24 * 3600; // 90 days
+  if (count >= 1_000) return 24 * 3600; // 24 hours
+  return 3 * 3600; // 3 hours
+}
+
+/**
+ * Check if statistical v2 detection is enabled.
+ */
+export function isStatisticalV2Enabled(): boolean {
+  return (
+    !!process.env.VALKEY_ENDPOINT &&
+    process.env.STATISTICAL_V2_ENABLED === "true"
+  );
+}
+
+/**
+ * Record a fingerprint observation and get statistical v2 data.
+ *
+ * Records to both UA-family-specific and global counters.
+ * Uses tiered TTLs based on observation count.
+ * Global updates are sampled at 1% to reduce write load.
+ *
+ * Key schema:
+ * - stat:v2:{ua_family}:{type}:{fingerprint} → counter (tiered TTL)
+ * - stat:v2:{ua_family}:{type}:_total → counter (24h TTL)
+ * - stat:v2:_global:{type}:{fingerprint} → counter (1% sampled)
+ * - stat:v2:_global:{type}:_total → counter
+ *
+ * @param uaFamily - Browser family (e.g., "Chrome", "Firefox")
+ * @param type - Fingerprint type ('ja4' or 'h2')
+ * @param fingerprint - The fingerprint value
+ * @returns Statistical data for computing Shannon score
+ */
+export async function recordFingerprintV2(
+  uaFamily: string,
+  type: string,
+  fingerprint: string,
+): Promise<StatisticalV2Data> {
+  const neutralData: StatisticalV2Data = {
+    count: 1,
+    total: 1,
+    globalCount: 1,
+    globalTotal: 1,
+  };
+
+  try {
+    const redisClient = getClient();
+    if (!redisClient) {
+      return neutralData;
+    }
+
+    const startTime = Date.now();
+
+    // Key names for UA-specific counters
+    const uaCountKey = `stat:v2:${uaFamily}:${type}:${fingerprint}`;
+    const uaTotalKey = `stat:v2:${uaFamily}:${type}:_total`;
+
+    // Key names for global counters
+    const globalCountKey = `stat:v2:_global:${type}:${fingerprint}`;
+    const globalTotalKey = `stat:v2:_global:${type}:_total`;
+
+    // Pipeline for reads + increments
+    const pipeline = redisClient.pipeline();
+
+    // Read current counts first (for TTL calculation)
+    pipeline.get(uaCountKey);
+    pipeline.get(uaTotalKey);
+    pipeline.get(globalCountKey);
+    pipeline.get(globalTotalKey);
+
+    // Increment UA-specific counters
+    pipeline.incr(uaCountKey);
+    pipeline.incr(uaTotalKey);
+
+    // Sample global updates at 1% to reduce write load
+    const shouldUpdateGlobal = Math.random() < 0.01;
+    if (shouldUpdateGlobal) {
+      // Increment by 100 to compensate for 1% sampling
+      pipeline.incrby(globalCountKey, 100);
+      pipeline.incrby(globalTotalKey, 100);
+    }
+
+    const results = await pipeline.exec();
+
+    if (!results) {
+      logger.warn("Unexpected null Valkey pipeline results");
+      return neutralData;
+    }
+
+    // Parse read results (indices 0-3)
+    const prevCount = parseInt((results[0]?.[1] as string) || "0", 10);
+    const prevTotal = parseInt((results[1]?.[1] as string) || "0", 10);
+    const globalCount = parseInt((results[2]?.[1] as string) || "0", 10);
+    const globalTotal = parseInt((results[3]?.[1] as string) || "0", 10);
+
+    // Current counts after increment
+    const count = prevCount + 1;
+    const total = prevTotal + 1;
+
+    // Set tiered TTL based on new count
+    const ttl = getTieredTTL(count);
+    const ttlPipeline = redisClient.pipeline();
+    ttlPipeline.expire(uaCountKey, ttl);
+    ttlPipeline.expire(uaTotalKey, 24 * 3600); // Total always 24h
+    if (shouldUpdateGlobal) {
+      ttlPipeline.expire(globalCountKey, 7 * 24 * 3600); // Global: 7 days
+      ttlPipeline.expire(globalTotalKey, 7 * 24 * 3600);
+    }
+    await ttlPipeline.exec();
+
+    const duration = Date.now() - startTime;
+    metrics.addMetric(
+      "ValkeyStatisticalV2OperationMs",
+      MetricUnit.Milliseconds,
+      duration,
+    );
+
+    return {
+      count,
+      total,
+      // Adjust global counts for 1% sampling
+      globalCount: Math.max(1, globalCount),
+      globalTotal: Math.max(1, globalTotal),
+    };
+  } catch (error) {
+    logger.warn("Valkey statistical v2 operation failed", {
+      error,
+      uaFamily,
+      type,
+    });
+    metrics.addMetric("ValkeyStatisticalV2OperationError", MetricUnit.Count, 1);
+    return neutralData;
+  }
+}
+
+/**
+ * Fetch statistical v2 data without recording.
+ *
+ * Used during pre-fetch phase to get counts for scoring.
+ *
+ * @param uaFamily - Browser family
+ * @param type - Fingerprint type (e.g., 'ja4', 'h2')
+ * @param fingerprint - The fingerprint value
+ * @returns Statistical data or null on failure
+ */
+export async function fetchStatisticalV2Data(
+  uaFamily: string,
+  type: string,
+  fingerprint: string,
+): Promise<StatisticalV2Data | null> {
+  try {
+    const redisClient = getClient();
+    if (!redisClient) {
+      return null;
+    }
+
+    const startTime = Date.now();
+
+    // Key names
+    const uaCountKey = `stat:v2:${uaFamily}:${type}:${fingerprint}`;
+    const uaTotalKey = `stat:v2:${uaFamily}:${type}:_total`;
+    const globalCountKey = `stat:v2:_global:${type}:${fingerprint}`;
+    const globalTotalKey = `stat:v2:_global:${type}:_total`;
+
+    // Pipeline all reads
+    const pipeline = redisClient.pipeline();
+    pipeline.get(uaCountKey);
+    pipeline.get(uaTotalKey);
+    pipeline.get(globalCountKey);
+    pipeline.get(globalTotalKey);
+
+    const results = await pipeline.exec();
+
+    const duration = Date.now() - startTime;
+    metrics.addMetric(
+      "ValkeyStatisticalV2FetchMs",
+      MetricUnit.Milliseconds,
+      duration,
+    );
+
+    if (!results || results.length < 4) {
+      return null;
+    }
+
+    return {
+      count: parseInt((results[0]?.[1] as string) || "0", 10),
+      total: parseInt((results[1]?.[1] as string) || "0", 10),
+      globalCount: parseInt((results[2]?.[1] as string) || "0", 10),
+      globalTotal: parseInt((results[3]?.[1] as string) || "0", 10),
+    };
+  } catch (error) {
+    logger.warn("Valkey statistical v2 fetch failed", {
+      error,
+      uaFamily,
+      type,
+    });
+    metrics.addMetric("ValkeyStatisticalV2FetchError", MetricUnit.Count, 1);
+    return null;
+  }
+}

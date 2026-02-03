@@ -12,6 +12,10 @@ import type { MatchResult } from "../../services/matching";
 import { SESSION_PAYLOAD_TTL_SECONDS } from "../../helpers/constants";
 import type { SessionAnomalySignal } from "../../types";
 import type { SqsPayload } from "./parse-record";
+import type {
+  StatisticalContext,
+  StatisticalContextV2,
+} from "../../services/profile/anomaly";
 
 /**
  * Constructs the full session response data object for storage.
@@ -25,6 +29,8 @@ import type { SqsPayload } from "./parse-record";
  * @param params.rawPayload - Original ingested payload with device data
  * @param params.matchResult - Results from the matching service
  * @param params.anomalies - Detected anomaly signals (empty array if none)
+ * @param params.statisticalContext - V1 statistical context (JA4/UA frequency)
+ * @param params.statisticalContextV2 - V2 statistical context (Shannon scoring)
  * @returns Assembled response data ready for serialization
  *
  * @internal
@@ -34,8 +40,17 @@ function buildSessionResponseData(params: {
   rawPayload: SqsPayload;
   matchResult: MatchResult;
   anomalies: SessionAnomalySignal[];
+  statisticalContext?: StatisticalContext | null;
+  statisticalContextV2?: StatisticalContextV2 | null;
 }): Record<string, unknown> {
-  const { sessionId, rawPayload, matchResult, anomalies } = params;
+  const {
+    sessionId,
+    rawPayload,
+    matchResult,
+    anomalies,
+    statisticalContext: _statisticalContext, // V1 deprecated, kept for API compatibility
+    statisticalContextV2,
+  } = params;
 
   const identifiers: Record<string, unknown> = {
     session_id: sessionId,
@@ -70,13 +85,57 @@ function buildSessionResponseData(params: {
     analysis.vector_match_details = matchResult.vector_match_details;
   }
 
-  return {
+  // Build fingerprint analysis object with Redis-based statistical data (V2 only)
+  if (statisticalContextV2) {
+    const fingerprints: Record<string, unknown> = {};
+
+    // Add scores for each fingerprint type
+    for (const [type, score] of Object.entries(statisticalContextV2.scores)) {
+      if (score) {
+        fingerprints[type] = {
+          value: statisticalContextV2.fingerprints[type],
+          grouped_by: score.groupingKey,
+          score: score.score,
+          confidence: score.confidence,
+          raw_ua_score: score.rawUaScore,
+          raw_global_score: score.rawGlobalScore,
+          ua_total: score.uaTotal,
+          global_total: score.globalTotal,
+        };
+      }
+    }
+
+    const fingerprintAnalysis: Record<string, unknown> = {
+      user_agent_family: statisticalContextV2.uaFamily,
+      fingerprints,
+    };
+
+    if (statisticalContextV2.combinedScore !== null) {
+      fingerprintAnalysis.combined_score = statisticalContextV2.combinedScore;
+    }
+    if (statisticalContextV2.baselineSkipped !== undefined) {
+      fingerprintAnalysis.baseline_skipped =
+        statisticalContextV2.baselineSkipped;
+    }
+    if (
+      statisticalContextV2.matchedRules &&
+      statisticalContextV2.matchedRules.length > 0
+    ) {
+      fingerprintAnalysis.matched_rules = statisticalContextV2.matchedRules;
+    }
+
+    analysis.fingerprint_analysis = fingerprintAnalysis;
+  }
+
+  const result: Record<string, unknown> = {
     identifiers,
     analysis,
     hashes: rawPayload.hashes,
     device: rawPayload.device,
     sigint: rawPayload.sigint,
   };
+
+  return result;
 }
 
 /**
@@ -93,6 +152,8 @@ function buildSessionResponseData(params: {
  * @param params.rawPayload - Original payload with device/sigint data
  * @param params.matchResult - Matching service results
  * @param params.anomalies - Detected anomaly signals
+ * @param params.statisticalContext - V1 statistical context (JA4/UA frequency)
+ * @param params.statisticalContextV2 - V2 statistical context (Shannon scoring)
  * @param deps - AWS and logging dependencies
  * @param deps.dynamodb - DynamoDB client instance
  * @param deps.tableName - Session payload table name
@@ -102,7 +163,7 @@ function buildSessionResponseData(params: {
  * @example
  * ```typescript
  * await writeSessionPayload(
- *   { sessionId, rawPayload, matchResult, anomalies },
+ *   { sessionId, rawPayload, matchResult, anomalies, statisticalContext, statisticalContextV2 },
  *   { dynamodb, tableName: "session-payloads", logger, metrics }
  * );
  * ```
@@ -113,6 +174,8 @@ export async function writeSessionPayload(
     rawPayload: SqsPayload;
     matchResult: MatchResult;
     anomalies: SessionAnomalySignal[];
+    statisticalContext?: StatisticalContext | null;
+    statisticalContextV2?: StatisticalContextV2 | null;
   },
   deps: {
     dynamodb: DynamoDBClient;

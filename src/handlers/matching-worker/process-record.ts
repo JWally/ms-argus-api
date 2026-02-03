@@ -12,8 +12,10 @@ import {
   detectAllAnomalies,
   fetchStatisticalContext,
   fetchNetworkBaselineContext,
+  fetchStatisticalContextV2,
   type StatisticalContext,
   type NetworkBaselineDetectorContext,
+  type StatisticalContextV2,
 } from "../../services/profile/anomaly";
 import type { SessionAnomalySignal } from "../../types";
 import type { MatchingWorkerEnvConfig } from "../../config/env";
@@ -98,6 +100,7 @@ async function runMatching(
  * @param rawPayload - Raw SQS payload containing device info
  * @param statisticalContext - Pre-fetched statistical context for frequency-based detection
  * @param networkBaselineContext - Pre-fetched network baseline context for ASN-based detection
+ * @param statisticalContextV2 - Pre-fetched statistical v2 context for Shannon scoring
  * @returns Array of anomaly signals for the session
  */
 function buildAnomalySignals(
@@ -105,6 +108,7 @@ function buildAnomalySignals(
   rawPayload: SqsPayload,
   statisticalContext: StatisticalContext | null,
   networkBaselineContext: NetworkBaselineDetectorContext | null,
+  statisticalContextV2: StatisticalContextV2 | null,
 ): SessionAnomalySignal[] {
   const result = detectAllAnomalies(
     fingerprint,
@@ -112,6 +116,7 @@ function buildAnomalySignals(
     undefined,
     statisticalContext,
     networkBaselineContext,
+    statisticalContextV2,
   );
   return result.signals.map((s) => ({
     type: s.type,
@@ -140,6 +145,8 @@ async function persistResults(
     anomalies: SessionAnomalySignal[];
     rawPayload: SqsPayload;
     payload: ParsedRecord["payload"];
+    statisticalContext: StatisticalContext | null;
+    statisticalContextV2: StatisticalContextV2 | null;
   },
   deps: ProcessRecordDeps,
 ): Promise<void> {
@@ -150,6 +157,8 @@ async function persistResults(
     anomalies,
     rawPayload,
     payload,
+    statisticalContext,
+    statisticalContextV2,
   } = ctx;
   const cacheWritten = await service.writeMatchResult({
     sessionId,
@@ -161,7 +170,14 @@ async function persistResults(
     deps.metrics.addMetric("SessionCacheWriteSkipped", MetricUnit.Count, 1);
   }
   await writeSessionPayload(
-    { sessionId, rawPayload, matchResult, anomalies },
+    {
+      sessionId,
+      rawPayload,
+      matchResult,
+      anomalies,
+      statisticalContext,
+      statisticalContextV2,
+    },
     {
       dynamodb: deps.dynamodb,
       tableName: deps.envConfig.SESSION_PAYLOAD_TABLE,
@@ -268,20 +284,36 @@ export async function processRecord(
 
   // Fetch statistical and network baseline contexts in parallel
   // These are non-blocking on failure - detectors return empty signals if context is null
-  const [statisticalContext, networkBaselineContext] = await Promise.all([
-    fetchStatisticalContext(fingerprint),
-    fetchNetworkBaselineContext(fingerprint, rawPayload.sigint),
-  ]);
+  const [statisticalContext, networkBaselineContext, statisticalContextV2] =
+    await Promise.all([
+      fetchStatisticalContext(fingerprint),
+      fetchNetworkBaselineContext(fingerprint, rawPayload.sigint),
+      fetchStatisticalContextV2(
+        fingerprint,
+        rawPayload.sigint,
+        rawPayload.device,
+      ),
+    ]);
 
   const anomalies = buildAnomalySignals(
     fingerprint,
     rawPayload,
     statisticalContext,
     networkBaselineContext,
+    statisticalContextV2,
   );
   await persistResults(
     service,
-    { sessionId, matchResult, idempotencyKey, anomalies, rawPayload, payload },
+    {
+      sessionId,
+      matchResult,
+      idempotencyKey,
+      anomalies,
+      rawPayload,
+      payload,
+      statisticalContext,
+      statisticalContextV2,
+    },
     deps,
   );
 
