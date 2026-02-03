@@ -30,23 +30,20 @@ function createScore(
   type: string,
   score: number,
   confidence: number,
-  uaCount = 10,
-  uaTotal = 500,
-  globalCount = 100,
-  globalTotal = 10000,
-  groupingKey = "chrome",
+  overrides: Partial<FingerprintScore> = {},
 ): FingerprintScore {
   return {
     type,
-    groupingKey,
+    groupingKey: "chrome",
     score,
     confidence,
     rawUaScore: score,
     rawGlobalScore: score * 0.8,
-    uaTotal,
-    globalTotal,
-    uaCount,
-    globalCount,
+    uaTotal: 500,
+    globalTotal: 10000,
+    uaCount: 10,
+    globalCount: 100,
+    ...overrides,
   };
 }
 
@@ -140,19 +137,37 @@ describe("statistical-v2", () => {
     });
 
     it("returns 100% global score when no UA samples", () => {
-      const result = computeBlendedScore(0, 0, 100, 1000, definition);
+      const result = computeBlendedScore({
+        uaCount: 0,
+        uaTotal: 0,
+        globalCount: 100,
+        globalTotal: 1000,
+        definition,
+      });
       expect(result.confidence).toBe(0);
       expect(result.score).toBeCloseTo(result.rawGlobalScore, 3);
     });
 
     it("returns 100% UA score when at saturation", () => {
-      const result = computeBlendedScore(50, 500, 100, 1000, definition);
+      const result = computeBlendedScore({
+        uaCount: 50,
+        uaTotal: 500,
+        globalCount: 100,
+        globalTotal: 1000,
+        definition,
+      });
       expect(result.confidence).toBe(1.0);
       expect(result.score).toBeCloseTo(result.rawUaScore, 3);
     });
 
     it("returns 50/50 blend at 25% of saturation", () => {
-      const result = computeBlendedScore(10, 125, 100, 1000, definition);
+      const result = computeBlendedScore({
+        uaCount: 10,
+        uaTotal: 125,
+        globalCount: 100,
+        globalTotal: 1000,
+        definition,
+      });
       expect(result.confidence).toBe(0.5);
       const expectedBlend =
         0.5 * result.rawUaScore + 0.5 * result.rawGlobalScore;
@@ -251,7 +266,13 @@ describe("statistical-v2", () => {
         groupingKeys: { ja4: "firefox", h2: "firefox" },
         scores: {
           ja4: null,
-          h2: createScore("h2", 0.6, 0.5, 10, 500, 100, 10000, "firefox"), // Above 0.5 threshold, above 0.3 confidence
+          h2: createScore("h2", 0.6, 0.5, {
+            uaCount: 10,
+            uaTotal: 500,
+            globalCount: 100,
+            globalTotal: 10000,
+            groupingKey: "firefox",
+          }), // Above 0.5 threshold, above 0.3 confidence
         },
         combinedScore: null,
       };

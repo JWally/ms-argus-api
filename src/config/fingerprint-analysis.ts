@@ -182,15 +182,6 @@ export function getFingerprintTypes(): string[] {
 }
 
 /**
- * Get definition for a specific fingerprint type.
- */
-export function getFingerprintDefinition(
-  type: string,
-): FingerprintDefinition | undefined {
-  return FINGERPRINT_DEFINITIONS[type];
-}
-
-/**
  * Get the grouping strategy for a fingerprint type.
  * Defaults to "uaFamily" if not specified.
  */

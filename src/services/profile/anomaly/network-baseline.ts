@@ -219,7 +219,7 @@ export function computeConfidence(sampleCount: number): number {
  * @param ctx - Baseline context with histograms
  * @returns Raw score in [0, 1]
  */
-export function computeRawScore(ctx: NetworkBaselineContext): number {
+function computeRawScore(ctx: NetworkBaselineContext): number {
   const tlsScore = computeShannonScore(
     ctx.histograms.tlsRatio.get(ctx.tlsRatioBucket) || 0,
     ctx.total,
@@ -234,47 +234,22 @@ export function computeRawScore(ctx: NetworkBaselineContext): number {
   return tlsScore * 0.6 + mssScore * 0.4;
 }
 
-/**
- * Compute blended anomaly score using Bayesian approach.
- *
- * Smoothly transitions from global baseline (for new ASNs) to
- * ASN-specific baseline (for established ASNs) based on sample size.
- *
- * Formula: final = (asn_score × confidence) + (global_score × (1 - confidence))
- *
- * @param asnCtx - ASN-specific baseline context
- * @param globalCtx - Global baseline context (fallback)
- * @returns Blended result with score, confidence, and signals
- */
-export function computeBlendedScore(
+/** Build debug signals based on scores */
+function buildSignals(
   asnCtx: NetworkBaselineContext,
   globalCtx: NetworkBaselineContext,
-): BaselineResult {
+  blendedScore: number,
+  confidence: number,
+): string[] {
   const signals: string[] = [];
-
-  // Confidence: sqrt curve rewards early data, plateaus at saturation
-  const confidence = computeConfidence(asnCtx.total);
-
-  // Compute raw scores for both baselines
-  const rawAsnScore = computeRawScore(asnCtx);
-  const rawGlobalScore = computeRawScore(globalCtx);
-
-  // Bayesian blend:
-  // - If confidence=0 (new ASN): 100% global score
-  // - If confidence=1 (established ASN): 100% ASN-specific score
-  const blendedScore =
-    rawAsnScore * confidence + rawGlobalScore * (1 - confidence);
-
-  // Build signals for debugging
   if (blendedScore > 0.5) {
-    if (confidence > 0.8) {
-      signals.push(`high_confidence_asn_anomaly:${asnCtx.asn}`);
-    } else {
-      signals.push("global_baseline_deviation");
-    }
+    signals.push(
+      confidence > 0.8
+        ? `high_confidence_asn_anomaly:${asnCtx.asn}`
+        : "global_baseline_deviation",
+    );
   }
 
-  // Add specific metric signals
   const asnTlsScore = computeShannonScore(
     asnCtx.histograms.tlsRatio.get(asnCtx.tlsRatioBucket) || 0,
     asnCtx.total,
@@ -290,10 +265,28 @@ export function computeBlendedScore(
   if (globalTlsScore > 0.6) {
     signals.push(`rare_tls_ratio_globally:${asnCtx.tlsRatioBucket}`);
   }
+  return signals;
+}
+
+/**
+ * Compute blended anomaly score using Bayesian approach.
+ *
+ * Smoothly transitions from global baseline (for new ASNs) to
+ * ASN-specific baseline (for established ASNs) based on sample size.
+ */
+export function computeBlendedScore(
+  asnCtx: NetworkBaselineContext,
+  globalCtx: NetworkBaselineContext,
+): BaselineResult {
+  const confidence = computeConfidence(asnCtx.total);
+  const rawAsnScore = computeRawScore(asnCtx);
+  const rawGlobalScore = computeRawScore(globalCtx);
+  const blendedScore =
+    rawAsnScore * confidence + rawGlobalScore * (1 - confidence);
+  const signals = buildSignals(asnCtx, globalCtx, blendedScore, confidence);
 
   logger.debug("Network baseline score computed", {
     asn: asnCtx.asn,
-    deviceType: asnCtx.deviceType,
     tlsRatioBucket: asnCtx.tlsRatioBucket,
     mssBucket: asnCtx.mssBucket,
     asnTotal: asnCtx.total,

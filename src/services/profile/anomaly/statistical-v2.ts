@@ -174,6 +174,23 @@ export function computeConfidence(
   return Math.min(1.0, Math.sqrt(sampleCount / saturationThreshold));
 }
 
+/** Input for blended score computation */
+interface BlendedScoreInput {
+  uaCount: number;
+  uaTotal: number;
+  globalCount: number;
+  globalTotal: number;
+  definition: FingerprintDefinition;
+}
+
+/** Output from blended score computation */
+interface BlendedScoreResult {
+  score: number;
+  confidence: number;
+  rawUaScore: number;
+  rawGlobalScore: number;
+}
+
 /**
  * Compute blended anomaly score using Bayesian approach.
  *
@@ -181,26 +198,11 @@ export function computeConfidence(
  * UA-specific baseline (for established UA families) based on sample size.
  *
  * Formula: final = (ua_score × confidence) + (global_score × (1 - confidence))
- *
- * @param uaCount - Count for this fingerprint within UA family
- * @param uaTotal - Total observations for UA family
- * @param globalCount - Count across all UA families
- * @param globalTotal - Total global observations
- * @param definition - Fingerprint type definition with tuning parameters
- * @returns Blended score with confidence and raw values
  */
 export function computeBlendedScore(
-  uaCount: number,
-  uaTotal: number,
-  globalCount: number,
-  globalTotal: number,
-  definition: FingerprintDefinition,
-): {
-  score: number;
-  confidence: number;
-  rawUaScore: number;
-  rawGlobalScore: number;
-} {
+  input: BlendedScoreInput,
+): BlendedScoreResult {
+  const { uaCount, uaTotal, globalCount, globalTotal, definition } = input;
   const confidence = computeConfidence(uaTotal, definition.saturationThreshold);
   const rawUaScore = computeShannonScore(
     uaCount,
@@ -258,87 +260,71 @@ export function computeCombinedScore(
 // Grouping Key Resolution
 // ============================================================================
 
+/** Context for resolving grouping keys */
+interface KeyResolverContext {
+  uaFamily: string;
+  originalUA: string | null;
+  network: Record<string, unknown>;
+  device: Record<string, unknown>;
+}
+
+/** Resolver function type */
+type KeyResolver = (ctx: KeyResolverContext) => string | null;
+
+/** Built-in key resolvers */
+const KEY_RESOLVERS: Record<string, KeyResolver> = {
+  uaFamily: (ctx) => ctx.uaFamily,
+  userAgent: (ctx) => ctx.originalUA,
+  asn: (ctx) => {
+    const asn = getByPath<string | number>(ctx.network, "tlsFingerprint.asn");
+    return asn ? `AS${asn}` : null;
+  },
+  country: (ctx) =>
+    getByPath<string>(ctx.network, "tlsFingerprint.country") || null,
+  platform: (ctx) =>
+    getByPath<string>(ctx.device, "navigator.platform") || null,
+  gpu: (ctx) =>
+    getByPath<string>(ctx.device, "canvasWebgl.gpu.compressedGPU") || null,
+  cpuCores: (ctx) => {
+    const cores = getByPath<number>(
+      ctx.device,
+      "workerScope.hardwareConcurrency",
+    );
+    return cores ? String(cores) : null;
+  },
+  deviceMemory: (ctx) => {
+    const mem = getByPath<number>(ctx.device, "workerScope.deviceMemory");
+    return mem ? String(mem) : null;
+  },
+  screen: (ctx) => {
+    const w = getByPath<number>(ctx.device, "screen.width");
+    const h = getByPath<number>(ctx.device, "screen.height");
+    return w && h ? `${w}x${h}` : null;
+  },
+};
+
 /**
  * Resolve a single grouping key component (built-in name or path).
  */
-function resolveSingleKey(
-  key: string,
-  uaFamily: string,
-  network: RawNetworkData | undefined,
-  device: Record<string, Record<string, unknown> | undefined> | undefined,
-  originalUA: string | null,
-): string | null {
-  // Handle built-in strategy names
-  switch (key) {
-    case "uaFamily":
-      return uaFamily;
-    case "userAgent":
-      // Return full user-agent string for precise grouping
-      return originalUA;
-    case "asn": {
-      const asn = getByPath<string | number>(
-        network as Record<string, unknown>,
-        "tlsFingerprint.asn",
-      );
-      return asn ? `AS${asn}` : null;
-    }
-    case "country":
-      return (
-        getByPath<string>(
-          network as Record<string, unknown>,
-          "tlsFingerprint.country",
-        ) || null
-      );
-    case "platform":
-      return (
-        getByPath<string>(
-          device as Record<string, unknown>,
-          "navigator.platform",
-        ) || null
-      );
-    case "gpu":
-      return (
-        getByPath<string>(
-          device as Record<string, unknown>,
-          "canvasWebgl.gpu.compressedGPU",
-        ) || null
-      );
-    case "cpuCores":
-      const cores = getByPath<number>(
-        device as Record<string, unknown>,
-        "workerScope.hardwareConcurrency",
-      );
-      return cores ? String(cores) : null;
-    case "deviceMemory":
-      const mem = getByPath<number>(
-        device as Record<string, unknown>,
-        "workerScope.deviceMemory",
-      );
-      return mem ? String(mem) : null;
-    case "screen":
-      const w = getByPath<number>(
-        device as Record<string, unknown>,
-        "screen.width",
-      );
-      const h = getByPath<number>(
-        device as Record<string, unknown>,
-        "screen.height",
-      );
-      return w && h ? `${w}x${h}` : null;
-    default:
-      // Treat as a path - try network first, then device
-      let value = getByPath<string | number>(
-        network as Record<string, unknown>,
-        key,
-      );
-      if (value === undefined || value === null) {
-        value = getByPath<string | number>(
-          device as Record<string, unknown>,
-          key,
-        );
-      }
-      return value !== undefined && value !== null ? String(value) : null;
+function resolveSingleKey(key: string, ctx: KeyResolverContext): string | null {
+  // Check for built-in resolver
+  const resolver = KEY_RESOLVERS[key];
+  if (resolver) {
+    return resolver(ctx);
   }
+
+  // Treat as a path - try network first, then device
+  const fromNetwork = getByPath<string | number>(ctx.network, key);
+  if (fromNetwork !== undefined && fromNetwork !== null) {
+    return String(fromNetwork);
+  }
+
+  const fromDevice = getByPath<string | number>(ctx.device, key);
+  if (fromDevice !== undefined && fromDevice !== null) {
+    return String(fromDevice);
+  }
+
+  return null;
 }
 
 /**
@@ -351,36 +337,24 @@ function resolveSingleKey(
  * @param originalUA - Original user-agent string (for "userAgent" strategy)
  * @returns The resolved grouping key, or null if it can't be resolved
  */
-function resolveGroupingKeyWithUA(
+/**
+ * Resolve the grouping key for a fingerprint type based on its strategy.
+ */
+function resolveGroupingKey(
   strategy: GroupingStrategy,
-  uaFamily: string,
-  network: RawNetworkData | undefined,
-  device: Record<string, Record<string, unknown> | undefined> | undefined,
-  originalUA: string | null,
+  ctx: KeyResolverContext,
 ): string | null {
   // Handle composite keys (array of keys/paths)
   if (Array.isArray(strategy)) {
-    const parts: string[] = [];
-    for (const key of strategy) {
-      const value = resolveSingleKey(
-        key,
-        uaFamily,
-        network,
-        device,
-        originalUA,
-      );
-      if (value) {
-        parts.push(value);
-      }
-    }
+    const parts = strategy
+      .map((key) => resolveSingleKey(key, ctx))
+      .filter((v): v is string => v !== null);
     return parts.length > 0 ? parts.join(":") : null;
   }
 
   // Handle single key (built-in name or path)
-  return resolveSingleKey(strategy, uaFamily, network, device, originalUA);
+  return resolveSingleKey(strategy, ctx);
 }
-
-// Old resolveGroupingKey removed - use resolveGroupingKeyWithUA instead
 
 // ============================================================================
 // Context Fetching
@@ -415,6 +389,108 @@ function extractFingerprints(
   return result;
 }
 
+/** Statistical data from Valkey */
+interface StatData {
+  count: number;
+  total: number;
+  globalCount: number;
+  globalTotal: number;
+}
+
+/**
+ * Resolve grouping keys for all fingerprint types.
+ */
+function resolveAllGroupingKeys(
+  types: string[],
+  keyCtx: KeyResolverContext,
+): Record<string, string> {
+  const groupingKeys: Record<string, string> = {};
+  for (const type of types) {
+    const strategy = getGroupingStrategy(type);
+    const key = resolveGroupingKey(strategy, keyCtx);
+    groupingKeys[type] = key || keyCtx.uaFamily;
+  }
+  return groupingKeys;
+}
+
+/**
+ * Log summary of context fetching results.
+ */
+function logContextSummary(
+  uaFamily: string,
+  scores: Record<string, FingerprintScore | null>,
+  combinedScore: number | null,
+  skipBaseline: boolean,
+): void {
+  const summary: Record<string, string | undefined> = {};
+  for (const [type, score] of Object.entries(scores)) {
+    if (score) {
+      summary[type] = score.score.toFixed(3);
+      summary[`${type}Confidence`] = score.confidence.toFixed(3);
+    }
+  }
+  logger.info("Statistical v2 context fetched", {
+    uaFamily,
+    ...summary,
+    combinedScore: combinedScore?.toFixed(3),
+    baselineSkipped: skipBaseline,
+  });
+}
+
+/**
+ * Compute scores for all fingerprint types from fetched data.
+ */
+function computeScores(
+  types: string[],
+  dataResults: (StatData | null)[],
+  fingerprints: Record<string, string | null>,
+  groupingKeys: Record<string, string>,
+): Record<string, FingerprintScore | null> {
+  const scores: Record<string, FingerprintScore | null> = {};
+
+  for (let i = 0; i < types.length; i++) {
+    const type = types[i];
+    const data = dataResults[i];
+    const value = fingerprints[type];
+    const definition = FINGERPRINT_DEFINITIONS[type];
+    const groupKey = groupingKeys[type];
+
+    if (!data || !value || !definition) {
+      scores[type] = null;
+      continue;
+    }
+
+    const blended = computeBlendedScore({
+      uaCount: data.count,
+      uaTotal: data.total,
+      globalCount: data.globalCount,
+      globalTotal: data.globalTotal,
+      definition,
+    });
+
+    scores[type] = {
+      type,
+      groupingKey: groupKey,
+      score: blended.score,
+      confidence: blended.confidence,
+      rawUaScore: blended.rawUaScore,
+      rawGlobalScore: blended.rawGlobalScore,
+      uaTotal: data.total,
+      globalTotal: data.globalTotal,
+      uaCount: data.count,
+      globalCount: data.globalCount,
+    };
+
+    metrics.addMetric(
+      `StatisticalV2${capitalize(type)}Score`,
+      MetricUnit.NoUnit,
+      blended.score,
+    );
+  }
+
+  return scores;
+}
+
 /**
  * Fetch statistical v2 context for anomaly detection.
  *
@@ -427,164 +503,120 @@ function extractFingerprints(
  * @param device - Raw device payload for baseline rule evaluation
  * @returns Statistical context or null if detection is disabled/not applicable
  */
+/** Extract and validate user agent, returning null if invalid */
+function extractUserAgent(
+  fingerprint: Fingerprint,
+  network: RawNetworkData | undefined,
+): string | null {
+  const ua = fingerprint.user_agent || network?.tcpProbe?.user_agent || null;
+  if (!ua) logger.warn("Statistical v2 skipped - no user agent");
+  return ua;
+}
+
+/** Input for processing fingerprints */
+interface ProcessInput {
+  fingerprint: Fingerprint;
+  device: Record<string, Record<string, unknown> | undefined> | undefined;
+  userAgent: string;
+  uaFamily: string;
+  fingerprints: Record<string, string | null>;
+  types: string[];
+  groupingKeys: Record<string, string>;
+}
+
+/** Process fingerprints and return context */
+async function processFingerprints(
+  input: ProcessInput,
+): Promise<StatisticalContextV2> {
+  const {
+    fingerprint,
+    device,
+    userAgent,
+    uaFamily,
+    fingerprints,
+    types,
+    groupingKeys,
+  } = input;
+
+  const ruleResult = evaluateBaselineRules(
+    buildRuleContext(fingerprint, device),
+  );
+  const skipBaseline = ruleResult.shouldSkipBaseline;
+  if (skipBaseline) {
+    logger.info("Skipping baseline update", {
+      uaFamily,
+      matchedRules: ruleResult.matchedRules,
+    });
+    metrics.addMetric("BaselineSkipped", MetricUnit.Count, 1);
+  }
+
+  const fetcher = skipBaseline ? fetchStatisticalV2Data : recordFingerprintV2;
+  const dataPromises = types.map((type) =>
+    fingerprints[type]
+      ? fetcher(groupingKeys[type], type, fingerprints[type]!)
+      : Promise.resolve(null),
+  );
+
+  const dataResults = await Promise.all(dataPromises);
+  const scores = computeScores(types, dataResults, fingerprints, groupingKeys);
+  const combinedScore = computeCombinedScore(
+    Object.values(scores),
+    COMBINED_MIN_CONFIDENCE,
+  );
+
+  logContextSummary(uaFamily, scores, combinedScore, skipBaseline);
+
+  return {
+    uaFamily,
+    originalUA: userAgent,
+    fingerprints,
+    groupingKeys,
+    scores,
+    combinedScore,
+    baselineSkipped: skipBaseline,
+    matchedRules: ruleResult.matchedRules,
+  };
+}
+
+/**
+ * Fetch statistical v2 context for anomaly detection.
+ */
 export async function fetchStatisticalContextV2(
   fingerprint: Fingerprint,
   network: RawNetworkData | undefined,
   device?: Record<string, Record<string, unknown> | undefined>,
 ): Promise<StatisticalContextV2 | null> {
-  if (!isStatisticalV2Enabled()) {
-    logger.debug("Statistical v2 disabled");
-    return null;
-  }
+  if (!isStatisticalV2Enabled()) return null;
 
-  // Extract user agent
-  const userAgent =
-    fingerprint.user_agent || network?.tcpProbe?.user_agent || null;
-  if (!userAgent) {
-    logger.warn("Statistical v2 skipped - no user agent");
-    return null;
-  }
+  const userAgent = extractUserAgent(fingerprint, network);
+  if (!userAgent) return null;
 
-  // Parse UA into family (chrome, firefox, safari, etc.) - NOT full string
-  const uaParsed = parseUAFamily(userAgent);
-  const uaFamily = uaParsed.baselineKey;
-
-  logger.debug("UA family parsed", {
-    original: userAgent.substring(0, 60),
-    browser: uaParsed.browser,
-    majorVersion: uaParsed.majorVersion,
-    baselineKey: uaFamily,
-  });
-
-  // Extract all configured fingerprints
+  const uaFamily = parseUAFamily(userAgent).baselineKey;
   const fingerprints = extractFingerprints(network);
 
-  // Check if we have at least one fingerprint
-  const hasAnyFingerprint = Object.values(fingerprints).some((v) => v !== null);
-  if (!hasAnyFingerprint) {
+  if (!Object.values(fingerprints).some((v) => v !== null)) {
     logger.debug("Statistical v2 skipped - no fingerprints available");
     return null;
   }
 
-  // Resolve grouping keys for each fingerprint type
   const types = getFingerprintTypes();
-  const groupingKeys: Record<string, string> = {};
-
-  for (const type of types) {
-    const strategy = getGroupingStrategy(type);
-    const key = resolveGroupingKeyWithUA(
-      strategy,
-      uaFamily,
-      network,
-      device,
-      userAgent,
-    );
-    // Fall back to uaFamily if the custom key can't be resolved
-    groupingKeys[type] = key || uaFamily;
-  }
+  const keyCtx: KeyResolverContext = {
+    uaFamily,
+    originalUA: userAgent,
+    network: network as Record<string, unknown>,
+    device: device as Record<string, unknown>,
+  };
 
   try {
-    // Evaluate baseline filtering rules
-    const ruleContext = buildRuleContext(fingerprint, device);
-    const ruleResult = evaluateBaselineRules(ruleContext);
-    const skipBaseline = ruleResult.shouldSkipBaseline;
-
-    if (skipBaseline) {
-      logger.info("Skipping baseline update", {
-        uaFamily,
-        matchedRules: ruleResult.matchedRules,
-      });
-      metrics.addMetric("BaselineSkipped", MetricUnit.Count, 1);
-    }
-
-    // Branch: read-only (skip) vs read+write (record)
-    const fetcher = skipBaseline ? fetchStatisticalV2Data : recordFingerprintV2;
-
-    // Fetch data for all fingerprint types in parallel (using per-type grouping keys)
-    const dataPromises = types.map((type) => {
-      const value = fingerprints[type];
-      const groupKey = groupingKeys[type];
-      if (!value) return Promise.resolve(null);
-      return fetcher(groupKey, type, value);
-    });
-
-    const dataResults = await Promise.all(dataPromises);
-
-    // Compute scores for each fingerprint type
-    const scores: Record<string, FingerprintScore | null> = {};
-
-    for (let i = 0; i < types.length; i++) {
-      const type = types[i];
-      const data = dataResults[i];
-      const value = fingerprints[type];
-      const definition = FINGERPRINT_DEFINITIONS[type];
-      const groupKey = groupingKeys[type];
-
-      if (!data || !value || !definition) {
-        scores[type] = null;
-        continue;
-      }
-
-      const blended = computeBlendedScore(
-        data.count,
-        data.total,
-        data.globalCount,
-        data.globalTotal,
-        definition,
-      );
-
-      scores[type] = {
-        type,
-        groupingKey: groupKey,
-        score: blended.score,
-        confidence: blended.confidence,
-        rawUaScore: blended.rawUaScore,
-        rawGlobalScore: blended.rawGlobalScore,
-        uaTotal: data.total,
-        globalTotal: data.globalTotal,
-        uaCount: data.count,
-        globalCount: data.globalCount,
-      };
-
-      // Emit metric for this fingerprint type
-      const metricName = `StatisticalV2${capitalize(type)}Score`;
-      metrics.addMetric(metricName, MetricUnit.NoUnit, blended.score);
-    }
-
-    // Compute combined score from all available scores
-    const combinedScore = computeCombinedScore(
-      Object.values(scores),
-      COMBINED_MIN_CONFIDENCE,
-    );
-
-    // Log context summary
-    const scoresSummary: Record<string, string | undefined> = {};
-    const confidenceSummary: Record<string, string | undefined> = {};
-    for (const [type, score] of Object.entries(scores)) {
-      if (score) {
-        scoresSummary[type] = score.score.toFixed(3);
-        confidenceSummary[`${type}Confidence`] = score.confidence.toFixed(3);
-      }
-    }
-
-    logger.info("Statistical v2 context fetched", {
+    return await processFingerprints({
+      fingerprint,
+      device,
+      userAgent,
       uaFamily,
-      ...scoresSummary,
-      ...confidenceSummary,
-      combinedScore: combinedScore?.toFixed(3),
-      baselineSkipped: skipBaseline,
-    });
-
-    return {
-      uaFamily,
-      originalUA: userAgent,
       fingerprints,
-      groupingKeys,
-      scores,
-      combinedScore,
-      baselineSkipped: skipBaseline,
-      matchedRules: ruleResult.matchedRules,
-    };
+      types,
+      groupingKeys: resolveAllGroupingKeys(types, keyCtx),
+    });
   } catch (error) {
     logger.warn("Statistical v2 context fetch failed", { error, uaFamily });
     metrics.addMetric("StatisticalV2ContextError", MetricUnit.Count, 1);
@@ -593,81 +625,95 @@ export async function fetchStatisticalContextV2(
 }
 
 // ============================================================================
+// Detection Helpers
+// ============================================================================
+
+/**
+ * Check a single fingerprint for anomaly based on its thresholds.
+ */
+function checkFingerprintAnomaly(
+  type: string,
+  score: FingerprintScore,
+  uaFamily: string,
+): AnomalySignal | null {
+  const definition = FINGERPRINT_DEFINITIONS[type];
+  if (!definition) return null;
+
+  const isAnomaly =
+    score.score >= definition.anomalyThreshold &&
+    score.confidence >= definition.confidenceThreshold;
+
+  if (!isAnomaly) return null;
+
+  logger.info(`Rare ${type.toUpperCase()} for UA detected`, {
+    uaFamily,
+    score: score.score.toFixed(3),
+    threshold: definition.anomalyThreshold,
+    confidence: score.confidence.toFixed(3),
+    uaCount: score.uaCount,
+    uaTotal: score.uaTotal,
+  });
+
+  metrics.addMetric(
+    `StatisticalV2${capitalize(type)}Anomaly`,
+    MetricUnit.Count,
+    1,
+  );
+
+  const anomalyCode = definition.anomalyCode as AnomalyCode;
+  if (!(anomalyCode in AnomalyCodes)) {
+    logger.error(`Unknown anomaly code: ${anomalyCode}`);
+    return null;
+  }
+
+  return createSignal("STATISTICAL", anomalyCode, score.score, {
+    expected: `${definition.fieldName} typical for '${uaFamily}' (threshold=${definition.anomalyThreshold})`,
+    actual: `score=${score.score.toFixed(3)}, seen=${score.uaCount}/${score.uaTotal}`,
+    fields: [definition.fieldName, "user_agent"],
+  });
+}
+
+/**
+ * Build score summary string for logging.
+ */
+function buildScoreSummary(
+  scores: Record<string, FingerprintScore | null>,
+): string {
+  return Object.entries(scores)
+    .filter(([, s]) => s !== null)
+    .map(([type, s]) => `${type}=${s?.score.toFixed(3)}`)
+    .join(", ");
+}
+
+// ============================================================================
 // Detection
 // ============================================================================
 
 /**
  * Detect statistical anomalies from pre-fetched v2 context.
- *
- * Detection strategy:
- * 1. Check each fingerprint independently with type-specific thresholds
- * 2. Check combined score for correlated weak signals
- * 3. Return all triggered anomalies with severity = score
- *
- * @param context - Pre-fetched statistical context, or null to skip detection
- * @returns Array of anomaly signals (empty if no anomalies detected)
  */
 export function detectStatisticalAnomaliesV2(
   context: StatisticalContextV2 | null,
 ): AnomalySignal[] {
-  if (!context) {
-    return [];
-  }
+  if (!context) return [];
 
   const signals: AnomalySignal[] = [];
   const { uaFamily, scores, combinedScore } = context;
 
-  // Check each fingerprint type with its specific thresholds
+  // Check each fingerprint type
   for (const [type, score] of Object.entries(scores)) {
     if (!score) continue;
-
-    const definition = FINGERPRINT_DEFINITIONS[type];
-    if (!definition) continue;
-
-    if (
-      score.score >= definition.anomalyThreshold &&
-      score.confidence >= definition.confidenceThreshold
-    ) {
-      logger.info(`Rare ${type.toUpperCase()} for UA detected`, {
-        uaFamily,
-        score: score.score.toFixed(3),
-        threshold: definition.anomalyThreshold,
-        confidence: score.confidence.toFixed(3),
-        uaCount: score.uaCount,
-        uaTotal: score.uaTotal,
-      });
-
-      const metricName = `StatisticalV2${capitalize(type)}Anomaly`;
-      metrics.addMetric(metricName, MetricUnit.Count, 1);
-
-      // Validate that the anomaly code exists
-      const anomalyCode = definition.anomalyCode as AnomalyCode;
-      if (!(anomalyCode in AnomalyCodes)) {
-        logger.error(`Unknown anomaly code: ${anomalyCode}`);
-        continue;
-      }
-
-      signals.push(
-        createSignal("STATISTICAL", anomalyCode, score.score, {
-          expected: `${definition.fieldName} typical for '${uaFamily}' (threshold=${definition.anomalyThreshold})`,
-          actual: `score=${score.score.toFixed(3)}, seen=${score.uaCount}/${score.uaTotal}`,
-          fields: [definition.fieldName, "user_agent"],
-        }),
-      );
-    }
+    const signal = checkFingerprintAnomaly(type, score, uaFamily);
+    if (signal) signals.push(signal);
   }
 
-  // Check combined score - catches correlated weak signals
+  // Check combined score only if no individual signals
   if (
     combinedScore !== null &&
     combinedScore >= COMBINED_THRESHOLD &&
-    // Only flag combined if no individual signals already flagged
     signals.length === 0
   ) {
-    const scoreSummary = Object.entries(scores)
-      .filter(([, s]) => s !== null)
-      .map(([type, s]) => `${type}=${s!.score.toFixed(3)}`)
-      .join(", ");
+    const scoreSummary = buildScoreSummary(scores);
 
     logger.info("Combined fingerprint anomaly detected", {
       uaFamily,
