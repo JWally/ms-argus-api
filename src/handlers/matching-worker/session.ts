@@ -72,8 +72,23 @@ function buildSessionResponseData(params: {
     flags: matchResult.flags,
     evidence_codes: matchResult.evidence_codes,
   };
-  if (anomalies.length > 0) {
-    analysis.anomalies = anomalies;
+
+  // Split anomalies into browser-reported vs server-detected
+  // Browser-reported: issues the client detected itself (lies, headless indicators)
+  // Server-detected (suspicious): rules triggered by cross-field validation, statistical analysis, etc.
+  const browserReportedCodes = new Set(["NAVIGATOR_LIES", "HEADLESS_DETECTED"]);
+  const browserAnomalies = anomalies.filter((a) =>
+    browserReportedCodes.has(a.code),
+  );
+  const serverSuspicious = anomalies.filter(
+    (a) => !browserReportedCodes.has(a.code),
+  );
+
+  if (browserAnomalies.length > 0) {
+    analysis.anomalies = browserAnomalies;
+  }
+  if (serverSuspicious.length > 0) {
+    analysis.suspicious = serverSuspicious;
   }
   if (matchResult.simhash_details) {
     analysis.simhash_details = matchResult.simhash_details;
