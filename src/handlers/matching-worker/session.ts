@@ -73,22 +73,58 @@ function buildSessionResponseData(params: {
     evidence_codes: matchResult.evidence_codes,
   };
 
-  // Split anomalies into browser-reported vs server-detected
-  // Browser-reported: issues the client detected itself (lies, headless indicators)
-  // Server-detected (suspicious): rules triggered by cross-field validation, statistical analysis, etc.
-  const browserReportedCodes = new Set(["NAVIGATOR_LIES", "HEADLESS_DETECTED"]);
-  const browserAnomalies = anomalies.filter((a) =>
-    browserReportedCodes.has(a.code),
-  );
-  const serverSuspicious = anomalies.filter(
-    (a) => !browserReportedCodes.has(a.code),
-  );
+  // Build anomalies object with raw browser-reported data
+  // This includes lies, headless indicators, and captured errors from the device
+  const device = rawPayload.device || {};
+  const lies = device.lies as Record<string, unknown> | undefined;
+  const headless = device.headless as Record<string, unknown> | undefined;
+  const capturedErrors = device.capturedErrors as
+    | Record<string, unknown>
+    | undefined;
 
-  if (browserAnomalies.length > 0) {
+  const browserAnomalies: Record<string, unknown> = {};
+
+  // Include lies data if present
+  if (lies && (lies.totalLies as number) > 0) {
+    browserAnomalies.lies = {
+      total: lies.totalLies,
+      data: lies.data,
+    };
+  }
+
+  // Include headless indicators if any ratings > 0
+  if (headless) {
+    const likeHeadlessRating = headless.likeHeadlessRating as number;
+    const headlessRating = headless.headlessRating as number;
+    const stealthRating = headless.stealthRating as number;
+
+    if (likeHeadlessRating > 0 || headlessRating > 0 || stealthRating > 0) {
+      browserAnomalies.headless = {
+        likeHeadlessRating,
+        headlessRating,
+        stealthRating,
+        likeHeadless: headless.likeHeadless,
+        headless: headless.headless,
+        stealth: headless.stealth,
+      };
+    }
+  }
+
+  // Include captured errors if present
+  if (capturedErrors) {
+    const errorData = capturedErrors.data as unknown[];
+    if (Array.isArray(errorData) && errorData.length > 0) {
+      browserAnomalies.errors = errorData;
+    }
+  }
+
+  if (Object.keys(browserAnomalies).length > 0) {
     analysis.anomalies = browserAnomalies;
   }
-  if (serverSuspicious.length > 0) {
-    analysis.suspicious = serverSuspicious;
+
+  // Server-detected suspicious signals (cross-field validation, statistical, network)
+  if (anomalies.length > 0) {
+    analysis.suspicious = anomalies;
   }
   if (matchResult.simhash_details) {
     analysis.simhash_details = matchResult.simhash_details;
