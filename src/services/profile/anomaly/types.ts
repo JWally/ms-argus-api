@@ -31,6 +31,7 @@ export const AnomalyCodes = {
   RARE_JA4_FOR_UA: "RARE_JA4_FOR_UA",
   RARE_H2_FOR_UA: "RARE_H2_FOR_UA",
   RARE_GPU_FOR_PLATFORM: "RARE_GPU_FOR_PLATFORM",
+  RARE_MATHS_FOR_UA: "RARE_MATHS_FOR_UA",
 } as const;
 
 export type AnomalyCode = (typeof AnomalyCodes)[keyof typeof AnomalyCodes];

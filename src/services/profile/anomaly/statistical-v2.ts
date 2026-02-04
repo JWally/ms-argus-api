@@ -360,30 +360,47 @@ function resolveGroupingKey(
 // Context Fetching
 // ============================================================================
 
+/** Sources for fingerprint extraction */
+interface ExtractionSources {
+  network?: RawNetworkData;
+  device?: Record<string, unknown>;
+  hashes?: Record<string, string | undefined>;
+}
+
 /**
- * Extract all configured fingerprints from the network payload.
+ * Extract all configured fingerprints from available sources.
  *
- * @param network - Raw network data from sigint
+ * Each fingerprint definition specifies its source:
+ * - "network": sigint/network data (default)
+ * - "device": device fingerprint data
+ * - "hashes": pre-computed hash values
+ *
+ * @param sources - Available data sources for extraction
  * @returns Map of fingerprint type to extracted value (or null if not present)
  */
 function extractFingerprints(
-  network: RawNetworkData | undefined,
+  sources: ExtractionSources,
 ): Record<string, string | null> {
   const result: Record<string, string | null> = {};
 
-  if (!network) {
-    for (const type of getFingerprintTypes()) {
-      result[type] = null;
-    }
-    return result;
-  }
-
   for (const [type, definition] of Object.entries(FINGERPRINT_DEFINITIONS)) {
-    const value = getByPath<string>(
-      network as Record<string, unknown>,
-      definition.path,
-    );
-    result[type] = value || null;
+    const source = definition.source || "network";
+    let value: string | null = null;
+
+    if (source === "hashes" && sources.hashes) {
+      // Direct key lookup for hashes
+      value = sources.hashes[definition.path] || null;
+    } else if (source === "device" && sources.device) {
+      value = getByPath<string>(sources.device, definition.path) || null;
+    } else if (source === "network" && sources.network) {
+      value =
+        getByPath<string>(
+          sources.network as Record<string, unknown>,
+          definition.path,
+        ) || null;
+    }
+
+    result[type] = value;
   }
 
   return result;
@@ -580,11 +597,17 @@ async function processFingerprints(
 
 /**
  * Fetch statistical v2 context for anomaly detection.
+ *
+ * @param fingerprint - Extracted fingerprint data
+ * @param network - Raw sigint/network data
+ * @param device - Raw device fingerprint data
+ * @param hashes - Pre-computed hashes (maths, etc.)
  */
 export async function fetchStatisticalContextV2(
   fingerprint: Fingerprint,
   network: RawNetworkData | undefined,
   device?: Record<string, Record<string, unknown> | undefined>,
+  hashes?: Record<string, string | undefined>,
 ): Promise<StatisticalContextV2 | null> {
   if (!isStatisticalV2Enabled()) return null;
 
@@ -592,7 +615,11 @@ export async function fetchStatisticalContextV2(
   if (!userAgent) return null;
 
   const uaFamily = parseUAFamily(userAgent).baselineKey;
-  const fingerprints = extractFingerprints(network);
+  const fingerprints = extractFingerprints({
+    network,
+    device: device as Record<string, unknown>,
+    hashes,
+  });
 
   if (!Object.values(fingerprints).some((v) => v !== null)) {
     logger.debug("Statistical v2 skipped - no fingerprints available");

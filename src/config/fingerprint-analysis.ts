@@ -37,10 +37,19 @@ export type GroupingStrategy =
  */
 export interface FingerprintDefinition {
   /**
-   * Dot-path to extract the fingerprint value from the sigint/network payload.
+   * Dot-path to extract the fingerprint value.
    * e.g., "tlsFingerprint.ja4" extracts network?.tlsFingerprint?.ja4
+   * For hashes source, use the hash key directly: "maths"
    */
   path: string;
+
+  /**
+   * Which payload section to extract from.
+   * - "network": sigint/network data (ja4, h2, etc.) - DEFAULT
+   * - "device": device fingerprint data (gpu, etc.)
+   * - "hashes": pre-computed hashes (maths, etc.)
+   */
+  source?: "network" | "device" | "hashes";
 
   /**
    * Anomaly code to emit when this fingerprint is anomalous.
@@ -161,6 +170,7 @@ export const FINGERPRINT_DEFINITIONS: Record<string, FingerprintDefinition> = {
     path: "canvasWebgl.gpu.compressedGPU",
     anomalyCode: "RARE_GPU_FOR_PLATFORM",
     fieldName: "gpu",
+    source: "device",
     groupBy: "platform",
     maxSurpriseBits: parseFloat(process.env.STAT_V2_GPU_MAX_BITS || "10"),
     saturationThreshold: parseInt(
@@ -170,6 +180,38 @@ export const FINGERPRINT_DEFINITIONS: Record<string, FingerprintDefinition> = {
     anomalyThreshold: parseFloat(process.env.STAT_V2_GPU_THRESHOLD || "0.5"),
     confidenceThreshold: parseFloat(
       process.env.STAT_V2_GPU_CONFIDENCE || "0.3",
+    ),
+  },
+
+  /**
+   * Math Hash
+   *
+   * VERY low cardinality - deterministic per JS engine/browser version.
+   * Same exact UA string should ALWAYS produce same math hash.
+   * Any deviation = spoofed UA or modified JS engine.
+   *
+   * This is a STRONG lie detection signal because:
+   * - Math operations (sin, cos, etc.) produce deterministic floating point results
+   * - Results vary by JS engine (V8 vs SpiderMonkey vs JavaScriptCore)
+   * - Cannot be spoofed without patching the entire math library
+   */
+  maths: {
+    path: "maths",
+    anomalyCode: "RARE_MATHS_FOR_UA",
+    fieldName: "maths_hash",
+    source: "hashes",
+    groupBy: "userAgent",
+    // Very low cardinality - expect 1 hash per exact UA
+    maxSurpriseBits: parseFloat(process.env.STAT_V2_MATHS_MAX_BITS || "6"),
+    // Need fewer samples since it's so stable
+    saturationThreshold: parseInt(
+      process.env.STAT_V2_MATHS_SATURATION || "50",
+      10,
+    ),
+    // Low threshold - any deviation is suspicious
+    anomalyThreshold: parseFloat(process.env.STAT_V2_MATHS_THRESHOLD || "0.3"),
+    confidenceThreshold: parseFloat(
+      process.env.STAT_V2_MATHS_CONFIDENCE || "0.2",
     ),
   },
 } as const;

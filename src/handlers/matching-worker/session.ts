@@ -85,14 +85,17 @@ function buildSessionResponseData(params: {
     analysis.vector_match_details = matchResult.vector_match_details;
   }
 
-  // Build fingerprint analysis object with Redis-based statistical data (V2 only)
+  // Build normalities object with Redis-based statistical data (V2 only)
+  // Fingerprint types are auto-populated from FINGERPRINT_DEFINITIONS config
   if (statisticalContextV2) {
-    const fingerprints: Record<string, unknown> = {};
+    const normalities: Record<string, unknown> = {
+      user_agent_family: statisticalContextV2.uaFamily,
+    };
 
-    // Add scores for each fingerprint type
+    // Add scores for each fingerprint type (auto-populated from config)
     for (const [type, score] of Object.entries(statisticalContextV2.scores)) {
       if (score) {
-        fingerprints[type] = {
+        normalities[type] = {
           value: statisticalContextV2.fingerprints[type],
           grouped_by: score.groupingKey,
           score: score.score,
@@ -105,26 +108,20 @@ function buildSessionResponseData(params: {
       }
     }
 
-    const fingerprintAnalysis: Record<string, unknown> = {
-      user_agent_family: statisticalContextV2.uaFamily,
-      fingerprints,
-    };
-
     if (statisticalContextV2.combinedScore !== null) {
-      fingerprintAnalysis.combined_score = statisticalContextV2.combinedScore;
+      normalities.combined_score = statisticalContextV2.combinedScore;
     }
     if (statisticalContextV2.baselineSkipped !== undefined) {
-      fingerprintAnalysis.baseline_skipped =
-        statisticalContextV2.baselineSkipped;
+      normalities.baseline_skipped = statisticalContextV2.baselineSkipped;
     }
     if (
       statisticalContextV2.matchedRules &&
       statisticalContextV2.matchedRules.length > 0
     ) {
-      fingerprintAnalysis.matched_rules = statisticalContextV2.matchedRules;
+      normalities.matched_rules = statisticalContextV2.matchedRules;
     }
 
-    analysis.fingerprint_analysis = fingerprintAnalysis;
+    analysis.normalities = normalities;
   }
 
   const result: Record<string, unknown> = {
