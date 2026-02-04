@@ -116,13 +116,32 @@ const HASH_FIELD_MAP: [keyof ArgusPayload["hashes"], keyof Fingerprint][] = [
 ];
 
 /**
+ * Mapping of SimHash fields (underscore-prefixed) to fingerprint fields
+ * SimHashes are 256-bit locality-sensitive hashes for similarity matching
+ */
+const SIMHASH_FIELD_MAP: [string, keyof Fingerprint][] = [
+  ["_canvas2d", "canvas_simhash"],
+  ["_canvasWebgl", "webgl_simhash"],
+  ["_offlineAudioContext", "audio_simhash"],
+];
+
+/**
  * Extract all hash fields (canvas, webgl, audio, etc.) from hashes section
+ * Includes both SHA-256 hashes and SimHash variants for similarity matching
  * @param hashes - The hashes section from the payload
  * @param fp - The fingerprint object to populate
  */
 function extractHashes(hashes: ArgusPayload["hashes"], fp: Fingerprint) {
+  // Extract SHA-256 hashes
   for (const [src, dst] of HASH_FIELD_MAP) {
     if (hashes[src]) (fp as Record<string, unknown>)[dst] = hashes[src];
+  }
+
+  // Extract SimHash variants (underscore-prefixed, 256-bit locality-sensitive)
+  const hashesRecord = hashes as Record<string, unknown>;
+  for (const [src, dst] of SIMHASH_FIELD_MAP) {
+    if (hashesRecord[src])
+      (fp as Record<string, unknown>)[dst] = hashesRecord[src];
   }
 }
 

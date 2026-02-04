@@ -4,14 +4,19 @@
  * Converts normalized fingerprint data into a 256-dimensional vector
  * suitable for similarity search in Qdrant.
  *
- * Embedding structure (v3 - improved for privacy browsers):
+ * Embedding structure (v4 - expanded fuzzy hash for 256-bit SimHash):
  * - Structural hashes (48 dims): htmlElement, maths, fonts, windowFeatures, css, svg
  * - Rendering (48 dims): canvas, webgl, audio, gpu - ZEROED for Brave/private
  * - Hardware (32 dims): concurrency, memory, screen, webgl extensions
  * - Network (32 dims): JA3/JA4, IP (8 dims preserving proximity), ASN (3 dims), TCP tuning
  * - Behavioral (22 dims): timezone, privacy flags, headless, lie count, features
- * - Identity (16 dims): stable hash, fuzzy hash
- * - Reserved (58 dims): future expansion
+ * - Identity (72 dims): stable hash (8), fuzzy hash (64) - expanded for 256-bit SimHash
+ * - Reserved (2 dims): future expansion
+ *
+ * Key improvements in v4:
+ * - Fuzzy hash expanded from 8 to 64 dims (encodes 64 bits = 25% of 256-bit SimHash)
+ * - Captures first 4 LSH bands worth of SimHash data for better similarity matching
+ * - Preserves SimHash locality-sensitivity in vector space via bipolar encoding
  *
  * Key improvements in v3:
  * - IP encoded as octets (preserves /24 subnet proximity in vector space)
@@ -40,9 +45,10 @@ export interface EmbeddingResult {
  * Current embedding schema version.
  * Increment when the embedding structure changes significantly.
  *
+ * v4: Expanded fuzzy_hash from 8 to 64 dims for 256-bit SimHash support
  * v3: Improved IP/ASN encoding, Brave/private handling, JA3/JA4 as bipolar
  */
-export const EMBEDDING_VERSION = 3;
+export const EMBEDDING_VERSION = 4;
 
 /**
  * Expected number of dimensions for the current embedding version.
@@ -259,10 +265,12 @@ function buildRenderingSection(fp: Fingerprint): number[] {
     ];
   }
 
+  // Prefer SimHash variants (locality-sensitive) over SHA-256 hashes (exact)
+  // SimHashes capture similarity between devices with similar rendering
   return [
-    ...hashToBipolar(fp.canvas_hash, 12),
-    ...hashToBipolar(fp.webgl_hash, 12),
-    ...hashToBipolar(fp.audio_hash, 8),
+    ...hashToBipolar(fp.canvas_simhash ?? fp.canvas_hash, 12),
+    ...hashToBipolar(fp.webgl_simhash ?? fp.webgl_hash, 12),
+    ...hashToBipolar(fp.audio_simhash ?? fp.audio_hash, 8),
     ...hashToBipolar(fp.client_rects_hash, 8),
     ...stringToVector(fp.gpu_renderer, 8),
   ];
@@ -310,11 +318,11 @@ function buildBehavioralSection(fp: Fingerprint): number[] {
   ]; // Total: 22 dims
 }
 
-/** Build identity section (16 dims) */
+/** Build identity section (72 dims) - expanded for 256-bit SimHash */
 function buildIdentitySection(fp: Fingerprint): number[] {
   return [
-    ...hashToBipolar(fp.stable_hash, 8),
-    ...hashToBipolar(fp.fuzzy_hash, 8),
+    ...hashToBipolar(fp.stable_hash, 8), // 8 dims - exact match anchor
+    ...hashToBipolar(fp.fuzzy_hash, 64), // 64 dims - encodes 64 bits (first 4 LSH bands)
   ];
 }
 
@@ -325,14 +333,14 @@ function buildIdentitySection(fp: Fingerprint): number[] {
 /**
  * Compute a 256-dimensional fingerprint embedding vector.
  *
- * Structure (v3):
+ * Structure (v4):
  * [0-47]   Structural hashes (48 dims) - stable even in privacy browsers
  * [48-95]  Rendering (48 dims) - zeroed for Brave/private
  * [96-127] Hardware (32 dims)
  * [128-159] Network (32 dims) - IP octets, ASN, JA3/JA4, TCP tuning
  * [160-181] Behavioral (22 dims)
- * [182-197] Identity (16 dims)
- * [198-255] Reserved (58 dims)
+ * [182-253] Identity (72 dims) - stable hash (8) + fuzzy hash (64)
+ * [254-255] Reserved (2 dims)
  *
  * @param fingerprint - Normalized fingerprint data
  * @returns Embedding result with vector and metadata

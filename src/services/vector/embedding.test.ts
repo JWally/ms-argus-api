@@ -60,7 +60,7 @@ describe("computeEmbedding", () => {
   it("includes version number", () => {
     const result = computeEmbedding(baseFingerprint);
     expect(result.version).toBe(EMBEDDING_VERSION);
-    expect(result.version).toBe(3);
+    expect(result.version).toBe(4);
   });
 
   it("produces deterministic output for same input", () => {
@@ -100,10 +100,11 @@ describe("computeEmbedding", () => {
 
   it("pads remaining dimensions with zeros", () => {
     const result = computeEmbedding(baseFingerprint);
-    // Reserved section (198-255) should be zeros
-    // Structure: 48+48+32+32+22+16 = 198 used dims
-    const reserved = result.vector.slice(198);
+    // Reserved section (254-255) should be zeros
+    // Structure: 48+48+32+32+22+72 = 254 used dims
+    const reserved = result.vector.slice(254);
     expect(reserved.every((v) => v === 0)).toBe(true);
+    expect(reserved.length).toBe(2);
   });
 });
 
@@ -112,12 +113,12 @@ describe("areEmbeddingsCompatible", () => {
     const a: EmbeddingResult = {
       vector: new Array(256).fill(0),
       dimensions: 256,
-      version: 3,
+      version: 4,
     };
     const b: EmbeddingResult = {
       vector: new Array(256).fill(0),
       dimensions: 256,
-      version: 3,
+      version: 4,
     };
     expect(areEmbeddingsCompatible(a, b)).toBe(true);
   });
@@ -126,12 +127,12 @@ describe("areEmbeddingsCompatible", () => {
     const a: EmbeddingResult = {
       vector: new Array(256).fill(0),
       dimensions: 256,
-      version: 2,
+      version: 3,
     };
     const b: EmbeddingResult = {
       vector: new Array(256).fill(0),
       dimensions: 256,
-      version: 3,
+      version: 4,
     };
     expect(areEmbeddingsCompatible(a, b)).toBe(false);
   });
@@ -140,12 +141,12 @@ describe("areEmbeddingsCompatible", () => {
     const a: EmbeddingResult = {
       vector: new Array(128).fill(0),
       dimensions: 128,
-      version: 3,
+      version: 4,
     };
     const b: EmbeddingResult = {
       vector: new Array(256).fill(0),
       dimensions: 256,
-      version: 3,
+      version: 4,
     };
     expect(areEmbeddingsCompatible(a, b)).toBe(false);
   });

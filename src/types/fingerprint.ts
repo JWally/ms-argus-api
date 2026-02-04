@@ -25,6 +25,11 @@ export interface Fingerprint {
   canvas_hash?: string;
   webgl_hash?: string;
   audio_hash?: string;
+  // SimHash variants (256-bit locality-sensitive hashes)
+  // These capture similarity between devices with similar rendering characteristics
+  canvas_simhash?: string; // From _canvas2d - 2D canvas rendering SimHash
+  webgl_simhash?: string; // From _canvasWebgl - WebGL rendering SimHash
+  audio_simhash?: string; // From _offlineAudioContext - Audio context SimHash
   ip_address?: string;
   ja4?: string;
   gpu_renderer?: string;
