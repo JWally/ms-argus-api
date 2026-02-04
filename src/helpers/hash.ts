@@ -42,25 +42,36 @@ export function fnv1aNum(str: string): number {
 }
 
 /**
- * Calculate Hamming distance between two 64-bit hex hashes
+ * Calculate Hamming distance between two SimHash hex strings.
+ * Supports both 64-bit (16 hex chars) and 256-bit (64 hex chars) hashes.
  * Counts the number of differing bits between two SimHash values.
  *
  * @param hash1 - First hash as hex string
  * @param hash2 - Second hash as hex string
- * @returns Number of differing bits (0-64), or -1 if invalid
+ * @returns Number of differing bits (0-256), or -1 if invalid
  */
 export function hammingDistance(hash1: string, hash2: string): number {
   const h1 = hash1.replace(/^0x/i, "").toLowerCase();
   const h2 = hash2.replace(/^0x/i, "").toLowerCase();
 
-  if (!/^[0-9a-f]{16}$/.test(h1) || !/^[0-9a-f]{16}$/.test(h2)) {
+  // Require same length and valid hex (support both 64-bit and 256-bit)
+  if (
+    h1.length !== h2.length ||
+    !/^[0-9a-f]+$/.test(h1) ||
+    !/^[0-9a-f]+$/.test(h2)
+  ) {
+    return -1;
+  }
+
+  // Only accept 16 chars (64-bit) or 64 chars (256-bit)
+  if (h1.length !== 16 && h1.length !== 64) {
     return -1;
   }
 
   let distance = 0;
 
   // Process 4 chars (16 bits) at a time to stay within JS safe integer range
-  for (let i = 0; i < 16; i += 4) {
+  for (let i = 0; i < h1.length; i += 4) {
     const chunk1 = parseInt(h1.slice(i, i + 4), 16);
     const chunk2 = parseInt(h2.slice(i, i + 4), 16);
     const xor = chunk1 ^ chunk2;
@@ -92,10 +103,13 @@ export function computeFuzzyMatchInfo(
 
   const distance = hammingDistance(incomingHash, storedHash);
 
+  // Compute total bits from hash length (4 bits per hex char)
+  const totalBits = incomingHash.replace(/^0x/i, "").length * 4;
+
   return {
     incoming_hash: incomingHash,
     stored_hash: storedHash,
     hamming_distance: distance,
-    similarity: distance >= 0 ? 1 - distance / 64 : 0,
+    similarity: distance >= 0 ? 1 - distance / totalBits : 0,
   };
 }

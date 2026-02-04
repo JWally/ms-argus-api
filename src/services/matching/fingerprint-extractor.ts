@@ -127,7 +127,8 @@ function extractHashes(hashes: ArgusPayload["hashes"], fp: Fingerprint) {
 }
 
 /**
- * Extract count of WebGL extensions supported by the device
+ * Extract count of WebGL extensions supported by the device.
+ * Handles both raw arrays and compacted format { $simhash, $len }.
  * @param device - The device section from the payload
  * @param fp - The fingerprint object to populate
  */
@@ -136,8 +137,18 @@ function extractWebglExtensions(
   fp: Fingerprint,
 ) {
   const webglData = device.canvasWebgl;
-  if (webglData && Array.isArray(webglData.extensions)) {
-    fp.webgl_extensions_count = (webglData.extensions as unknown[]).length;
+  if (!webglData) return;
+
+  const extensions = webglData.extensions;
+  if (Array.isArray(extensions)) {
+    fp.webgl_extensions_count = extensions.length;
+  } else if (
+    extensions &&
+    typeof extensions === "object" &&
+    "$len" in extensions
+  ) {
+    // Handle compacted format: { $simhash: "...", $len: N }
+    fp.webgl_extensions_count = (extensions as { $len: number }).$len;
   }
 }
 

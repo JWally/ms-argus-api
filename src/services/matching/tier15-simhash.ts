@@ -144,11 +144,14 @@ function buildSimHashMatchResult(
   best: ScoredCandidate,
   fingerprint: Fingerprint,
 ): MatchResult {
+  // Compute total bits from hash length (4 bits per hex char)
+  const totalBits = fingerprint.fuzzy_hash!.replace(/^0x/i, "").length * 4;
+
   const simhash_details: SimHashDetails = {
     incoming_hash: fingerprint.fuzzy_hash!,
     matched_hash: best.fuzzyHash,
     hamming_distance: best.hammingDistance,
-    similarity: 1 - best.hammingDistance / 64,
+    similarity: 1 - best.hammingDistance / totalBits,
     bands_matched: best.bandMatches,
   };
 

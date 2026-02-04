@@ -29,10 +29,13 @@ function createDeps(): Tier15SimHashDeps {
   };
 }
 
+// 256-bit fuzzy hash for tests (64 hex chars)
+const DEFAULT_FUZZY_HASH_256 = "1234567890abcdef".repeat(4);
+
 function createFingerprint(overrides: Partial<Fingerprint> = {}): Fingerprint {
   return {
     stable_hash: "abc123",
-    fuzzy_hash: "1234567890abcdef",
+    fuzzy_hash: DEFAULT_FUZZY_HASH_256,
     ...overrides,
   };
 }
@@ -145,9 +148,20 @@ describe("tier15SimHashMatch", () => {
   });
 
   describe("Band Queries", () => {
-    it("queries all 4 bands in parallel", async () => {
+    it("queries all 16 bands in parallel (256-bit hash)", async () => {
       dynamoMock.on(QueryCommand).resolves({ Items: [] });
       await tier15SimHashMatch(createDeps(), createFingerprint());
+
+      const calls = dynamoMock.commandCalls(QueryCommand);
+      expect(calls.length).toBe(16);
+    });
+
+    it("queries all 4 bands for legacy 64-bit hash", async () => {
+      dynamoMock.on(QueryCommand).resolves({ Items: [] });
+      await tier15SimHashMatch(
+        createDeps(),
+        createFingerprint({ fuzzy_hash: "1234567890abcdef" }),
+      );
 
       const calls = dynamoMock.commandCalls(QueryCommand);
       expect(calls.length).toBe(4);
@@ -282,49 +296,58 @@ describe("tier15SimHashMatch", () => {
 
     it("rejects candidates beyond threshold", async () => {
       const now = Math.floor(Date.now() / 1000);
+      // Use 256-bit hashes with Hamming distance > 16 (threshold)
+      // These hashes differ in many positions: ~32 bits different
+      const farHash = "ffffffff00000000".repeat(4); // 64 chars
+      const incomingHash = "00000000ffffffff".repeat(4); // 64 chars, ~128 bits different
+
       dynamoMock
         .on(QueryCommand)
         .resolvesOnce({
-          Items: [buildBandItem("device-far", "1234567890abffff", now)],
+          Items: [buildBandItem("device-far", farHash, now)],
         })
         .resolvesOnce({
-          Items: [buildBandItem("device-far", "1234567890abffff", now)],
+          Items: [buildBandItem("device-far", farHash, now)],
         })
         .resolvesOnce({
-          Items: [buildBandItem("device-far", "1234567890abffff", now)],
+          Items: [buildBandItem("device-far", farHash, now)],
         })
         .resolves({ Items: [] });
 
       const result = await tier15SimHashMatch(
         createDeps(),
-        createFingerprint({ fuzzy_hash: "1234567890ab0000" }),
+        createFingerprint({ fuzzy_hash: incomingHash }),
       );
 
       expect(result).toBeNull();
     });
 
-    it("accepts candidates within threshold (distance 1-4)", async () => {
+    it("accepts candidates within threshold (distance 1-16)", async () => {
       const now = Math.floor(Date.now() / 1000);
+      // Use 256-bit hashes with small Hamming distance (< 16)
+      // Only differ in last hex char: 'f' vs 'e' = 1 bit different
+      const closeHash = DEFAULT_FUZZY_HASH_256.slice(0, -1) + "e";
+
       dynamoMock
         .on(QueryCommand)
         .resolvesOnce({
-          Items: [buildBandItem("device-close", "1234567890abcdee", now)],
+          Items: [buildBandItem("device-close", closeHash, now)],
         })
         .resolvesOnce({
-          Items: [buildBandItem("device-close", "1234567890abcdee", now)],
+          Items: [buildBandItem("device-close", closeHash, now)],
         })
         .resolvesOnce({
-          Items: [buildBandItem("device-close", "1234567890abcdee", now)],
+          Items: [buildBandItem("device-close", closeHash, now)],
         })
         .resolves({ Items: [] });
 
       const result = await tier15SimHashMatch(
         createDeps(),
-        createFingerprint({ fuzzy_hash: "1234567890abcdef" }),
+        createFingerprint({ fuzzy_hash: DEFAULT_FUZZY_HASH_256 }),
       );
 
       expect(result).not.toBeNull();
-      expect(result!.simhash_details?.hamming_distance).toBeLessThanOrEqual(4);
+      expect(result!.simhash_details?.hamming_distance).toBeLessThanOrEqual(16);
     });
   });
 

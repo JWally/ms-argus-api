@@ -57,20 +57,28 @@ describe("SIMHASH_CONFIG", () => {
     expect(SIMHASH_CONFIG).toHaveProperty("RECENCY_WINDOW_DAYS");
   });
 
-  it("should have NUM_BANDS = 4", () => {
-    expect(SIMHASH_CONFIG.NUM_BANDS).toBe(4);
+  it("should have NUM_BANDS = 16 (for 256-bit hashes)", () => {
+    expect(SIMHASH_CONFIG.NUM_BANDS).toBe(16);
   });
 
   it("should have BITS_PER_BAND = 16", () => {
     expect(SIMHASH_CONFIG.BITS_PER_BAND).toBe(16);
   });
 
-  it("should have HAMMING_THRESHOLD = 4", () => {
-    expect(SIMHASH_CONFIG.HAMMING_THRESHOLD).toBe(4);
+  it("should have HAMMING_THRESHOLD = 16 (scaled for 256-bit)", () => {
+    expect(SIMHASH_CONFIG.HAMMING_THRESHOLD).toBe(16);
   });
 
-  it("should satisfy NUM_BANDS * BITS_PER_BAND = 64 (total hash bits)", () => {
-    expect(SIMHASH_CONFIG.NUM_BANDS * SIMHASH_CONFIG.BITS_PER_BAND).toBe(64);
+  it("should satisfy NUM_BANDS * BITS_PER_BAND = 256 (total hash bits)", () => {
+    expect(SIMHASH_CONFIG.NUM_BANDS * SIMHASH_CONFIG.BITS_PER_BAND).toBe(256);
+  });
+
+  it("should have TOTAL_BITS = 256", () => {
+    expect(SIMHASH_CONFIG.TOTAL_BITS).toBe(256);
+  });
+
+  it("should have HEX_LENGTH = 64 (256 bits / 4 bits per hex char)", () => {
+    expect(SIMHASH_CONFIG.HEX_LENGTH).toBe(64);
   });
 });
 

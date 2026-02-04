@@ -91,15 +91,21 @@ export const ERROR_STRINGS = {
 
 /**
  * SimHash LSH Configuration
- * Splits 64-bit fuzzy_hash into bands for locality-sensitive lookup
+ * Splits 256-bit fuzzy_hash into bands for locality-sensitive lookup
  */
 export const SIMHASH_CONFIG = {
+  /** Total bits in the SimHash */
+  TOTAL_BITS: 256,
   /** Number of band partitions for LSH */
-  NUM_BANDS: 4,
-  /** Bits per band (4 bands x 16 bits = 64 bits total) */
+  NUM_BANDS: 16,
+  /** Bits per band (16 bands x 16 bits = 256 bits total) */
   BITS_PER_BAND: 16,
-  /** Max Hamming distance bits to accept a match */
-  HAMMING_THRESHOLD: 4,
+  /** Hex chars per band (16 bits = 4 hex chars) */
+  HEX_CHARS_PER_BAND: 4,
+  /** Expected hex string length (256 bits = 64 hex chars) */
+  HEX_LENGTH: 64,
+  /** Max Hamming distance bits to accept a match (scaled 4x from 64-bit) */
+  HAMMING_THRESHOLD: 16,
   /** Require this many bands to match for candidacy */
   MIN_BANDS_MATCH: 2,
   /** Band entry TTL in days */

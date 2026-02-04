@@ -425,11 +425,51 @@ describe("writeAnchorBucket", () => {
 });
 
 describe("buildSimHashBandEntries", () => {
-  it("returns 4 band entries for valid 16-char hex fuzzy_hash", () => {
-    const fingerprint: Fingerprint = { fuzzy_hash: "0123456789abcdef" };
-    const entries = buildSimHashBandEntries("dev-1", fingerprint, 1700000000);
+  describe("64-bit hashes (legacy)", () => {
+    it("returns 4 band entries for valid 16-char hex fuzzy_hash", () => {
+      const fingerprint: Fingerprint = { fuzzy_hash: "0123456789abcdef" };
+      const entries = buildSimHashBandEntries("dev-1", fingerprint, 1700000000);
 
-    expect(entries).toHaveLength(4);
+      expect(entries).toHaveLength(4);
+    });
+
+    it("sets correct bucket_key format for each band", () => {
+      const fingerprint: Fingerprint = { fuzzy_hash: "0123456789abcdef" };
+      const entries = buildSimHashBandEntries("dev-1", fingerprint, 1700000000);
+
+      entries.forEach((entry) => {
+        expect(entry.bucket_key).toMatch(/^SIMHASH_BAND#\d#[0-9a-f]{4}$/);
+      });
+    });
+  });
+
+  describe("256-bit hashes", () => {
+    const hash256 = "0123456789abcdef".repeat(4); // 64 hex chars
+
+    it("returns 16 band entries for valid 64-char hex fuzzy_hash", () => {
+      const fingerprint: Fingerprint = { fuzzy_hash: hash256 };
+      const entries = buildSimHashBandEntries("dev-1", fingerprint, 1700000000);
+
+      expect(entries).toHaveLength(16);
+    });
+
+    it("sets correct bucket_key format for each band", () => {
+      const fingerprint: Fingerprint = { fuzzy_hash: hash256 };
+      const entries = buildSimHashBandEntries("dev-1", fingerprint, 1700000000);
+
+      entries.forEach((entry, i) => {
+        expect(entry.bucket_key).toMatch(/^SIMHASH_BAND#\d+#[0-9a-f]{4}$/);
+      });
+    });
+
+    it("includes fuzzy_hash in each entry", () => {
+      const fingerprint: Fingerprint = { fuzzy_hash: hash256 };
+      const entries = buildSimHashBandEntries("dev-1", fingerprint, 1700000000);
+
+      entries.forEach((entry) => {
+        expect(entry.fuzzy_hash).toBe(hash256);
+      });
+    });
   });
 
   it("returns empty array when fuzzy_hash is missing", () => {
@@ -444,15 +484,6 @@ describe("buildSimHashBandEntries", () => {
     const entries = buildSimHashBandEntries("dev-1", fingerprint);
 
     expect(entries).toEqual([]);
-  });
-
-  it("sets correct bucket_key format for each band", () => {
-    const fingerprint: Fingerprint = { fuzzy_hash: "0123456789abcdef" };
-    const entries = buildSimHashBandEntries("dev-1", fingerprint, 1700000000);
-
-    entries.forEach((entry) => {
-      expect(entry.bucket_key).toMatch(/^SIMHASH_BAND#\d#[0-9a-f]{4}$/);
-    });
   });
 
   it("sets device_id as inverted timestamp SK", () => {

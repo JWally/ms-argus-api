@@ -48,13 +48,13 @@ export interface SimHashBandKey {
 
 /**
  * Build SimHash LSH band keys from fuzzy_hash
- * Splits 64-bit hash into 4 bands of 16 bits each for locality-sensitive lookup.
+ * Splits 256-bit hash into 16 bands of 16 bits each for locality-sensitive lookup.
  *
  * Band partitioning allows similar hashes (small Hamming distance) to share
  * at least one band with high probability, enabling efficient candidate retrieval.
  *
- * @param fuzzyHash - 64-bit SimHash as hex string (e.g., "0x1234567890abcdef" or "1234567890abcdef")
- * @returns Array of 4 band keys, or null if fuzzy_hash is invalid
+ * @param fuzzyHash - 256-bit SimHash as hex string (64 hex chars)
+ * @returns Array of 16 band keys, or null if fuzzy_hash is invalid
  */
 export function buildSimHashBandKeys(
   fuzzyHash: string | undefined,
@@ -63,15 +63,21 @@ export function buildSimHashBandKeys(
 
   const normalized = fuzzyHash.replace(/^0x/i, "").toLowerCase();
 
-  if (!/^[0-9a-f]{16}$/.test(normalized)) {
+  // Accept 256-bit (64 chars) or legacy 64-bit (16 chars)
+  if (
+    !/^[0-9a-f]{64}$/.test(normalized) &&
+    !/^[0-9a-f]{16}$/.test(normalized)
+  ) {
     return null;
   }
 
   const bands: SimHashBandKey[] = [];
+  const charsPerBand = SIMHASH_CONFIG.HEX_CHARS_PER_BAND;
+  const numBands = normalized.length / charsPerBand;
 
-  for (let i = 0; i < SIMHASH_CONFIG.NUM_BANDS; i++) {
-    const startChar = i * 4;
-    const bandValue = normalized.slice(startChar, startChar + 4);
+  for (let i = 0; i < numBands; i++) {
+    const startChar = i * charsPerBand;
+    const bandValue = normalized.slice(startChar, startChar + charsPerBand);
 
     bands.push({
       pk: `SIMHASH_BAND#${i}#${bandValue}`,
