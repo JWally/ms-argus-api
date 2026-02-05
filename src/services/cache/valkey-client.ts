@@ -16,6 +16,7 @@
 import { Logger } from "@aws-lambda-powertools/logger";
 import { Metrics, MetricUnit } from "@aws-lambda-powertools/metrics";
 import Redis from "ioredis";
+import { fnv1a } from "../../helpers/hash";
 
 const logger = new Logger({
   serviceName: process.env.POWERTOOLS_SERVICE_NAME || "valkey-client",
@@ -465,23 +466,23 @@ export function isStatisticalV2Enabled(): boolean {
 /**
  * Record a fingerprint observation and get statistical v2 data.
  *
- * Records to both UA-family-specific and global counters.
+ * Records to both grouping-key-specific and global counters.
  * Uses tiered TTLs based on observation count.
  * Global updates are sampled at 1% to reduce write load.
  *
- * Key schema:
- * - stat:v2:{ua_family}:{type}:{fingerprint} → counter (tiered TTL)
- * - stat:v2:{ua_family}:{type}:_total → counter (24h TTL)
+ * Key schema (grouping key is hashed for compact storage):
+ * - stat:v2:{keyHash}:{type}:{fingerprint} → counter (tiered TTL)
+ * - stat:v2:{keyHash}:{type}:_total → counter (24h TTL)
  * - stat:v2:_global:{type}:{fingerprint} → counter (1% sampled)
  * - stat:v2:_global:{type}:_total → counter
  *
- * @param uaFamily - Browser family (e.g., "Chrome", "Firefox")
- * @param type - Fingerprint type ('ja4' or 'h2')
+ * @param groupingKey - Composite grouping key (e.g., "Mozilla/5.0...:chrome")
+ * @param type - Fingerprint type ('ja4', 'h2', 'maths', etc.)
  * @param fingerprint - The fingerprint value
  * @returns Statistical data for computing Shannon score
  */
 export async function recordFingerprintV2(
-  uaFamily: string,
+  groupingKey: string,
   type: string,
   fingerprint: string,
 ): Promise<StatisticalV2Data> {
@@ -500,9 +501,12 @@ export async function recordFingerprintV2(
 
     const startTime = Date.now();
 
-    // Key names for UA-specific counters
-    const uaCountKey = `stat:v2:${uaFamily}:${type}:${fingerprint}`;
-    const uaTotalKey = `stat:v2:${uaFamily}:${type}:_total`;
+    // Hash the grouping key for compact Redis keys
+    const keyHash = fnv1a(groupingKey);
+
+    // Key names for grouping-specific counters
+    const groupCountKey = `stat:v2:${keyHash}:${type}:${fingerprint}`;
+    const groupTotalKey = `stat:v2:${keyHash}:${type}:_total`;
 
     // Key names for global counters
     const globalCountKey = `stat:v2:_global:${type}:${fingerprint}`;
@@ -512,14 +516,14 @@ export async function recordFingerprintV2(
     const pipeline = redisClient.pipeline();
 
     // Read current counts first (for TTL calculation)
-    pipeline.get(uaCountKey);
-    pipeline.get(uaTotalKey);
+    pipeline.get(groupCountKey);
+    pipeline.get(groupTotalKey);
     pipeline.get(globalCountKey);
     pipeline.get(globalTotalKey);
 
-    // Increment UA-specific counters
-    pipeline.incr(uaCountKey);
-    pipeline.incr(uaTotalKey);
+    // Increment grouping-specific counters
+    pipeline.incr(groupCountKey);
+    pipeline.incr(groupTotalKey);
 
     // Sample global updates at 1% to reduce write load
     const shouldUpdateGlobal = Math.random() < 0.01;
@@ -549,8 +553,8 @@ export async function recordFingerprintV2(
     // Set tiered TTL based on new count
     const ttl = getTieredTTL(count);
     const ttlPipeline = redisClient.pipeline();
-    ttlPipeline.expire(uaCountKey, ttl);
-    ttlPipeline.expire(uaTotalKey, 24 * 3600); // Total always 24h
+    ttlPipeline.expire(groupCountKey, ttl);
+    ttlPipeline.expire(groupTotalKey, 24 * 3600); // Total always 24h
     if (shouldUpdateGlobal) {
       ttlPipeline.expire(globalCountKey, 7 * 24 * 3600); // Global: 7 days
       ttlPipeline.expire(globalTotalKey, 7 * 24 * 3600);
@@ -574,7 +578,7 @@ export async function recordFingerprintV2(
   } catch (error) {
     logger.warn("Valkey statistical v2 operation failed", {
       error,
-      uaFamily,
+      groupingKey,
       type,
     });
     metrics.addMetric("ValkeyStatisticalV2OperationError", MetricUnit.Count, 1);
@@ -587,13 +591,13 @@ export async function recordFingerprintV2(
  *
  * Used during pre-fetch phase to get counts for scoring.
  *
- * @param uaFamily - Browser family
+ * @param groupingKey - Composite grouping key (e.g., "Mozilla/5.0...:chrome")
  * @param type - Fingerprint type (e.g., 'ja4', 'h2')
  * @param fingerprint - The fingerprint value
  * @returns Statistical data or null on failure
  */
 export async function fetchStatisticalV2Data(
-  uaFamily: string,
+  groupingKey: string,
   type: string,
   fingerprint: string,
 ): Promise<StatisticalV2Data | null> {
@@ -605,16 +609,19 @@ export async function fetchStatisticalV2Data(
 
     const startTime = Date.now();
 
+    // Hash the grouping key for compact Redis keys
+    const keyHash = fnv1a(groupingKey);
+
     // Key names
-    const uaCountKey = `stat:v2:${uaFamily}:${type}:${fingerprint}`;
-    const uaTotalKey = `stat:v2:${uaFamily}:${type}:_total`;
+    const groupCountKey = `stat:v2:${keyHash}:${type}:${fingerprint}`;
+    const groupTotalKey = `stat:v2:${keyHash}:${type}:_total`;
     const globalCountKey = `stat:v2:_global:${type}:${fingerprint}`;
     const globalTotalKey = `stat:v2:_global:${type}:_total`;
 
     // Pipeline all reads
     const pipeline = redisClient.pipeline();
-    pipeline.get(uaCountKey);
-    pipeline.get(uaTotalKey);
+    pipeline.get(groupCountKey);
+    pipeline.get(groupTotalKey);
     pipeline.get(globalCountKey);
     pipeline.get(globalTotalKey);
 
@@ -640,7 +647,7 @@ export async function fetchStatisticalV2Data(
   } catch (error) {
     logger.warn("Valkey statistical v2 fetch failed", {
       error,
-      uaFamily,
+      groupingKey,
       type,
     });
     metrics.addMetric("ValkeyStatisticalV2FetchError", MetricUnit.Count, 1);

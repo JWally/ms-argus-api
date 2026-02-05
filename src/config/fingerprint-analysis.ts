@@ -120,13 +120,13 @@ export const FINGERPRINT_DEFINITIONS: Record<string, FingerprintDefinition> = {
    * JA4 TLS Fingerprint
    *
    * High cardinality - varies with browser extensions, TLS library versions.
-   * Grouped by full user agent for precise baseline comparison.
+   * Grouped by composite key (UA string + browser family) to detect UA spoofing.
    */
   ja4: {
     path: "tlsFingerprint.ja4",
     anomalyCode: "RARE_JA4_FOR_UA",
     fieldName: "ja4",
-    groupBy: "userAgent",
+    groupBy: ["userAgent", "uaFamily"],
     maxSurpriseBits: parseFloat(process.env.STAT_V2_JA4_MAX_BITS || "12"),
     saturationThreshold: parseInt(
       process.env.STAT_V2_JA4_SATURATION || "500",
@@ -142,13 +142,13 @@ export const FINGERPRINT_DEFINITIONS: Record<string, FingerprintDefinition> = {
    * HTTP/2 Fingerprint
    *
    * Low cardinality - very stable per device class.
-   * Grouped by full user agent for precise baseline comparison.
+   * Grouped by composite key (UA string + browser family) to detect UA spoofing.
    */
   h2: {
     path: "h2Probe.h2_fingerprint.fingerprint",
     anomalyCode: "RARE_H2_FOR_UA",
     fieldName: "http2_fingerprint",
-    groupBy: "userAgent",
+    groupBy: ["userAgent", "uaFamily"],
     maxSurpriseBits: parseFloat(process.env.STAT_V2_H2_MAX_BITS || "8"),
     saturationThreshold: parseInt(
       process.env.STAT_V2_H2_SATURATION || "100",
@@ -157,29 +157,6 @@ export const FINGERPRINT_DEFINITIONS: Record<string, FingerprintDefinition> = {
     anomalyThreshold: parseFloat(process.env.STAT_V2_H2_THRESHOLD || "0.4"),
     confidenceThreshold: parseFloat(
       process.env.STAT_V2_H2_CONFIDENCE || "0.25",
-    ),
-  },
-
-  /**
-   * GPU Renderer
-   *
-   * Medium cardinality (28 unique) - strong hardware signal.
-   * Grouped by platform since GPU is tightly coupled to OS.
-   */
-  gpu: {
-    path: "canvasWebgl.gpu.compressedGPU",
-    anomalyCode: "RARE_GPU_FOR_PLATFORM",
-    fieldName: "gpu",
-    source: "device",
-    groupBy: "platform",
-    maxSurpriseBits: parseFloat(process.env.STAT_V2_GPU_MAX_BITS || "10"),
-    saturationThreshold: parseInt(
-      process.env.STAT_V2_GPU_SATURATION || "200",
-      10,
-    ),
-    anomalyThreshold: parseFloat(process.env.STAT_V2_GPU_THRESHOLD || "0.5"),
-    confidenceThreshold: parseFloat(
-      process.env.STAT_V2_GPU_CONFIDENCE || "0.3",
     ),
   },
 
@@ -200,18 +177,85 @@ export const FINGERPRINT_DEFINITIONS: Record<string, FingerprintDefinition> = {
     anomalyCode: "RARE_MATHS_FOR_UA",
     fieldName: "maths_hash",
     source: "hashes",
-    groupBy: "userAgent",
-    // Very low cardinality - expect 1 hash per exact UA
+    groupBy: ["userAgent", "uaFamily"],
     maxSurpriseBits: parseFloat(process.env.STAT_V2_MATHS_MAX_BITS || "6"),
-    // Need fewer samples since it's so stable
     saturationThreshold: parseInt(
       process.env.STAT_V2_MATHS_SATURATION || "50",
       10,
     ),
-    // Low threshold - any deviation is suspicious
     anomalyThreshold: parseFloat(process.env.STAT_V2_MATHS_THRESHOLD || "0.3"),
     confidenceThreshold: parseFloat(
       process.env.STAT_V2_MATHS_CONFIDENCE || "0.2",
+    ),
+  },
+
+  /**
+   * Font Hash
+   *
+   * Medium cardinality - varies by OS and installed fonts.
+   * Grouped by composite key to detect font enumeration spoofing.
+   */
+  fonts: {
+    path: "fonts",
+    anomalyCode: "RARE_FONTS_FOR_UA",
+    fieldName: "fonts_hash",
+    source: "hashes",
+    groupBy: ["userAgent", "uaFamily"],
+    maxSurpriseBits: parseFloat(process.env.STAT_V2_FONTS_MAX_BITS || "10"),
+    saturationThreshold: parseInt(
+      process.env.STAT_V2_FONTS_SATURATION || "100",
+      10,
+    ),
+    anomalyThreshold: parseFloat(process.env.STAT_V2_FONTS_THRESHOLD || "0.5"),
+    confidenceThreshold: parseFloat(
+      process.env.STAT_V2_FONTS_CONFIDENCE || "0.25",
+    ),
+  },
+
+  /**
+   * Lies Hash
+   *
+   * Low cardinality - detected browser lies/inconsistencies.
+   * Legitimate browsers should have consistent lies patterns per UA.
+   * Spoofing tools often produce inconsistent lies signatures.
+   */
+  lies: {
+    path: "lies",
+    anomalyCode: "RARE_LIES_FOR_UA",
+    fieldName: "lies_hash",
+    source: "hashes",
+    groupBy: ["userAgent", "uaFamily"],
+    maxSurpriseBits: parseFloat(process.env.STAT_V2_LIES_MAX_BITS || "8"),
+    saturationThreshold: parseInt(
+      process.env.STAT_V2_LIES_SATURATION || "50",
+      10,
+    ),
+    anomalyThreshold: parseFloat(process.env.STAT_V2_LIES_THRESHOLD || "0.4"),
+    confidenceThreshold: parseFloat(
+      process.env.STAT_V2_LIES_CONFIDENCE || "0.2",
+    ),
+  },
+
+  /**
+   * CSS Hash
+   *
+   * Medium cardinality - CSS feature detection varies by browser/OS.
+   * Should be consistent for same UA string + browser family.
+   */
+  css: {
+    path: "css",
+    anomalyCode: "RARE_CSS_FOR_UA",
+    fieldName: "css_hash",
+    source: "hashes",
+    groupBy: ["userAgent", "uaFamily"],
+    maxSurpriseBits: parseFloat(process.env.STAT_V2_CSS_MAX_BITS || "10"),
+    saturationThreshold: parseInt(
+      process.env.STAT_V2_CSS_SATURATION || "100",
+      10,
+    ),
+    anomalyThreshold: parseFloat(process.env.STAT_V2_CSS_THRESHOLD || "0.5"),
+    confidenceThreshold: parseFloat(
+      process.env.STAT_V2_CSS_CONFIDENCE || "0.25",
     ),
   },
 } as const;

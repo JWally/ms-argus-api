@@ -30,8 +30,10 @@ export const AnomalyCodes = {
   // Statistical v2 anomalies (Shannon scoring)
   RARE_JA4_FOR_UA: "RARE_JA4_FOR_UA",
   RARE_H2_FOR_UA: "RARE_H2_FOR_UA",
-  RARE_GPU_FOR_PLATFORM: "RARE_GPU_FOR_PLATFORM",
   RARE_MATHS_FOR_UA: "RARE_MATHS_FOR_UA",
+  RARE_FONTS_FOR_UA: "RARE_FONTS_FOR_UA",
+  RARE_LIES_FOR_UA: "RARE_LIES_FOR_UA",
+  RARE_CSS_FOR_UA: "RARE_CSS_FOR_UA",
 } as const;
 
 export type AnomalyCode = (typeof AnomalyCodes)[keyof typeof AnomalyCodes];

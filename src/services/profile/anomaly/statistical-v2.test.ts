@@ -354,7 +354,7 @@ describe("statistical-v2", () => {
       expect(result).toBeNull();
     });
 
-    it("groups by full user agent string", async () => {
+    it("groups by composite key (UA string + browser family)", async () => {
       mockRecordFingerprintV2.mockResolvedValue({
         count: 10,
         total: 500,
@@ -372,8 +372,9 @@ describe("statistical-v2", () => {
       expect(result).not.toBeNull();
       expect(result?.uaFamily).toBe("chrome"); // Family is still parsed for fallback
       expect(result?.originalUA).toContain("Chrome/144");
+      // Composite key: "UA string:browser family" - catches UA spoofing
       expect(mockRecordFingerprintV2).toHaveBeenCalledWith(
-        testUA, // Uses full UA string as grouping key
+        `${testUA}:chrome`,
         "ja4",
         "t13d1516h2_abc123",
       );
