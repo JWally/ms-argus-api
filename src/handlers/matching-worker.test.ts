@@ -4,7 +4,6 @@ const {
   mockAddMetric,
   mockPublishStoredMetrics,
   mockDetectAllAnomalies,
-  mockFetchStatisticalContext,
   mockFetchNetworkBaselineContext,
   mockFetchStatisticalContextV2,
 } = vi.hoisted(() => ({
@@ -15,14 +14,12 @@ const {
     aggregateScore: 0,
     suggestedFlags: [],
   }),
-  mockFetchStatisticalContext: vi.fn().mockResolvedValue(null),
   mockFetchNetworkBaselineContext: vi.fn().mockResolvedValue(null),
   mockFetchStatisticalContextV2: vi.fn().mockResolvedValue(null),
 }));
 
 vi.mock("../services/profile/anomaly", () => ({
   detectAllAnomalies: mockDetectAllAnomalies,
-  fetchStatisticalContext: mockFetchStatisticalContext,
   fetchNetworkBaselineContext: mockFetchNetworkBaselineContext,
   fetchStatisticalContextV2: mockFetchStatisticalContextV2,
 }));
@@ -94,7 +91,6 @@ describe("matching-worker handler", () => {
     vi.clearAllMocks();
     mockAddMetric.mockClear();
     mockPublishStoredMetrics.mockClear();
-    mockFetchStatisticalContext.mockClear();
     mockFetchNetworkBaselineContext.mockClear();
     mockFetchStatisticalContextV2.mockClear();
   });

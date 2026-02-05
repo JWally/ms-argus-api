@@ -9,6 +9,7 @@ import {
   type SimHashBandKey,
 } from "../../helpers/bucket-keys";
 import { hammingDistance, computeFuzzyMatchInfo } from "../../helpers/hash";
+import { MatchTier } from "../../types/matching-tiers";
 import type { Fingerprint, MatchResult, SimHashDetails } from "./types";
 
 const logger = new Logger({
@@ -19,43 +20,23 @@ const metrics = new Metrics({
   namespace: process.env.POWERTOOLS_METRICS_NAMESPACE || "Argus",
 });
 
-/**
- * Dependencies for Tier 1.5 SimHash matching operations
- */
-export interface Tier15SimHashDeps {
-  /** DynamoDB client instance */
+export interface SimHashMatchDeps {
   dynamodb: DynamoDBClient;
-  /** Name of the tier 2 buckets table (used for band storage) */
   tier2BucketsTable: string;
 }
 
-/**
- * Candidate device found in a single band query
- */
 interface BandCandidate {
-  /** Device ID from the band entry */
   deviceId: string;
-  /** Full fuzzy hash for Hamming distance calculation */
   fuzzyHash: string;
-  /** Unix timestamp of last observation */
   lastSeen: number;
-  /** Index of the band (0-3) where this candidate was found */
   bandIndex: number;
 }
 
-/**
- * Candidate device after scoring by Hamming distance
- */
 interface ScoredCandidate {
-  /** Device ID */
   deviceId: string;
-  /** Full fuzzy hash */
   fuzzyHash: string;
-  /** Unix timestamp of last observation */
   lastSeen: number;
-  /** Number of bands where this device was found (2-4) */
   bandMatches: number;
-  /** Hamming distance from incoming hash (lower = more similar) */
   hammingDistance: number;
 }
 
@@ -77,12 +58,6 @@ interface ScoredCandidate {
  * - Shadow mode for safe rollout
  * - Percentage rollout for gradual enablement
  */
-/**
- * Check if SimHash tier is enabled for this request based on rollout percentage
- * @param fingerprint - The fingerprint to check
- * @param flags - SimHash feature flags
- * @returns True if SimHash should be used for this request
- */
 function isRolloutEnabled(
   fingerprint: Fingerprint,
   flags: ReturnType<typeof getSimHashFlags>,
@@ -93,14 +68,6 @@ function isRolloutEnabled(
   return bucket < flags.ROLLOUT_PERCENT;
 }
 
-/**
- * Find the best matching candidate from band query results
- * Aggregates candidates, scores by Hamming distance, and applies recency gate
- * @param bandResults - All candidates from band queries
- * @param fuzzyHash - The incoming fuzzy hash to compare against
- * @param flags - SimHash feature flags including thresholds
- * @returns Best candidate if within thresholds, null otherwise
- */
 function findBestCandidate(
   bandResults: BandCandidate[],
   fuzzyHash: string,
@@ -134,12 +101,6 @@ function findBestCandidate(
   return best;
 }
 
-/**
- * Build a match result from a scored candidate
- * @param best - The best matching candidate
- * @param fingerprint - The incoming fingerprint
- * @returns Complete match result with SimHash details
- */
 function buildSimHashMatchResult(
   best: ScoredCandidate,
   fingerprint: Fingerprint,
@@ -158,7 +119,7 @@ function buildSimHashMatchResult(
   return {
     device_id: best.deviceId,
     confidence: computeConfidence(best.hammingDistance, best.bandMatches),
-    match_tier: 1.5,
+    match_tier: MatchTier.SIMHASH,
     is_new_device: false,
     risk_score: 0.35,
     flags: [],
@@ -171,13 +132,7 @@ function buildSimHashMatchResult(
   };
 }
 
-/**
- * Resolve a SimHash match, handling shadow mode logging
- * @param best - The best matching candidate
- * @param fingerprint - The incoming fingerprint
- * @param flags - SimHash feature flags
- * @returns Match result, or null if in shadow mode
- */
+/** Returns null in shadow mode (logs the match but doesn't act on it). */
 function resolveSimHashMatch(
   best: ScoredCandidate,
   fingerprint: Fingerprint,
@@ -207,15 +162,8 @@ function resolveSimHashMatch(
   return result;
 }
 
-/**
- * Tier 1.5: SimHash LSH match for same-browser drift detection
- * Uses Locality Sensitive Hashing to find similar fuzzy hashes
- * @param deps - Dependencies including DynamoDB client and table name
- * @param fingerprint - The fingerprint containing fuzzy_hash
- * @returns Match result if similar hash found within threshold, null otherwise
- */
-export async function tier15SimHashMatch(
-  deps: Tier15SimHashDeps,
+export async function simHashMatch(
+  deps: SimHashMatchDeps,
   fingerprint: Fingerprint,
 ): Promise<MatchResult | null> {
   const flags = getSimHashFlags();
@@ -262,14 +210,8 @@ export async function tier15SimHashMatch(
   }
 }
 
-/**
- * Query a single SimHash band for candidate devices
- * @param deps - Dependencies including DynamoDB client and table name
- * @param band - The band key containing partition key and band index
- * @returns Array of candidate devices found in this band
- */
 async function queryBand(
-  deps: Tier15SimHashDeps,
+  deps: SimHashMatchDeps,
   band: SimHashBandKey,
 ): Promise<BandCandidate[]> {
   const result = await deps.dynamodb.send(
@@ -310,12 +252,7 @@ async function queryBand(
   return candidates;
 }
 
-/**
- * Aggregate candidates, keeping only those appearing in 2+ bands
- * Devices must appear in multiple bands to be considered a match
- * @param candidates - Raw candidates from all band queries
- * @returns Map of device IDs to aggregated data for qualifying candidates
- */
+/** Keep only candidates appearing in 2+ bands. */
 function aggregateCandidates(
   candidates: BandCandidate[],
 ): Map<
@@ -350,14 +287,6 @@ function aggregateCandidates(
   return aggregated;
 }
 
-/**
- * Score candidates by Hamming distance, filter by threshold, sort best first
- * @param candidates - Aggregated candidates from band queries
- * @param incomingHash - The incoming fuzzy hash to compare against
- * @param threshold - Maximum allowed Hamming distance
- * @param maxCandidates - Maximum number of candidates to return
- * @returns Sorted array of scored candidates within threshold
- */
 function scoreCandidates(
   candidates: Map<
     string,
@@ -411,11 +340,6 @@ function computeConfidence(
   return Math.max(0.6, Math.min(0.95, baseConfidence + bandBonus));
 }
 
-/**
- * Simple hash code function for deterministic bucketing
- * @param str - String to hash
- * @returns 32-bit integer hash
- */
 function hashCode(str: string): number {
   let hash = 0;
   for (let i = 0; i < str.length; i++) {

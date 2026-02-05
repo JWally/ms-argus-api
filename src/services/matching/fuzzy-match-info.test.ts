@@ -1,11 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import {
-  tier05PublicKeyLookup,
-  tier05CookieLookup,
-  tier05SigintIdLookup,
-} from "./tier05-identity";
-import { tier1HashMatch } from "./tier1-hash";
+  publicKeyLookup,
+  cookieLookup,
+  sigintIdLookup,
+  hashMatch,
+} from "./index-lookup";
 
 vi.mock("@aws-sdk/client-dynamodb", () => ({
   DynamoDBClient: vi.fn(),
@@ -21,7 +21,7 @@ describe("fuzzy_match_info drift detection", () => {
     mockDynamodb = new DynamoDBClient({});
   });
 
-  describe("tier05PublicKeyLookup", () => {
+  describe("publicKeyLookup", () => {
     it("should include fuzzy_match_info when both hashes are present", async () => {
       mockDynamodb.send = vi.fn().mockResolvedValue({
         Item: {
@@ -33,7 +33,7 @@ describe("fuzzy_match_info drift detection", () => {
       });
 
       const deps = { dynamodb: mockDynamodb, tier1IndexTable };
-      const result = await tier05PublicKeyLookup(
+      const result = await publicKeyLookup(
         deps,
         "pubkey123",
         "0123456789abcdef",
@@ -59,7 +59,7 @@ describe("fuzzy_match_info drift detection", () => {
 
       const deps = { dynamodb: mockDynamodb, tier1IndexTable };
       // 000f = 4 bits set (1111 in binary)
-      const result = await tier05PublicKeyLookup(
+      const result = await publicKeyLookup(
         deps,
         "pubkey123",
         "000f000000000000",
@@ -82,7 +82,7 @@ describe("fuzzy_match_info drift detection", () => {
       });
 
       const deps = { dynamodb: mockDynamodb, tier1IndexTable };
-      const result = await tier05PublicKeyLookup(deps, "pubkey123");
+      const result = await publicKeyLookup(deps, "pubkey123");
 
       expect(result).not.toBeNull();
       expect(result!.fuzzy_match_info).toBeUndefined();
@@ -98,7 +98,7 @@ describe("fuzzy_match_info drift detection", () => {
       });
 
       const deps = { dynamodb: mockDynamodb, tier1IndexTable };
-      const result = await tier05PublicKeyLookup(
+      const result = await publicKeyLookup(
         deps,
         "pubkey123",
         "0123456789abcdef",
@@ -109,7 +109,7 @@ describe("fuzzy_match_info drift detection", () => {
     });
   });
 
-  describe("tier05CookieLookup", () => {
+  describe("cookieLookup", () => {
     it("should include fuzzy_match_info for evercookie match", async () => {
       mockDynamodb.send = vi.fn().mockResolvedValue({
         Item: {
@@ -121,11 +121,7 @@ describe("fuzzy_match_info drift detection", () => {
       });
 
       const deps = { dynamodb: mockDynamodb, tier1IndexTable };
-      const result = await tier05CookieLookup(
-        deps,
-        "cookie123",
-        "fedcba9876543210",
-      );
+      const result = await cookieLookup(deps, "cookie123", "fedcba9876543210");
 
       expect(result).not.toBeNull();
       expect(result!.evidence_codes).toContain("EVERCOOKIE_MATCH");
@@ -134,7 +130,7 @@ describe("fuzzy_match_info drift detection", () => {
     });
   });
 
-  describe("tier05SigintIdLookup", () => {
+  describe("sigintIdLookup", () => {
     it("should include fuzzy_match_info for sigint match", async () => {
       mockDynamodb.send = vi.fn().mockResolvedValue({
         Item: {
@@ -146,7 +142,7 @@ describe("fuzzy_match_info drift detection", () => {
       });
 
       const deps = { dynamodb: mockDynamodb, tier1IndexTable };
-      const result = await tier05SigintIdLookup(
+      const result = await sigintIdLookup(
         deps,
         "sigint-id",
         "1111111111111111",
@@ -160,7 +156,7 @@ describe("fuzzy_match_info drift detection", () => {
     });
   });
 
-  describe("tier1HashMatch", () => {
+  describe("hashMatch", () => {
     it("should include fuzzy_match_info for stable_hash match", async () => {
       mockDynamodb.send = vi.fn().mockResolvedValue({
         Item: {
@@ -176,7 +172,7 @@ describe("fuzzy_match_info drift detection", () => {
         stable_hash: "stable123",
         fuzzy_hash: "aaaaaaaaaaaaaaaa",
       };
-      const result = await tier1HashMatch(deps, fingerprint);
+      const result = await hashMatch(deps, fingerprint);
 
       expect(result).not.toBeNull();
       expect(result!.evidence_codes).toContain("STABLE_HASH_MATCH");
@@ -203,7 +199,7 @@ describe("fuzzy_match_info drift detection", () => {
         stable_hash: "stable123",
         fuzzy_hash: "bbbbbbbbbbbbbbbb",
       };
-      const result = await tier1HashMatch(deps, fingerprint);
+      const result = await hashMatch(deps, fingerprint);
 
       expect(result).not.toBeNull();
       expect(result!.evidence_codes).toContain("FUZZY_HASH_MATCH");
@@ -227,7 +223,7 @@ describe("fuzzy_match_info drift detection", () => {
         stable_hash: "stable123",
         fuzzy_hash: "ffff000000000000",
       };
-      const result = await tier1HashMatch(deps, fingerprint);
+      const result = await hashMatch(deps, fingerprint);
 
       expect(result).not.toBeNull();
       expect(result!.fuzzy_match_info).toBeDefined();

@@ -212,7 +212,6 @@ export class AnalyticsConstruct extends Construct {
           columns: [
             { name: "timestamp", type: "bigint" },
             { name: "session_id", type: "string" },
-            { name: "tenant_id", type: "string" },
             { name: "device_id", type: "string" },
             { name: "match_tier", type: "double" },
             { name: "confidence", type: "double" },

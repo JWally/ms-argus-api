@@ -6,10 +6,7 @@
 export { DynamoCacheService, type DynamoCacheConfig } from "./dynamo-cache";
 
 export {
-  recordAndGetStats,
-  isValkeyEnabled,
   closeClient,
-  type StatisticalData,
   // Statistical v2 exports
   recordFingerprintV2,
   fetchStatisticalV2Data,

@@ -5,17 +5,18 @@
  */
 
 import { Metrics, MetricUnit } from "@aws-lambda-powertools/metrics";
+import { MatchTier } from "../../types/matching-tiers";
 
 /**
  * Mapping of matching tiers to their CloudWatch metric names.
- * Keys are tier numbers (0.5 for identity, 1 for hash, 2 for compound, 3 for vector).
+ * Uses MatchTier constants for type safety.
  * @internal
  */
 const TIER_METRICS: Record<number, string[]> = {
-  0.5: ["Tier05Hit"],
-  1: ["Tier1Hit"],
-  2: ["Tier2Hit"],
-  3: ["Tier3Hit"],
+  [MatchTier.IDENTITY]: ["Tier05Hit"],
+  [MatchTier.HASH]: ["Tier1Hit"],
+  [MatchTier.SIMHASH]: ["Tier15Hit"],
+  [MatchTier.VECTOR]: ["Tier2Hit"],
 };
 
 /**

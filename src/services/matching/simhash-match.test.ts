@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, vi, afterEach } from "vitest";
 import { mockClient } from "aws-sdk-client-mock";
 import { DynamoDBClient, QueryCommand } from "@aws-sdk/client-dynamodb";
 import { marshall } from "@aws-sdk/util-dynamodb";
-import { tier15SimHashMatch, Tier15SimHashDeps } from "./tier15-simhash";
+import { simHashMatch, SimHashMatchDeps } from "./simhash-match";
 import type { Fingerprint } from "../../types";
 
 const dynamoMock = mockClient(DynamoDBClient);
@@ -22,7 +22,7 @@ function setSimHashEnv(overrides: Record<string, string> = {}) {
   };
 }
 
-function createDeps(): Tier15SimHashDeps {
+function createDeps(): SimHashMatchDeps {
   return {
     dynamodb: new DynamoDBClient({}),
     tier2BucketsTable: "test-tier2-buckets",
@@ -57,7 +57,7 @@ function buildBandItem(
   });
 }
 
-describe("tier15SimHashMatch", () => {
+describe("simHashMatch", () => {
   beforeEach(() => {
     dynamoMock.reset();
     setSimHashEnv();
@@ -71,29 +71,20 @@ describe("tier15SimHashMatch", () => {
   describe("Feature Flags", () => {
     it("returns null when SIMHASH_ENABLED is false", async () => {
       setSimHashEnv({ SIMHASH_ENABLED: "false" });
-      const result = await tier15SimHashMatch(
-        createDeps(),
-        createFingerprint(),
-      );
+      const result = await simHashMatch(createDeps(), createFingerprint());
       expect(result).toBeNull();
     });
 
     it("returns null when rollout percentage excludes this hash", async () => {
       setSimHashEnv({ SIMHASH_ROLLOUT: "0" });
-      const result = await tier15SimHashMatch(
-        createDeps(),
-        createFingerprint(),
-      );
+      const result = await simHashMatch(createDeps(), createFingerprint());
       expect(result).toBeNull();
     });
 
     it("proceeds when rollout percentage includes this hash", async () => {
       setSimHashEnv({ SIMHASH_ROLLOUT: "100" });
       dynamoMock.on(QueryCommand).resolves({ Items: [] });
-      const result = await tier15SimHashMatch(
-        createDeps(),
-        createFingerprint(),
-      );
+      const result = await simHashMatch(createDeps(), createFingerprint());
       expect(result).toBeNull();
     });
 
@@ -105,7 +96,7 @@ describe("tier15SimHashMatch", () => {
         Items: [buildBandItem("device-123", "1234567890abcdef", now)],
       });
 
-      const result = await tier15SimHashMatch(
+      const result = await simHashMatch(
         createDeps(),
         createFingerprint({ fuzzy_hash: "1234567890abcdef" }),
       );
@@ -115,7 +106,7 @@ describe("tier15SimHashMatch", () => {
 
   describe("Input Validation", () => {
     it("returns null when fuzzy_hash is undefined", async () => {
-      const result = await tier15SimHashMatch(
+      const result = await simHashMatch(
         createDeps(),
         createFingerprint({ fuzzy_hash: undefined }),
       );
@@ -123,7 +114,7 @@ describe("tier15SimHashMatch", () => {
     });
 
     it("returns null when fuzzy_hash is empty string", async () => {
-      const result = await tier15SimHashMatch(
+      const result = await simHashMatch(
         createDeps(),
         createFingerprint({ fuzzy_hash: "" }),
       );
@@ -131,7 +122,7 @@ describe("tier15SimHashMatch", () => {
     });
 
     it("returns null when fuzzy_hash is invalid hex", async () => {
-      const result = await tier15SimHashMatch(
+      const result = await simHashMatch(
         createDeps(),
         createFingerprint({ fuzzy_hash: "not-a-valid-hash" }),
       );
@@ -139,7 +130,7 @@ describe("tier15SimHashMatch", () => {
     });
 
     it("returns null when fuzzy_hash is too short", async () => {
-      const result = await tier15SimHashMatch(
+      const result = await simHashMatch(
         createDeps(),
         createFingerprint({ fuzzy_hash: "1234" }),
       );
@@ -150,7 +141,7 @@ describe("tier15SimHashMatch", () => {
   describe("Band Queries", () => {
     it("queries all 16 bands in parallel (256-bit hash)", async () => {
       dynamoMock.on(QueryCommand).resolves({ Items: [] });
-      await tier15SimHashMatch(createDeps(), createFingerprint());
+      await simHashMatch(createDeps(), createFingerprint());
 
       const calls = dynamoMock.commandCalls(QueryCommand);
       expect(calls.length).toBe(16);
@@ -158,7 +149,7 @@ describe("tier15SimHashMatch", () => {
 
     it("queries all 4 bands for legacy 64-bit hash", async () => {
       dynamoMock.on(QueryCommand).resolves({ Items: [] });
-      await tier15SimHashMatch(
+      await simHashMatch(
         createDeps(),
         createFingerprint({ fuzzy_hash: "1234567890abcdef" }),
       );
@@ -169,7 +160,7 @@ describe("tier15SimHashMatch", () => {
 
     it("queries correct band partition keys", async () => {
       dynamoMock.on(QueryCommand).resolves({ Items: [] });
-      await tier15SimHashMatch(
+      await simHashMatch(
         createDeps(),
         createFingerprint({ fuzzy_hash: "1234567890abcdef" }),
       );
@@ -188,7 +179,7 @@ describe("tier15SimHashMatch", () => {
       dynamoMock.on(QueryCommand).resolves({ Items: [] });
       const deps = createDeps();
       deps.tier2BucketsTable = "my-custom-table";
-      await tier15SimHashMatch(deps, createFingerprint());
+      await simHashMatch(deps, createFingerprint());
 
       const calls = dynamoMock.commandCalls(QueryCommand);
       expect(calls[0].args[0].input.TableName).toBe("my-custom-table");
@@ -196,7 +187,7 @@ describe("tier15SimHashMatch", () => {
 
     it("applies per-band LIMIT", async () => {
       dynamoMock.on(QueryCommand).resolves({ Items: [] });
-      await tier15SimHashMatch(createDeps(), createFingerprint());
+      await simHashMatch(createDeps(), createFingerprint());
 
       const calls = dynamoMock.commandCalls(QueryCommand);
       expect(calls[0].args[0].input.Limit).toBe(100);
@@ -213,10 +204,7 @@ describe("tier15SimHashMatch", () => {
         })
         .resolves({ Items: [] });
 
-      const result = await tier15SimHashMatch(
-        createDeps(),
-        createFingerprint(),
-      );
+      const result = await simHashMatch(createDeps(), createFingerprint());
       expect(result).toBeNull();
     });
 
@@ -232,7 +220,7 @@ describe("tier15SimHashMatch", () => {
         })
         .resolves({ Items: [] });
 
-      const result = await tier15SimHashMatch(
+      const result = await simHashMatch(
         createDeps(),
         createFingerprint({ fuzzy_hash: "1234567890abcdef" }),
       );
@@ -262,7 +250,7 @@ describe("tier15SimHashMatch", () => {
         })
         .resolves({ Items: [] });
 
-      const result = await tier15SimHashMatch(
+      const result = await simHashMatch(
         createDeps(),
         createFingerprint({ fuzzy_hash: "1234567890abcdef" }),
       );
@@ -285,7 +273,7 @@ describe("tier15SimHashMatch", () => {
         })
         .resolves({ Items: [] });
 
-      const result = await tier15SimHashMatch(
+      const result = await simHashMatch(
         createDeps(),
         createFingerprint({ fuzzy_hash: "1234567890abcdef" }),
       );
@@ -314,7 +302,7 @@ describe("tier15SimHashMatch", () => {
         })
         .resolves({ Items: [] });
 
-      const result = await tier15SimHashMatch(
+      const result = await simHashMatch(
         createDeps(),
         createFingerprint({ fuzzy_hash: incomingHash }),
       );
@@ -341,7 +329,7 @@ describe("tier15SimHashMatch", () => {
         })
         .resolves({ Items: [] });
 
-      const result = await tier15SimHashMatch(
+      const result = await simHashMatch(
         createDeps(),
         createFingerprint({ fuzzy_hash: DEFAULT_FUZZY_HASH_256 }),
       );
@@ -364,7 +352,7 @@ describe("tier15SimHashMatch", () => {
         })
         .resolves({ Items: [] });
 
-      const result = await tier15SimHashMatch(
+      const result = await simHashMatch(
         createDeps(),
         createFingerprint({ fuzzy_hash: "1234567890abcdef" }),
       );
@@ -379,7 +367,7 @@ describe("tier15SimHashMatch", () => {
         Items: [buildBandItem("dev", "1234567890abcdef", now)],
       });
 
-      const result = await tier15SimHashMatch(
+      const result = await simHashMatch(
         createDeps(),
         createFingerprint({ fuzzy_hash: "1234567890abcdef" }),
       );
@@ -394,7 +382,7 @@ describe("tier15SimHashMatch", () => {
         Items: [buildBandItem("dev", "1234567890abcdef", now)],
       });
 
-      const result = await tier15SimHashMatch(
+      const result = await simHashMatch(
         createDeps(),
         createFingerprint({ fuzzy_hash: "1234567890abcdef" }),
       );
@@ -420,7 +408,7 @@ describe("tier15SimHashMatch", () => {
         })
         .resolves({ Items: [] });
 
-      const result = await tier15SimHashMatch(
+      const result = await simHashMatch(
         createDeps(),
         createFingerprint({ fuzzy_hash: "1234567890abcdef" }),
       );
@@ -445,7 +433,7 @@ describe("tier15SimHashMatch", () => {
         })
         .resolves({ Items: [] });
 
-      const result = await tier15SimHashMatch(
+      const result = await simHashMatch(
         createDeps(),
         createFingerprint({ fuzzy_hash: "1234567890abcdef" }),
       );
@@ -468,7 +456,7 @@ describe("tier15SimHashMatch", () => {
         })
         .resolves({ Items: [] });
 
-      const result = await tier15SimHashMatch(
+      const result = await simHashMatch(
         createDeps(),
         createFingerprint({ fuzzy_hash: "1234567890abcdef" }),
       );
@@ -491,7 +479,7 @@ describe("tier15SimHashMatch", () => {
         })
         .resolves({ Items: [] });
 
-      const result = await tier15SimHashMatch(
+      const result = await simHashMatch(
         createDeps(),
         createFingerprint({ fuzzy_hash: "1234567890abcdef" }),
       );
@@ -513,7 +501,7 @@ describe("tier15SimHashMatch", () => {
         })
         .resolves({ Items: [] });
 
-      const result = await tier15SimHashMatch(
+      const result = await simHashMatch(
         createDeps(),
         createFingerprint({ fuzzy_hash: "1234567890abcdef" }),
       );
@@ -539,7 +527,7 @@ describe("tier15SimHashMatch", () => {
         })
         .resolves({ Items: [] });
 
-      const result = await tier15SimHashMatch(
+      const result = await simHashMatch(
         createDeps(),
         createFingerprint({ fuzzy_hash: "1234567890abcdef" }),
       );
@@ -559,7 +547,7 @@ describe("tier15SimHashMatch", () => {
         })
         .resolves({ Items: [] });
 
-      const result = await tier15SimHashMatch(
+      const result = await simHashMatch(
         createDeps(),
         createFingerprint({ fuzzy_hash: "1234567890abcdef" }),
       );
@@ -572,10 +560,7 @@ describe("tier15SimHashMatch", () => {
     it("fails open on DynamoDB error", async () => {
       dynamoMock.on(QueryCommand).rejects(new Error("DynamoDB unavailable"));
 
-      const result = await tier15SimHashMatch(
-        createDeps(),
-        createFingerprint(),
-      );
+      const result = await simHashMatch(createDeps(), createFingerprint());
       expect(result).toBeNull();
     });
 
@@ -583,10 +568,7 @@ describe("tier15SimHashMatch", () => {
       setSimHashEnv({ SIMHASH_LATENCY_BYPASS: "0" });
       dynamoMock.on(QueryCommand).resolves({ Items: [] });
 
-      const result = await tier15SimHashMatch(
-        createDeps(),
-        createFingerprint(),
-      );
+      const result = await simHashMatch(createDeps(), createFingerprint());
       expect(result).toBeNull();
     });
   });
@@ -618,7 +600,7 @@ describe("tier15SimHashMatch", () => {
         })
         .resolves({ Items: [] });
 
-      const result = await tier15SimHashMatch(
+      const result = await simHashMatch(
         createDeps(),
         createFingerprint({ fuzzy_hash: "1234567890abcdef" }),
       );
@@ -647,7 +629,7 @@ describe("tier15SimHashMatch", () => {
         })
         .resolves({ Items: [] });
 
-      const result = await tier15SimHashMatch(
+      const result = await simHashMatch(
         createDeps(),
         createFingerprint({ fuzzy_hash: "1234567890abcdef" }),
       );

@@ -52,18 +52,6 @@ export function detectQuickWinAnomalies(
 ): AnomalySignal[] {
   const signals: AnomalySignal[] = [];
 
-  if (fingerprint.lie_count !== undefined && fingerprint.lie_count > 0) {
-    // Severity scales with lie count: 0.5 base + 0.1 per lie, max 0.9
-    const severity = Math.min(0.9, 0.5 + fingerprint.lie_count * 0.1);
-    signals.push(
-      createSignal("CROSS_FIELD", AnomalyCodes.NAVIGATOR_LIES, severity, {
-        expected: "0 lies",
-        actual: `${fingerprint.lie_count} lies detected`,
-        fields: ["lie_count"],
-      }),
-    );
-  }
-
   if (fingerprint.is_headless === true) {
     signals.push(
       createSignal("CROSS_FIELD", AnomalyCodes.HEADLESS_DETECTED, 0.9, {

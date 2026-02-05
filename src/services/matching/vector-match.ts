@@ -1,15 +1,3 @@
-/**
- * @fileoverview Tier 2 Vector Matching - Replaces compound bucket matching.
- *
- * Uses Qdrant vector similarity search for device matching instead of
- * DynamoDB compound buckets. This provides:
- * - Better accuracy on privacy browsers (no more bucket collisions)
- * - Simpler architecture (no bucket cardinality management)
- * - O(1) scaling vs O(n) bucket queries
- *
- * @module services/matching/tier2-vector
- */
-
 import {
   LambdaClient,
   InvokeCommand,
@@ -21,6 +9,7 @@ import { Metrics, MetricUnit } from "@aws-lambda-powertools/metrics";
 import { computeEmbedding, assessEmbeddingQuality } from "../vector/embedding";
 import { loadProfile } from "./profile-loader";
 import { computeFuzzyMatchInfo } from "../../helpers/hash";
+import { MatchTier } from "../../types/matching-tiers";
 import type {
   Fingerprint,
   MatchResult,
@@ -35,38 +24,20 @@ import type {
   SyncErrorResponse,
 } from "../../handlers/vector-worker/types";
 
-/** Minimum similarity score to consider a match */
 const MIN_SCORE_THRESHOLD = 0.7;
-
-/** High confidence threshold for very similar vectors */
 const HIGH_SCORE_THRESHOLD = 0.9;
-
-/** Timeout for vector search Lambda invocation */
 const VECTOR_INVOKE_TIMEOUT_MS = 5000;
 
-/**
- * Dependencies for Tier 2 vector matching
- */
-export interface Tier2VectorDeps {
-  /** Lambda client for invoking vector-worker */
+export interface VectorMatchDeps {
   lambda: LambdaClient;
-  /** DynamoDB client for profile lookups */
   dynamodb: DynamoDBClient;
-  /** ARN of the vector-worker Lambda function */
   vectorWorkerArn: string;
-  /** Qdrant collection name */
   collection: string;
-  /** Profiles table name */
   profilesTable: string;
-  /** Logger for debugging */
   logger: Logger;
-  /** Metrics for CloudWatch */
   metrics: Metrics;
 }
 
-/**
- * Primary features used in the embedding, ordered by discriminating power.
- */
 const PRIMARY_EMBEDDING_FEATURES = [
   "canvas_hash",
   "webgl_hash",
@@ -78,19 +49,16 @@ const PRIMARY_EMBEDDING_FEATURES = [
   "hardware_concurrency",
 ];
 
-/**
- * Tier 2: Vector similarity match with timeout protection.
- * Returns result with timedOut flag for "fail open" scenarios.
- */
-export async function tier2VectorMatchWithTimeout(
-  deps: Tier2VectorDeps,
+/** Vector similarity match with timeout protection (fail-open on timeout). */
+export async function vectorMatchWithTimeout(
+  deps: VectorMatchDeps,
   fingerprint: Fingerprint,
 ): Promise<{ result: MatchResult | null; timedOut: boolean }> {
   const abortController = new AbortController();
   const TIMEOUT_SENTINEL = Symbol("timeout");
 
   const raceResult = await Promise.race([
-    tier2VectorMatch(deps, fingerprint, abortController.signal).then((r) => ({
+    vectorMatch(deps, fingerprint, abortController.signal).then((r) => ({
       value: r,
       timedOut: false,
     })),
@@ -111,7 +79,6 @@ export async function tier2VectorMatchWithTimeout(
   return { result: raceResult.value as MatchResult | null, timedOut: false };
 }
 
-/** Options for Lambda invocation */
 interface InvokeLambdaOptions {
   functionName: string;
   payload: unknown;
@@ -119,9 +86,8 @@ interface InvokeLambdaOptions {
   abortSignal?: AbortSignal;
 }
 
-/** Invoke Lambda and parse response, returns null on error */
 async function invokeLambda<T>(
-  deps: Pick<Tier2VectorDeps, "lambda" | "logger" | "metrics">,
+  deps: Pick<VectorMatchDeps, "lambda" | "logger" | "metrics">,
   opts: InvokeLambdaOptions,
 ): Promise<T | null> {
   const invokeResult = await deps.lambda.send(
@@ -157,9 +123,8 @@ async function invokeLambda<T>(
   return JSON.parse(Buffer.from(invokeResult.Payload).toString()) as T;
 }
 
-/** Handle error response from vector search */
 function handleSearchError(
-  deps: Pick<Tier2VectorDeps, "logger" | "metrics">,
+  deps: Pick<VectorMatchDeps, "logger" | "metrics">,
   errorResponse: SyncErrorResponse,
 ): void {
   if (errorResponse.code === "COLLECTION_NOT_FOUND") {
@@ -174,9 +139,8 @@ function handleSearchError(
   }
 }
 
-/** Record search completion metrics */
 function recordSearchMetrics(
-  deps: Pick<Tier2VectorDeps, "metrics">,
+  deps: Pick<VectorMatchDeps, "metrics">,
   count: number,
   duration: number,
 ): void {
@@ -194,9 +158,8 @@ type SearchMatch = {
   response: SyncSearchResponse;
 };
 
-/** Process search response and return best match or null */
 function processSearchResponse(
-  deps: Pick<Tier2VectorDeps, "logger" | "metrics">,
+  deps: Pick<VectorMatchDeps, "logger" | "metrics">,
   response: SyncSearchResponse | SyncErrorResponse,
   startTime: number,
 ): SearchMatch | null {
@@ -225,11 +188,8 @@ function processSearchResponse(
   return { best, response: successResponse };
 }
 
-/**
- * Tier 2: Vector similarity match using Qdrant.
- */
-async function tier2VectorMatch(
-  deps: Tier2VectorDeps,
+async function vectorMatch(
+  deps: VectorMatchDeps,
   fingerprint: Fingerprint,
   abortSignal?: AbortSignal,
 ): Promise<MatchResult | null> {
@@ -282,16 +242,14 @@ async function tier2VectorMatch(
   });
 }
 
-/** Options for building a vector match result */
 interface BuildMatchResultOptions {
-  deps: Pick<Tier2VectorDeps, "dynamodb" | "profilesTable" | "logger">;
+  deps: Pick<VectorMatchDeps, "dynamodb" | "profilesTable" | "logger">;
   deviceId: string;
   score: number;
   fingerprint: Fingerprint;
   searchResponse: SyncSearchResponse;
 }
 
-/** Build vector match details for transparency */
 function buildVectorDetails(
   score: number,
   searchResponse: SyncSearchResponse,
@@ -309,9 +267,6 @@ function buildVectorDetails(
   };
 }
 
-/**
- * Build a complete MatchResult from a vector search match.
- */
 async function buildVectorMatchResult(
   opts: BuildMatchResultOptions,
 ): Promise<MatchResult> {
@@ -331,7 +286,7 @@ async function buildVectorMatchResult(
   return {
     device_id: deviceId,
     confidence,
-    match_tier: 2,
+    match_tier: MatchTier.VECTOR,
     is_new_device: false,
     risk_score: profile?.risk_score ?? 0.4,
     flags: profile?.flags ?? [],
@@ -344,10 +299,7 @@ async function buildVectorMatchResult(
   };
 }
 
-/**
- * Convert vector similarity score to confidence score.
- * Score range: 0.7-1.0 maps to confidence 0.5-0.95
- */
+/** Score 0.7–1.0 → confidence 0.5–0.95 */
 function computeVectorConfidence(score: number): number {
   const minScore = MIN_SCORE_THRESHOLD;
   const maxScore = 1.0;
@@ -358,24 +310,17 @@ function computeVectorConfidence(score: number): number {
   return minConfidence + normalized * (maxConfidence - minConfidence);
 }
 
-/**
- * Upsert a device's vector embedding to Qdrant.
- *
- * Includes a quality gate to prevent sparse/incomplete fingerprints from
- * polluting the vector index. Fingerprints missing critical signals
- * (structural hashes, rendering data, hardware info) will be rejected.
- *
- * @returns true if upsert succeeded, false if skipped or failed
- */
-export async function upsertDeviceVector(
-  deps: Pick<
-    Tier2VectorDeps,
-    "lambda" | "vectorWorkerArn" | "collection" | "logger" | "metrics"
-  >,
+type UpsertDeps = Pick<
+  VectorMatchDeps,
+  "lambda" | "vectorWorkerArn" | "collection" | "logger" | "metrics"
+>;
+
+/** Returns false if fingerprint quality is too low for indexing. */
+function passesQualityGate(
+  deps: Pick<UpsertDeps, "logger" | "metrics">,
   deviceId: string,
   fingerprint: Fingerprint,
-): Promise<boolean> {
-  // Quality gate: reject sparse fingerprints that would pollute the index
+): boolean {
   const quality = assessEmbeddingQuality(fingerprint);
   if (!quality.acceptable) {
     deps.logger.info("Skipping vector upsert - fingerprint quality too low", {
@@ -393,19 +338,26 @@ export async function upsertDeviceVector(
     );
     return false;
   }
-
   deps.metrics.addMetric(
     "VectorEmbeddingQualityScore",
     MetricUnit.Count,
     Math.round(quality.score * 100),
   );
+  return true;
+}
 
-  const embeddingResult = computeEmbedding(fingerprint);
+/** Quality-gated upsert — rejects sparse fingerprints to avoid index pollution. */
+export async function upsertDeviceVector(
+  deps: UpsertDeps,
+  deviceId: string,
+  fingerprint: Fingerprint,
+): Promise<boolean> {
+  if (!passesQualityGate(deps, deviceId, fingerprint)) return false;
 
   const upsertRequest: SyncUpsertRequest = {
     action: "upsert",
     device_id: deviceId,
-    vector: embeddingResult.vector,
+    vector: computeEmbedding(fingerprint).vector,
     collection: deps.collection,
     payload: {
       stable_hash: fingerprint.stable_hash,
@@ -425,9 +377,7 @@ export async function upsertDeviceVector(
         errorMetric: "VectorUpsertError",
       },
     );
-
     if (!response) return false;
-
     if (!response.success) {
       deps.logger.error("Vector upsert failed", {
         error: (response as SyncErrorResponse).error,
@@ -435,7 +385,6 @@ export async function upsertDeviceVector(
       deps.metrics.addMetric("VectorUpsertFailed", MetricUnit.Count, 1);
       return false;
     }
-
     deps.metrics.addMetric("VectorUpsertSuccess", MetricUnit.Count, 1);
     deps.logger.info("Vector upsert complete", { device_id: deviceId });
     return true;

@@ -26,23 +26,6 @@ const metrics = new Metrics({
   namespace: process.env.POWERTOOLS_METRICS_NAMESPACE || "Argus",
 });
 
-/** Statistical data returned from Valkey */
-export interface StatisticalData {
-  /** Total requests for this UA family */
-  total: number;
-  /** Requests for this specific UA+JA4 combo */
-  comboCount: number;
-  /** Estimated distinct JA4 values seen for this UA family */
-  distinct: number;
-}
-
-/** Neutral stats returned on failure (won't trigger false positives) */
-const NEUTRAL_STATS: StatisticalData = {
-  total: 1,
-  comboCount: 1,
-  distinct: 1,
-};
-
 // Singleton client instance
 let client: Redis | null = null;
 
@@ -96,100 +79,6 @@ function getClient(): Redis | null {
   });
 
   return client;
-}
-
-/**
- * Record a fingerprint observation and get statistical data.
- *
- * Atomically increments counters and updates HyperLogLog in a single pipeline.
- * All keys expire after TTL (default 48h) to bound memory usage.
- *
- * @param uaFamily - Browser family (e.g., "Chrome", "Firefox")
- * @param ja4 - JA4 TLS fingerprint
- * @returns Statistical data for this combination, or neutral stats on failure
- *
- * @example
- * ```typescript
- * const stats = await recordAndGetStats("Chrome", "t13d1516h2_8daaf6152771_b0da82dd1658");
- * // stats = { total: 1000, comboCount: 5, distinct: 200 }
- * // score = 5 / (1000 / 200) = 1.0 (normal)
- *
- * const suspiciousStats = await recordAndGetStats("Chrome", "t13d1516h2_rare_fingerprint");
- * // suspiciousStats = { total: 1000, comboCount: 1, distinct: 200 }
- * // score = 1 / (1000 / 200) = 0.2% (suspicious if < 1%)
- * ```
- */
-export async function recordAndGetStats(
-  uaFamily: string,
-  ja4: string,
-): Promise<StatisticalData> {
-  const ttl = parseInt(process.env.VALKEY_TTL_SECONDS || "172800", 10); // 48h default
-
-  try {
-    const redisClient = getClient();
-    if (!redisClient) {
-      // Valkey not configured - return neutral stats
-      return NEUTRAL_STATS;
-    }
-
-    const startTime = Date.now();
-
-    // Key names
-    const totalKey = `ua:${uaFamily}:total`;
-    const comboKey = `ua:${uaFamily}:ja4:${ja4}`;
-    const distinctKey = `ua:${uaFamily}:distinct`;
-
-    // Execute pipeline: INCR total, INCR combo, PFADD distinct, EXPIRE all, PFCOUNT
-    // Pipeline reduces round-trips
-    const pipeline = redisClient.pipeline();
-    pipeline.incr(totalKey);
-    pipeline.incr(comboKey);
-    pipeline.pfadd(distinctKey, ja4);
-    pipeline.expire(totalKey, ttl);
-    pipeline.expire(comboKey, ttl);
-    pipeline.expire(distinctKey, ttl);
-    pipeline.pfcount(distinctKey);
-
-    const results = await pipeline.exec();
-
-    const duration = Date.now() - startTime;
-    metrics.addMetric("ValkeyOperationMs", MetricUnit.Milliseconds, duration);
-
-    // Parse pipeline results
-    // ioredis returns [[err, result], [err, result], ...]
-    if (!results || results.length < 7) {
-      logger.warn("Unexpected Valkey pipeline results", { results });
-      return NEUTRAL_STATS;
-    }
-
-    // Extract values (index 1 of each result tuple)
-    const total = results[0]?.[1] as number;
-    const comboCount = results[1]?.[1] as number;
-    const distinct = results[6]?.[1] as number;
-
-    return {
-      total: total || 1,
-      comboCount: comboCount || 1,
-      distinct: distinct || 1,
-    };
-  } catch (error) {
-    // Log but don't throw - return neutral stats to avoid false positives
-    logger.warn("Valkey operation failed", { error, uaFamily, ja4 });
-    metrics.addMetric("ValkeyOperationError", MetricUnit.Count, 1);
-    return NEUTRAL_STATS;
-  }
-}
-
-/**
- * Check if Valkey is enabled and configured.
- *
- * @returns true if VALKEY_ENDPOINT is set and statistical detection is enabled
- */
-export function isValkeyEnabled(): boolean {
-  return (
-    !!process.env.VALKEY_ENDPOINT &&
-    process.env.STATISTICAL_DETECTION_ENABLED === "true"
-  );
 }
 
 /**
@@ -312,15 +201,29 @@ export async function recordNetworkMetrics(
   }
 }
 
-/**
- * Fetch network baseline histograms for both ASN-specific and global.
- *
- * Performs a single pipelined read for efficiency.
- *
- * @param asn - Autonomous System Number
- * @param deviceType - Device type (desktop, mobile, tablet)
- * @returns Both ASN-specific and global histograms
- */
+function parseBaselineResults(results: [Error | null, unknown][]): {
+  asn: NetworkHistograms;
+  global: NetworkHistograms;
+} {
+  const asnTlsRaw = (results[0]?.[1] as Record<string, string>) || {};
+  const asnMssRaw = (results[1]?.[1] as Record<string, string>) || {};
+  const asnTotal = parseInt((results[2]?.[1] as string) || "0", 10);
+  const globalTlsRaw = (results[3]?.[1] as Record<string, string>) || {};
+  const globalMssRaw = (results[4]?.[1] as Record<string, string>) || {};
+  const globalTotal = parseInt((results[5]?.[1] as string) || "0", 10);
+  return {
+    asn: {
+      tlsRatio: parseHistogram(asnTlsRaw, asnTotal),
+      mss: parseHistogram(asnMssRaw, asnTotal),
+    },
+    global: {
+      tlsRatio: parseHistogram(globalTlsRaw, globalTotal),
+      mss: parseHistogram(globalMssRaw, globalTotal),
+    },
+  };
+}
+
+/** Fetch network baseline histograms for both ASN-specific and global. */
 export async function getNetworkBaselines(
   asn: string,
   deviceType: string,
@@ -332,36 +235,25 @@ export async function getNetworkBaselines(
 
   try {
     const redisClient = getClient();
-    if (!redisClient) {
-      return emptyResult;
-    }
+    if (!redisClient) return emptyResult;
 
     const startTime = Date.now();
+    const prefix = `asn:${asn}:${deviceType}`;
+    const globalPrefix = `global:${deviceType}`;
 
-    // Keys
-    const asnTlsKey = `asn:${asn}:${deviceType}:tls:hist`;
-    const asnMssKey = `asn:${asn}:${deviceType}:mss:hist`;
-    const asnTotalKey = `asn:${asn}:${deviceType}:total`;
-    const globalTlsKey = `global:${deviceType}:tls:hist`;
-    const globalMssKey = `global:${deviceType}:mss:hist`;
-    const globalTotalKey = `global:${deviceType}:total`;
-
-    // Pipeline all reads
     const pipeline = redisClient.pipeline();
-    pipeline.hgetall(asnTlsKey);
-    pipeline.hgetall(asnMssKey);
-    pipeline.get(asnTotalKey);
-    pipeline.hgetall(globalTlsKey);
-    pipeline.hgetall(globalMssKey);
-    pipeline.get(globalTotalKey);
+    pipeline.hgetall(`${prefix}:tls:hist`);
+    pipeline.hgetall(`${prefix}:mss:hist`);
+    pipeline.get(`${prefix}:total`);
+    pipeline.hgetall(`${globalPrefix}:tls:hist`);
+    pipeline.hgetall(`${globalPrefix}:mss:hist`);
+    pipeline.get(`${globalPrefix}:total`);
 
     const results = await pipeline.exec();
-
-    const duration = Date.now() - startTime;
     metrics.addMetric(
       "ValkeyNetworkBaselineReadMs",
       MetricUnit.Milliseconds,
-      duration,
+      Date.now() - startTime,
     );
 
     if (!results || results.length < 6) {
@@ -369,26 +261,7 @@ export async function getNetworkBaselines(
       return emptyResult;
     }
 
-    // Parse ASN histograms
-    const asnTlsRaw = (results[0]?.[1] as Record<string, string>) || {};
-    const asnMssRaw = (results[1]?.[1] as Record<string, string>) || {};
-    const asnTotal = parseInt((results[2]?.[1] as string) || "0", 10);
-
-    // Parse global histograms
-    const globalTlsRaw = (results[3]?.[1] as Record<string, string>) || {};
-    const globalMssRaw = (results[4]?.[1] as Record<string, string>) || {};
-    const globalTotal = parseInt((results[5]?.[1] as string) || "0", 10);
-
-    return {
-      asn: {
-        tlsRatio: parseHistogram(asnTlsRaw, asnTotal),
-        mss: parseHistogram(asnMssRaw, asnTotal),
-      },
-      global: {
-        tlsRatio: parseHistogram(globalTlsRaw, globalTotal),
-        mss: parseHistogram(globalMssRaw, globalTotal),
-      },
-    };
+    return parseBaselineResults(results as [Error | null, unknown][]);
   } catch (error) {
     logger.warn("Failed to get network baselines", { error, asn, deviceType });
     metrics.addMetric("ValkeyNetworkBaselineReadError", MetricUnit.Count, 1);
@@ -463,118 +336,101 @@ export function isStatisticalV2Enabled(): boolean {
   );
 }
 
-/**
- * Record a fingerprint observation and get statistical v2 data.
- *
- * Records to both grouping-key-specific and global counters.
- * Uses tiered TTLs based on observation count.
- * Global updates are sampled at 1% to reduce write load.
- *
- * Key schema (grouping key is hashed for compact storage):
- * - stat:v2:{keyHash}:{type}:{fingerprint} → counter (tiered TTL)
- * - stat:v2:{keyHash}:{type}:_total → counter (24h TTL)
- * - stat:v2:_global:{type}:{fingerprint} → counter (1% sampled)
- * - stat:v2:_global:{type}:_total → counter
- *
- * @param groupingKey - Composite grouping key (e.g., "Mozilla/5.0...:chrome")
- * @param type - Fingerprint type ('ja4', 'h2', 'maths', etc.)
- * @param fingerprint - The fingerprint value
- * @returns Statistical data for computing Shannon score
- */
+interface V2Keys {
+  groupCount: string;
+  groupTotal: string;
+  globalCount: string;
+  globalTotal: string;
+}
+
+function buildV2Keys(
+  groupingKey: string,
+  type: string,
+  fingerprint: string,
+): V2Keys {
+  const keyHash = fnv1a(groupingKey);
+  return {
+    groupCount: `stat:v2:${keyHash}:${type}:${fingerprint}`,
+    groupTotal: `stat:v2:${keyHash}:${type}:_total`,
+    globalCount: `stat:v2:_global:${type}:${fingerprint}`,
+    globalTotal: `stat:v2:_global:${type}:_total`,
+  };
+}
+
+async function setV2TTLs(
+  redisClient: Redis,
+  keys: V2Keys,
+  count: number,
+  includeGlobal: boolean,
+): Promise<void> {
+  const ttlPipeline = redisClient.pipeline();
+  ttlPipeline.expire(keys.groupCount, getTieredTTL(count));
+  ttlPipeline.expire(keys.groupTotal, 24 * 3600);
+  if (includeGlobal) {
+    ttlPipeline.expire(keys.globalCount, 7 * 24 * 3600);
+    ttlPipeline.expire(keys.globalTotal, 7 * 24 * 3600);
+  }
+  await ttlPipeline.exec();
+}
+
+function parseV2PipelineResults(
+  results: [Error | null, unknown][],
+): StatisticalV2Data {
+  return {
+    count: parseInt((results[0]?.[1] as string) || "0", 10) + 1,
+    total: parseInt((results[1]?.[1] as string) || "0", 10) + 1,
+    globalCount: Math.max(1, parseInt((results[2]?.[1] as string) || "0", 10)),
+    globalTotal: Math.max(1, parseInt((results[3]?.[1] as string) || "0", 10)),
+  };
+}
+
+const NEUTRAL_V2_DATA: StatisticalV2Data = {
+  count: 1,
+  total: 1,
+  globalCount: 1,
+  globalTotal: 1,
+};
+
+/** Record a fingerprint observation and get statistical v2 data. */
 export async function recordFingerprintV2(
   groupingKey: string,
   type: string,
   fingerprint: string,
 ): Promise<StatisticalV2Data> {
-  const neutralData: StatisticalV2Data = {
-    count: 1,
-    total: 1,
-    globalCount: 1,
-    globalTotal: 1,
-  };
-
   try {
     const redisClient = getClient();
-    if (!redisClient) {
-      return neutralData;
-    }
+    if (!redisClient) return NEUTRAL_V2_DATA;
 
     const startTime = Date.now();
-
-    // Hash the grouping key for compact Redis keys
-    const keyHash = fnv1a(groupingKey);
-
-    // Key names for grouping-specific counters
-    const groupCountKey = `stat:v2:${keyHash}:${type}:${fingerprint}`;
-    const groupTotalKey = `stat:v2:${keyHash}:${type}:_total`;
-
-    // Key names for global counters
-    const globalCountKey = `stat:v2:_global:${type}:${fingerprint}`;
-    const globalTotalKey = `stat:v2:_global:${type}:_total`;
-
-    // Pipeline for reads + increments
+    const keys = buildV2Keys(groupingKey, type, fingerprint);
     const pipeline = redisClient.pipeline();
+    pipeline.get(keys.groupCount);
+    pipeline.get(keys.groupTotal);
+    pipeline.get(keys.globalCount);
+    pipeline.get(keys.globalTotal);
+    pipeline.incr(keys.groupCount);
+    pipeline.incr(keys.groupTotal);
 
-    // Read current counts first (for TTL calculation)
-    pipeline.get(groupCountKey);
-    pipeline.get(groupTotalKey);
-    pipeline.get(globalCountKey);
-    pipeline.get(globalTotalKey);
-
-    // Increment grouping-specific counters
-    pipeline.incr(groupCountKey);
-    pipeline.incr(groupTotalKey);
-
-    // Sample global updates at 1% to reduce write load
     const shouldUpdateGlobal = Math.random() < 0.01;
     if (shouldUpdateGlobal) {
-      // Increment by 100 to compensate for 1% sampling
-      pipeline.incrby(globalCountKey, 100);
-      pipeline.incrby(globalTotalKey, 100);
+      pipeline.incrby(keys.globalCount, 100);
+      pipeline.incrby(keys.globalTotal, 100);
     }
 
     const results = await pipeline.exec();
-
     if (!results) {
       logger.warn("Unexpected null Valkey pipeline results");
-      return neutralData;
+      return NEUTRAL_V2_DATA;
     }
 
-    // Parse read results (indices 0-3)
-    const prevCount = parseInt((results[0]?.[1] as string) || "0", 10);
-    const prevTotal = parseInt((results[1]?.[1] as string) || "0", 10);
-    const globalCount = parseInt((results[2]?.[1] as string) || "0", 10);
-    const globalTotal = parseInt((results[3]?.[1] as string) || "0", 10);
-
-    // Current counts after increment
-    const count = prevCount + 1;
-    const total = prevTotal + 1;
-
-    // Set tiered TTL based on new count
-    const ttl = getTieredTTL(count);
-    const ttlPipeline = redisClient.pipeline();
-    ttlPipeline.expire(groupCountKey, ttl);
-    ttlPipeline.expire(groupTotalKey, 24 * 3600); // Total always 24h
-    if (shouldUpdateGlobal) {
-      ttlPipeline.expire(globalCountKey, 7 * 24 * 3600); // Global: 7 days
-      ttlPipeline.expire(globalTotalKey, 7 * 24 * 3600);
-    }
-    await ttlPipeline.exec();
-
-    const duration = Date.now() - startTime;
+    const data = parseV2PipelineResults(results as [Error | null, unknown][]);
+    await setV2TTLs(redisClient, keys, data.count, shouldUpdateGlobal);
     metrics.addMetric(
       "ValkeyStatisticalV2OperationMs",
       MetricUnit.Milliseconds,
-      duration,
+      Date.now() - startTime,
     );
-
-    return {
-      count,
-      total,
-      // Adjust global counts for 1% sampling
-      globalCount: Math.max(1, globalCount),
-      globalTotal: Math.max(1, globalTotal),
-    };
+    return data;
   } catch (error) {
     logger.warn("Valkey statistical v2 operation failed", {
       error,
@@ -582,7 +438,7 @@ export async function recordFingerprintV2(
       type,
     });
     metrics.addMetric("ValkeyStatisticalV2OperationError", MetricUnit.Count, 1);
-    return neutralData;
+    return NEUTRAL_V2_DATA;
   }
 }
 

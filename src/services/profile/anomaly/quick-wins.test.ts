@@ -4,53 +4,14 @@ import { AnomalyCodes } from "./types";
 import { Fingerprint } from "../../../types";
 
 describe("detectQuickWinAnomalies", () => {
-  describe("lie_count detection", () => {
-    it("should detect when lie_count > 0", () => {
+  describe("lie_count detection (removed)", () => {
+    it("should not detect lie_count (detection removed from quick-wins)", () => {
       const fingerprint = { lie_count: 3 } as Fingerprint;
       const signals = detectQuickWinAnomalies(fingerprint);
 
-      expect(signals).toHaveLength(1);
-      expect(signals[0].code).toBe(AnomalyCodes.NAVIGATOR_LIES);
-      // 0.5 base + 0.3 (3 * 0.1) = 0.8
-      expect(signals[0].severity).toBeCloseTo(0.8, 2);
-      expect(signals[0].evidence.expected).toBe("0 lies");
-      expect(signals[0].evidence.actual).toBe("3 lies detected");
-    });
-
-    it("should cap severity at 0.9 for high lie counts", () => {
-      const fingerprint = { lie_count: 10 } as Fingerprint;
-      const signals = detectQuickWinAnomalies(fingerprint);
-
-      expect(signals).toHaveLength(1);
-      // 0.5 + 1.0 would be 1.5, but capped at 0.9
-      expect(signals[0].severity).toBe(0.9);
-    });
-
-    it("should not flag when lie_count is 0", () => {
-      const fingerprint = { lie_count: 0 } as Fingerprint;
-      const signals = detectQuickWinAnomalies(fingerprint);
-
       expect(signals.some((s) => s.code === AnomalyCodes.NAVIGATOR_LIES)).toBe(
         false,
       );
-    });
-
-    it("should handle undefined lie_count", () => {
-      const fingerprint = {} as Fingerprint;
-      const signals = detectQuickWinAnomalies(fingerprint);
-
-      expect(signals.some((s) => s.code === AnomalyCodes.NAVIGATOR_LIES)).toBe(
-        false,
-      );
-    });
-
-    it("should have correct severity for single lie", () => {
-      const fingerprint = { lie_count: 1 } as Fingerprint;
-      const signals = detectQuickWinAnomalies(fingerprint);
-
-      expect(signals).toHaveLength(1);
-      // 0.5 + 0.1 = 0.6
-      expect(signals[0].severity).toBeCloseTo(0.6, 2);
     });
   });
 
@@ -174,13 +135,12 @@ describe("detectQuickWinAnomalies", () => {
       } as Fingerprint;
       const signals = detectQuickWinAnomalies(fingerprint);
 
-      expect(signals).toHaveLength(4);
+      expect(signals).toHaveLength(3);
       expect(signals.map((s) => s.code).sort()).toEqual(
         [
           AnomalyCodes.HEADLESS_DETECTED,
           AnomalyCodes.HIGH_PROXY_SCORE,
           AnomalyCodes.HIGH_VPN_SCORE,
-          AnomalyCodes.NAVIGATOR_LIES,
         ].sort(),
       );
     });

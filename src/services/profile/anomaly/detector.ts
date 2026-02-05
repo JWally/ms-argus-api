@@ -14,10 +14,6 @@ import { detectQuickWinAnomalies } from "./quick-wins";
 import { detectCrossFieldAnomalies } from "./cross-field";
 import { detectNetworkAnomalies } from "./network";
 import {
-  detectStatisticalAnomalies,
-  type StatisticalContext,
-} from "./statistical";
-import {
   detectNetworkBaselineAnomalies,
   type NetworkBaselineDetectorContext,
 } from "./network-baseline-detector";
@@ -72,7 +68,6 @@ const detectors: DetectorFn[] = [
  * @param fingerprint - Normalized fingerprint data
  * @param raw - Raw payload with nested structure (for cross-field checks)
  * @param sigint - Signal intelligence data (for network checks)
- * @param statisticalContext - Pre-fetched statistical context (for statistical checks)
  * @param networkBaselineContext - Pre-fetched network baseline context (for ASN-based checks)
  * @param statisticalContextV2 - Pre-fetched statistical v2 context (Shannon scoring)
  * @returns Aggregated anomaly result with signals, score, and suggested flags
@@ -81,9 +76,10 @@ export function detectAllAnomalies(
   fingerprint: Fingerprint,
   raw?: unknown,
   sigint?: SigintData,
-  statisticalContext?: StatisticalContext | null,
-  networkBaselineContext?: NetworkBaselineDetectorContext | null,
-  statisticalContextV2?: StatisticalContextV2 | null,
+  contextOpts?: {
+    networkBaseline?: NetworkBaselineDetectorContext | null;
+    statisticalV2?: StatisticalContextV2 | null;
+  },
 ): AnomalyResult {
   const signals: AnomalySignal[] = [];
 
@@ -100,18 +96,10 @@ export function detectAllAnomalies(
     }
   }
 
-  // Run statistical detection with pre-fetched context
-  try {
-    signals.push(...detectStatisticalAnomalies(statisticalContext ?? null));
-  } catch (error) {
-    logger.error("Statistical anomaly detector failed", { error });
-    metrics.addMetric("AnomalyDetectorError", MetricUnit.Count, 1);
-  }
-
   // Run network baseline detection with pre-fetched context
   try {
     signals.push(
-      ...detectNetworkBaselineAnomalies(networkBaselineContext ?? null),
+      ...detectNetworkBaselineAnomalies(contextOpts?.networkBaseline ?? null),
     );
   } catch (error) {
     logger.error("Network baseline anomaly detector failed", { error });
@@ -120,7 +108,9 @@ export function detectAllAnomalies(
 
   // Run statistical v2 detection with pre-fetched context (Shannon scoring)
   try {
-    signals.push(...detectStatisticalAnomaliesV2(statisticalContextV2 ?? null));
+    signals.push(
+      ...detectStatisticalAnomaliesV2(contextOpts?.statisticalV2 ?? null),
+    );
   } catch (error) {
     logger.error("Statistical v2 anomaly detector failed", { error });
     metrics.addMetric("AnomalyDetectorError", MetricUnit.Count, 1);

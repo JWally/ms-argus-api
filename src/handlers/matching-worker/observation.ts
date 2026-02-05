@@ -16,7 +16,6 @@ import type { MatchResult } from "../../services/matching";
 export interface ObservationRecord {
   timestamp: number;
   session_id: string;
-  tenant_id: string;
   device_id: string;
   match_tier: number;
   confidence: number;
@@ -78,7 +77,6 @@ export async function emitObservation(
   const observation: ObservationRecord = {
     timestamp: Date.now(),
     session_id: params.sessionId,
-    tenant_id: "", // Deprecated field, kept for schema compatibility
     device_id: params.matchResult.device_id,
     match_tier: params.matchResult.match_tier,
     confidence: params.matchResult.confidence,

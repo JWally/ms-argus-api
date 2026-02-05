@@ -10,10 +10,8 @@ import {
 } from "../../services/matching";
 import {
   detectAllAnomalies,
-  fetchStatisticalContext,
   fetchNetworkBaselineContext,
   fetchStatisticalContextV2,
-  type StatisticalContext,
   type NetworkBaselineDetectorContext,
   type StatisticalContextV2,
 } from "../../services/profile/anomaly";
@@ -98,7 +96,6 @@ async function runMatching(
  *
  * @param fingerprint - Normalized fingerprint data
  * @param rawPayload - Raw SQS payload containing device info
- * @param statisticalContext - Pre-fetched statistical context for frequency-based detection
  * @param networkBaselineContext - Pre-fetched network baseline context for ASN-based detection
  * @param statisticalContextV2 - Pre-fetched statistical v2 context for Shannon scoring
  * @returns Array of anomaly signals for the session
@@ -106,18 +103,13 @@ async function runMatching(
 function buildAnomalySignals(
   fingerprint: ParsedRecord["fingerprint"],
   rawPayload: SqsPayload,
-  statisticalContext: StatisticalContext | null,
   networkBaselineContext: NetworkBaselineDetectorContext | null,
   statisticalContextV2: StatisticalContextV2 | null,
 ): SessionAnomalySignal[] {
-  const result = detectAllAnomalies(
-    fingerprint,
-    rawPayload.device,
-    undefined,
-    statisticalContext,
-    networkBaselineContext,
-    statisticalContextV2,
-  );
+  const result = detectAllAnomalies(fingerprint, rawPayload.device, undefined, {
+    networkBaseline: networkBaselineContext,
+    statisticalV2: statisticalContextV2,
+  });
   return result.signals.map((s) => ({
     type: s.type,
     code: s.code,
@@ -126,16 +118,7 @@ function buildAnomalySignals(
   }));
 }
 
-/**
- * Persist matching results to cache, session table, and profile queue.
- *
- * Writes the match result to session cache, stores the full session payload
- * in DynamoDB, and queues a profile update message for the matched device.
- *
- * @param service - Matching service instance
- * @param ctx - Session context with match result and anomalies
- * @param deps - Handler dependencies
- */
+/** Persist matching results to cache, session table, and profile queue. */
 async function persistResults(
   service: MatchingService,
   ctx: {
@@ -145,21 +128,11 @@ async function persistResults(
     anomalies: SessionAnomalySignal[];
     rawPayload: SqsPayload;
     payload: ParsedRecord["payload"];
-    statisticalContext: StatisticalContext | null;
     statisticalContextV2: StatisticalContextV2 | null;
   },
   deps: ProcessRecordDeps,
 ): Promise<void> {
-  const {
-    sessionId,
-    matchResult,
-    idempotencyKey,
-    anomalies,
-    rawPayload,
-    payload,
-    statisticalContext,
-    statisticalContextV2,
-  } = ctx;
+  const { sessionId, matchResult, idempotencyKey, anomalies } = ctx;
   const cacheWritten = await service.writeMatchResult({
     sessionId,
     result: matchResult,
@@ -172,11 +145,10 @@ async function persistResults(
   await writeSessionPayload(
     {
       sessionId,
-      rawPayload,
+      rawPayload: ctx.rawPayload,
       matchResult,
       anomalies,
-      statisticalContext,
-      statisticalContextV2,
+      statisticalContextV2: ctx.statisticalContextV2,
     },
     {
       dynamodb: deps.dynamodb,
@@ -187,7 +159,7 @@ async function persistResults(
   );
   await service.queueProfileUpdate(
     matchResult.device_id,
-    payload,
+    ctx.payload,
     matchResult.is_new_device,
     matchResult,
   );
@@ -240,18 +212,53 @@ function emitCompletionMetrics(
   });
 }
 
-/**
- * Process a single SQS record through the matching pipeline.
- *
- * Main entry point for the matching worker. Parses the record, checks cache
- * for duplicates, runs tiered matching, detects anomalies, persists results,
- * upserts device vector (if configured), and emits metrics.
- * Short-circuits on cache hit or parse failure.
- *
- * @param record - SQS record containing fingerprint payload
- * @param service - Matching service instance
- * @param deps - Handler dependencies
- */
+/** Check if session was already processed (cache hit). */
+async function checkDuplicate(
+  service: MatchingService,
+  sessionId: string,
+  deps: Pick<ProcessRecordDeps, "logger" | "metrics">,
+): Promise<boolean> {
+  const cached = await service.cache.checkSessionCache(sessionId);
+  if (cached && cached.status === "complete") {
+    deps.logger.info("Cache hit - already processed", {
+      session_id: sessionId,
+      device_id: cached.device_id,
+    });
+    deps.metrics.addMetric("Tier0CacheHit", MetricUnit.Count, 1);
+    return true;
+  }
+  return false;
+}
+
+/** Fetch anomaly contexts and build signals. */
+async function fetchAndBuildAnomalies(
+  fingerprint: ParsedRecord["fingerprint"],
+  rawPayload: SqsPayload,
+): Promise<{
+  anomalies: SessionAnomalySignal[];
+  statisticalContextV2: StatisticalContextV2 | null;
+}> {
+  const [networkBaselineContext, statisticalContextV2] = await Promise.all([
+    fetchNetworkBaselineContext(fingerprint, rawPayload.sigint),
+    fetchStatisticalContextV2(
+      fingerprint,
+      rawPayload.sigint,
+      rawPayload.device,
+      rawPayload.hashes,
+    ),
+  ]);
+  return {
+    anomalies: buildAnomalySignals(
+      fingerprint,
+      rawPayload,
+      networkBaselineContext,
+      statisticalContextV2,
+    ),
+    statisticalContextV2,
+  };
+}
+
+/** Process a single SQS record through the matching pipeline. */
 export async function processRecord(
   record: SQSRecord,
   service: MatchingService,
@@ -262,19 +269,10 @@ export async function processRecord(
 
   const startTime = Date.now();
   const { rawPayload, sessionId, fingerprint, payload } = parsed;
-
   deps.logger.info("Processing fingerprint", { session_id: sessionId });
   const idempotencyKey = generateIdempotencyKey(sessionId, fingerprint);
 
-  const cached = await service.cache.checkSessionCache(sessionId);
-  if (cached && cached.status === "complete") {
-    deps.logger.info("Cache hit - already processed", {
-      session_id: sessionId,
-      device_id: cached.device_id,
-    });
-    deps.metrics.addMetric("Tier0CacheHit", MetricUnit.Count, 1);
-    return;
-  }
+  if (await checkDuplicate(service, sessionId, deps)) return;
 
   const { matchResult, tier2TimedOut } = await runMatching(
     service,
@@ -282,26 +280,9 @@ export async function processRecord(
     deps,
   );
 
-  // Fetch statistical and network baseline contexts in parallel
-  // These are non-blocking on failure - detectors return empty signals if context is null
-  const [statisticalContext, networkBaselineContext, statisticalContextV2] =
-    await Promise.all([
-      fetchStatisticalContext(fingerprint),
-      fetchNetworkBaselineContext(fingerprint, rawPayload.sigint),
-      fetchStatisticalContextV2(
-        fingerprint,
-        rawPayload.sigint,
-        rawPayload.device,
-        rawPayload.hashes,
-      ),
-    ]);
-
-  const anomalies = buildAnomalySignals(
+  const { anomalies, statisticalContextV2 } = await fetchAndBuildAnomalies(
     fingerprint,
     rawPayload,
-    statisticalContext,
-    networkBaselineContext,
-    statisticalContextV2,
   );
   await persistResults(
     service,
@@ -312,24 +293,19 @@ export async function processRecord(
       anomalies,
       rawPayload,
       payload,
-      statisticalContext,
       statisticalContextV2,
     },
     deps,
   );
 
-  // Upsert device vector to Qdrant (fire-and-forget, non-blocking)
-  // This keeps the vector database in sync with the device profile
   service.upsertVector(matchResult.device_id, fingerprint).catch((error) => {
     deps.logger.warn("Vector upsert failed", {
       error,
       device_id: matchResult.device_id,
     });
   });
-
-  const duration = Date.now() - startTime;
   emitCompletionMetrics(
-    { sessionId, matchResult, tier2TimedOut, duration },
+    { sessionId, matchResult, tier2TimedOut, duration: Date.now() - startTime },
     deps,
   );
 }

@@ -14,17 +14,16 @@ import {
   generateIdempotencyKey,
 } from "./matching-service";
 import {
-  tier05PublicKeyLookup,
-  tier05CookieLookup,
-  tier05SigintIdLookup,
-  tier1HashMatch,
-  tier15SimHashMatch,
+  publicKeyLookup,
+  cookieLookup,
+  sigintIdLookup,
+  hashMatch,
+  simHashMatch,
   sessionAnchorLookup,
   ipUaAnchorLookup,
   loadProfile,
-  type Tier05IdentityDeps,
-  type Tier1HashDeps,
-  type Tier15SimHashDeps,
+  type IndexLookupDeps,
+  type SimHashMatchDeps,
   type SessionAnchorDeps,
   type ProfileLoaderDeps,
 } from ".";
@@ -83,9 +82,8 @@ describe("MatchingService", () => {
   let sqs: SQSClient;
   let mockCache: ReturnType<typeof createMockCacheService>;
   let service: MatchingService;
-  let tier05Deps: Tier05IdentityDeps;
-  let tier1Deps: Tier1HashDeps;
-  let _tier15Deps: Tier15SimHashDeps;
+  let indexLookupDeps: IndexLookupDeps;
+  let _simHashDeps: SimHashMatchDeps;
   let _anchorDeps: SessionAnchorDeps;
   let profileDeps: ProfileLoaderDeps;
 
@@ -98,9 +96,11 @@ describe("MatchingService", () => {
     dynamodb = new DynamoDBClient({});
     sqs = new SQSClient({});
 
-    tier05Deps = { dynamodb, tier1IndexTable: testConfig.tier1IndexTable };
-    tier1Deps = { dynamodb, tier1IndexTable: testConfig.tier1IndexTable };
-    _tier15Deps = { dynamodb, tier2BucketsTable: testConfig.tier2BucketsTable };
+    indexLookupDeps = { dynamodb, tier1IndexTable: testConfig.tier1IndexTable };
+    _simHashDeps = {
+      dynamodb,
+      tier2BucketsTable: testConfig.tier2BucketsTable,
+    };
     _anchorDeps = {
       dynamodb,
       tier2BucketsTable: testConfig.tier2BucketsTable,
@@ -148,11 +148,11 @@ describe("MatchingService", () => {
     });
   });
 
-  describe("tier05CookieLookup", () => {
+  describe("cookieLookup", () => {
     it("should return null when evercookie not found", async () => {
       dynamoMock.on(GetItemCommand).resolves({ Item: undefined });
 
-      const result = await tier05CookieLookup(tier05Deps, "unknown-cookie");
+      const result = await cookieLookup(indexLookupDeps, "unknown-cookie");
       expect(result).toBeNull();
     });
 
@@ -167,7 +167,7 @@ describe("MatchingService", () => {
         }),
       });
 
-      const result = await tier05CookieLookup(tier05Deps, "cookie123");
+      const result = await cookieLookup(indexLookupDeps, "cookie123");
 
       expect(result).not.toBeNull();
       expect(result?.device_id).toBe(deviceId);
@@ -187,20 +187,17 @@ describe("MatchingService", () => {
         }),
       });
 
-      const result = await tier05CookieLookup(tier05Deps, "cookie123");
+      const result = await cookieLookup(indexLookupDeps, "cookie123");
       expect(result?.risk_score).toBe(0.3);
       expect(result?.flags).toEqual([]);
     });
   });
 
-  describe("tier05SigintIdLookup", () => {
+  describe("sigintIdLookup", () => {
     it("should return null when sigint_id not found", async () => {
       dynamoMock.on(GetItemCommand).resolves({ Item: undefined });
 
-      const result = await tier05SigintIdLookup(
-        tier05Deps,
-        "unknown-sigint-id",
-      );
+      const result = await sigintIdLookup(indexLookupDeps, "unknown-sigint-id");
       expect(result).toBeNull();
     });
 
@@ -215,7 +212,7 @@ describe("MatchingService", () => {
         }),
       });
 
-      const result = await tier05SigintIdLookup(tier05Deps, "abc123-def456");
+      const result = await sigintIdLookup(indexLookupDeps, "abc123-def456");
 
       expect(result).not.toBeNull();
       expect(result?.device_id).toBe(deviceId);
@@ -235,18 +232,18 @@ describe("MatchingService", () => {
         }),
       });
 
-      const result = await tier05SigintIdLookup(tier05Deps, "abc123");
+      const result = await sigintIdLookup(indexLookupDeps, "abc123");
       expect(result?.risk_score).toBe(0.3);
       expect(result?.flags).toEqual([]);
     });
   });
 
-  describe("tier05PublicKeyLookup", () => {
+  describe("publicKeyLookup", () => {
     it("should return null when public key not found", async () => {
       dynamoMock.on(GetItemCommand).resolves({ Item: undefined });
 
-      const result = await tier05PublicKeyLookup(
-        tier05Deps,
+      const result = await publicKeyLookup(
+        indexLookupDeps,
         "unknown-public-key",
       );
       expect(result).toBeNull();
@@ -264,7 +261,7 @@ describe("MatchingService", () => {
         }),
       });
 
-      const result = await tier05PublicKeyLookup(tier05Deps, publicKey);
+      const result = await publicKeyLookup(indexLookupDeps, publicKey);
 
       expect(result).not.toBeNull();
       expect(result?.device_id).toBe(deviceId);
@@ -285,13 +282,13 @@ describe("MatchingService", () => {
         }),
       });
 
-      const result = await tier05PublicKeyLookup(tier05Deps, publicKey);
+      const result = await publicKeyLookup(indexLookupDeps, publicKey);
       expect(result?.risk_score).toBe(0.3);
       expect(result?.flags).toEqual([]);
     });
   });
 
-  describe("tier1HashMatch", () => {
+  describe("hashMatch", () => {
     it("should return null when no hash matches", async () => {
       dynamoMock.on(GetItemCommand).resolves({ Item: undefined });
 
@@ -300,7 +297,7 @@ describe("MatchingService", () => {
         fuzzy_hash: "fuzzy456",
       };
 
-      const result = await tier1HashMatch(tier1Deps, fingerprint);
+      const result = await hashMatch(indexLookupDeps, fingerprint);
       expect(result).toBeNull();
     });
 
@@ -314,7 +311,7 @@ describe("MatchingService", () => {
       });
 
       const fingerprint: Fingerprint = { stable_hash: "stable123" };
-      const result = await tier1HashMatch(tier1Deps, fingerprint);
+      const result = await hashMatch(indexLookupDeps, fingerprint);
 
       expect(result).not.toBeNull();
       expect(result?.device_id).toBe("dev_stable");
@@ -350,7 +347,7 @@ describe("MatchingService", () => {
         fuzzy_hash: "fuzzy456",
       };
 
-      const result = await tier1HashMatch(tier1Deps, fingerprint);
+      const result = await hashMatch(indexLookupDeps, fingerprint);
 
       expect(result).not.toBeNull();
       expect(result?.device_id).toBe("dev_fuzzy");
@@ -371,7 +368,7 @@ describe("MatchingService", () => {
         fuzzy_hash: "fuzzy456",
       };
 
-      const result = await tier1HashMatch(tier1Deps, fingerprint);
+      const result = await hashMatch(indexLookupDeps, fingerprint);
       expect(result?.confidence).toBe(0.95);
     });
   });
@@ -1287,14 +1284,14 @@ describe("MatchingService anchor recency sorting", () => {
 
 describe("Tier function direct calls", () => {
   let dynamodb: DynamoDBClient;
-  let tier15Deps: Tier15SimHashDeps;
+  let simHashDeps: SimHashMatchDeps;
   let anchorDeps: SessionAnchorDeps;
 
   beforeEach(() => {
     dynamoMock.reset();
     sqsMock.reset();
     dynamodb = new DynamoDBClient({});
-    tier15Deps = { dynamodb, tier2BucketsTable: testConfig.tier2BucketsTable };
+    simHashDeps = { dynamodb, tier2BucketsTable: testConfig.tier2BucketsTable };
     anchorDeps = {
       dynamodb,
       tier2BucketsTable: testConfig.tier2BucketsTable,
@@ -1302,12 +1299,12 @@ describe("Tier function direct calls", () => {
     };
   });
 
-  describe("tier15SimHashMatch", () => {
+  describe("simHashMatch", () => {
     it("should return null when no SimHash match found", async () => {
       dynamoMock.on(QueryCommand).resolves({ Items: [] });
 
       const fingerprint: Fingerprint = { fuzzy_hash: "abcdef1234567890" };
-      const result = await tier15SimHashMatch(tier15Deps, fingerprint);
+      const result = await simHashMatch(simHashDeps, fingerprint);
       expect(result).toBeNull();
     });
   });

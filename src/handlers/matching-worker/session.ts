@@ -12,57 +12,93 @@ import type { MatchResult } from "../../services/matching";
 import { SESSION_PAYLOAD_TTL_SECONDS } from "../../helpers/constants";
 import type { SessionAnomalySignal } from "../../types";
 import type { SqsPayload } from "./parse-record";
-import type {
-  StatisticalContext,
-  StatisticalContextV2,
-} from "../../services/profile/anomaly";
+import type { StatisticalContextV2 } from "../../services/profile/anomaly";
 
-/**
- * Constructs the full session response data object for storage.
- *
- * Combines identifiers, analysis results, hashes, device info, and sigint
- * into the canonical SessionResponse format. Optional fields like anomalies
- * and simhash_details are only included when present.
- *
- * @param params - Components to assemble into the response
- * @param params.sessionId - Session identifier
- * @param params.rawPayload - Original ingested payload with device data
- * @param params.matchResult - Results from the matching service
- * @param params.anomalies - Detected anomaly signals (empty array if none)
- * @param params.statisticalContext - V1 statistical context (JA4/UA frequency)
- * @param params.statisticalContextV2 - V2 statistical context (Shannon scoring)
- * @returns Assembled response data ready for serialization
- *
- * @internal
- */
-function buildSessionResponseData(params: {
-  sessionId: string;
-  rawPayload: SqsPayload;
-  matchResult: MatchResult;
-  anomalies: SessionAnomalySignal[];
-  statisticalContext?: StatisticalContext | null;
-  statisticalContextV2?: StatisticalContextV2 | null;
-}): Record<string, unknown> {
-  const {
-    sessionId,
-    rawPayload,
-    matchResult,
-    anomalies,
-    statisticalContext: _statisticalContext, // V1 deprecated, kept for API compatibility
-    statisticalContextV2,
-  } = params;
-
+function buildIdentifiers(
+  sessionId: string,
+  rawPayload: SqsPayload,
+  matchResult: MatchResult,
+): Record<string, unknown> {
   const identifiers: Record<string, unknown> = {
     session_id: sessionId,
     device_id: matchResult.device_id,
   };
-  if (rawPayload.identifiers.evercookie_id) {
+  if (rawPayload.identifiers.evercookie_id)
     identifiers.evercookie_id = rawPayload.identifiers.evercookie_id;
-  }
-  if (rawPayload.identifiers.public_key) {
+  if (rawPayload.identifiers.public_key)
     identifiers.public_key = rawPayload.identifiers.public_key;
-  }
+  return identifiers;
+}
 
+function buildBrowserAnomalies(
+  device: Record<string, unknown>,
+): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+  const lies = device.lies as Record<string, unknown> | undefined;
+  const headless = device.headless as Record<string, unknown> | undefined;
+  const capturedErrors = device.capturedErrors as
+    | Record<string, unknown>
+    | undefined;
+
+  if (lies && (lies.totalLies as number) > 0) {
+    result.lies = { total: lies.totalLies, data: lies.data };
+  }
+  if (headless) {
+    const lhr = headless.likeHeadlessRating as number;
+    const hr = headless.headlessRating as number;
+    const sr = headless.stealthRating as number;
+    if (lhr > 0 || hr > 0 || sr > 0) {
+      result.headless = {
+        likeHeadlessRating: lhr,
+        headlessRating: hr,
+        stealthRating: sr,
+        likeHeadless: headless.likeHeadless,
+        headless: headless.headless,
+        stealth: headless.stealth,
+      };
+    }
+  }
+  if (capturedErrors) {
+    const errorData = capturedErrors.data as unknown[];
+    if (Array.isArray(errorData) && errorData.length > 0)
+      result.errors = errorData;
+  }
+  return result;
+}
+
+function buildNormalities(ctx: StatisticalContextV2): Record<string, unknown> {
+  const normalities: Record<string, unknown> = {
+    user_agent_family: ctx.uaFamily,
+  };
+  for (const [type, score] of Object.entries(ctx.scores)) {
+    if (score) {
+      normalities[type] = {
+        value: ctx.fingerprints[type],
+        grouped_by: score.groupingKey,
+        score: score.score,
+        confidence: score.confidence,
+        raw_ua_score: score.rawUaScore,
+        raw_global_score: score.rawGlobalScore,
+        ua_total: score.uaTotal,
+        global_total: score.globalTotal,
+      };
+    }
+  }
+  if (ctx.combinedScore !== null)
+    normalities.combined_score = ctx.combinedScore;
+  if (ctx.baselineSkipped !== undefined)
+    normalities.baseline_skipped = ctx.baselineSkipped;
+  if (ctx.matchedRules && ctx.matchedRules.length > 0)
+    normalities.matched_rules = ctx.matchedRules;
+  return normalities;
+}
+
+function buildAnalysis(
+  matchResult: MatchResult,
+  anomalies: SessionAnomalySignal[],
+  device: Record<string, unknown>,
+  statisticalContextV2?: StatisticalContextV2 | null,
+): Record<string, unknown> {
   const analysis: Record<string, unknown> = {
     status: "complete",
     confidence: matchResult.confidence,
@@ -72,157 +108,56 @@ function buildSessionResponseData(params: {
     flags: matchResult.flags,
     evidence_codes: matchResult.evidence_codes,
   };
-
-  // Build anomalies object with raw browser-reported data
-  // This includes lies, headless indicators, and captured errors from the device
-  const device = rawPayload.device || {};
-  const lies = device.lies as Record<string, unknown> | undefined;
-  const headless = device.headless as Record<string, unknown> | undefined;
-  const capturedErrors = device.capturedErrors as
-    | Record<string, unknown>
-    | undefined;
-
-  const browserAnomalies: Record<string, unknown> = {};
-
-  // Include lies data if present
-  if (lies && (lies.totalLies as number) > 0) {
-    browserAnomalies.lies = {
-      total: lies.totalLies,
-      data: lies.data,
-    };
-  }
-
-  // Include headless indicators if any ratings > 0
-  if (headless) {
-    const likeHeadlessRating = headless.likeHeadlessRating as number;
-    const headlessRating = headless.headlessRating as number;
-    const stealthRating = headless.stealthRating as number;
-
-    if (likeHeadlessRating > 0 || headlessRating > 0 || stealthRating > 0) {
-      browserAnomalies.headless = {
-        likeHeadlessRating,
-        headlessRating,
-        stealthRating,
-        likeHeadless: headless.likeHeadless,
-        headless: headless.headless,
-        stealth: headless.stealth,
-      };
-    }
-  }
-
-  // Include captured errors if present
-  if (capturedErrors) {
-    const errorData = capturedErrors.data as unknown[];
-    if (Array.isArray(errorData) && errorData.length > 0) {
-      browserAnomalies.errors = errorData;
-    }
-  }
-
-  if (Object.keys(browserAnomalies).length > 0) {
+  const browserAnomalies = buildBrowserAnomalies(device);
+  if (Object.keys(browserAnomalies).length > 0)
     analysis.anomalies = browserAnomalies;
-  }
-
-  // Server-detected suspicious signals (cross-field validation, statistical, network)
-  if (anomalies.length > 0) {
-    analysis.suspicious = anomalies;
-  }
-  if (matchResult.simhash_details) {
+  if (anomalies.length > 0) analysis.suspicious = anomalies;
+  if (matchResult.simhash_details)
     analysis.simhash_details = matchResult.simhash_details;
-  }
-  if (matchResult.fuzzy_match_info) {
+  if (matchResult.fuzzy_match_info)
     analysis.fuzzy_match_info = matchResult.fuzzy_match_info;
-  }
-  if (matchResult.vector_match_details) {
+  if (matchResult.vector_match_details)
     analysis.vector_match_details = matchResult.vector_match_details;
-  }
+  if (statisticalContextV2)
+    analysis.normalities = buildNormalities(statisticalContextV2);
+  return analysis;
+}
 
-  // Build normalities object with Redis-based statistical data (V2 only)
-  // Fingerprint types are auto-populated from FINGERPRINT_DEFINITIONS config
-  if (statisticalContextV2) {
-    const normalities: Record<string, unknown> = {
-      user_agent_family: statisticalContextV2.uaFamily,
-    };
-
-    // Add scores for each fingerprint type (auto-populated from config)
-    for (const [type, score] of Object.entries(statisticalContextV2.scores)) {
-      if (score) {
-        normalities[type] = {
-          value: statisticalContextV2.fingerprints[type],
-          grouped_by: score.groupingKey,
-          score: score.score,
-          confidence: score.confidence,
-          raw_ua_score: score.rawUaScore,
-          raw_global_score: score.rawGlobalScore,
-          ua_total: score.uaTotal,
-          global_total: score.globalTotal,
-        };
-      }
-    }
-
-    if (statisticalContextV2.combinedScore !== null) {
-      normalities.combined_score = statisticalContextV2.combinedScore;
-    }
-    if (statisticalContextV2.baselineSkipped !== undefined) {
-      normalities.baseline_skipped = statisticalContextV2.baselineSkipped;
-    }
-    if (
-      statisticalContextV2.matchedRules &&
-      statisticalContextV2.matchedRules.length > 0
-    ) {
-      normalities.matched_rules = statisticalContextV2.matchedRules;
-    }
-
-    analysis.normalities = normalities;
-  }
-
-  const result: Record<string, unknown> = {
-    identifiers,
-    analysis,
+function buildSessionResponseData(params: {
+  sessionId: string;
+  rawPayload: SqsPayload;
+  matchResult: MatchResult;
+  anomalies: SessionAnomalySignal[];
+  statisticalContextV2?: StatisticalContextV2 | null;
+}): Record<string, unknown> {
+  const {
+    sessionId,
+    rawPayload,
+    matchResult,
+    anomalies,
+    statisticalContextV2,
+  } = params;
+  return {
+    identifiers: buildIdentifiers(sessionId, rawPayload, matchResult),
+    analysis: buildAnalysis(
+      matchResult,
+      anomalies,
+      rawPayload.device || {},
+      statisticalContextV2,
+    ),
     hashes: rawPayload.hashes,
     device: rawPayload.device,
     sigint: rawPayload.sigint,
   };
-
-  return result;
 }
 
-/**
- * Writes the full session payload to DynamoDB for later retrieval.
- *
- * The payload is gzip-compressed and base64-encoded to reduce storage costs.
- * A TTL is set based on SESSION_PAYLOAD_TTL_SECONDS for automatic cleanup.
- *
- * Write failures are logged but do not throw - session cache still contains
- * the essential matching result, so degraded mode retrieval remains possible.
- *
- * @param params - Session data to persist
- * @param params.sessionId - Session identifier (becomes partition key)
- * @param params.rawPayload - Original payload with device/sigint data
- * @param params.matchResult - Matching service results
- * @param params.anomalies - Detected anomaly signals
- * @param params.statisticalContext - V1 statistical context (JA4/UA frequency)
- * @param params.statisticalContextV2 - V2 statistical context (Shannon scoring)
- * @param deps - AWS and logging dependencies
- * @param deps.dynamodb - DynamoDB client instance
- * @param deps.tableName - Session payload table name
- * @param deps.logger - Logger for warning on failures
- * @param deps.metrics - Metrics for tracking write errors
- *
- * @example
- * ```typescript
- * await writeSessionPayload(
- *   { sessionId, rawPayload, matchResult, anomalies, statisticalContext, statisticalContextV2 },
- *   { dynamodb, tableName: "session-payloads", logger, metrics }
- * );
- * ```
- */
+/** Write gzip-compressed session payload to DynamoDB. Failures are logged, not thrown. */
 export async function writeSessionPayload(
   params: {
     sessionId: string;
     rawPayload: SqsPayload;
     matchResult: MatchResult;
     anomalies: SessionAnomalySignal[];
-    statisticalContext?: StatisticalContext | null;
     statisticalContextV2?: StatisticalContextV2 | null;
   },
   deps: {
