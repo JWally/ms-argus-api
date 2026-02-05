@@ -1,6 +1,5 @@
 // lib/constructs/workers.ts
 // AR-52: Simplified - removed VPC/Redis, uses DynamoDB for all caching
-// AR-130: Added cardinality recalculation Lambda with daily EventBridge rule
 // AR-160: Centralized Lambda memory settings in stage config
 import * as path from "path";
 import { Construct } from "constructs";
@@ -14,12 +13,15 @@ import * as codedeploy from "aws-cdk-lib/aws-codedeploy";
 import * as sns from "aws-cdk-lib/aws-sns";
 import * as sqs from "aws-cdk-lib/aws-sqs";
 import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
-import * as events from "aws-cdk-lib/aws-events";
-import * as targets from "aws-cdk-lib/aws-events-targets";
+import * as ec2 from "aws-cdk-lib/aws-ec2";
 import { Duration } from "aws-cdk-lib";
 import * as actions from "aws-cdk-lib/aws-cloudwatch-actions";
-import { getStageConfig } from "../config";
-import { createBaseLambdaConfig, createWorkerEnv } from "./lambda-config";
+import { getStageConfig, StageConfig } from "../config";
+import {
+  createBaseLambdaConfig,
+  createWorkerEnv,
+  createValkeyLambdaConfig,
+} from "./lambda-config";
 
 interface WorkersConstructProps {
   stackName: string;
@@ -33,7 +35,26 @@ interface WorkersConstructProps {
   tier2BucketsTable: dynamodb.ITable;
   sessionCacheTable: dynamodb.ITable; // AR-52: Replaces Redis
   sessionPayloadTable: dynamodb.ITable; // AR-XXX: Full payload for gRPC stub
+  vectorResultsTable: dynamodb.ITable; // Vector search results for session retrieval
   observationsDeliveryStreamName: string; // AR-57: Firehose for observations
+  /** Optional: Vector queue for Qdrant upserts. When provided, profile-updater queues embeddings. */
+  vectorQueue?: sqs.IQueue;
+  /** Optional: Vector results queue for search result writes. */
+  vectorResultsQueue?: sqs.IQueue;
+  /** Optional: Vector worker Lambda ARN for Tier 2 vector search. */
+  vectorWorkerArn?: string;
+  /** Optional: Qdrant collection name for fingerprint vectors. Defaults to 'fingerprints'. */
+  vectorCollection?: string;
+  /** Optional: Valkey endpoint for statistical anomaly detection. */
+  valkeyEndpoint?: string;
+  /** Optional: Security group for Valkey access. */
+  valkeySecurityGroup?: ec2.ISecurityGroup;
+  /** Optional: VPC for Lambda (required if using Valkey). */
+  vpc?: ec2.IVpc;
+  /** Optional: Security group for Lambda (required if using Valkey). */
+  lambdaSecurityGroup?: ec2.ISecurityGroup;
+  /** Optional: Stage config (required if using Valkey for threshold settings). */
+  stageConfig?: StageConfig;
 }
 
 /**
@@ -52,7 +73,7 @@ interface WorkersConstructProps {
 export class WorkersConstruct extends Construct {
   public readonly matchingWorker: lambda.NodejsFunction;
   public readonly profileUpdater: lambda.NodejsFunction;
-  public readonly cardinalityRecalc: lambda.NodejsFunction; // AR-130
+  public readonly vectorResultsWriter?: lambda.NodejsFunction;
   public readonly matchingWorkerAlias: Alias;
   public readonly profileUpdaterAlias: Alias;
 
@@ -71,7 +92,17 @@ export class WorkersConstruct extends Construct {
       tier2BucketsTable,
       sessionCacheTable,
       sessionPayloadTable,
+      vectorResultsTable,
       observationsDeliveryStreamName,
+      vectorQueue,
+      vectorResultsQueue,
+      vectorWorkerArn,
+      vectorCollection = "fingerprints",
+      valkeyEndpoint,
+      valkeySecurityGroup,
+      vpc,
+      lambdaSecurityGroup,
+      stageConfig,
     } = props;
 
     // Secrets Manager reference
@@ -87,6 +118,12 @@ export class WorkersConstruct extends Construct {
       tracing: true,
       keepNames: true,
     });
+
+    // Matching worker uses Valkey config when Valkey is enabled
+    // This marks ioredis as a nodeModule to avoid ESM bundling issues
+    const matchingWorkerConfig = valkeyEndpoint
+      ? createValkeyLambdaConfig({ tracing: true, keepNames: true })
+      : commonConfig;
 
     // IAM Logging Policy
     const loggingPolicy = new iam.PolicyStatement({
@@ -104,8 +141,19 @@ export class WorkersConstruct extends Construct {
     // =====================================
     const config = getStageConfig(stage);
 
+    // VPC configuration for matching worker (required for Valkey access)
+    const matchingWorkerVpcConfig =
+      vpc && lambdaSecurityGroup && valkeySecurityGroup
+        ? {
+            vpc,
+            vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
+            securityGroups: [lambdaSecurityGroup],
+          }
+        : {};
+
     this.matchingWorker = new lambda.NodejsFunction(this, "MatchingWorker", {
-      ...commonConfig,
+      ...matchingWorkerConfig,
+      ...matchingWorkerVpcConfig,
       entry: path.join(__dirname, "../../src/handlers/matching-worker.ts"),
       functionName: `${stackName}-matching-worker`,
       memorySize: config.lambda.matching.memorySize,
@@ -127,6 +175,37 @@ export class WorkersConstruct extends Construct {
         // AR-XXX: SimHash LSH Tier 1.5 - same-browser drift detection
         SIMHASH_ENABLED: "true",
         SIMHASH_SHADOW: "false", // Set to "true" to log without affecting matching
+        // Vector search for Tier 2 (replaces compound buckets when enabled)
+        ...(vectorWorkerArn && {
+          VECTOR_WORKER_ARN: vectorWorkerArn,
+          VECTOR_COLLECTION: vectorCollection,
+        }),
+        // Valkey configuration for statistical anomaly detection
+        ...(valkeyEndpoint && {
+          VALKEY_ENDPOINT: valkeyEndpoint,
+          STATISTICAL_DETECTION_ENABLED: "true",
+          VALKEY_TTL_SECONDS: String(stageConfig?.valkey.ttlSeconds ?? 172800),
+          STATISTICAL_SCORE_THRESHOLD: String(
+            stageConfig?.valkey.scoreThreshold ?? 0.01,
+          ),
+          STATISTICAL_DISTINCT_THRESHOLD: String(
+            stageConfig?.valkey.distinctThreshold ?? 50,
+          ),
+          // Network baseline anomaly detection
+          NETWORK_BASELINE_ENABLED: String(
+            stageConfig?.valkey.networkBaseline?.enabled ?? false,
+          ),
+          NETWORK_BASELINE_THRESHOLD: String(
+            stageConfig?.valkey.networkBaseline?.threshold ?? 0.5,
+          ),
+          // Statistical v2 anomaly detection (Shannon scoring)
+          STATISTICAL_V2_ENABLED: String(
+            stageConfig?.valkey.statisticalV2?.enabled ?? false,
+          ),
+          STATISTICAL_V2_THRESHOLD: String(
+            stageConfig?.valkey.statisticalV2?.threshold ?? 0.6,
+          ),
+        }),
       },
     });
 
@@ -161,6 +240,17 @@ export class WorkersConstruct extends Construct {
       }),
     );
 
+    // Grant Lambda invoke permission for vector worker (Tier 2 vector search)
+    if (vectorWorkerArn) {
+      this.matchingWorker.addToRolePolicy(
+        new iam.PolicyStatement({
+          effect: iam.Effect.ALLOW,
+          actions: ["lambda:InvokeFunction"],
+          resources: [vectorWorkerArn],
+        }),
+      );
+    }
+
     // =====================================
     // PROFILE UPDATER LAMBDA
     // =====================================
@@ -181,6 +271,8 @@ export class WorkersConstruct extends Construct {
         TIER2_BUCKETS_TABLE: tier2BucketsTable.tableName,
         // AR-XXX: SimHash LSH Tier 1.5 - writes band entries when enabled
         SIMHASH_ENABLED: "true",
+        // Optional: Vector queue for Qdrant embeddings (feature flag)
+        ...(vectorQueue && { VECTOR_QUEUE_URL: vectorQueue.queueUrl }),
       },
     });
 
@@ -202,67 +294,55 @@ export class WorkersConstruct extends Construct {
     sessionCacheTable.grantReadWriteData(this.profileUpdater); // AR-52
     profileQueue.grantConsumeMessages(this.profileUpdater);
 
-    // =====================================
-    // AR-130: CARDINALITY RECALCULATION LAMBDA
-    // =====================================
-    // Daily Lambda to fix drift in Tier2 bucket cardinalities
-    // Bucket cardinality counters use ADD which only increments.
-    // When devices expire via TTL, cardinalities drift higher than reality.
-    // This affects high-cardinality penalty calculations in fraud scoring.
+    // Optional: Grant send permission to vector queue for Qdrant embeddings
+    if (vectorQueue) {
+      vectorQueue.grantSendMessages(this.profileUpdater);
+    }
 
-    this.cardinalityRecalc = new lambda.NodejsFunction(
-      this,
-      "CardinalityRecalc",
-      {
-        ...commonConfig,
-        entry: path.join(__dirname, "../../src/handlers/cardinality-recalc.ts"),
-        functionName: `${stackName}-cardinality-recalc`,
-        // AR-160: Use configurable memory from stage config
-        memorySize: config.lambda.cardinalityRecalc.memorySize,
-        timeout: Duration.minutes(15), // Max Lambda timeout for large tables
-        environment: {
-          ...createWorkerEnv(
-            stage,
-            stackName,
-            `${stackName}-cardinality-recalc`,
+    // =====================================
+    // VECTOR RESULTS WRITER LAMBDA
+    // =====================================
+    // Consumes from vector-results SQS queue and writes to DynamoDB
+    // Enables async vector search results to be returned via /session endpoint
+
+    if (vectorResultsQueue) {
+      this.vectorResultsWriter = new lambda.NodejsFunction(
+        this,
+        "VectorResultsWriter",
+        {
+          ...commonConfig,
+          entry: path.join(
+            __dirname,
+            "../../src/handlers/vector-results-writer.ts",
           ),
-          TIER2_BUCKETS_TABLE: tier2BucketsTable.tableName,
+          functionName: `${stackName}-vector-results-writer`,
+          memorySize: 256, // Simple DynamoDB write - minimal CPU needed
+          timeout: Duration.seconds(15),
+          environment: {
+            ...createWorkerEnv(
+              stage,
+              stackName,
+              `${stackName}-vector-results-writer`,
+            ),
+            VECTOR_RESULTS_TABLE: vectorResultsTable.tableName,
+          },
         },
-      },
-    );
+      );
 
-    // Permissions - read/write to Tier2Buckets table
-    this.cardinalityRecalc.addToRolePolicy(loggingPolicy);
-    tier2BucketsTable.grantReadWriteData(this.cardinalityRecalc);
-
-    // EventBridge rule - run daily at 3 AM UTC (low traffic time)
-    const cardinalityRecalcRule = new events.Rule(
-      this,
-      "CardinalityRecalcRule",
-      {
-        ruleName: `${stackName}-cardinality-recalc-daily`,
-        description: "AR-130: Daily cardinality recalculation to fix TTL drift",
-        schedule: events.Schedule.cron({
-          minute: "0",
-          hour: "3",
-          day: "*",
-          month: "*",
-          year: "*",
+      // SQS event source
+      this.vectorResultsWriter.addEventSource(
+        new lambdaEventSources.SqsEventSource(vectorResultsQueue, {
+          batchSize: 10,
+          maxBatchingWindow: Duration.seconds(0), // Process immediately
+          reportBatchItemFailures: true,
         }),
-      },
-    );
+      );
 
-    cardinalityRecalcRule.addTarget(
-      new targets.LambdaFunction(this.cardinalityRecalc),
-    );
-
-    // AR-152: Alarm for cardinality recalc partial failures
-    // Silent failures in fraud-critical path - need immediate visibility
-    this.createCardinalityRecalcAlarm(stackName, alarmsTopic);
-
-    // AR-153: Alarm for Tier2 cardinality fetch failures
-    // Affects fraud penalty scoring when cardinality data unavailable
-    this.createTier2CardinalityFetchAlarm(stackName, alarmsTopic);
+      // Permissions
+      this.vectorResultsWriter.addToRolePolicy(loggingPolicy);
+      vectorResultsTable.grantWriteData(this.vectorResultsWriter);
+      vectorResultsQueue.grantConsumeMessages(this.vectorResultsWriter);
+    }
 
     // AR-154: Alarm for Firehose observation emit errors
     // Data loss in analytics pipeline when Firehose writes fail
@@ -480,71 +560,6 @@ export class WorkersConstruct extends Construct {
 
     // Ensure alarm depends on the anomaly detector
     anomalyAlarm.addDependency(anomalyDetector);
-  }
-
-  /**
-   * AR-152: Create alarm for cardinality recalc partial failures
-   * Alerts when ProcessingErrors > 0 to catch silent failures in fraud-critical path
-   */
-  private createCardinalityRecalcAlarm(
-    stackName: string,
-    alarmsTopic: sns.ITopic,
-  ): void {
-    const alarm = new cloudwatch.Alarm(
-      this,
-      "CardinalityRecalcPartialFailure",
-      {
-        alarmName: `${stackName}-cardinality-recalc-partial-failure`,
-        alarmDescription:
-          "Cardinality recalc had processing errors - fraud scoring may be affected",
-        metric: new cloudwatch.Metric({
-          namespace: stackName,
-          metricName: "ProcessingErrors",
-          dimensionsMap: {
-            service: `${stackName}-cardinality-recalc`,
-          },
-          statistic: "Sum",
-          period: Duration.hours(1), // Check hourly since it runs daily at 3 AM
-        }),
-        threshold: 0,
-        comparisonOperator:
-          cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
-        evaluationPeriods: 1,
-        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
-      },
-    );
-    alarm.addAlarmAction(new actions.SnsAction(alarmsTopic));
-  }
-
-  /**
-   * AR-153: Create alarm for Tier2 cardinality fetch failures
-   * Alerts when cardinality fetch fails, affecting fraud penalty scoring
-   */
-  private createTier2CardinalityFetchAlarm(
-    stackName: string,
-    alarmsTopic: sns.ITopic,
-  ): void {
-    const alarm = new cloudwatch.Alarm(
-      this,
-      "Tier2CardinalityFetchFailedAlarm",
-      {
-        alarmName: `${stackName}-tier2-cardinality-fetch-failed`,
-        alarmDescription:
-          "Tier2 cardinality fetch failed - fraud penalty scoring disabled",
-        metric: new cloudwatch.Metric({
-          namespace: stackName,
-          metricName: "Tier2CardinalityFetchFailed",
-          statistic: "Sum",
-          period: Duration.minutes(5),
-        }),
-        threshold: 0,
-        comparisonOperator:
-          cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
-        evaluationPeriods: 2, // 10 minutes sustained
-        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
-      },
-    );
-    alarm.addAlarmAction(new actions.SnsAction(alarmsTopic));
   }
 
   /**

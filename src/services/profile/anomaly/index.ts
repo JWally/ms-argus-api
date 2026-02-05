@@ -1,9 +1,17 @@
-// src/services/profile/anomaly/index.ts
-// AR-141: Public exports for anomaly detection module
+/**
+ * @fileoverview Anomaly detection module exports.
+ * Provides detection of cross-field, network, identity, and statistical anomalies
+ * to identify potentially fraudulent or suspicious sessions.
+ * @module services/profile/anomaly
+ */
 
 export * from "./types";
+export { detectAllAnomalies } from "./detector";
 export {
-  detectAllAnomalies,
-  registerDetector,
-  getDetectorCount,
-} from "./detector";
+  fetchNetworkBaselineContext,
+  type NetworkBaselineDetectorContext,
+} from "./network-baseline-detector";
+export {
+  fetchStatisticalContextV2,
+  type StatisticalContextV2,
+} from "./statistical-v2";

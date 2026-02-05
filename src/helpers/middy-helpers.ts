@@ -1,5 +1,4 @@
-// src/helpers/middy-helpers.ts
-import { getAwsSecrets } from "../services/get-aws-secrets";
+import { getAwsSecrets } from "./get-aws-secrets";
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from "aws-lambda";
 import { MiddlewareObj } from "@middy/core";
 import { LRUCache } from "lru-cache";
@@ -13,11 +12,21 @@ export { fnv1a };
 
 const logger = new Logger({ serviceName: "argus-warmup" });
 
+/**
+ * Event structure for warmup detection
+ */
 interface MiddyEvent {
+  /** Source identifier (e.g., "serverless-plugin-warmup") */
   source: string;
+  /** Explicit warmup flag */
   warmup?: boolean;
 }
 
+/**
+ * Check if the event is a warmup invocation
+ * @param event - Lambda event to check
+ * @returns True if this is a warmup request
+ */
 export const isWarmingUp = (event: MiddyEvent) => {
   return (
     event.source === "serverless-plugin-warmup" ||
@@ -26,6 +35,9 @@ export const isWarmingUp = (event: MiddyEvent) => {
   );
 };
 
+/**
+ * Handle warmup invocation by preloading secrets
+ */
 export const onWarmup = async () => {
   try {
     await getAwsSecrets();
@@ -35,20 +47,22 @@ export const onWarmup = async () => {
   }
 };
 
-// Global LRU cache for deduplication
 const cache = new LRUCache<string, number>({
   max: DEDUPE_CACHE_MAX_ENTRIES,
   ttl: DEDUPE_CACHE_TTL_MS,
 });
 
+/**
+ * Clear the deduplication cache (for testing)
+ */
 export const _clearDeduplicateCache = (): void => {
   cache.clear();
 };
 
 /**
- * Deduplicate middleware using LRU cache
- * Prevents duplicate requests from network retries
- * Simplified - no longer includes tenant ID in key
+ * Deduplicate middleware using LRU cache.
+ * Prevents duplicate requests from network retries.
+ * @returns Middy middleware object that throws HttpError 429 on duplicates
  */
 export const deduplicateMiddleware = (): MiddlewareObj<
   APIGatewayProxyEvent,

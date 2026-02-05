@@ -1,12 +1,13 @@
-// src/services/profile/types.ts
-// AR-50: Re-export from central types for backwards compatibility
+/**
+ * @fileoverview Re-exports profile-related types from the main types module.
+ * Provides convenient access to profile types within the services/profile module.
+ * @module services/profile/types
+ */
 
 export {
-  // Base types
   Fingerprint,
   DeviceFlags,
   DeviceFlag,
-  // Profile domain types
   ProfileUpdatePayload,
   DeviceProfile,
 } from "../../types";

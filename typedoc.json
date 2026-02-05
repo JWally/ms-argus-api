@@ -1,0 +1,31 @@
+{
+  "$schema": "https://typedoc.org/schema.json",
+  "entryPointStrategy": "expand",
+  "entryPoints": ["src"],
+  "out": "api-docs",
+  "name": "Argus API Documentation",
+  "exclude": ["**/node_modules/**", "**/*.test.ts"],
+  "excludePrivate": true,
+  "excludeInternal": true,
+  "includeVersion": true,
+  "categorizeByGroup": true,
+  "categoryOrder": ["Handlers", "Services", "Helpers", "Types", "*"],
+  "navigationLinks": {
+    "GitHub": "https://github.com/your-org/ms-argus-api"
+  },
+  "blockTags": [
+    "@param",
+    "@returns",
+    "@throws",
+    "@example",
+    "@see",
+    "@internal",
+    "@module",
+    "@fileoverview",
+    "@interface",
+    "@extends",
+    "@typedef",
+    "@yields"
+  ],
+  "modifierTags": ["@internal", "@readonly"]
+}

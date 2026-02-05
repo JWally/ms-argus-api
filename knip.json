@@ -1,0 +1,15 @@
+{
+  "$schema": "https://unpkg.com/knip@5/schema.json",
+  "entry": [
+    "src/handlers/*.ts",
+    "src/services/*/index.ts",
+    "src/helpers/*.ts",
+    "src/types/*.ts",
+    "bin/*.ts",
+    "lib/**/*.ts"
+  ],
+  "project": ["src/**/*.ts", "lib/**/*.ts", "bin/**/*.ts"],
+  "ignore": ["**/*.test.ts", "tests/**", "scripts/**", "cmd/**"],
+  "ignoreDependencies": ["ts-node"],
+  "exclude": ["types", "nsTypes"]
+}

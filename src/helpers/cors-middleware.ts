@@ -1,7 +1,3 @@
-// src/helpers/cors-middleware.ts
-// AR-164: Shared CORS middleware for API handlers
-// Extracted from ingestion.ts and session-get.ts
-
 import middy from "@middy/core";
 import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from "aws-lambda";
 

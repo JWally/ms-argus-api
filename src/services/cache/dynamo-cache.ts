@@ -1,5 +1,3 @@
-// src/services/cache/dynamo-cache.ts
-// AR-52: DynamoDB-based session cache - replaces Redis
 import {
   DynamoDBClient,
   GetItemCommand,
@@ -9,9 +7,15 @@ import {
 import { marshall, unmarshall } from "@aws-sdk/util-dynamodb";
 import { SessionCacheValue } from "../../types";
 
+/**
+ * Configuration for DynamoCacheService
+ */
 export interface DynamoCacheConfig {
+  /** Name of the DynamoDB cache table */
   tableName: string;
+  /** TTL in seconds for session cache entries */
   sessionTtlSeconds: number;
+  /** TTL in seconds for mutation gate entries */
   mutationGateTtlSeconds: number;
 }
 
@@ -29,6 +33,11 @@ export interface DynamoCacheConfig {
  * - gate:{device_id} - Mutation gates for write coalescing
  */
 export class DynamoCacheService {
+  /**
+   * Create a new DynamoCacheService
+   * @param dynamodb - DynamoDB client instance
+   * @param config - Cache configuration
+   */
   constructor(
     private readonly dynamodb: DynamoDBClient,
     private readonly config: DynamoCacheConfig,
@@ -37,6 +46,8 @@ export class DynamoCacheService {
   /**
    * Check if a session result is cached
    * Returns null if not found or expired
+   * @param sessionId - The session ID to look up
+   * @returns Cached session value if found and not expired, null otherwise
    */
   async checkSessionCache(
     sessionId: string,
@@ -68,8 +79,9 @@ export class DynamoCacheService {
   /**
    * Write session result to cache
    * Uses conditional write to only update if confidence is higher
-   *
-   * @returns true if written, false if skipped (existing has higher confidence)
+   * @param sessionId - The session ID to cache
+   * @param value - The session cache value to store
+   * @returns True if written, false if skipped (existing has higher confidence)
    */
   async writeSessionCache(
     sessionId: string,
@@ -110,9 +122,9 @@ export class DynamoCacheService {
 
   /**
    * Try to acquire a mutation gate for a device
-   * Returns true if acquired, false if gate already exists
-   *
    * Used to coalesce rapid writes to the same device profile
+   * @param deviceId - The device ID to acquire the gate for
+   * @returns True if acquired, false if gate already exists
    */
   async tryAcquireMutationGate(deviceId: string): Promise<boolean> {
     const key = `gate:${deviceId}`;

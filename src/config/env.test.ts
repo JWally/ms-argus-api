@@ -1,5 +1,3 @@
-// src/config/env.test.ts
-// AR-52: Updated to use SESSION_CACHE_TABLE instead of REDIS_ENDPOINT
 import { describe, it, expect, beforeEach, afterAll } from "vitest";
 import {
   getMatchingWorkerEnv,
@@ -11,19 +9,17 @@ describe("Environment validation", () => {
   const originalEnv = process.env;
 
   beforeEach(() => {
-    // Reset process.env before each test
     process.env = { ...originalEnv };
   });
 
   afterAll(() => {
-    // Restore original env after all tests
     process.env = originalEnv;
   });
 
   describe("getMatchingWorkerEnv", () => {
     const requiredVars = {
       SESSION_CACHE_TABLE: "session-cache-table",
-      SESSION_PAYLOAD_TABLE: "session-payload-table", // AR-XXX: Full payload storage
+      SESSION_PAYLOAD_TABLE: "session-payload-table",
       PROFILES_TABLE: "profiles-table",
       TIER1_INDEX_TABLE: "tier1-index-table",
       TIER2_BUCKETS_TABLE: "tier2-buckets-table",
@@ -42,8 +38,8 @@ describe("Environment validation", () => {
       expect(config.PROFILE_QUEUE_URL).toBe(
         "https://sqs.us-east-1.amazonaws.com/123/queue",
       );
-      expect(config.POWERTOOLS_SERVICE_NAME).toBe("argus-matching"); // default
-      expect(config.POWERTOOLS_METRICS_NAMESPACE).toBe("Argus"); // default
+      expect(config.POWERTOOLS_SERVICE_NAME).toBe("argus-matching");
+      expect(config.POWERTOOLS_METRICS_NAMESPACE).toBe("Argus");
     });
 
     it("should use custom Powertools config when provided", () => {
@@ -59,7 +55,6 @@ describe("Environment validation", () => {
     });
 
     it("should throw error listing all missing required vars", () => {
-      // Clear all required vars
       delete process.env.SESSION_CACHE_TABLE;
       delete process.env.SESSION_PAYLOAD_TABLE;
       delete process.env.PROFILES_TABLE;
@@ -99,8 +94,8 @@ describe("Environment validation", () => {
       expect(config.PROFILES_TABLE).toBe("profiles-table");
       expect(config.TIER1_INDEX_TABLE).toBe("tier1-index-table");
       expect(config.TIER2_BUCKETS_TABLE).toBe("tier2-buckets-table");
-      expect(config.POWERTOOLS_SERVICE_NAME).toBe("argus-profile"); // default
-      expect(config.POWERTOOLS_METRICS_NAMESPACE).toBe("Argus"); // default
+      expect(config.POWERTOOLS_SERVICE_NAME).toBe("argus-profile");
+      expect(config.POWERTOOLS_METRICS_NAMESPACE).toBe("Argus");
     });
 
     it("should throw error listing all missing required vars", () => {

@@ -1,34 +1,28 @@
-// src/services/profile/index-writers.test.ts
-
 import { describe, it, expect, beforeEach } from "vitest";
 import { mockClient } from "aws-sdk-client-mock";
 import {
   DynamoDBClient,
   BatchWriteItemCommand,
   PutItemCommand,
-  UpdateItemCommand,
 } from "@aws-sdk/client-dynamodb";
 import {
   buildTier1IndexEntries,
   buildIdentityIndexEntries,
   buildHashIndexEntries,
   batchWriteTier1Indexes,
-  batchWriteTier2Buckets,
-  incrementBucketCardinalities,
   writeAnchorBucket,
   buildSimHashBandEntries,
   batchWriteSimHashBands,
   ASSOCIATION_ALLOWED_EVIDENCE,
   type IndexWriterDeps,
   type Tier1IndexEntry,
-  type Tier2BucketEntry,
   type SimHashBandEntry,
 } from "./index-writers";
 import { Fingerprint } from "./types";
 
 const dynamoMock = mockClient(DynamoDBClient);
 
-describe("AR-150: Tier-gated identity association", () => {
+describe("Tier-gated identity association", () => {
   const ttl = 1705000000;
 
   describe("ASSOCIATION_ALLOWED_EVIDENCE", () => {
@@ -49,7 +43,6 @@ describe("AR-150: Tier-gated identity association", () => {
     });
 
     it("should NOT contain unbounded Tier 2 bucket codes", () => {
-      // These are the viral spreading culprits
       expect(ASSOCIATION_ALLOWED_EVIDENCE).not.toContain("IP_JA4_BUCKET");
       expect(ASSOCIATION_ALLOWED_EVIDENCE).not.toContain(
         "GPU_SCREEN_TZ_BUCKET",
@@ -61,7 +54,6 @@ describe("AR-150: Tier-gated identity association", () => {
     });
 
     it("should contain NEW_DEVICE code", () => {
-      // New devices must create indexes for future lookups to work
       expect(ASSOCIATION_ALLOWED_EVIDENCE).toContain("NEW_DEVICE");
     });
   });
@@ -119,7 +111,6 @@ describe("AR-150: Tier-gated identity association", () => {
         public_key: publicKey,
         evercookie_id: "cookie123",
         sigint_id: "sigint-uuid-123",
-        // Hash fields should be ignored
         stable_hash: "stable123",
         fuzzy_hash: "fuzzy456",
       };
@@ -130,7 +121,6 @@ describe("AR-150: Tier-gated identity association", () => {
       expect(hashKeys).toContain(`pubkey#${publicKey}`);
       expect(hashKeys).toContain("evercookie#cookie123");
       expect(hashKeys).toContain("sigint#sigint-uuid-123");
-      // Should NOT contain hash entries
       expect(hashKeys).not.toContain("stable#stable123");
       expect(hashKeys).not.toContain("fuzzy#fuzzy456");
     });
@@ -166,7 +156,7 @@ describe("AR-150: Tier-gated identity association", () => {
       expect(entries[0]).toEqual({
         hash_key: "fuzzy#fuzzy456",
         device_id: "dev_123",
-        fuzzy_hash: "fuzzy456", // AR-XXX: Now included for drift detection
+        fuzzy_hash: "fuzzy456",
         ttl,
       });
     });
@@ -175,7 +165,6 @@ describe("AR-150: Tier-gated identity association", () => {
       const fingerprint: Fingerprint = {
         stable_hash: "stable123",
         fuzzy_hash: "fuzzy456",
-        // Identity fields should be ignored
         public_key: "MFkwE...",
         evercookie_id: "cookie123",
       };
@@ -185,7 +174,6 @@ describe("AR-150: Tier-gated identity association", () => {
       const hashKeys = entries.map((e) => e.hash_key);
       expect(hashKeys).toContain("stable#stable123");
       expect(hashKeys).toContain("fuzzy#fuzzy456");
-      // Should NOT contain identity entries
       expect(hashKeys).not.toContain("pubkey#MFkwE...");
       expect(hashKeys).not.toContain("evercookie#cookie123");
     });
@@ -203,7 +191,6 @@ describe("AR-150: Tier-gated identity association", () => {
       };
       const entries = buildTier1IndexEntries("dev_123", fingerprint, ttl);
 
-      // Should return all 5 entries
       expect(entries).toHaveLength(5);
       const hashKeys = entries.map((e) => e.hash_key);
       expect(hashKeys).toContain(`pubkey#${publicKey}`);
@@ -214,7 +201,7 @@ describe("AR-150: Tier-gated identity association", () => {
     });
   });
 
-  describe("AR-XXX: fuzzy_hash in index entries for drift detection", () => {
+  describe("fuzzy_hash in index entries for drift detection", () => {
     it("should include fuzzy_hash in buildTier1IndexEntries", () => {
       const fingerprint: Fingerprint = {
         evercookie_id: "cookie123",
@@ -223,7 +210,6 @@ describe("AR-150: Tier-gated identity association", () => {
       };
       const entries = buildTier1IndexEntries("dev_123", fingerprint, ttl);
 
-      // All entries should include the fuzzy_hash
       expect(entries).toHaveLength(3);
       entries.forEach((entry) => {
         expect(entry.fuzzy_hash).toBe("0123456789abcdef");
@@ -269,8 +255,6 @@ describe("AR-150: Tier-gated identity association", () => {
   });
 });
 
-// ==================== ASYNC WRITE OPERATIONS ====================
-
 function createDeps(): IndexWriterDeps {
   return {
     dynamodb: new DynamoDBClient({}),
@@ -311,7 +295,6 @@ describe("batchWriteTier1Indexes", () => {
 
     await batchWriteTier1Indexes(createDeps(), []);
 
-    // Empty array still sends a batch write (0 items clears immediately)
     const calls = dynamoMock.commandCalls(BatchWriteItemCommand);
     expect(calls).toHaveLength(0);
   });
@@ -321,7 +304,6 @@ describe("batchWriteTier1Indexes", () => {
       { hash_key: "stable#abc", device_id: "dev-1", ttl: 1700000000 },
     ];
 
-    // First call returns unprocessed items, second succeeds
     dynamoMock
       .on(BatchWriteItemCommand)
       .resolvesOnce({
@@ -344,7 +326,6 @@ describe("batchWriteTier1Indexes", () => {
       { hash_key: "stable#abc", device_id: "dev-1", ttl: 1700000000 },
     ];
 
-    // Always return unprocessed items
     dynamoMock.on(BatchWriteItemCommand).resolves({
       UnprocessedItems: {
         "test-tier1-index": [
@@ -377,163 +358,6 @@ describe("batchWriteTier1Indexes", () => {
       calls[0].args[0].input.RequestItems!["test-tier1-index"]![0].PutRequest!
         .Item!;
     expect(item.fuzzy_hash).toBeUndefined();
-  });
-});
-
-describe("batchWriteTier2Buckets", () => {
-  beforeEach(() => {
-    dynamoMock.reset();
-  });
-
-  it("writes bucket entries with correct attributes", async () => {
-    dynamoMock.on(BatchWriteItemCommand).resolves({ UnprocessedItems: {} });
-
-    const entries: Tier2BucketEntry[] = [
-      {
-        bucket_key: "ip_ja4#1.2.3.4#ja4hash",
-        device_id: "dev-1",
-        ttl: 1700000000,
-      },
-    ];
-
-    await batchWriteTier2Buckets(createDeps(), entries);
-
-    const calls = dynamoMock.commandCalls(BatchWriteItemCommand);
-    expect(calls).toHaveLength(1);
-    const item =
-      calls[0].args[0].input.RequestItems!["test-tier2-buckets"]![0].PutRequest!
-        .Item!;
-    expect(item.bucket_key.S).toBe("ip_ja4#1.2.3.4#ja4hash");
-    expect(item.device_id.S).toBe("dev-1");
-    expect(item.ttl.N).toBe("1700000000");
-  });
-
-  it("retries unprocessed items", async () => {
-    const entries: Tier2BucketEntry[] = [
-      { bucket_key: "ip_ja4#key", device_id: "dev-1", ttl: 1700000000 },
-    ];
-
-    dynamoMock
-      .on(BatchWriteItemCommand)
-      .resolvesOnce({
-        UnprocessedItems: {
-          "test-tier2-buckets": [
-            { PutRequest: { Item: { bucket_key: { S: "ip_ja4#key" } } } },
-          ],
-        },
-      })
-      .resolvesOnce({ UnprocessedItems: {} });
-
-    await batchWriteTier2Buckets(createDeps(), entries);
-
-    expect(dynamoMock.commandCalls(BatchWriteItemCommand)).toHaveLength(2);
-  });
-
-  it("throws after max retries exceeded", async () => {
-    const entries: Tier2BucketEntry[] = [
-      { bucket_key: "ip_ja4#key", device_id: "dev-1", ttl: 1700000000 },
-    ];
-
-    dynamoMock.on(BatchWriteItemCommand).resolves({
-      UnprocessedItems: {
-        "test-tier2-buckets": [
-          { PutRequest: { Item: { bucket_key: { S: "ip_ja4#key" } } } },
-        ],
-      },
-    });
-
-    await expect(
-      batchWriteTier2Buckets(createDeps(), entries, 2),
-    ).rejects.toThrow("Failed to write 1 Tier2 bucket items after 2 retries");
-  });
-
-  it("succeeds on first attempt when no unprocessed items", async () => {
-    dynamoMock.on(BatchWriteItemCommand).resolves({ UnprocessedItems: {} });
-
-    const entries: Tier2BucketEntry[] = [
-      { bucket_key: "key1", device_id: "dev-1", ttl: 1700000000 },
-      { bucket_key: "key2", device_id: "dev-2", ttl: 1700000000 },
-    ];
-
-    await batchWriteTier2Buckets(createDeps(), entries);
-
-    expect(dynamoMock.commandCalls(BatchWriteItemCommand)).toHaveLength(1);
-  });
-});
-
-describe("incrementBucketCardinalities", () => {
-  beforeEach(() => {
-    dynamoMock.reset();
-  });
-
-  it("sends UpdateItem for each bucket key", async () => {
-    dynamoMock.on(UpdateItemCommand).resolves({});
-
-    const bucketKeys = [
-      "ip_ja4#1.2.3.4#ja4",
-      "gpu_screen_tz#nvidia#1920x1080#EST",
-    ];
-    await incrementBucketCardinalities(createDeps(), bucketKeys, 1700000000);
-
-    const calls = dynamoMock.commandCalls(UpdateItemCommand);
-    expect(calls).toHaveLength(2);
-  });
-
-  it("uses _stats as sort key", async () => {
-    dynamoMock.on(UpdateItemCommand).resolves({});
-
-    await incrementBucketCardinalities(
-      createDeps(),
-      ["ip_ja4#key"],
-      1700000000,
-    );
-
-    const call = dynamoMock.commandCalls(UpdateItemCommand)[0];
-    expect(call.args[0].input.Key!.device_id.S).toBe("_stats");
-  });
-
-  it("uses ADD expression for atomic increment", async () => {
-    dynamoMock.on(UpdateItemCommand).resolves({});
-
-    await incrementBucketCardinalities(
-      createDeps(),
-      ["ip_ja4#key"],
-      1700000000,
-    );
-
-    const call = dynamoMock.commandCalls(UpdateItemCommand)[0];
-    expect(call.args[0].input.UpdateExpression).toContain(
-      "ADD cardinality :inc",
-    );
-    expect(call.args[0].input.ExpressionAttributeValues![":inc"].N).toBe("1");
-  });
-
-  it("sets TTL on stats entry", async () => {
-    dynamoMock.on(UpdateItemCommand).resolves({});
-
-    await incrementBucketCardinalities(createDeps(), ["key1"], 1700000000);
-
-    const call = dynamoMock.commandCalls(UpdateItemCommand)[0];
-    expect(call.args[0].input.ExpressionAttributeValues![":ttl"].N).toBe(
-      "1700000000",
-    );
-  });
-
-  it("handles empty bucket keys array", async () => {
-    dynamoMock.on(UpdateItemCommand).resolves({});
-
-    await incrementBucketCardinalities(createDeps(), [], 1700000000);
-
-    expect(dynamoMock.commandCalls(UpdateItemCommand)).toHaveLength(0);
-  });
-
-  it("executes all updates in parallel", async () => {
-    dynamoMock.on(UpdateItemCommand).resolves({});
-
-    const keys = ["key1", "key2", "key3"];
-    await incrementBucketCardinalities(createDeps(), keys, 1700000000);
-
-    expect(dynamoMock.commandCalls(UpdateItemCommand)).toHaveLength(3);
   });
 });
 
@@ -601,11 +425,51 @@ describe("writeAnchorBucket", () => {
 });
 
 describe("buildSimHashBandEntries", () => {
-  it("returns 4 band entries for valid 16-char hex fuzzy_hash", () => {
-    const fingerprint: Fingerprint = { fuzzy_hash: "0123456789abcdef" };
-    const entries = buildSimHashBandEntries("dev-1", fingerprint, 1700000000);
+  describe("64-bit hashes (legacy)", () => {
+    it("returns 4 band entries for valid 16-char hex fuzzy_hash", () => {
+      const fingerprint: Fingerprint = { fuzzy_hash: "0123456789abcdef" };
+      const entries = buildSimHashBandEntries("dev-1", fingerprint, 1700000000);
 
-    expect(entries).toHaveLength(4);
+      expect(entries).toHaveLength(4);
+    });
+
+    it("sets correct bucket_key format for each band", () => {
+      const fingerprint: Fingerprint = { fuzzy_hash: "0123456789abcdef" };
+      const entries = buildSimHashBandEntries("dev-1", fingerprint, 1700000000);
+
+      entries.forEach((entry) => {
+        expect(entry.bucket_key).toMatch(/^SIMHASH_BAND#\d#[0-9a-f]{4}$/);
+      });
+    });
+  });
+
+  describe("256-bit hashes", () => {
+    const hash256 = "0123456789abcdef".repeat(4); // 64 hex chars
+
+    it("returns 16 band entries for valid 64-char hex fuzzy_hash", () => {
+      const fingerprint: Fingerprint = { fuzzy_hash: hash256 };
+      const entries = buildSimHashBandEntries("dev-1", fingerprint, 1700000000);
+
+      expect(entries).toHaveLength(16);
+    });
+
+    it("sets correct bucket_key format for each band", () => {
+      const fingerprint: Fingerprint = { fuzzy_hash: hash256 };
+      const entries = buildSimHashBandEntries("dev-1", fingerprint, 1700000000);
+
+      entries.forEach((entry, i) => {
+        expect(entry.bucket_key).toMatch(/^SIMHASH_BAND#\d+#[0-9a-f]{4}$/);
+      });
+    });
+
+    it("includes fuzzy_hash in each entry", () => {
+      const fingerprint: Fingerprint = { fuzzy_hash: hash256 };
+      const entries = buildSimHashBandEntries("dev-1", fingerprint, 1700000000);
+
+      entries.forEach((entry) => {
+        expect(entry.fuzzy_hash).toBe(hash256);
+      });
+    });
   });
 
   it("returns empty array when fuzzy_hash is missing", () => {
@@ -620,15 +484,6 @@ describe("buildSimHashBandEntries", () => {
     const entries = buildSimHashBandEntries("dev-1", fingerprint);
 
     expect(entries).toEqual([]);
-  });
-
-  it("sets correct bucket_key format for each band", () => {
-    const fingerprint: Fingerprint = { fuzzy_hash: "0123456789abcdef" };
-    const entries = buildSimHashBandEntries("dev-1", fingerprint, 1700000000);
-
-    entries.forEach((entry) => {
-      expect(entry.bucket_key).toMatch(/^SIMHASH_BAND#\d#[0-9a-f]{4}$/);
-    });
   });
 
   it("sets device_id as inverted timestamp SK", () => {
@@ -663,7 +518,6 @@ describe("buildSimHashBandEntries", () => {
     const timestamp = 1700000000;
     const entries = buildSimHashBandEntries("dev-1", fingerprint, timestamp);
 
-    // TTL = timestamp + 90 days * 86400 seconds/day
     const expectedTtl = timestamp + 90 * 86400;
     entries.forEach((entry) => {
       expect(entry.ttl).toBe(expectedTtl);

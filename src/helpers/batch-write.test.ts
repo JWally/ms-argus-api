@@ -25,23 +25,21 @@ describe("batchWriteWithRetry", () => {
     dynamoMock.on(BatchWriteItemCommand).resolves({});
     const items = makeItems(3);
 
-    await batchWriteWithRetry(
-      new DynamoDBClient({}),
+    await batchWriteWithRetry(new DynamoDBClient({}), {
       tableName,
       items,
       entityName,
-    );
+    });
 
     expect(dynamoMock.calls()).toHaveLength(1);
   });
 
   it("returns immediately for empty items array", async () => {
-    await batchWriteWithRetry(
-      new DynamoDBClient({}),
+    await batchWriteWithRetry(new DynamoDBClient({}), {
       tableName,
-      [],
+      items: [],
       entityName,
-    );
+    });
 
     expect(dynamoMock.calls()).toHaveLength(0);
   });
@@ -56,12 +54,11 @@ describe("batchWriteWithRetry", () => {
       })
       .resolvesOnce({});
 
-    await batchWriteWithRetry(
-      new DynamoDBClient({}),
+    await batchWriteWithRetry(new DynamoDBClient({}), {
       tableName,
       items,
       entityName,
-    );
+    });
 
     expect(dynamoMock.calls()).toHaveLength(2);
   });
@@ -74,13 +71,12 @@ describe("batchWriteWithRetry", () => {
     });
 
     await expect(
-      batchWriteWithRetry(
-        new DynamoDBClient({}),
+      batchWriteWithRetry(new DynamoDBClient({}), {
         tableName,
         items,
         entityName,
-        2,
-      ),
+        maxRetries: 2,
+      }),
     ).rejects.toThrow("Failed to write 1 Test items after 2 retries");
   });
 
@@ -97,12 +93,11 @@ describe("batchWriteWithRetry", () => {
       })
       .resolvesOnce({});
 
-    await batchWriteWithRetry(
-      new DynamoDBClient({}),
+    await batchWriteWithRetry(new DynamoDBClient({}), {
       tableName,
       items,
       entityName,
-    );
+    });
 
     expect(dynamoMock.calls()).toHaveLength(3);
   });
@@ -112,12 +107,11 @@ describe("batchWriteWithRetry", () => {
       UnprocessedItems: undefined,
     });
 
-    await batchWriteWithRetry(
-      new DynamoDBClient({}),
+    await batchWriteWithRetry(new DynamoDBClient({}), {
       tableName,
-      makeItems(2),
+      items: makeItems(2),
       entityName,
-    );
+    });
 
     expect(dynamoMock.calls()).toHaveLength(1);
   });
@@ -127,12 +121,11 @@ describe("batchWriteWithRetry", () => {
       UnprocessedItems: { [tableName]: [] },
     });
 
-    await batchWriteWithRetry(
-      new DynamoDBClient({}),
+    await batchWriteWithRetry(new DynamoDBClient({}), {
       tableName,
-      makeItems(2),
+      items: makeItems(2),
       entityName,
-    );
+    });
 
     expect(dynamoMock.calls()).toHaveLength(1);
   });

@@ -1,8 +1,6 @@
-// src/handlers/vector-worker.test.ts
 import { describe, it, expect, beforeEach, vi, afterEach } from "vitest";
 import type { SQSEvent, SQSRecord } from "aws-lambda";
 
-// Set up environment before module imports
 vi.hoisted(() => {
   process.env.QDRANT_URL = "http://qdrant.internal:6333";
   process.env.QDRANT_SECRET_ARN =
@@ -11,7 +9,6 @@ vi.hoisted(() => {
   process.env.POWERTOOLS_METRICS_NAMESPACE = "ArgusTest";
 });
 
-// Mock QdrantClient
 const mockSearch = vi.fn();
 const mockUpsert = vi.fn();
 
@@ -22,12 +19,10 @@ vi.mock("../services/vector/qdrant-client", () => ({
   })),
 }));
 
-// Mock DynamoDB client
 vi.mock("@aws-sdk/client-dynamodb", () => ({
   DynamoDBClient: vi.fn().mockImplementation(() => ({})),
 }));
 
-// Mock Powertools
 vi.mock("@aws-lambda-powertools/logger", () => ({
   Logger: vi.fn().mockImplementation(() => ({
     info: vi.fn(),
@@ -77,7 +72,6 @@ describe("Vector Worker Handler", () => {
     mockSearch.mockResolvedValue([]);
     mockUpsert.mockResolvedValue(undefined);
 
-    // Re-import handler for each test to get fresh module state
     const module = await import("./vector-worker");
     handler = module.handler;
   });
@@ -85,8 +79,6 @@ describe("Vector Worker Handler", () => {
   afterEach(() => {
     vi.restoreAllMocks();
   });
-
-  // ==================== BASIC HANDLING ====================
 
   describe("Basic SQS Handling", () => {
     it("processes empty batch successfully", async () => {
@@ -134,8 +126,8 @@ describe("Vector Worker Handler", () => {
 
     it("processes multiple records and reports individual failures", async () => {
       mockSearch
-        .mockResolvedValueOnce([]) // First succeeds
-        .mockRejectedValueOnce(new Error("fail")); // Second fails
+        .mockResolvedValueOnce([])
+        .mockRejectedValueOnce(new Error("fail"));
 
       const event = createSQSEvent([
         createSQSRecord(
@@ -167,8 +159,6 @@ describe("Vector Worker Handler", () => {
     });
   });
 
-  // ==================== WARMUP MESSAGES ====================
-
   describe("Warmup Messages", () => {
     it("handles warmup message without calling QDrant", async () => {
       const event = createSQSEvent([
@@ -197,8 +187,6 @@ describe("Vector Worker Handler", () => {
       expect(mockSearch).toHaveBeenCalled();
     });
   });
-
-  // ==================== SEARCH MESSAGES ====================
 
   describe("Search Messages", () => {
     it("calls QDrant search with correct parameters", async () => {
@@ -242,8 +230,6 @@ describe("Vector Worker Handler", () => {
       });
     });
   });
-
-  // ==================== UPSERT MESSAGES ====================
 
   describe("Upsert Messages", () => {
     it("calls QDrant upsert with correct parameters", async () => {
@@ -294,8 +280,6 @@ describe("Vector Worker Handler", () => {
     });
   });
 
-  // ==================== MALFORMED MESSAGES ====================
-
   describe("Malformed Messages", () => {
     it("does not retry malformed JSON", async () => {
       const event = createSQSEvent([
@@ -303,7 +287,6 @@ describe("Vector Worker Handler", () => {
       ]);
 
       const result = await handler(event, {} as any, vi.fn());
-      // Malformed JSON is logged and skipped, not retried
       expect(result.batchItemFailures).toEqual([]);
     });
 

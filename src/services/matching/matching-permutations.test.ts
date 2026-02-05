@@ -1,11 +1,9 @@
-// src/services/matching/matching-permutations.test.ts
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { mockClient } from "aws-sdk-client-mock";
 import {
   DynamoDBClient,
   GetItemCommand,
   QueryCommand,
-  BatchGetItemCommand,
 } from "@aws-sdk/client-dynamodb";
 import { SQSClient } from "@aws-sdk/client-sqs";
 import { marshall } from "@aws-sdk/util-dynamodb";
@@ -16,18 +14,15 @@ import {
 } from "./matching-service";
 import { Fingerprint, SessionCacheValue } from "./types";
 import { DynamoCacheService } from "../cache";
-import { buildBucketKeys } from "../../helpers/bucket-keys";
 import {
   createFingerprint,
   createDriftedFingerprint,
   FingerprintPresets,
 } from "../../../tests/utils";
 
-// Mock AWS SDK clients
 const dynamoMock = mockClient(DynamoDBClient);
 const sqsMock = mockClient(SQSClient);
 
-// Test configuration
 const testConfig: MatchingServiceConfig = {
   tier1IndexTable: "test-tier1-index",
   tier2BucketsTable: "test-tier2-buckets",
@@ -37,7 +32,6 @@ const testConfig: MatchingServiceConfig = {
   tier2TimeoutMs: 100,
 };
 
-// Mock DynamoCacheService
 function createMockCacheService() {
   const sessions = new Map<string, SessionCacheValue>();
   return {
@@ -96,7 +90,6 @@ describe("Tier Priority Tests", () => {
 
   describe("evercookie vs stable_hash priority", () => {
     it("should use Tier 0.5 (evercookie) when both evercookie and stable_hash match", async () => {
-      // Both evercookie and stable_hash return valid matches
       dynamoMock
         .on(GetItemCommand, {
           Key: {
@@ -243,9 +236,8 @@ describe("Tier Priority Tests", () => {
     });
   });
 
-  describe("Tier 1 vs Tier 2 priority", () => {
-    it("should use Tier 1 match over Tier 2 match", async () => {
-      // Tier 1 stable_hash matches
+  describe("Tier 1 matching", () => {
+    it("should use Tier 1 match when stable_hash found", async () => {
       dynamoMock
         .on(GetItemCommand, {
           Key: {
@@ -259,19 +251,9 @@ describe("Tier Priority Tests", () => {
           }),
         });
 
-      // Tier 2 buckets would also match if we got there
-      dynamoMock
-        .on(QueryCommand, { TableName: testConfig.tier2BucketsTable })
-        .resolves({
-          Items: [marshall({ device_id: "dev_tier2" })],
-        });
-
       const fingerprint: Fingerprint = {
         stable_hash: "stable123",
         ip_address: "10.0.0.1",
-        ja4: "ja4hash",
-        audio_hash: "audio123",
-        canvas_hash: "canvas456",
       };
 
       const { result } = await service.runTieredMatching(fingerprint);
@@ -280,47 +262,19 @@ describe("Tier Priority Tests", () => {
       expect(result.device_id).toBe("dev_tier1");
     });
 
-    it("should use Tier 2 match when Tier 1 not found", async () => {
-      // Tier 1 doesn't match
+    it("should create new device when no Tier 1 match found", async () => {
       dynamoMock.on(GetItemCommand).resolves({ Item: undefined });
-
-      // Tier 2 buckets match
-      dynamoMock
-        .on(QueryCommand, { TableName: testConfig.tier2BucketsTable })
-        .resolves({
-          Items: [marshall({ device_id: "dev_tier2" })],
-        });
-
-      // Cardinality lookup
-      dynamoMock.on(BatchGetItemCommand).resolves({
-        Responses: {
-          [testConfig.tier2BucketsTable]: [],
-        },
-      });
-
-      // Profile lookup for Tier 2 device
-      dynamoMock
-        .on(GetItemCommand, { TableName: testConfig.profilesTable })
-        .resolves({
-          Item: marshall({
-            device_id: "dev_tier2",
-            risk_score: 0.4,
-            flags: [],
-          }),
-        });
+      dynamoMock.on(QueryCommand).resolves({ Items: [] });
 
       const fingerprint: Fingerprint = {
         stable_hash: "unknown",
         ip_address: "10.0.0.1",
-        ja4: "ja4hash",
-        audio_hash: "audio123",
-        canvas_hash: "canvas456",
       };
 
       const { result } = await service.runTieredMatching(fingerprint);
 
-      expect(result.match_tier).toBe(2);
-      expect(result.device_id).toBe("dev_tier2");
+      expect(result.is_new_device).toBe(true);
+      expect(result.match_tier).toBe(-1);
     });
   });
 });
@@ -347,7 +301,6 @@ describe("Signal Presence Matrix", () => {
     service = new MatchingService(deps);
   });
 
-  // Table-driven tests for signal combinations
   const signalCombinations = [
     {
       name: "evercookie only",
@@ -381,48 +334,12 @@ describe("Signal Presence Matrix", () => {
       expectedConfidence: 0.99,
       expectedEvidence: "EVERCOOKIE_MATCH",
     },
-    {
-      name: "tier 2 signals only (2 compound buckets)",
-      fingerprint: {
-        ip_address: "10.0.0.1",
-        ja4: "ja4hash",
-        audio_hash: "audio",
-        canvas_hash: "canvas",
-      },
-      expectedTier: 2,
-      expectedConfidence: 0.8, // 2 buckets = 0.8 confidence
-      expectedEvidence: "IP_JA4_BUCKET",
-      needsTier2Match: true,
-    },
-    {
-      name: "tier 2 signals only (all 3 compound buckets)",
-      fingerprint: {
-        ip_address: "10.0.0.1",
-        ja4: "ja4hash",
-        gpu_renderer: "GPU",
-        screen_dims: "1920x1080",
-        timezone: "UTC",
-        audio_hash: "audio",
-        canvas_hash: "canvas",
-      },
-      expectedTier: 2,
-      expectedConfidence: 0.85, // 3 buckets = max confidence
-      expectedEvidence: "IP_JA4_BUCKET",
-      needsTier2Match: true,
-    },
   ];
 
   describe.each(signalCombinations)(
     "$name",
-    ({
-      fingerprint,
-      expectedTier,
-      expectedConfidence,
-      expectedEvidence,
-      needsTier2Match,
-    }) => {
+    ({ fingerprint, expectedTier, expectedConfidence, expectedEvidence }) => {
       it(`should match at tier ${expectedTier} with confidence ${expectedConfidence}`, async () => {
-        // Setup mocks based on fingerprint content
         if (fingerprint.evercookie_id) {
           dynamoMock
             .on(GetItemCommand, {
@@ -460,7 +377,6 @@ describe("Signal Presence Matrix", () => {
           expectedTier !== 0.5 &&
           expectedEvidence === "FUZZY_HASH_MATCH"
         ) {
-          // Only mock fuzzy if it's the expected match
           dynamoMock
             .on(GetItemCommand, {
               Key: {
@@ -472,36 +388,6 @@ describe("Signal Presence Matrix", () => {
                 hash_key: `fuzzy#${fingerprint.fuzzy_hash}`,
                 device_id: "dev_match",
                 risk_score: 0.3,
-              }),
-            });
-        }
-
-        if (needsTier2Match) {
-          // No tier 1 matches
-          dynamoMock.on(GetItemCommand).resolves({ Item: undefined });
-
-          // Tier 2 bucket matches
-          dynamoMock
-            .on(QueryCommand, { TableName: testConfig.tier2BucketsTable })
-            .resolves({
-              Items: [marshall({ device_id: "dev_match" })],
-            });
-
-          // Cardinality lookup (low cardinality = no penalty)
-          dynamoMock.on(BatchGetItemCommand).resolves({
-            Responses: {
-              [testConfig.tier2BucketsTable]: [],
-            },
-          });
-
-          // Profile lookup
-          dynamoMock
-            .on(GetItemCommand, { TableName: testConfig.profilesTable })
-            .resolves({
-              Item: marshall({
-                device_id: "dev_match",
-                risk_score: 0.3,
-                flags: [],
               }),
             });
         }
@@ -530,26 +416,6 @@ describe("Signal Presence Matrix", () => {
       expect(result.match_tier).toBe(-1);
       expect(result.confidence).toBe(0);
       expect(result.evidence_codes).toContain("NEW_DEVICE");
-    });
-  });
-
-  describe("partial signals", () => {
-    it("should not build ip_ja4 bucket when only ip_address present", () => {
-      const fingerprint: Fingerprint = { ip_address: "10.0.0.1" };
-      const keys = buildBucketKeys(fingerprint);
-      expect(keys).toHaveLength(0);
-    });
-
-    it("should not build gpu_screen_tz bucket when only gpu_renderer present", () => {
-      const fingerprint: Fingerprint = { gpu_renderer: "GPU" };
-      const keys = buildBucketKeys(fingerprint);
-      expect(keys).toHaveLength(0);
-    });
-
-    it("should not build audio_canvas bucket when only audio_hash present", () => {
-      const fingerprint: Fingerprint = { audio_hash: "audio123" };
-      const keys = buildBucketKeys(fingerprint);
-      expect(keys).toHaveLength(0);
     });
   });
 });
@@ -586,7 +452,6 @@ describe("Fingerprint Drift Scenarios", () => {
 
       const drifted = createDriftedFingerprint(original, { changeIp: true });
 
-      // Stable hash still matches
       dynamoMock
         .on(GetItemCommand, {
           Key: {
@@ -711,7 +576,6 @@ describe("Fingerprint Drift Scenarios", () => {
         changeTimezone: true,
       });
 
-      // No tier 1 or tier 2 matches
       dynamoMock.on(GetItemCommand).resolves({ Item: undefined });
       dynamoMock.on(QueryCommand).resolves({ Items: [] });
 
@@ -773,19 +637,6 @@ describe("Edge Cases", () => {
 
       expect(result.is_new_device).toBe(true);
     });
-
-    it("should not build bucket keys for empty string signals", () => {
-      const fingerprint: Fingerprint = {
-        ip_address: "",
-        ja4: "",
-        gpu_renderer: "",
-        screen_dims: "",
-        timezone: "",
-      };
-
-      const keys = buildBucketKeys(fingerprint);
-      expect(keys).toHaveLength(0);
-    });
   });
 
   describe("very long hash values", () => {
@@ -838,66 +689,12 @@ describe("Edge Cases", () => {
     });
   });
 
-  describe("multiple devices in same bucket", () => {
-    it("should select device with most bucket overlap", async () => {
-      // No tier 1 matches
-      dynamoMock.on(GetItemCommand).resolves({ Item: undefined });
-
-      // Multiple devices in buckets - dev_winner appears in all 3, dev_partial in 1
-      dynamoMock
-        .on(QueryCommand, { TableName: testConfig.tier2BucketsTable })
-        .resolves({
-          Items: [
-            marshall({ device_id: "dev_winner" }),
-            marshall({ device_id: "dev_partial" }),
-          ],
-        });
-
-      // Low cardinality
-      dynamoMock.on(BatchGetItemCommand).resolves({
-        Responses: {
-          [testConfig.tier2BucketsTable]: [],
-        },
-      });
-
-      // Profile lookup (returns first device found with most overlap)
-      dynamoMock
-        .on(GetItemCommand, { TableName: testConfig.profilesTable })
-        .resolves({
-          Item: marshall({
-            device_id: "dev_winner",
-            risk_score: 0.3,
-            flags: [],
-          }),
-        });
-
-      const fingerprint: Fingerprint = {
-        ip_address: "10.0.0.1",
-        ja4: "ja4hash",
-        gpu_renderer: "GPU",
-        screen_dims: "1920x1080",
-        timezone: "UTC",
-        audio_hash: "audio",
-        canvas_hash: "canvas",
-      };
-
-      const { result } = await service.runTieredMatching(fingerprint);
-
-      expect(result.match_tier).toBe(2);
-      // The device with most bucket appearances should be selected
-    });
-  });
-
   describe("concurrent matches at different tiers", () => {
     it("should always prefer higher tier match", async () => {
-      // Simulate race condition where tier 2 might return first
-      // but tier 0.5 evercookie should still win
-
       dynamoMock.on(GetItemCommand).callsFake(async (input) => {
         const key = input.Key?.hash_key?.S;
 
         if (key?.startsWith("evercookie#")) {
-          // Evercookie lookup is slow but returns
           await new Promise((resolve) => setTimeout(resolve, 50));
           return {
             Item: marshall({
@@ -921,7 +718,6 @@ describe("Edge Cases", () => {
 
       const { result } = await service.runTieredMatching(fingerprint);
 
-      // Even though tier 2 might have been faster, evercookie should win
       expect(result.match_tier).toBe(0.5);
       expect(result.device_id).toBe("dev_evercookie");
     });
@@ -930,7 +726,7 @@ describe("Edge Cases", () => {
 
 describe("Using Fingerprint Factory Presets", () => {
   describe("FULL preset", () => {
-    it("should have evercookie, stable_hash, fuzzy_hash, and all tier 2 signals", () => {
+    it("should have evercookie, stable_hash, fuzzy_hash, and fingerprint signals", () => {
       const fp = createFingerprint(FingerprintPresets.FULL);
 
       expect(fp.evercookie_id).toBeDefined();
@@ -944,12 +740,6 @@ describe("Using Fingerprint Factory Presets", () => {
       expect(fp.audio_hash).toBeDefined();
       expect(fp.canvas_hash).toBeDefined();
     });
-
-    it("should build all 3 bucket keys", () => {
-      const fp = createFingerprint(FingerprintPresets.FULL);
-      const keys = buildBucketKeys(fp);
-      expect(keys).toHaveLength(3);
-    });
   });
 
   describe("MINIMAL preset", () => {
@@ -959,12 +749,6 @@ describe("Using Fingerprint Factory Presets", () => {
       expect(fp.stable_hash).toBeDefined();
       expect(fp.evercookie_id).toBeUndefined();
       expect(fp.fuzzy_hash).toBeUndefined();
-    });
-
-    it("should build no bucket keys", () => {
-      const fp = createFingerprint(FingerprintPresets.MINIMAL);
-      const keys = buildBucketKeys(fp);
-      expect(keys).toHaveLength(0);
     });
   });
 
@@ -995,7 +779,6 @@ describe("Using Fingerprint Factory Presets", () => {
       expect(fp.stable_hash).toBeDefined();
       expect(fp.ip_address).toBeDefined();
       expect(fp.ja4).toBeDefined();
-      // Canvas and audio typically blocked
       expect(fp.canvas_hash).toBeUndefined();
       expect(fp.audio_hash).toBeUndefined();
     });

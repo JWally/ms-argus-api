@@ -1,33 +1,49 @@
-// src/handlers/vector-worker.ts
-// Vector search worker Lambda for QDrant integration
-// Runs in the ms-argus-vector VPC to access the internal ALB
-import { SQSHandler, SQSRecord } from "aws-lambda";
+/**
+ * @fileoverview Vector Worker Lambda Handler.
+ *
+ * Processes vector operations via Qdrant for similarity matching.
+ * Runs in a dedicated VPC (ms-argus-vector) with access to the internal
+ * Qdrant ALB endpoint.
+ *
+ * Supports two invocation modes:
+ * 1. **SQS Events**: Async batch processing (original Tier 3 flow)
+ * 2. **Direct Invocation**: Sync Lambda-to-Lambda calls (Tier 2 replacement)
+ *
+ * Operations:
+ * - **search**: Find devices with similar fingerprint embeddings
+ * - **upsert**: Store/update device fingerprint vectors
+ *
+ * @module handlers/vector-worker
+ */
+
+import { SQSEvent, SQSBatchResponse, Context } from "aws-lambda";
 import { Logger } from "@aws-lambda-powertools/logger";
 import { Metrics, MetricUnit } from "@aws-lambda-powertools/metrics";
 import { processSqsBatch } from "../helpers/sqs-batch";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
+import { SQSClient } from "@aws-sdk/client-sqs";
+import { QdrantClient } from "../services/vector/qdrant-client";
+import { getVectorWorkerEnv } from "../config/env";
+import { processRecord } from "./vector-worker/process-record";
 import {
-  QdrantClient,
-  VectorSearchRequest,
-  VectorUpsertRequest,
-} from "../services/vector/qdrant-client";
-import { getVectorWorkerEnv, VectorWorkerEnvConfig } from "../config/env";
+  handleSyncInvoke,
+  isSyncInvokeRequest,
+} from "./vector-worker/sync-handler";
+import type {
+  SyncInvokeRequest,
+  SyncInvokeResponse,
+} from "./vector-worker/types";
 
-// Validate environment variables at module load (cold start)
-// Throws immediately if required env vars are missing
-const envConfig: VectorWorkerEnvConfig = getVectorWorkerEnv();
+const envConfig = getVectorWorkerEnv();
 
-// Powertools (using validated config)
 const logger = new Logger({ serviceName: envConfig.POWERTOOLS_SERVICE_NAME });
 const metrics = new Metrics({
   namespace: envConfig.POWERTOOLS_METRICS_NAMESPACE,
 });
 
-// AWS SDK clients (reused across invocations)
-// DynamoDB client for future profile lookups
 const _dynamodb = new DynamoDBClient({});
+const sqs = new SQSClient({});
 
-// QDrant client (reused across invocations)
 const qdrantClient = new QdrantClient({
   baseUrl: envConfig.QDRANT_URL,
   secretArn: envConfig.QDRANT_SECRET_ARN,
@@ -35,157 +51,52 @@ const qdrantClient = new QdrantClient({
 });
 
 /**
- * Message types for the vector worker
+ * AWS Lambda handler for the vector worker.
+ *
+ * Supports two invocation patterns:
+ *
+ * 1. **SQS Event** (async): Triggered by SQS messages for batch processing.
+ *    Results are published to the vector-results queue for persistence.
+ *
+ * 2. **Direct Invocation** (sync): Called directly by matching-worker via
+ *    Lambda invoke. Returns results immediately for Tier 2 replacement.
+ *    Request format: `{ action: "search" | "upsert", ... }`
+ *
+ * @param event - SQS event or sync invoke request
+ * @param context - Lambda context
+ * @returns SQS batch response or sync invoke response
+ *
+ * @see {@link processRecord} for SQS message handling
+ * @see {@link handleSyncInvoke} for direct invocation handling
  */
-interface VectorSearchMessage {
-  type: "search";
-  session_id: string;
-  device_id: string;
-  vector: number[];
-  collection: string;
-  limit?: number;
-}
-
-interface VectorUpsertMessage {
-  type: "upsert";
-  device_id: string;
-  vector: number[];
-  collection: string;
-  payload?: Record<string, unknown>;
-}
-
-interface WarmupMessage {
-  warmup: true;
-  source?: string;
-}
-
-type VectorMessage = VectorSearchMessage | VectorUpsertMessage | WarmupMessage;
-
-/**
- * Vector Worker Lambda Handler
- * Processes vector operations from SQS and communicates with QDrant
- */
-export const handler: SQSHandler = async (event) => {
-  return processSqsBatch(event.Records, processRecord, {
-    metrics,
-    logger,
-    successMetric: "VectorOperationSuccess",
-    errorMetric: "VectorOperationError",
-  });
-};
-
-/**
- * Check if this is a warmup message from EventBridge
- */
-function isWarmupMessage(message: VectorMessage): message is WarmupMessage {
-  return "warmup" in message && message.warmup === true;
-}
-
-/**
- * Process a single SQS record
- */
-async function processRecord(record: SQSRecord): Promise<void> {
-  const startTime = Date.now();
-
-  // Parse message
-  let message: VectorMessage;
-  try {
-    message = JSON.parse(record.body);
-  } catch (parseError) {
-    logger.error("Malformed JSON payload - skipping message", {
-      error: parseError,
-      messageId: record.messageId,
-      bodyPreview: record.body.slice(0, 200),
-    });
-    metrics.addMetric("MalformedPayload", MetricUnit.Count, 1);
-    return; // Don't retry - mark as processed
+export async function handler(
+  event: SQSEvent | SyncInvokeRequest,
+  _context: Context,
+): Promise<SQSBatchResponse | SyncInvokeResponse> {
+  // Check if this is a sync invoke (direct Lambda-to-Lambda call)
+  if (isSyncInvokeRequest(event)) {
+    logger.info("Processing sync invoke request", { action: event.action });
+    metrics.addMetric("SyncInvokeRequest", MetricUnit.Count, 1);
+    return handleSyncInvoke(event, { qdrantClient, logger, metrics });
   }
 
-  // Handle warmup messages
-  if (isWarmupMessage(message)) {
-    logger.info("Warmup ping received - keeping pipeline warm");
-    metrics.addMetric("WarmupPing", MetricUnit.Count, 1);
-    return;
-  }
-
-  // Route to appropriate handler
-  if (message.type === "search") {
-    await handleSearch(message);
-  } else if (message.type === "upsert") {
-    await handleUpsert(message);
-  } else {
-    logger.warn("Unknown message type", { message });
-    metrics.addMetric("UnknownMessageType", MetricUnit.Count, 1);
-  }
-
-  const duration = Date.now() - startTime;
-  metrics.addMetric(
-    "VectorOperationDuration",
-    MetricUnit.Milliseconds,
-    duration,
+  // Otherwise, process as SQS event (original async flow)
+  logger.info("Processing SQS batch", { recordCount: event.Records?.length });
+  return processSqsBatch(
+    event.Records,
+    (record) =>
+      processRecord(record, {
+        qdrantClient,
+        sqs,
+        vectorResultsQueueUrl: envConfig.VECTOR_RESULTS_QUEUE_URL,
+        logger,
+        metrics,
+      }),
+    {
+      metrics,
+      logger,
+      successMetric: "VectorOperationSuccess",
+      errorMetric: "VectorOperationError",
+    },
   );
-}
-
-/**
- * Handle vector search request
- */
-async function handleSearch(message: VectorSearchMessage): Promise<void> {
-  logger.info("Processing vector search", {
-    session_id: message.session_id,
-    collection: message.collection,
-    limit: message.limit,
-  });
-
-  const request: VectorSearchRequest = {
-    vector: message.vector,
-    limit: message.limit ?? 10,
-    with_payload: true,
-  };
-
-  const results = await qdrantClient.search(message.collection, request);
-
-  metrics.addMetric("VectorSearchComplete", MetricUnit.Count, 1);
-  metrics.addMetric(
-    "VectorSearchResultCount",
-    MetricUnit.Count,
-    results.length,
-  );
-
-  logger.info("Vector search complete", {
-    session_id: message.session_id,
-    result_count: results.length,
-    top_score: results[0]?.score,
-  });
-
-  // TODO: Write results to session cache or callback queue
-  // This depends on how the matching service wants to consume vector results
-}
-
-/**
- * Handle vector upsert request
- */
-async function handleUpsert(message: VectorUpsertMessage): Promise<void> {
-  logger.info("Processing vector upsert", {
-    device_id: message.device_id,
-    collection: message.collection,
-  });
-
-  const request: VectorUpsertRequest = {
-    points: [
-      {
-        id: message.device_id,
-        vector: message.vector,
-        payload: message.payload,
-      },
-    ],
-  };
-
-  await qdrantClient.upsert(message.collection, request);
-
-  metrics.addMetric("VectorUpsertComplete", MetricUnit.Count, 1);
-
-  logger.info("Vector upsert complete", {
-    device_id: message.device_id,
-    collection: message.collection,
-  });
 }

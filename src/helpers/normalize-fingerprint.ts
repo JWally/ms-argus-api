@@ -1,20 +1,21 @@
-// src/helpers/normalize-fingerprint.ts
-// AR-73: Normalize fingerprint from matching-worker flat format
-// AR-83: Added robust type coercion, validation, and sanitization
-// AR-XXX: Simplified to only handle flat fingerprints (nested web format removed)
-//
-// The matching-worker now extracts flat fingerprints from V3 payloads via extractFingerprint().
-// This helper sanitizes those flat fingerprints and applies sigint overrides.
-
+/**
+ * Fingerprint normalization and sanitization.
+ *
+ * Cleans incoming fingerprint data by stripping nested objects (to prevent
+ * DynamoDB marshalling errors with large numbers) and applying signal
+ * intelligence overrides from ms-argus-web.
+ * @module
+ */
 import type { Fingerprint } from "../types/fingerprint";
 import type { SigintData } from "../types/matching";
 
-// AR-83: Maximum string length to prevent storage issues
+/** Maximum allowed string length to prevent DoS via large payloads. */
 const MAX_STRING_LENGTH = 8192;
 
 /**
- * AR-83: Safely coerce a value to a valid positive number.
- * Returns undefined if the value cannot be coerced or is invalid.
+ * Safely coerce a value to a valid positive number.
+ * @param val - Value to coerce
+ * @returns Number if valid, undefined otherwise
  */
 function toValidNumber(val: unknown): number | undefined {
   if (val === undefined || val === null) return undefined;
@@ -24,8 +25,9 @@ function toValidNumber(val: unknown): number | undefined {
 }
 
 /**
- * AR-83: Safely coerce a value to a valid positive integer.
- * Returns undefined if the value is negative, NaN, or Infinity.
+ * Safely coerce a value to a valid positive number.
+ * @param val - Value to coerce
+ * @returns Positive number if valid, undefined if negative/invalid
  */
 function toValidPositiveNumber(val: unknown): number | undefined {
   const num = toValidNumber(val);
@@ -34,19 +36,17 @@ function toValidPositiveNumber(val: unknown): number | undefined {
 }
 
 /**
- * AR-83: Validate and sanitize a string value.
- * Returns undefined for empty/whitespace strings, sanitizes null bytes, truncates long strings.
+ * Validate and sanitize a string value.
+ * @param val - Value to sanitize
+ * @returns Sanitized string, or undefined if empty/invalid
  */
 function sanitizeString(val: unknown): string | undefined {
   if (typeof val !== "string") return undefined;
-  // Trim whitespace
   let str = val.trim();
   if (str.length === 0) return undefined;
-  // Remove null bytes (using String.fromCharCode to avoid eslint no-control-regex)
   // eslint-disable-next-line no-control-regex
   str = str.replace(/\x00/g, "");
   if (str.length === 0) return undefined;
-  // Truncate very long strings
   if (str.length > MAX_STRING_LENGTH) {
     str = str.substring(0, MAX_STRING_LENGTH);
   }
@@ -54,7 +54,9 @@ function sanitizeString(val: unknown): string | undefined {
 }
 
 /**
- * AR-83: Validate a score is in the 0-1 range.
+ * Validate a score is in the 0-1 range.
+ * @param val - Value to validate
+ * @returns Number if in valid range, undefined otherwise
  */
 function toValidScore(val: unknown): number | undefined {
   const num = toValidNumber(val);
@@ -82,9 +84,7 @@ export function normalizeFingerprint(
     return {};
   }
 
-  // AR-146: Strip nested objects that might contain large numbers (e.g., maths)
-  // Only keep primitive fields (string, number, boolean, null, undefined)
-  // This prevents DynamoDB marshalling errors from numbers > MAX_SAFE_INTEGER
+  // Only keep primitive fields to prevent DynamoDB marshalling errors from numbers > MAX_SAFE_INTEGER
   const result: Fingerprint = {};
   for (const [key, value] of Object.entries(raw)) {
     if (
@@ -96,34 +96,61 @@ export function normalizeFingerprint(
     ) {
       (result as Record<string, unknown>)[key] = value;
     }
-    // Skip objects and arrays (nested structures with potentially huge numbers)
   }
 
-  // Apply sigint overrides
-  if (sigint) {
-    if (sigint.tlsFingerprint && typeof sigint.tlsFingerprint === "object") {
-      const tls = sigint.tlsFingerprint;
-      const sigintId = sanitizeString(tls.id);
-      if (sigintId) result.sigint_id = sigintId;
-      const ja3 = sanitizeString(tls.ja3);
-      if (ja3) result.ja3 = ja3;
-      const ja4 = sanitizeString(tls.ja4);
-      if (ja4) result.ja4 = ja4;
-      const ip = sanitizeString(tls.ip);
-      if (ip) result.ip_address = ip;
-    }
-    if (sigint.tcpProbe && typeof sigint.tcpProbe === "object") {
-      const tcp = sigint.tcpProbe;
-      const rttMs = toValidPositiveNumber(tcp.rttMs);
-      if (rttMs !== undefined) result.tcp_rtt_us = Math.round(rttMs * 1000);
-      const proxyScore = toValidScore(tcp.proxyScore);
-      if (proxyScore !== undefined) result.proxy_score = proxyScore;
-      const vpnScore = toValidScore(tcp.vpnScore);
-      if (vpnScore !== undefined) result.vpn_score = vpnScore;
-    }
-    const faviconDeviceId = sanitizeString(sigint.faviconCache?.deviceId);
-    if (faviconDeviceId) result.evercookie_id = faviconDeviceId;
-  }
+  if (sigint) applySigintOverrides(sigint, result);
 
   return result;
+}
+
+/**
+ * Apply TLS fingerprint overrides to fingerprint
+ * @param tls - TLS fingerprint data from sigint
+ * @param fp - Fingerprint to modify
+ */
+function applyTlsOverrides(
+  tls: NonNullable<SigintData["tlsFingerprint"]>,
+  fp: Fingerprint,
+) {
+  const sigintId = sanitizeString(tls.id);
+  if (sigintId) fp.sigint_id = sigintId;
+  const ja3 = sanitizeString(tls.ja3);
+  if (ja3) fp.ja3 = ja3;
+  const ja4 = sanitizeString(tls.ja4);
+  if (ja4) fp.ja4 = ja4;
+  const ip = sanitizeString(tls.ip);
+  if (ip) fp.ip_address = ip;
+}
+
+/**
+ * Apply TCP probe overrides to fingerprint
+ * @param tcp - TCP probe data from sigint
+ * @param fp - Fingerprint to modify
+ */
+function applyTcpOverrides(
+  tcp: NonNullable<SigintData["tcpProbe"]>,
+  fp: Fingerprint,
+) {
+  const rttMs = toValidPositiveNumber(tcp.rttMs);
+  if (rttMs !== undefined) fp.tcp_rtt_us = Math.round(rttMs * 1000);
+  const proxyScore = toValidScore(tcp.proxyScore);
+  if (proxyScore !== undefined) fp.proxy_score = proxyScore;
+  const vpnScore = toValidScore(tcp.vpnScore);
+  if (vpnScore !== undefined) fp.vpn_score = vpnScore;
+}
+
+/**
+ * Apply all sigint overrides (TLS, TCP, favicon) to fingerprint
+ * @param sigint - Signal intelligence data
+ * @param fp - Fingerprint to modify
+ */
+function applySigintOverrides(sigint: SigintData, fp: Fingerprint) {
+  if (sigint.tlsFingerprint && typeof sigint.tlsFingerprint === "object") {
+    applyTlsOverrides(sigint.tlsFingerprint, fp);
+  }
+  if (sigint.tcpProbe && typeof sigint.tcpProbe === "object") {
+    applyTcpOverrides(sigint.tcpProbe, fp);
+  }
+  const faviconDeviceId = sanitizeString(sigint.faviconCache?.deviceId);
+  if (faviconDeviceId) fp.evercookie_id = faviconDeviceId;
 }

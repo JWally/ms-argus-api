@@ -1,7 +1,3 @@
-// src/helpers/error-middleware.ts
-// AR-166: Shared error handling middleware for API handlers
-// Extracted from ingestion.ts and session-get.ts
-
 import middy from "@middy/core";
 import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from "aws-lambda";
 import { Logger } from "@aws-lambda-powertools/logger";
@@ -52,13 +48,11 @@ export const jsonErrorHandler = (
     onError: (request) => {
       const { error } = request;
 
-      // Extract status code from HttpError or default to 500
       const statusCode =
         error && typeof error === "object" && "statusCode" in error
           ? (error as { statusCode: number }).statusCode
           : 500;
 
-      // Determine error message based on configuration
       let message: string;
       if (exposeErrors === "all") {
         message =

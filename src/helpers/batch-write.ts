@@ -6,21 +6,30 @@ import {
 import { sleep } from "./sleep";
 
 /**
+ * Parameters for batch write with retry
+ */
+export interface BatchWriteParams {
+  /** DynamoDB table name */
+  tableName: string;
+  /** Array of write requests to execute */
+  items: WriteRequest[];
+  /** Entity name for error messages */
+  entityName: string;
+  /** Maximum retry attempts (default 3) */
+  maxRetries?: number;
+}
+
+/**
  * Batch write to DynamoDB with exponential backoff retry for unprocessed items.
- *
- * @param client - DynamoDB client
- * @param tableName - Target table name
- * @param items - Pre-marshalled WriteRequest array
- * @param entityName - Entity name for error messages (e.g. "Tier1 index")
- * @param maxRetries - Maximum retry attempts (default: 3)
+ * @param client - DynamoDB client instance
+ * @param params - Batch write parameters
+ * @throws Error if items remain unprocessed after max retries
  */
 export async function batchWriteWithRetry(
   client: DynamoDBClient,
-  tableName: string,
-  items: WriteRequest[],
-  entityName: string,
-  maxRetries: number = 3,
+  params: BatchWriteParams,
 ): Promise<void> {
+  const { tableName, items, entityName, maxRetries = 3 } = params;
   if (items.length === 0) return;
 
   let unprocessedItems = items;

@@ -1,4 +1,3 @@
-// src/services/matching/session-anchors.test.ts
 import { describe, it, expect, beforeEach } from "vitest";
 import { mockClient } from "aws-sdk-client-mock";
 import {
@@ -10,10 +9,12 @@ import { marshall } from "@aws-sdk/util-dynamodb";
 import {
   sessionAnchorLookup,
   ipUaAnchorLookup,
-  buildSessionAnchorKey,
-  buildIpUaAnchorKey,
   SessionAnchorDeps,
 } from "./session-anchors";
+import {
+  buildSessionAnchorKey,
+  buildIpUaAnchorKey,
+} from "../../helpers/bucket-keys";
 import type { Fingerprint } from "../../types";
 
 const dynamoMock = mockClient(DynamoDBClient);
@@ -63,8 +64,6 @@ describe("Session Anchors", () => {
   beforeEach(() => {
     dynamoMock.reset();
   });
-
-  // ==================== BUILD KEY FUNCTIONS ====================
 
   describe("buildSessionAnchorKey", () => {
     it("builds key with IP, UA hash, and screen dims", () => {
@@ -137,8 +136,6 @@ describe("Session Anchors", () => {
       expect(key).not.toBeNull();
     });
   });
-
-  // ==================== SESSION ANCHOR LOOKUP ====================
 
   describe("sessionAnchorLookup", () => {
     it("returns null when fingerprint lacks required fields", async () => {
@@ -295,7 +292,7 @@ describe("Session Anchors", () => {
       const now = Date.now();
       dynamoMock.on(QueryCommand).resolves({
         Items: [
-          marshall({ device_id: "no-timestamp" }), // No created_at
+          marshall({ device_id: "no-timestamp" }),
           buildBucketItem("has-timestamp", now - 60000),
         ],
       });
@@ -311,8 +308,6 @@ describe("Session Anchors", () => {
       expect(result!.device_id).toBe("has-timestamp");
     });
   });
-
-  // ==================== IP+UA ANCHOR LOOKUP ====================
 
   describe("ipUaAnchorLookup", () => {
     it("returns null when fingerprint lacks required fields", async () => {
@@ -345,7 +340,7 @@ describe("Session Anchors", () => {
 
       expect(result).not.toBeNull();
       expect(result!.device_id).toBe("device-ua");
-      expect(result!.confidence).toBe(0.6); // Lower than session anchor
+      expect(result!.confidence).toBe(0.6);
       expect(result!.match_tier).toBe(2);
       expect(result!.evidence_codes).toContain("IP_UA_ANCHOR_BUCKET");
     });

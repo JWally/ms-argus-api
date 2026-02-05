@@ -27,6 +27,7 @@ export class DynamoDbConstruct extends Construct {
   public readonly tier2BucketsTable: dynamodb.Table;
   public readonly sessionCacheTable: dynamodb.Table; // AR-52: Session cache (replaces Redis)
   public readonly sessionPayloadTable: dynamodb.Table; // AR-XXX: Full payload for gRPC stub
+  public readonly vectorResultsTable: dynamodb.Table; // Vector search results for session retrieval
 
   constructor(scope: Construct, id: string, props: DynamoDbConstructProps) {
     super(scope, id);
@@ -133,6 +134,22 @@ export class DynamoDbConstruct extends Construct {
       removalPolicy: RemovalPolicy.DESTROY, // Ephemeral data with short TTL
     });
 
+    // Vector results table - stores vector search results for session retrieval
+    // PK: session_id
+    // Short TTL (5 min) - results are ephemeral, consumed by session-get endpoint
+    // Written by vector-results-writer Lambda consuming from vector-results SQS queue
+    this.vectorResultsTable = new dynamodb.Table(this, "VectorResultsTable", {
+      tableName: `${stackName}-vector-results`,
+      partitionKey: { name: "session_id", type: dynamodb.AttributeType.STRING },
+      billingMode,
+      ...(dbConfig.useProvisionedCapacity && {
+        readCapacity: dbConfig.baseReadCapacity,
+        writeCapacity: dbConfig.baseWriteCapacity,
+      }),
+      timeToLiveAttribute: "ttl",
+      removalPolicy: RemovalPolicy.DESTROY, // Ephemeral data with short TTL
+    });
+
     // AR-133: Configure auto-scaling for provisioned capacity tables
     if (dbConfig.useProvisionedCapacity) {
       const maxCapacity = Math.ceil(
@@ -181,6 +198,14 @@ export class DynamoDbConstruct extends Construct {
         maxCapacity,
         targetUtilization,
       );
+      this.enableAutoScaling(
+        this.vectorResultsTable,
+        "VectorResults",
+        dbConfig.baseReadCapacity,
+        dbConfig.baseWriteCapacity,
+        maxCapacity,
+        targetUtilization,
+      );
     }
 
     // Alarms
@@ -191,6 +216,11 @@ export class DynamoDbConstruct extends Construct {
     this.createTableAlarms(
       this.sessionPayloadTable,
       "SessionPayload",
+      alarmsTopic,
+    );
+    this.createTableAlarms(
+      this.vectorResultsTable,
+      "VectorResults",
       alarmsTopic,
     );
   }

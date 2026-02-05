@@ -1,77 +1,89 @@
-// src/handlers/profile-updater.ts
-import { SQSHandler, SQSRecord } from "aws-lambda";
+/**
+ * @fileoverview Profile Updater Lambda Handler.
+ *
+ * Consumes profile update messages from SQS and persists device profiles
+ * and matching indexes to DynamoDB. Implements mutation gating to reduce
+ * unnecessary writes for frequently-seen devices.
+ *
+ * Responsibilities:
+ * - Update device profiles with latest fingerprint data
+ * - Detect fingerprint drift (significant changes over time)
+ * - Compute and update risk flags
+ * - Maintain Tier1 (hash) and Tier2 (bucket) indexes
+ * - Manage SimHash band entries for fuzzy matching
+ *
+ * @module handlers/profile-updater
+ */
+
+import { SQSHandler } from "aws-lambda";
 import { Logger } from "@aws-lambda-powertools/logger";
-import { Metrics, MetricUnit } from "@aws-lambda-powertools/metrics";
+import { Metrics } from "@aws-lambda-powertools/metrics";
+import { SQSClient } from "@aws-sdk/client-sqs";
 import { processSqsBatch } from "../helpers/sqs-batch";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import {
-  ProfileService,
-  ProfileServiceConfig,
-  ProfileServiceDeps,
-  ProfileUpdatePayload,
-} from "../services/profile";
 import { DynamoCacheService } from "../services/cache";
-import { getProfileUpdaterEnv, ProfileUpdaterEnvConfig } from "../config/env";
+import { getProfileUpdaterEnv } from "../config/env";
 import {
-  PROFILE_TTL_DAYS,
-  TIER2_BUCKET_TTL_DAYS,
-  MUTATION_GATE_TTL_SECONDS,
   SESSION_TTL_SECONDS,
+  MUTATION_GATE_TTL_SECONDS,
 } from "../helpers/constants";
-import { normalizeFingerprint } from "../helpers/normalize-fingerprint";
+import { createProfileService } from "./profile-updater/config";
+import { processRecord } from "./profile-updater/process-record";
 
-// Validate environment variables at module load (cold start)
-// Throws immediately if required env vars are missing
-const envConfig: ProfileUpdaterEnvConfig = getProfileUpdaterEnv();
+const envConfig = getProfileUpdaterEnv();
 
-// Powertools (using validated config)
 const logger = new Logger({ serviceName: envConfig.POWERTOOLS_SERVICE_NAME });
 const metrics = new Metrics({
   namespace: envConfig.POWERTOOLS_METRICS_NAMESPACE,
 });
 
-// AWS SDK client (reused across invocations)
 const dynamodb = new DynamoDBClient({});
 
-// Service configuration from validated environment
-function getConfig(): ProfileServiceConfig {
-  return {
-    profilesTable: envConfig.PROFILES_TABLE,
-    tier1IndexTable: envConfig.TIER1_INDEX_TABLE,
-    tier2BucketsTable: envConfig.TIER2_BUCKETS_TABLE,
-    profileTtlDays: PROFILE_TTL_DAYS,
-    tier2BucketTtlDays: TIER2_BUCKET_TTL_DAYS,
-    mutationGateTtlSeconds: MUTATION_GATE_TTL_SECONDS,
-  };
-}
-
-// Create DynamoDB cache service
 const cacheService = new DynamoCacheService(dynamodb, {
   tableName: envConfig.SESSION_CACHE_TABLE,
   sessionTtlSeconds: SESSION_TTL_SECONDS,
   mutationGateTtlSeconds: MUTATION_GATE_TTL_SECONDS,
 });
 
-// Create service with production dependencies
-function createProfileService(): ProfileService {
-  const deps: ProfileServiceDeps = {
-    dynamodb,
-    cache: cacheService,
-    config: getConfig(),
-  };
-  return new ProfileService(deps);
-}
+// Optional: SQS client for vector queue
+// Only initialized if VECTOR_QUEUE_URL is set
+const sqsClient = envConfig.VECTOR_QUEUE_URL ? new SQSClient({}) : null;
+const vectorQueueUrl = envConfig.VECTOR_QUEUE_URL;
 
 /**
- * Profile Updater Lambda Handler
- * Writes device profiles and indexes to DynamoDB
- * Implements mutation gating to reduce unnecessary writes
+ * AWS Lambda handler for the profile updater.
+ *
+ * Triggered by SQS messages queued by the matching worker after successful
+ * device matching. Each message contains a device ID, fingerprint, and
+ * matching metadata to persist.
+ *
+ * Processing flow:
+ * 1. Check mutation gate (skip if recently updated)
+ * 2. Load existing profile (if any)
+ * 3. Detect fingerprint drift
+ * 4. Compute risk flags
+ * 5. Write profile and indexes
+ * 6. Set mutation gate
+ *
+ * Uses partial batch failure reporting for reliable processing.
+ *
+ * @param event - SQS event containing profile update records
+ * @returns SQS batch response with partial failures
+ *
+ * @see {@link ProfileService} for profile persistence logic
+ * @see {@link createProfileService} for service configuration
  */
 export const handler: SQSHandler = async (event) => {
-  const service = createProfileService();
+  const service = createProfileService({ dynamodb, cacheService, envConfig });
   return processSqsBatch(
     event.Records,
-    (record) => processRecord(record, service),
+    (record) =>
+      processRecord(record, service, {
+        logger,
+        metrics,
+        sqsClient,
+        vectorQueueUrl,
+      }),
     {
       metrics,
       logger,
@@ -80,86 +92,3 @@ export const handler: SQSHandler = async (event) => {
     },
   );
 };
-
-/**
- * Process a single SQS record
- */
-async function processRecord(
-  record: SQSRecord,
-  service: ProfileService,
-): Promise<void> {
-  const startTime = Date.now();
-
-  // Don't retry malformed JSON - treat as poison message
-  let rawPayload: ProfileUpdatePayload;
-  try {
-    rawPayload = JSON.parse(record.body);
-  } catch (parseError) {
-    logger.error("Malformed JSON payload - skipping message", {
-      error: parseError,
-      messageId: record.messageId,
-      bodyPreview: record.body.slice(0, 200), // Truncate for logging
-    });
-    metrics.addMetric("MalformedPayload", MetricUnit.Count, 1);
-    return; // Don't retry - mark as processed
-  }
-
-  const { device_id } = rawPayload;
-
-  // Normalize fingerprint and preserve raw for cross-field anomaly detection
-  const payload: ProfileUpdatePayload = {
-    ...rawPayload,
-    fingerprint: normalizeFingerprint(
-      rawPayload.fingerprint,
-      rawPayload.sigint,
-    ),
-    raw_fingerprint: rawPayload.fingerprint,
-  };
-
-  logger.info("Processing profile update", { device_id });
-
-  const result = await service.processProfileUpdate(payload);
-
-  if (result.skipped) {
-    if (result.reason === "mutation_gate") {
-      metrics.addMetric("MutationGateSkip", MetricUnit.Count, 1);
-      logger.info("Skipping update - recently updated", { device_id });
-    } else if (result.reason === "no_drift") {
-      metrics.addMetric("NoDriftSkip", MetricUnit.Count, 1);
-      if (result.tier2Writes) {
-        metrics.addMetric(
-          "Tier2BucketWrites",
-          MetricUnit.Count,
-          result.tier2Writes,
-        );
-      }
-      logger.info("Skipping update - no significant drift", {
-        device_id,
-        tier2Writes: result.tier2Writes,
-      });
-    }
-    return;
-  }
-
-  // Record write metrics
-  metrics.addMetric("ProfileWrite", MetricUnit.Count, 1);
-  metrics.addMetric(
-    "Tier1IndexWrites",
-    MetricUnit.Count,
-    result.tier1Writes ?? 0,
-  );
-  metrics.addMetric(
-    "Tier2BucketWrites",
-    MetricUnit.Count,
-    result.tier2Writes ?? 0,
-  );
-
-  const duration = Date.now() - startTime;
-  metrics.addMetric("ProfileUpdateDuration", MetricUnit.Milliseconds, duration);
-  logger.info("Profile update complete", {
-    device_id,
-    duration,
-    tier1Writes: result.tier1Writes,
-    tier2Writes: result.tier2Writes,
-  });
-}

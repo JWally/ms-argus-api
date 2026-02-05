@@ -1,8 +1,41 @@
-// src/services/profile/anomaly/quick-wins.ts
-// AR-142: Quick win anomaly detections using data already in normalized fingerprint
-
 import { Fingerprint } from "../../../types";
-import { AnomalySignal, AnomalyCodes, createSignal } from "./types";
+import {
+  AnomalySignal,
+  AnomalyType,
+  AnomalyCodes,
+  createSignal,
+} from "./types";
+
+/**
+ * Configuration for a score threshold check
+ */
+interface ScoreCheck {
+  /** Score value to check (undefined treated as 0) */
+  score: number | undefined;
+  /** Type of anomaly to create */
+  type: AnomalyType;
+  /** Anomaly code to use */
+  code: (typeof AnomalyCodes)[keyof typeof AnomalyCodes];
+  /** Field name for reporting */
+  field: string;
+  /** Optional multiplier for severity (default 1) */
+  severityMultiplier?: number;
+}
+
+/**
+ * Check if a score exceeds threshold and create anomaly signal
+ * @param check - Score check configuration
+ * @returns Anomaly signal if score > 0.7, null otherwise
+ */
+function checkScoreThreshold(check: ScoreCheck): AnomalySignal | null {
+  const { score, type, code, field, severityMultiplier = 1 } = check;
+  if (score === undefined || score <= 0.7) return null;
+  return createSignal(type, code, score * severityMultiplier, {
+    expected: `${field} <= 0.7`,
+    actual: `${field}: ${score.toFixed(2)}`,
+    fields: [field],
+  });
+}
 
 /**
  * Quick win anomaly detections
@@ -11,70 +44,40 @@ import { AnomalySignal, AnomalyCodes, createSignal } from "./types";
  * - is_headless: Direct headless browser detection
  * - proxy_score: High proxy likelihood
  * - vpn_score: VPN usage detection
+ * @param fingerprint - Normalized fingerprint with lie_count, is_headless, proxy_score, vpn_score
+ * @returns Array of detected anomaly signals
  */
 export function detectQuickWinAnomalies(
   fingerprint: Fingerprint,
 ): AnomalySignal[] {
   const signals: AnomalySignal[] = [];
 
-  // Lie count detection - navigator API tampering
-  if (fingerprint.lie_count !== undefined && fingerprint.lie_count > 0) {
-    // Severity scales with lie count: 0.5 base + 0.1 per lie, max 0.9
-    const severity = Math.min(0.9, 0.5 + fingerprint.lie_count * 0.1);
-    signals.push(
-      createSignal(
-        "CROSS_FIELD",
-        AnomalyCodes.NAVIGATOR_LIES,
-        severity,
-        "0 lies",
-        `${fingerprint.lie_count} lies detected`,
-        ["lie_count"],
-      ),
-    );
-  }
-
-  // Direct headless detection
   if (fingerprint.is_headless === true) {
     signals.push(
-      createSignal(
-        "CROSS_FIELD",
-        AnomalyCodes.HEADLESS_DETECTED,
-        0.9,
-        "is_headless: false",
-        "is_headless: true",
-        ["is_headless"],
-      ),
+      createSignal("CROSS_FIELD", AnomalyCodes.HEADLESS_DETECTED, 0.9, {
+        expected: "is_headless: false",
+        actual: "is_headless: true",
+        fields: ["is_headless"],
+      }),
     );
   }
 
-  // Proxy score threshold - high likelihood of proxy usage
-  if (fingerprint.proxy_score !== undefined && fingerprint.proxy_score > 0.7) {
-    signals.push(
-      createSignal(
-        "NETWORK",
-        AnomalyCodes.HIGH_PROXY_SCORE,
-        fingerprint.proxy_score,
-        "proxy_score <= 0.7",
-        `proxy_score: ${fingerprint.proxy_score.toFixed(2)}`,
-        ["proxy_score"],
-      ),
-    );
-  }
+  const proxySignal = checkScoreThreshold({
+    score: fingerprint.proxy_score,
+    type: "NETWORK",
+    code: AnomalyCodes.HIGH_PROXY_SCORE,
+    field: "proxy_score",
+  });
+  if (proxySignal) signals.push(proxySignal);
 
-  // VPN score threshold - lower severity than proxy
-  if (fingerprint.vpn_score !== undefined && fingerprint.vpn_score > 0.7) {
-    // VPN is less suspicious than proxy, so multiply by 0.8
-    signals.push(
-      createSignal(
-        "NETWORK",
-        AnomalyCodes.HIGH_VPN_SCORE,
-        fingerprint.vpn_score * 0.8,
-        "vpn_score <= 0.7",
-        `vpn_score: ${fingerprint.vpn_score.toFixed(2)}`,
-        ["vpn_score"],
-      ),
-    );
-  }
+  const vpnSignal = checkScoreThreshold({
+    score: fingerprint.vpn_score,
+    type: "NETWORK",
+    code: AnomalyCodes.HIGH_VPN_SCORE,
+    field: "vpn_score",
+    severityMultiplier: 0.8,
+  });
+  if (vpnSignal) signals.push(vpnSignal);
 
   return signals;
 }

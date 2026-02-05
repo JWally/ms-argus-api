@@ -1,5 +1,5 @@
-// src/services/vector/qdrant-client.ts
-// QDrant vector database client for ms-argus-vector integration
+// Thin wrapper around @qdrant/js-client-rest with AWS Secrets Manager auth
+import { QdrantClient as OfficialClient } from "@qdrant/js-client-rest";
 import {
   SecretsManagerClient,
   GetSecretValueCommand,
@@ -7,311 +7,292 @@ import {
 import type { Logger } from "@aws-lambda-powertools/logger";
 
 /**
- * QDrant client configuration
+ * Configuration for QdrantClient
  */
 export interface QdrantClientConfig {
-  /** Base URL for QDrant REST API (e.g., http://alb-dns:6333) */
+  /** Base URL of the Qdrant server */
   baseUrl: string;
-  /** ARN of the Secrets Manager secret containing the API key */
+  /** ARN of the AWS Secrets Manager secret containing the API key */
   secretArn: string;
-  /** Logger instance for request logging */
+  /** Logger instance for debugging */
   logger: Logger;
-  /** Request timeout in milliseconds (default: 10000) */
+  /** Request timeout in milliseconds (default 10000) */
   timeoutMs?: number;
-  /** Optional SecretsManagerClient instance (for dependency injection in tests) */
+  /** Optional pre-configured Secrets Manager client */
   secretsClient?: SecretsManagerClient;
 }
 
 /**
- * Vector search request
+ * Request parameters for vector similarity search
  */
 export interface VectorSearchRequest {
-  /** Query vector */
+  /** Query vector for similarity search */
   vector: number[];
   /** Maximum number of results to return */
   limit: number;
-  /** Include payload in results */
+  /** Include payload data in results */
   with_payload?: boolean;
-  /** Include vector in results */
+  /** Include vector data in results */
   with_vector?: boolean;
-  /** Score threshold for filtering results */
+  /** Minimum similarity score threshold */
   score_threshold?: number;
-  /** Filter conditions */
+  /** Filter conditions to apply */
   filter?: QdrantFilter;
 }
 
 /**
- * QDrant filter for search queries
+ * Filter conditions for Qdrant queries
  */
 export interface QdrantFilter {
+  /** All conditions must match (AND) */
   must?: QdrantCondition[];
+  /** At least one condition should match (OR) */
   should?: QdrantCondition[];
+  /** None of these conditions should match */
   must_not?: QdrantCondition[];
 }
 
 /**
- * QDrant filter condition
+ * Single filter condition for a Qdrant query
  */
 export interface QdrantCondition {
+  /** Payload field key to filter on */
   key: string;
+  /** Exact match condition */
   match?: { value: string | number | boolean };
+  /** Range condition for numeric fields */
   range?: { gt?: number; gte?: number; lt?: number; lte?: number };
 }
 
 /**
- * Vector search result
+ * Single result from a vector search
  */
 export interface VectorSearchResult {
-  /** Point ID */
+  /** Point ID (string ULID or numeric ID) */
   id: string | number;
-  /** Similarity score */
+  /** Similarity score (higher = more similar) */
   score: number;
-  /** Point payload */
+  /** Optional payload data attached to the point */
   payload?: Record<string, unknown>;
-  /** Point vector (if requested) */
+  /** Optional vector data (if requested) */
   vector?: number[];
 }
 
 /**
- * Vector upsert request
+ * Request to upsert (insert or update) vectors
  */
 export interface VectorUpsertRequest {
-  /** Points to upsert */
+  /** Array of points to upsert */
   points: VectorPoint[];
 }
 
 /**
- * Vector point for upsert
+ * Single vector point for storage
  */
 export interface VectorPoint {
-  /** Point ID (string or number) */
+  /** Unique identifier for the point */
   id: string | number;
-  /** Vector values */
+  /** Vector embedding */
   vector: number[];
-  /** Optional payload */
+  /** Optional metadata payload */
   payload?: Record<string, unknown>;
 }
 
 /**
- * QDrant REST API response wrapper
- */
-interface QdrantResponse<T> {
-  result: T;
-  status: string;
-  time: number;
-}
-
-/**
- * QDrant client for vector operations
- * Communicates with QDrant via REST API through the internal ALB
+ * Thin wrapper around @qdrant/js-client-rest with AWS Secrets Manager auth
+ * Handles API key caching and automatic client recreation on key rotation
  */
 export class QdrantClient {
-  private readonly config: Required<Omit<QdrantClientConfig, "secretsClient">>;
   private readonly secretsClient: SecretsManagerClient;
+  private readonly config: QdrantClientConfig;
+  private client: OfficialClient | null = null;
   private cachedApiKey: string | null = null;
-  private apiKeyExpiresAt: number = 0;
-
-  // Cache API key for 15 minutes to avoid Secrets Manager rate limits
+  private apiKeyExpiresAt = 0;
   private static readonly API_KEY_CACHE_TTL_MS = 15 * 60 * 1000;
 
+  /**
+   * Create a new QdrantClient
+   * @param config - Client configuration including URL and secret ARN
+   */
   constructor(config: QdrantClientConfig) {
-    this.config = {
-      ...config,
-      timeoutMs: config.timeoutMs ?? 10000,
-    };
+    this.config = config;
     this.secretsClient = config.secretsClient ?? new SecretsManagerClient({});
   }
 
   /**
    * Search for similar vectors in a collection
+   * @param collection - Name of the collection to search
+   * @param request - Search parameters including query vector and filters
+   * @returns Array of matching results sorted by similarity
    */
   async search(
     collection: string,
     request: VectorSearchRequest,
   ): Promise<VectorSearchResult[]> {
-    const response = await this.request<QdrantResponse<VectorSearchResult[]>>(
-      "POST",
-      `/collections/${encodeURIComponent(collection)}/points/search`,
-      request,
-    );
-    return response.result;
+    const client = await this.getClient();
+    const results = await client.search(collection, {
+      vector: request.vector,
+      limit: request.limit,
+      with_payload: request.with_payload,
+      with_vector: request.with_vector,
+      score_threshold: request.score_threshold,
+      filter: request.filter,
+    });
+    return results as VectorSearchResult[];
   }
 
   /**
-   * Upsert vectors into a collection
+   * Insert or update vectors in a collection
+   * @param collection - Name of the collection
+   * @param request - Points to upsert
    */
   async upsert(
     collection: string,
     request: VectorUpsertRequest,
   ): Promise<void> {
-    await this.request<QdrantResponse<{ status: string }>>(
-      "PUT",
-      `/collections/${encodeURIComponent(collection)}/points`,
-      request,
-    );
+    const client = await this.getClient();
+    await client.upsert(collection, { points: request.points });
   }
 
   /**
-   * Delete points by IDs
+   * Delete vectors from a collection by ID
+   * @param collection - Name of the collection
+   * @param ids - Array of point IDs to delete
    */
   async delete(collection: string, ids: (string | number)[]): Promise<void> {
-    await this.request<QdrantResponse<{ status: string }>>(
-      "POST",
-      `/collections/${encodeURIComponent(collection)}/points/delete`,
-      { points: ids },
-    );
+    const client = await this.getClient();
+    await client.delete(collection, { points: ids });
   }
 
   /**
-   * Get points by IDs
+   * Retrieve vectors by ID from a collection
+   * @param collection - Name of the collection
+   * @param ids - Array of point IDs to retrieve
+   * @param options - Options for including payload and vector data
+   * @returns Array of retrieved points
    */
   async get(
     collection: string,
     ids: (string | number)[],
     options?: { with_payload?: boolean; with_vector?: boolean },
   ): Promise<VectorSearchResult[]> {
-    const response = await this.request<QdrantResponse<VectorSearchResult[]>>(
-      "POST",
-      `/collections/${encodeURIComponent(collection)}/points`,
-      {
-        ids,
-        with_payload: options?.with_payload ?? true,
-        with_vector: options?.with_vector ?? false,
-      },
-    );
-    return response.result;
+    const client = await this.getClient();
+    const results = await client.retrieve(collection, {
+      ids,
+      with_payload: options?.with_payload ?? true,
+      with_vector: options?.with_vector ?? false,
+    });
+    return results as VectorSearchResult[];
   }
 
   /**
    * Check if a collection exists
+   * @param collection - Name of the collection to check
+   * @returns True if collection exists
    */
   async collectionExists(collection: string): Promise<boolean> {
-    try {
-      await this.request<QdrantResponse<unknown>>(
-        "GET",
-        `/collections/${encodeURIComponent(collection)}`,
-      );
-      return true;
-    } catch (error) {
-      if (error instanceof QdrantError && error.statusCode === 404) {
-        return false;
-      }
-      throw error;
-    }
+    const client = await this.getClient();
+    const result = await client.collectionExists(collection);
+    return result.exists;
   }
 
   /**
-   * Create a collection
+   * Create a new collection
+   * @param collection - Name for the new collection
+   * @param options - Collection configuration including vector size and distance metric
    */
   async createCollection(
     collection: string,
     options: {
-      vectors: {
-        size: number;
-        distance: "Cosine" | "Euclid" | "Dot";
-      };
+      vectors: { size: number; distance: "Cosine" | "Euclid" | "Dot" };
     },
   ): Promise<void> {
-    await this.request<QdrantResponse<boolean>>(
-      "PUT",
-      `/collections/${encodeURIComponent(collection)}`,
-      options,
-    );
+    const client = await this.getClient();
+    await client.createCollection(collection, options);
   }
 
   /**
-   * Get the API key from Secrets Manager (with caching)
+   * Delete an entire collection
+   * @param collection - Name of the collection to delete
+   */
+  async deleteCollection(collection: string): Promise<void> {
+    const client = await this.getClient();
+    await client.deleteCollection(collection);
+  }
+
+  /**
+   * List all collections
+   * @returns Array of collection names
+   */
+  async listCollections(): Promise<string[]> {
+    const client = await this.getClient();
+    const response = await client.getCollections();
+    return response.collections.map((c) => c.name);
+  }
+
+  /**
+   * Get collection info including point count
+   * @param collection - Name of the collection
+   * @returns Collection info with points_count
+   */
+  async getCollectionInfo(
+    collection: string,
+  ): Promise<{ points_count: number; vectors_count: number }> {
+    const client = await this.getClient();
+    const info = await client.getCollection(collection);
+    return {
+      points_count: info.points_count ?? 0,
+      // indexed_vectors_count is the actual field name in newer Qdrant versions
+      vectors_count:
+        (info as { indexed_vectors_count?: number }).indexed_vectors_count ??
+        info.points_count ??
+        0,
+    };
+  }
+
+  /**
+   * Get or create the Qdrant client instance
+   * @returns Configured Qdrant client
+   */
+  private async getClient(): Promise<OfficialClient> {
+    const apiKey = await this.getApiKey();
+    if (!this.client) {
+      this.client = new OfficialClient({
+        url: this.config.baseUrl,
+        apiKey,
+        timeout: this.config.timeoutMs ?? 10000,
+      });
+    }
+    return this.client;
+  }
+
+  /**
+   * Get the API key from cache or fetch from Secrets Manager
+   * @returns API key string
    */
   private async getApiKey(): Promise<string> {
     const now = Date.now();
-
-    // Return cached key if still valid
     if (this.cachedApiKey && now < this.apiKeyExpiresAt) {
       return this.cachedApiKey;
     }
 
-    // Fetch fresh key from Secrets Manager
     const response = await this.secretsClient.send(
       new GetSecretValueCommand({ SecretId: this.config.secretArn }),
     );
-
     if (!response.SecretString) {
-      throw new Error("QDrant API key secret is empty");
+      throw new QdrantError("QDrant API key secret is empty", 0, "");
     }
 
     this.cachedApiKey = response.SecretString;
     this.apiKeyExpiresAt = now + QdrantClient.API_KEY_CACHE_TTL_MS;
-
+    // Recreate client with new key on next call
+    this.client = null;
     return this.cachedApiKey;
-  }
-
-  /**
-   * Make an HTTP request to QDrant
-   */
-  private async request<T>(
-    method: string,
-    path: string,
-    body?: unknown,
-  ): Promise<T> {
-    const apiKey = await this.getApiKey();
-    const url = `${this.config.baseUrl}${path}`;
-
-    const controller = new AbortController();
-    const timeoutId = setTimeout(
-      () => controller.abort(),
-      this.config.timeoutMs,
-    );
-
-    try {
-      this.config.logger.debug("QDrant request", { method, path });
-
-      const response = await fetch(url, {
-        method,
-        headers: {
-          "Content-Type": "application/json",
-          "api-key": apiKey,
-        },
-        body: body ? JSON.stringify(body) : undefined,
-        signal: controller.signal,
-      });
-
-      if (!response.ok) {
-        const errorBody = await response.text().catch(() => "");
-        throw new QdrantError(
-          `QDrant request failed: ${response.status} ${response.statusText}`,
-          response.status,
-          errorBody,
-        );
-      }
-
-      const data = await response.json();
-      return data as T;
-    } catch (error) {
-      if (error instanceof QdrantError) {
-        throw error;
-      }
-
-      if (error instanceof Error && error.name === "AbortError") {
-        throw new QdrantError(
-          `QDrant request timed out after ${this.config.timeoutMs}ms`,
-          0,
-          "",
-        );
-      }
-
-      throw new QdrantError(
-        `QDrant request failed: ${error instanceof Error ? error.message : "Unknown error"}`,
-        0,
-        "",
-      );
-    } finally {
-      clearTimeout(timeoutId);
-    }
   }
 }
 
 /**
- * QDrant-specific error class
+ * Error class for Qdrant API errors
  */
 export class QdrantError extends Error {
   constructor(

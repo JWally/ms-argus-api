@@ -1,6 +1,3 @@
-// src/services/profile/anomaly/network.test.ts
-// AR-144: Tests for network anomaly detection (timezone mismatch)
-
 import { describe, it, expect } from "vitest";
 import { detectNetworkAnomalies } from "./network";
 import { AnomalyCodes } from "./types";
@@ -10,11 +7,11 @@ describe("detectNetworkAnomalies", () => {
   describe("timezone mismatch detection", () => {
     it("should detect server timezone different from client timezone by >3 hours", () => {
       const fingerprint = {
-        timezone: "America/Los_Angeles", // Pacific time
+        timezone: "America/Los_Angeles",
       } as Fingerprint;
       const sigint = {
         geo: {
-          timezone: "America/New_York", // Eastern time - 3 hours ahead
+          timezone: "America/New_York",
         },
       };
 
@@ -27,11 +24,11 @@ describe("detectNetworkAnomalies", () => {
 
     it("should detect large timezone mismatch (Asia vs US)", () => {
       const fingerprint = {
-        timezone: "Asia/Tokyo", // +9 hours from UTC
+        timezone: "Asia/Tokyo",
       } as Fingerprint;
       const sigint = {
         geo: {
-          timezone: "America/New_York", // -5 hours from UTC
+          timezone: "America/New_York",
         },
       };
 
@@ -61,7 +58,7 @@ describe("detectNetworkAnomalies", () => {
 
     it("should not flag same offset different zone names", () => {
       const fingerprint = {
-        timezone: "America/Detroit", // Same offset as New York
+        timezone: "America/Detroit",
       } as Fingerprint;
       const sigint = {
         geo: {
@@ -71,7 +68,6 @@ describe("detectNetworkAnomalies", () => {
 
       const signals = detectNetworkAnomalies(fingerprint, undefined, sigint);
 
-      // Should not flag as major mismatch since offset is same
       const tzMismatch = signals.filter(
         (s) => s.code === AnomalyCodes.IP_TIMEZONE_MISMATCH,
       );
@@ -82,11 +78,11 @@ describe("detectNetworkAnomalies", () => {
 
     it("should scale severity with timezone difference", () => {
       const fingerprint = {
-        timezone: "Asia/Tokyo", // +9 hours from UTC
+        timezone: "Asia/Tokyo",
       } as Fingerprint;
       const sigint = {
         geo: {
-          timezone: "America/New_York", // -5 hours from UTC (14 hour diff)
+          timezone: "America/New_York",
         },
       };
 
@@ -96,7 +92,6 @@ describe("detectNetworkAnomalies", () => {
         (s) => s.code === AnomalyCodes.IP_TIMEZONE_MISMATCH,
       );
       expect(tzSignal).toBeDefined();
-      // Large timezone diff should have high severity
       expect(tzSignal?.severity).toBeGreaterThan(0.6);
     });
   });
@@ -105,7 +100,7 @@ describe("detectNetworkAnomalies", () => {
     it("should return empty array when sigint is undefined", () => {
       const fingerprint = {} as Fingerprint;
 
-      const signals = detectNetworkAnomalies(fingerprint, undefined, undefined);
+      const signals = detectNetworkAnomalies(fingerprint);
 
       expect(signals).toHaveLength(0);
     });

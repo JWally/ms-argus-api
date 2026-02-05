@@ -1,15 +1,11 @@
-// src/services/profile/index-writers.ts
-
 import {
   DynamoDBClient,
   PutItemCommand,
-  UpdateItemCommand,
   WriteRequest,
 } from "@aws-sdk/client-dynamodb";
 import { marshall } from "@aws-sdk/util-dynamodb";
 import { Fingerprint } from "./types";
 import {
-  TIER2_STATS_SK,
   SESSION_ANCHOR_CLEANUP_TTL_SECONDS,
   SIMHASH_CONFIG,
 } from "../../helpers/constants";
@@ -23,32 +19,23 @@ import { batchWriteWithRetry } from "../../helpers/batch-write";
  * Evidence codes that permit identity association
  *
  * Only these match types should create identity indexes (pubkey#, evercookie#, sigint#).
- * Tier 2 unbounded matches (IP_JA4_BUCKET, GPU_SCREEN_TZ_BUCKET, etc.) are excluded
- * to prevent viral spreading of device_ids across unrelated users.
  *
  * Includes:
  * - Tier 0.5: Identity matches (PUBLIC_KEY_MATCH, EVERCOOKIE_MATCH, SIGINT_ID_MATCH)
  * - Tier 1: Hash matches (STABLE_HASH_MATCH, FUZZY_HASH_MATCH)
+ * - Tier 1.5: SimHash LSH matches (SIMHASH_MATCH)
  * - Time-bounded anchors: SESSION_ANCHOR_BUCKET (10min), IP_UA_ANCHOR_BUCKET (3min)
  * - NEW_DEVICE: First time seeing this device, must create indexes for future lookups
- *
- * Excludes:
- * - Tier 2 unbounded: IP_JA4_BUCKET, GPU_SCREEN_TZ_BUCKET, AUDIO_CANVAS_BUCKET, etc.
  */
 export const ASSOCIATION_ALLOWED_EVIDENCE: readonly string[] = [
-  // Tier 0.5: Identity matches (highest confidence)
   "PUBLIC_KEY_MATCH",
   "EVERCOOKIE_MATCH",
   "SIGINT_ID_MATCH",
-  // Tier 1: Hash matches (high confidence)
   "STABLE_HASH_MATCH",
   "FUZZY_HASH_MATCH",
-  // Tier 1.5: SimHash LSH match (high confidence - drift detection)
   "SIMHASH_MATCH",
-  // Time-bounded anchors (medium-high confidence, decay quickly)
   "SESSION_ANCHOR_BUCKET",
   "IP_UA_ANCHOR_BUCKET",
-  // New device: Must create indexes for future lookups to work
   "NEW_DEVICE",
 ] as const;
 
@@ -65,15 +52,6 @@ export interface Tier1IndexEntry {
 }
 
 /**
- * Type for Tier 2 bucket entry
- */
-export interface Tier2BucketEntry {
-  bucket_key: string;
-  device_id: string;
-  ttl: number;
-}
-
-/**
  * Dependencies for index writer operations
  */
 export interface IndexWriterDeps {
@@ -82,159 +60,94 @@ export interface IndexWriterDeps {
   tier2BucketsTable: string;
 }
 
+const INDEX_FIELDS: {
+  field: keyof Fingerprint;
+  prefix: string;
+  group: "identity" | "hash";
+}[] = [
+  { field: "evercookie_id", prefix: "evercookie#", group: "identity" },
+  { field: "sigint_id", prefix: "sigint#", group: "identity" },
+  { field: "public_key", prefix: "pubkey#", group: "identity" },
+  { field: "stable_hash", prefix: "stable#", group: "hash" },
+  { field: "fuzzy_hash", prefix: "fuzzy#", group: "hash" },
+];
+
 /**
- * Build Tier 1 index entries for a fingerprint
- * Added fuzzy_hash to all entries for drift detection at match time
+ * Build Tier 1 index entries for a device
+ * @param deviceId - The device ID to index
+ * @param fingerprint - The fingerprint containing index values
+ * @param ttl - TTL timestamp for DynamoDB expiration
+ * @param filter - Optional filter to build only identity or hash indexes
+ * @returns Array of index entries to write
+ */
+function buildIndexEntries(
+  deviceId: string,
+  fingerprint: Fingerprint,
+  ttl: number,
+  filter?: "identity" | "hash",
+): Tier1IndexEntry[] {
+  const fuzzyHash = fingerprint.fuzzy_hash;
+  return INDEX_FIELDS.filter((f) => !filter || f.group === filter)
+    .filter((f) => fingerprint[f.field])
+    .map((f) => ({
+      hash_key: `${f.prefix}${fingerprint[f.field]}`,
+      device_id: deviceId,
+      fuzzy_hash: fuzzyHash,
+      ttl,
+    }));
+}
+
+/**
+ * Build all Tier 1 index entries (both identity and hash)
+ * @param deviceId - The device ID to index
+ * @param fingerprint - The fingerprint containing index values
+ * @param ttl - TTL timestamp for DynamoDB expiration
+ * @returns Array of all index entries to write
  */
 export function buildTier1IndexEntries(
   deviceId: string,
   fingerprint: Fingerprint,
   ttl: number,
 ): Tier1IndexEntry[] {
-  const entries: Tier1IndexEntry[] = [];
-  // Include fuzzy_hash in all entries for drift comparison at match time
-  const fuzzyHash = fingerprint.fuzzy_hash;
-
-  if (fingerprint.evercookie_id) {
-    entries.push({
-      hash_key: `evercookie#${fingerprint.evercookie_id}`,
-      device_id: deviceId,
-      fuzzy_hash: fuzzyHash,
-      ttl,
-    });
-  }
-
-  // Third-party cookie from sigint CloudFront edge
-  if (fingerprint.sigint_id) {
-    entries.push({
-      hash_key: `sigint#${fingerprint.sigint_id}`,
-      device_id: deviceId,
-      fuzzy_hash: fuzzyHash,
-      ttl,
-    });
-  }
-
-  // ECDSA public key for cryptographic device identity
-  if (fingerprint.public_key) {
-    entries.push({
-      hash_key: `pubkey#${fingerprint.public_key}`,
-      device_id: deviceId,
-      fuzzy_hash: fuzzyHash,
-      ttl,
-    });
-  }
-
-  if (fingerprint.stable_hash) {
-    entries.push({
-      hash_key: `stable#${fingerprint.stable_hash}`,
-      device_id: deviceId,
-      fuzzy_hash: fuzzyHash,
-      ttl,
-    });
-  }
-
-  if (fingerprint.fuzzy_hash) {
-    entries.push({
-      hash_key: `fuzzy#${fingerprint.fuzzy_hash}`,
-      device_id: deviceId,
-      fuzzy_hash: fuzzyHash,
-      ttl,
-    });
-  }
-
-  // Removed standalone ja4# indexing - JA4 alone is not unique enough
-  // for direct matching (many devices share the same JA4). JA4 is still used
-  // in Tier2 compound buckets (ip_ja4) where it's combined with other signals.
-
-  return entries;
+  return buildIndexEntries(deviceId, fingerprint, ttl);
 }
 
 /**
- * Build identity index entries only (pubkey#, evercookie#, sigint#)
- * These are the indexes that link crypto-id/evercookie to device_id.
- * Only write these for high-confidence matches to prevent viral spreading.
- * Added fuzzy_hash for drift detection at match time
+ * Build identity index entries only (evercookie, sigint, public key)
+ * @param deviceId - The device ID to index
+ * @param fingerprint - The fingerprint containing identity values
+ * @param ttl - TTL timestamp for DynamoDB expiration
+ * @returns Array of identity index entries to write
  */
 export function buildIdentityIndexEntries(
   deviceId: string,
   fingerprint: Fingerprint,
   ttl: number,
 ): Tier1IndexEntry[] {
-  const entries: Tier1IndexEntry[] = [];
-  // Include fuzzy_hash for drift comparison at match time
-  const fuzzyHash = fingerprint.fuzzy_hash;
-
-  if (fingerprint.evercookie_id) {
-    entries.push({
-      hash_key: `evercookie#${fingerprint.evercookie_id}`,
-      device_id: deviceId,
-      fuzzy_hash: fuzzyHash,
-      ttl,
-    });
-  }
-
-  // Third-party cookie from sigint CloudFront edge
-  if (fingerprint.sigint_id) {
-    entries.push({
-      hash_key: `sigint#${fingerprint.sigint_id}`,
-      device_id: deviceId,
-      fuzzy_hash: fuzzyHash,
-      ttl,
-    });
-  }
-
-  // ECDSA public key for cryptographic device identity
-  if (fingerprint.public_key) {
-    entries.push({
-      hash_key: `pubkey#${fingerprint.public_key}`,
-      device_id: deviceId,
-      fuzzy_hash: fuzzyHash,
-      ttl,
-    });
-  }
-
-  return entries;
+  return buildIndexEntries(deviceId, fingerprint, ttl, "identity");
 }
 
 /**
- * Build hash index entries only (stable#, fuzzy#)
- * These indexes enable fingerprint-based lookups.
- * Always written regardless of match tier.
- * Added fuzzy_hash for drift detection at match time
+ * Build hash index entries only (stable hash, fuzzy hash)
+ * @param deviceId - The device ID to index
+ * @param fingerprint - The fingerprint containing hash values
+ * @param ttl - TTL timestamp for DynamoDB expiration
+ * @returns Array of hash index entries to write
  */
 export function buildHashIndexEntries(
   deviceId: string,
   fingerprint: Fingerprint,
   ttl: number,
 ): Tier1IndexEntry[] {
-  const entries: Tier1IndexEntry[] = [];
-  // Include fuzzy_hash for drift comparison at match time
-  const fuzzyHash = fingerprint.fuzzy_hash;
-
-  if (fingerprint.stable_hash) {
-    entries.push({
-      hash_key: `stable#${fingerprint.stable_hash}`,
-      device_id: deviceId,
-      fuzzy_hash: fuzzyHash,
-      ttl,
-    });
-  }
-
-  if (fingerprint.fuzzy_hash) {
-    entries.push({
-      hash_key: `fuzzy#${fingerprint.fuzzy_hash}`,
-      device_id: deviceId,
-      fuzzy_hash: fuzzyHash,
-      ttl,
-    });
-  }
-
-  return entries;
+  return buildIndexEntries(deviceId, fingerprint, ttl, "hash");
 }
 
 /**
  * Batch write Tier 1 index entries with retry logic for unprocessed items
  * Uses removeUndefinedValues to handle optional fuzzy_hash
+ * @param deps - Dependencies including DynamoDB client and table names
+ * @param entries - Index entries to write
+ * @param maxRetries - Maximum retry attempts for unprocessed items (default 3)
  */
 export async function batchWriteTier1Indexes(
   deps: IndexWriterDeps,
@@ -246,75 +159,12 @@ export async function batchWriteTier1Indexes(
       Item: marshall(entry, { removeUndefinedValues: true }),
     },
   }));
-  await batchWriteWithRetry(
-    deps.dynamodb,
-    deps.tier1IndexTable,
+  await batchWriteWithRetry(deps.dynamodb, {
+    tableName: deps.tier1IndexTable,
     items,
-    "Tier1 index",
+    entityName: "Tier1 index",
     maxRetries,
-  );
-}
-
-/**
- * Batch write Tier 2 bucket entries with retry logic for unprocessed items
- */
-export async function batchWriteTier2Buckets(
-  deps: IndexWriterDeps,
-  entries: Tier2BucketEntry[],
-  maxRetries: number = 3,
-): Promise<void> {
-  const items: WriteRequest[] = entries.map((entry) => ({
-    PutRequest: {
-      Item: {
-        bucket_key: { S: entry.bucket_key },
-        device_id: { S: entry.device_id },
-        ttl: { N: String(entry.ttl) },
-      },
-    },
-  }));
-  await batchWriteWithRetry(
-    deps.dynamodb,
-    deps.tier2BucketsTable,
-    items,
-    "Tier2 bucket",
-    maxRetries,
-  );
-}
-
-/**
- * Increment cardinality counters for Tier 2 buckets
- * Uses UpdateItem with ADD for atomic increment
- * Stats items use "_stats" as sort key to distinguish from device entries
- */
-export async function incrementBucketCardinalities(
-  deps: IndexWriterDeps,
-  bucketKeys: string[],
-  ttl: number,
-): Promise<void> {
-  const tableName = deps.tier2BucketsTable;
-
-  // Increment all counters in parallel
-  const updates = bucketKeys.map((bucketKey) =>
-    deps.dynamodb.send(
-      new UpdateItemCommand({
-        TableName: tableName,
-        Key: {
-          bucket_key: { S: bucketKey },
-          device_id: { S: TIER2_STATS_SK },
-        },
-        UpdateExpression: "ADD cardinality :inc SET #ttl = :ttl",
-        ExpressionAttributeNames: {
-          "#ttl": "ttl",
-        },
-        ExpressionAttributeValues: {
-          ":inc": { N: "1" },
-          ":ttl": { N: String(ttl) },
-        },
-      }),
-    ),
-  );
-
-  await Promise.all(updates);
+  });
 }
 
 /**
@@ -322,6 +172,9 @@ export async function incrementBucketCardinalities(
  * Used for both session anchors and IP+UA anchors.
  * Stores created_at for application-side validity check.
  * Uses SESSION_ANCHOR_CLEANUP_TTL for DynamoDB TTL cleanup.
+ * @param deps - Dependencies including DynamoDB client and table names
+ * @param bucketKey - The anchor bucket key
+ * @param deviceId - The device ID to anchor
  */
 export async function writeAnchorBucket(
   deps: IndexWriterDeps,
@@ -344,8 +197,6 @@ export async function writeAnchorBucket(
   );
 }
 
-// ==================== SIMHASH LSH BAND ENTRIES (Tier 1.5) ====================
-
 /**
  * Type for SimHash LSH band entry
  * Stored in tier2BucketsTable with special PK format
@@ -358,11 +209,11 @@ export async function writeAnchorBucket(
  * - ttl: DynamoDB TTL for auto-expiration
  */
 export interface SimHashBandEntry {
-  bucket_key: string; // PK: SIMHASH_BAND#0#a1b2
-  device_id: string; // SK: t#<inverted_ts>#dev_xxx (recency-ordered)
-  fuzzy_hash: string; // Full hash for Hamming distance scoring
-  last_seen: number; // Unix timestamp in seconds
-  ttl: number; // TTL for DynamoDB expiration
+  bucket_key: string;
+  device_id: string;
+  fuzzy_hash: string;
+  last_seen: number;
+  ttl: number;
 }
 
 /**
@@ -397,6 +248,9 @@ export function buildSimHashBandEntries(
 /**
  * Batch write SimHash LSH band entries with retry logic
  * Uses tier2BucketsTable with special PK format for band entries
+ * @param deps - Dependencies including DynamoDB client and table names
+ * @param entries - SimHash band entries to write
+ * @param maxRetries - Maximum retry attempts for unprocessed items (default 3)
  */
 export async function batchWriteSimHashBands(
   deps: IndexWriterDeps,
@@ -414,11 +268,10 @@ export async function batchWriteSimHashBands(
       },
     },
   }));
-  await batchWriteWithRetry(
-    deps.dynamodb,
-    deps.tier2BucketsTable,
+  await batchWriteWithRetry(deps.dynamodb, {
+    tableName: deps.tier2BucketsTable,
     items,
-    "SimHash band",
+    entityName: "SimHash band",
     maxRetries,
-  );
+  });
 }

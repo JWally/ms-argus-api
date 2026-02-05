@@ -1,10 +1,5 @@
-// src/handlers/profile-updater.test.ts
-// AR-52: Updated to use DynamoDB session cache instead of Redis
-// AR-156: Added Metrics mock for MalformedPayload test
 import { describe, it, expect, beforeEach, vi } from "vitest";
 
-// AR-156: Mock Powertools Metrics to verify metric emission
-// Must use vi.hoisted to create mock functions before vi.mock runs
 const { mockAddMetric, mockPublishStoredMetrics } = vi.hoisted(() => ({
   mockAddMetric: vi.fn(),
   mockPublishStoredMetrics: vi.fn(),
@@ -21,8 +16,6 @@ vi.mock("@aws-lambda-powertools/metrics", () => ({
   },
 }));
 
-// Set environment variables BEFORE any module imports using vi.hoisted
-// This ensures env validation passes during module load
 vi.hoisted(() => {
   process.env.POWERTOOLS_SERVICE_NAME = "argus-profile-updater-test";
   process.env.POWERTOOLS_METRICS_NAMESPACE = "argus-test";
@@ -44,10 +37,8 @@ import {
 import { marshall } from "@aws-sdk/util-dynamodb";
 import { SQSEvent, SQSRecord, Context } from "aws-lambda";
 
-// Mock AWS SDK clients
 const dynamoMock = mockClient(DynamoDBClient);
 
-// Import handler after mocking
 import { handler } from "./profile-updater";
 
 describe("profile-updater handler", () => {
@@ -68,7 +59,6 @@ describe("profile-updater handler", () => {
 
   beforeEach(() => {
     dynamoMock.reset();
-    // Default mock for BatchWriteItem (Tier1 indexes) - can be overridden in individual tests
     dynamoMock.on(BatchWriteItemCommand).resolves({});
     vi.clearAllMocks();
   });
@@ -122,7 +112,6 @@ describe("profile-updater handler", () => {
     it("should process a single profile update successfully", async () => {
       const payload = createProfileUpdatePayload();
 
-      // Mock no existing profile (new device)
       dynamoMock.on(GetItemCommand).resolves({});
       dynamoMock.on(PutItemCommand).resolves({});
       dynamoMock.on(UpdateItemCommand).resolves({});
@@ -155,13 +144,12 @@ describe("profile-updater handler", () => {
     it("should update existing profile", async () => {
       const payload = createProfileUpdatePayload();
 
-      // Mock existing profile with correct DeviceProfile shape
       dynamoMock.on(GetItemCommand).resolves({
         Item: marshall({
           device_id: "device-123",
           stable_hash: "old-hash",
-          first_seen_at: Date.now() - 86400000, // 1 day ago
-          last_seen_at: Date.now() - 3600000, // 1 hour ago
+          first_seen_at: Date.now() - 86400000,
+          last_seen_at: Date.now() - 3600000,
           updated_at: Date.now() - 3600000,
           request_count: 10,
           risk_score: 0.3,
@@ -189,21 +177,15 @@ describe("profile-updater handler", () => {
 
       expect(result!.batchItemFailures).toHaveLength(0);
 
-      // Verify PutItemCommand was called
       const putCalls = dynamoMock.commandCalls(PutItemCommand);
       expect(putCalls.length).toBeGreaterThan(0);
     });
   });
 
   describe("mutation gating", () => {
-    // AR-52: Mutation gating is now handled by DynamoCacheService using DynamoDB conditional writes.
-    // Detailed mutation gate tests are in profile-service.test.ts.
-
     it("should process update when mutation gate is not active", async () => {
       const payload = createProfileUpdatePayload();
 
-      // Mock: GetItemCommand returns empty (no existing profile - new device)
-      // PutItemCommand succeeds (this covers both profile update and gate acquisition)
       dynamoMock.on(GetItemCommand).resolves({});
       dynamoMock.on(PutItemCommand).resolves({});
 
@@ -216,7 +198,6 @@ describe("profile-updater handler", () => {
     it("should skip update and emit MutationGateSkip metric when gate is active", async () => {
       const payload = createProfileUpdatePayload();
 
-      // Gate acquisition PutItem throws ConditionalCheckFailedException
       dynamoMock.on(PutItemCommand).rejects(
         new ConditionalCheckFailedException({
           message: "Condition not met",
@@ -240,9 +221,7 @@ describe("profile-updater handler", () => {
     it("should skip update and emit NoDriftSkip metric when no drift", async () => {
       const payload = createProfileUpdatePayload();
 
-      // Gate acquisition and anchor writes succeed
       dynamoMock.on(PutItemCommand).resolves({});
-      // Mock existing profile with MATCHING fingerprint (all fields same as payload)
       dynamoMock.on(GetItemCommand).resolves({
         Item: marshall({
           device_id: "device-123",
@@ -277,7 +256,6 @@ describe("profile-updater handler", () => {
         },
       });
 
-      // Mock existing profile with different fingerprint (correct DeviceProfile shape)
       dynamoMock.on(GetItemCommand).resolves({
         Item: marshall({
           device_id: "device-123",
@@ -313,9 +291,7 @@ describe("profile-updater handler", () => {
 
       expect(result!.batchItemFailures).toHaveLength(0);
 
-      // Verify index writes
       const putCalls = dynamoMock.commandCalls(PutItemCommand);
-      // Should have profile + tier1 indexes
       expect(putCalls.length).toBeGreaterThanOrEqual(1);
     });
 
@@ -362,7 +338,6 @@ describe("profile-updater handler", () => {
         device_id: "fail-device",
       });
 
-      // First call succeeds, second fails
       let callCount = 0;
       dynamoMock.on(GetItemCommand).callsFake(() => {
         callCount++;
@@ -384,7 +359,6 @@ describe("profile-updater handler", () => {
       expect(result!.batchItemFailures[0].itemIdentifier).toBe("fail-msg");
     });
 
-    // AR-156: Updated - invalid JSON should NOT retry (poison message handling)
     it("should handle invalid JSON in record body without retrying", async () => {
       const event = createSQSEvent([
         {
@@ -397,7 +371,6 @@ describe("profile-updater handler", () => {
 
       // Should NOT be in batch failures (don't retry poison messages)
       expect(result!.batchItemFailures).toHaveLength(0);
-      // Should emit MalformedPayload metric
       expect(mockAddMetric).toHaveBeenCalledWith(
         "MalformedPayload",
         "Count",
@@ -432,7 +405,6 @@ describe("profile-updater handler", () => {
       const putCalls = dynamoMock.commandCalls(PutItemCommand);
       if (putCalls.length > 0) {
         const item = putCalls[0].args[0].input.Item;
-        // TTL should be set (60 days from now)
         expect(item).toBeDefined();
       }
     });

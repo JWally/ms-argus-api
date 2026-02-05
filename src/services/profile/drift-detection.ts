@@ -1,21 +1,32 @@
-// src/services/profile/drift-detection.ts
-// AR-120: Extracted drift detection logic from profile-service.ts
+/**
+ * Profile drift detection.
+ *
+ * Determines whether an incoming fingerprint has changed enough from
+ * the stored profile to warrant an update. Used to reduce unnecessary
+ * writes when fingerprints are effectively identical.
+ * @module
+ */
 import { DeviceProfile, Fingerprint } from "./types";
 
 /**
- * Check if incoming fingerprint has significant drift from existing profile
- * Returns true if we should update, false if fingerprint is essentially the same
+ * Check if incoming fingerprint has significant drift from existing profile.
+ *
+ * Compares stable_hash for exact changes, then counts secondary signal
+ * changes (canvas, webgl, audio, gpu, screen). Updates are triggered if
+ * stable_hash differs OR 2+ secondary signals have changed.
+ *
+ * @param existing - Current device profile from storage
+ * @param incoming - Incoming fingerprint from request
+ * @returns True if profile should be updated, false if no significant drift
  */
 export function hasSignificantDrift(
   existing: DeviceProfile,
   incoming: Fingerprint,
 ): boolean {
-  // Major drift: stable hash changed
   if (existing.stable_hash !== incoming.stable_hash) {
     return true;
   }
 
-  // Count how many signals have changed
   let changedSignals = 0;
 
   if (existing.canvas_hash !== incoming.canvas_hash) changedSignals++;

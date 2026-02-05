@@ -1,6 +1,3 @@
-// src/config/env.ts
-// AR-52: Updated to use DynamoDB session cache instead of Redis
-// Vector worker env config added for ms-argus-vector integration
 /**
  * Environment variable validation and typing.
  * Validates all required environment variables at startup and
@@ -21,86 +18,23 @@ export interface BaseEnvConfig {
 
 /**
  * Environment configuration for the Matching Worker Lambda
- * AR-57: Added OBSERVATIONS_STREAM_NAME for analytics
- * AR-XXX: Added SESSION_PAYLOAD_TABLE for full payload storage (gRPC stub)
  */
 export interface MatchingWorkerEnvConfig extends BaseEnvConfig {
   PROFILE_QUEUE_URL: string;
-  SESSION_PAYLOAD_TABLE: string; // AR-XXX: Full payload storage for gRPC stub
+  SESSION_PAYLOAD_TABLE: string;
   OBSERVATIONS_STREAM_NAME?: string; // Optional - analytics may not be deployed in all envs
+  /** Optional: Vector worker Lambda ARN for Tier 2 vector search */
+  VECTOR_WORKER_ARN?: string;
+  /** Optional: Qdrant collection name for fingerprint vectors */
+  VECTOR_COLLECTION?: string;
 }
 
 /**
  * Environment configuration for the Profile Updater Lambda
  */
-export type ProfileUpdaterEnvConfig = BaseEnvConfig;
-
-/**
- * Validate and return environment configuration for the Matching Worker.
- * Throws an error listing all missing required variables.
- */
-export function getMatchingWorkerEnv(): MatchingWorkerEnvConfig {
-  const required = [
-    "SESSION_CACHE_TABLE",
-    "SESSION_PAYLOAD_TABLE",
-    "PROFILES_TABLE",
-    "TIER1_INDEX_TABLE",
-    "TIER2_BUCKETS_TABLE",
-    "PROFILE_QUEUE_URL",
-  ] as const;
-
-  const missing = required.filter((key) => !process.env[key]);
-  if (missing.length > 0) {
-    throw new Error(
-      `Missing required environment variables: ${missing.join(", ")}`,
-    );
-  }
-
-  return {
-    SESSION_CACHE_TABLE: process.env.SESSION_CACHE_TABLE!,
-    SESSION_PAYLOAD_TABLE: process.env.SESSION_PAYLOAD_TABLE!,
-    PROFILES_TABLE: process.env.PROFILES_TABLE!,
-    TIER1_INDEX_TABLE: process.env.TIER1_INDEX_TABLE!,
-    TIER2_BUCKETS_TABLE: process.env.TIER2_BUCKETS_TABLE!,
-    PROFILE_QUEUE_URL: process.env.PROFILE_QUEUE_URL!,
-    POWERTOOLS_SERVICE_NAME:
-      process.env.POWERTOOLS_SERVICE_NAME || "argus-matching",
-    POWERTOOLS_METRICS_NAMESPACE:
-      process.env.POWERTOOLS_METRICS_NAMESPACE || "Argus",
-    // AR-57: Optional analytics stream
-    OBSERVATIONS_STREAM_NAME: process.env.OBSERVATIONS_STREAM_NAME,
-  };
-}
-
-/**
- * Validate and return environment configuration for the Profile Updater.
- * Throws an error listing all missing required variables.
- */
-export function getProfileUpdaterEnv(): ProfileUpdaterEnvConfig {
-  const required = [
-    "SESSION_CACHE_TABLE",
-    "PROFILES_TABLE",
-    "TIER1_INDEX_TABLE",
-    "TIER2_BUCKETS_TABLE",
-  ] as const;
-
-  const missing = required.filter((key) => !process.env[key]);
-  if (missing.length > 0) {
-    throw new Error(
-      `Missing required environment variables: ${missing.join(", ")}`,
-    );
-  }
-
-  return {
-    SESSION_CACHE_TABLE: process.env.SESSION_CACHE_TABLE!,
-    PROFILES_TABLE: process.env.PROFILES_TABLE!,
-    TIER1_INDEX_TABLE: process.env.TIER1_INDEX_TABLE!,
-    TIER2_BUCKETS_TABLE: process.env.TIER2_BUCKETS_TABLE!,
-    POWERTOOLS_SERVICE_NAME:
-      process.env.POWERTOOLS_SERVICE_NAME || "argus-profile",
-    POWERTOOLS_METRICS_NAMESPACE:
-      process.env.POWERTOOLS_METRICS_NAMESPACE || "Argus",
-  };
+export interface ProfileUpdaterEnvConfig extends BaseEnvConfig {
+  /** Optional: SQS queue URL for vector operations. If set, enables vector upserts. */
+  VECTOR_QUEUE_URL?: string;
 }
 
 /**
@@ -112,28 +46,108 @@ export interface VectorWorkerEnvConfig {
   QDRANT_SECRET_ARN: string;
   POWERTOOLS_SERVICE_NAME: string;
   POWERTOOLS_METRICS_NAMESPACE: string;
+  /** Optional: SQS queue URL for vector results. If set, publishes search results. */
+  VECTOR_RESULTS_QUEUE_URL?: string;
 }
 
 /**
- * Validate and return environment configuration for the Vector Worker.
- * Throws an error listing all missing required variables.
+ * Environment configuration for the Vector Results Writer Lambda
+ * Consumes from vector-results SQS queue, writes to DynamoDB
  */
-export function getVectorWorkerEnv(): VectorWorkerEnvConfig {
-  const required = ["QDRANT_URL", "QDRANT_SECRET_ARN"] as const;
+export interface VectorResultsWriterEnvConfig {
+  VECTOR_RESULTS_TABLE: string;
+  POWERTOOLS_SERVICE_NAME: string;
+  POWERTOOLS_METRICS_NAMESPACE: string;
+}
 
+/**
+ * Build environment configuration with validation
+ * @param required - Required environment variable names
+ * @param serviceName - Default service name for Powertools
+ * @param optional - Optional environment variable names
+ * @returns Validated environment configuration
+ * @throws Error if required variables are missing
+ */
+function buildEnvConfig<T>(
+  required: readonly string[],
+  serviceName: string,
+  optional?: readonly string[],
+): T {
   const missing = required.filter((key) => !process.env[key]);
   if (missing.length > 0) {
     throw new Error(
       `Missing required environment variables: ${missing.join(", ")}`,
     );
   }
+  const result: Record<string, string | undefined> = {};
+  for (const key of required) result[key] = process.env[key]!;
+  result.POWERTOOLS_SERVICE_NAME =
+    process.env.POWERTOOLS_SERVICE_NAME || serviceName;
+  result.POWERTOOLS_METRICS_NAMESPACE =
+    process.env.POWERTOOLS_METRICS_NAMESPACE || "Argus";
+  if (optional) for (const key of optional) result[key] = process.env[key];
+  return result as T;
+}
 
-  return {
-    QDRANT_URL: process.env.QDRANT_URL!,
-    QDRANT_SECRET_ARN: process.env.QDRANT_SECRET_ARN!,
-    POWERTOOLS_SERVICE_NAME:
-      process.env.POWERTOOLS_SERVICE_NAME || "argus-vector-worker",
-    POWERTOOLS_METRICS_NAMESPACE:
-      process.env.POWERTOOLS_METRICS_NAMESPACE || "Argus",
-  };
+/**
+ * Get and validate environment configuration for Matching Worker
+ * @returns Validated MatchingWorkerEnvConfig
+ * @throws Error if required environment variables are missing
+ */
+export function getMatchingWorkerEnv(): MatchingWorkerEnvConfig {
+  return buildEnvConfig<MatchingWorkerEnvConfig>(
+    [
+      "SESSION_CACHE_TABLE",
+      "SESSION_PAYLOAD_TABLE",
+      "PROFILES_TABLE",
+      "TIER1_INDEX_TABLE",
+      "TIER2_BUCKETS_TABLE",
+      "PROFILE_QUEUE_URL",
+    ],
+    "argus-matching",
+    ["OBSERVATIONS_STREAM_NAME", "VECTOR_WORKER_ARN", "VECTOR_COLLECTION"],
+  );
+}
+
+/**
+ * Get and validate environment configuration for Profile Updater
+ * @returns Validated ProfileUpdaterEnvConfig
+ * @throws Error if required environment variables are missing
+ */
+export function getProfileUpdaterEnv(): ProfileUpdaterEnvConfig {
+  return buildEnvConfig<ProfileUpdaterEnvConfig>(
+    [
+      "SESSION_CACHE_TABLE",
+      "PROFILES_TABLE",
+      "TIER1_INDEX_TABLE",
+      "TIER2_BUCKETS_TABLE",
+    ],
+    "argus-profile",
+    ["VECTOR_QUEUE_URL"], // Optional - enables vector upserts when set
+  );
+}
+
+/**
+ * Get and validate environment configuration for Vector Worker
+ * @returns Validated VectorWorkerEnvConfig
+ * @throws Error if required environment variables are missing
+ */
+export function getVectorWorkerEnv(): VectorWorkerEnvConfig {
+  return buildEnvConfig<VectorWorkerEnvConfig>(
+    ["QDRANT_URL", "QDRANT_SECRET_ARN"],
+    "argus-vector-worker",
+    ["VECTOR_RESULTS_QUEUE_URL"],
+  );
+}
+
+/**
+ * Get and validate environment configuration for Vector Results Writer
+ * @returns Validated VectorResultsWriterEnvConfig
+ * @throws Error if required environment variables are missing
+ */
+export function getVectorResultsWriterEnv(): VectorResultsWriterEnvConfig {
+  return buildEnvConfig<VectorResultsWriterEnvConfig>(
+    ["VECTOR_RESULTS_TABLE"],
+    "argus-vector-results-writer",
+  );
 }

@@ -1,14 +1,15 @@
-// src/services/profile/anomaly/types.ts
-// AR-141: Anomaly detection types - minimal structure for Phase 1
-
 /**
  * Type of anomaly detected
  */
-export type AnomalyType = "CROSS_FIELD" | "NETWORK" | "HARDWARE" | "IDENTITY";
+export type AnomalyType =
+  | "CROSS_FIELD"
+  | "NETWORK"
+  | "HARDWARE"
+  | "IDENTITY"
+  | "STATISTICAL";
 
 /**
  * Anomaly codes as const object for type-safe lookup
- * Uses const assertions to catch typos at compile time
  */
 export const AnomalyCodes = {
   // Cross-field anomalies
@@ -19,10 +20,20 @@ export const AnomalyCodes = {
   IP_TIMEZONE_MISMATCH: "IP_TIMEZONE_MISMATCH",
   SERVER_CLIENT_TZ_MISMATCH: "SERVER_CLIENT_TZ_MISMATCH",
   JA4_UA_MISMATCH: "JA4_UA_MISMATCH",
+  ASN_NETWORK_ANOMALY: "ASN_NETWORK_ANOMALY",
   // Quick win anomalies
   HEADLESS_DETECTED: "HEADLESS_DETECTED",
   HIGH_PROXY_SCORE: "HIGH_PROXY_SCORE",
   HIGH_VPN_SCORE: "HIGH_VPN_SCORE",
+  // Statistical anomalies
+  RARE_FINGERPRINT_COMBO: "RARE_FINGERPRINT_COMBO",
+  // Statistical v2 anomalies (Shannon scoring)
+  RARE_JA4_FOR_UA: "RARE_JA4_FOR_UA",
+  RARE_H2_FOR_UA: "RARE_H2_FOR_UA",
+  RARE_MATHS_FOR_UA: "RARE_MATHS_FOR_UA",
+  RARE_FONTS_FOR_UA: "RARE_FONTS_FOR_UA",
+  RARE_LIES_FOR_UA: "RARE_LIES_FOR_UA",
+  RARE_CSS_FOR_UA: "RARE_CSS_FOR_UA",
 } as const;
 
 export type AnomalyCode = (typeof AnomalyCodes)[keyof typeof AnomalyCodes];
@@ -62,14 +73,12 @@ export function createSignal(
   type: AnomalyType,
   code: AnomalyCode,
   severity: number,
-  expected: string,
-  actual: string,
-  fields?: string[],
+  evidence: AnomalyEvidence,
 ): AnomalySignal {
   return {
     type,
     code,
     severity: Math.max(0, Math.min(1, severity)),
-    evidence: { expected, actual, fields },
+    evidence,
   };
 }

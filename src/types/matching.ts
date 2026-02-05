@@ -1,70 +1,84 @@
-// src/types/matching.ts
-// AR-50: Consolidated matching domain types
-// AR-54: Added evidence codes for match explainability
-
+/**
+ * Matching service types.
+ *
+ * Core type definitions for the device matching pipeline including
+ * evidence codes, session cache values, and match results.
+ * @module
+ */
 import type { Fingerprint } from "./fingerprint";
 
 /**
  * Evidence codes explaining which signals contributed to a match decision.
+ *
  * Used for observability, debugging, and support escalations.
+ * Each code indicates which matching tier and signal produced the match.
  */
 export type EvidenceCode =
   | "EVERCOOKIE_MATCH" // T0.5: Matched on evercookie ID
-  | "SIGINT_ID_MATCH" // T0.5: Matched on third-party cookie from sigint (AR-81)
-  | "PUBLIC_KEY_MATCH" // T0.5: Matched on ECDSA public key (AR-64)
+  | "SIGINT_ID_MATCH" // T0.5: Matched on third-party cookie from sigint
+  | "PUBLIC_KEY_MATCH" // T0.5: Matched on ECDSA public key
   | "STABLE_HASH_MATCH" // T1: Matched on stable fingerprint hash
   | "FUZZY_HASH_MATCH" // T1: Matched on fuzzy fingerprint hash
-  // AR-XXX: SimHash LSH for same-browser drift detection (Tier 1.5)
   | "SIMHASH_MATCH" // T1.5: Matched via SimHash LSH (fuzzy_hash Hamming distance)
-  | "IP_JA4_BUCKET" // T2: Matched in IP+JA4 bucket
-  | "GPU_SCREEN_TZ_BUCKET" // T2: Matched in GPU+Screen+Timezone bucket
-  | "AUDIO_CANVAS_BUCKET" // T2: Matched in Audio+Canvas bucket
-  // AR-80: Structural tier2 buckets (stable browser engine anchors)
-  | "MATHS_WINDOW_BUCKET" // T2: Matched in Maths+WindowFeatures bucket
-  | "HTML_CSS_BUCKET" // T2: Matched in HtmlElement+CSS bucket
-  | "WEBGL_STRUCT_BUCKET" // T2: Matched in WebGL+Extensions+SVG bucket
-  // AR-82: Ephemeral session anchor bucket
-  | "SESSION_ANCHOR_BUCKET" // T2: Matched in IP+UA+Screen with 10min validity
-  // AR-94: IP+UA-only anchor bucket (no screen)
-  | "IP_UA_ANCHOR_BUCKET" // T2: Matched in IP+UA with 3min validity
+  | "SESSION_ANCHOR_BUCKET" // Anchor: Matched in IP+UA+Screen with 10min validity
+  | "IP_UA_ANCHOR_BUCKET" // Anchor: Matched in IP+UA with 3min validity
+  | "VECTOR_SIMILARITY" // T2: Matched via Qdrant vector similarity
+  | "HIGH_SIMILARITY" // T2: Vector similarity score >= 0.9
   | "NEW_DEVICE"; // No match found, new device created
 
-/**
- * Anomaly signal exposed in session response
- * AR-148: Expose server-side anomaly detection results
- */
+/** Anomaly signal exposed in session response. */
 export interface SessionAnomalySignal {
-  type: "CROSS_FIELD" | "NETWORK" | "HARDWARE" | "IDENTITY";
+  /** Category of anomaly detected */
+  type: "CROSS_FIELD" | "NETWORK" | "HARDWARE" | "IDENTITY" | "STATISTICAL";
+  /** Specific anomaly code (e.g., "SCREEN_CSS_MISMATCH") */
   code: string;
+  /** Severity score from 0.0 (info) to 1.0 (critical) */
   severity: number;
+  /** Evidence explaining the anomaly */
   evidence: {
+    /** Expected value based on other signals */
     expected: string;
+    /** Actual value observed */
     actual: string;
+    /** Fields involved in cross-field anomalies */
     fields?: string[];
   };
 }
 
-/**
- * Session cache value stored in DynamoDB (AR-52: was Redis)
- */
+/** Session cache value stored in DynamoDB. */
 export interface SessionCacheValue {
+  /** Processing status: pending, complete, or degraded */
   status: "pending" | "complete" | "degraded";
+  /** Matched device ID (empty string if degraded) */
   device_id: string;
+  /** Device risk score (0.0 to 1.0) */
   risk_score: number;
+  /** Match confidence (0.0 to 1.0) */
   confidence: number;
+  /** Matching tier that produced the result (-1 if failed) */
   match_tier: number;
+  /** Timestamp for cache versioning */
   match_version: number;
+  /** Idempotency key to detect duplicate requests */
   idempotency_key: string;
+  /** Risk flags for the device */
   flags: string[];
-  evidence_codes: EvidenceCode[]; // AR-54: Which signals contributed to match
-  anomalies?: SessionAnomalySignal[]; // AR-148: Server-side anomaly detection results
-  simhash_details?: SimHashDetails; // AR-XXX: Details when matched via SimHash LSH
-  fuzzy_match_info?: FuzzyMatchInfo; // AR-XXX: Fuzzy hash drift info for all tiers
+  /** Evidence codes showing how match was made */
+  evidence_codes: EvidenceCode[];
+  /** Anomalies detected during matching */
+  anomalies?: SessionAnomalySignal[];
+  /** SimHash details for tier 1.5 matches */
+  simhash_details?: SimHashDetails;
+  /** Fuzzy hash comparison info */
+  fuzzy_match_info?: FuzzyMatchInfo;
+  /** Vector match details for Tier 2 Qdrant matches */
+  vector_match_details?: VectorMatchDetails;
+  /** Last update timestamp (epoch ms) */
   updated_at: number;
 }
 
 /**
- * AR-81: Sigint data from ms-argus-web (third-party signals)
+ * Sigint data from ms-argus-web (third-party signals)
  * Contains TLS fingerprint, TCP probe, STUN, and favicon cache data
  */
 export interface SigintData {
@@ -110,7 +124,7 @@ export interface SigintData {
 export interface FingerprintPayload {
   session_id: string;
   fingerprint: Fingerprint;
-  /** AR-81: Sigint data from ms-argus-web */
+  /** Sigint data from ms-argus-web */
   sigint?: SigintData;
   tcp_blob?: string;
   tls_blob?: string;
@@ -119,8 +133,8 @@ export interface FingerprintPayload {
 }
 
 /**
- * AR-XXX: SimHash match details for debugging and analytics
- * Exposed when a match is made via Tier 1.5 SimHash LSH
+ * SimHash match details for debugging and analytics.
+ * Exposed when a match is made via Tier 1.5 SimHash LSH.
  */
 export interface SimHashDetails {
   /** The incoming fingerprint's fuzzy_hash */
@@ -136,7 +150,7 @@ export interface SimHashDetails {
 }
 
 /**
- * AR-XXX: Fuzzy hash comparison info for all match tiers
+ * Fuzzy hash comparison info for all match tiers.
  * Shows how much the incoming fingerprint has drifted from the stored profile.
  * Computed at Tier 0.5, 1, and 1.5 where we have the stored fuzzy_hash available.
  */
@@ -152,39 +166,64 @@ export interface FuzzyMatchInfo {
 }
 
 /**
- * Result of device matching
+ * Vector match details for Tier 2 Qdrant matches.
+ * Exposes similarity scores and candidate distribution for transparency.
  */
+export interface VectorMatchDetails {
+  /** Raw similarity score from Qdrant (0.0 to 1.0) */
+  similarity_score: number;
+  /** Total candidates found above threshold */
+  candidates_in_range: number;
+  /** Score of 2nd best candidate, if exists (for gap analysis) */
+  runner_up_score: number | null;
+  /** Top N candidate scores for distribution analysis */
+  top_scores: number[];
+  /** Embedding dimension used */
+  embedding_dimension: number;
+  /** Primary features that drove this match (highest weighted) */
+  primary_match_features: string[];
+}
+
+/** Result of device matching. */
 export interface MatchResult {
+  /** Matched or newly created device ID */
   device_id: string;
+  /** Match confidence (0.0 to 1.0) */
   confidence: number;
+  /** Matching tier that produced the result */
   match_tier: number;
+  /** True if device was just created */
   is_new_device: boolean;
+  /** Device risk score (0.0 to 1.0) */
   risk_score: number;
+  /** Risk flags for the device */
   flags: string[];
-  evidence_codes: EvidenceCode[]; // AR-54: Which signals contributed to match
-  simhash_details?: SimHashDetails; // AR-XXX: Details when matched via SimHash LSH
-  fuzzy_match_info?: FuzzyMatchInfo; // AR-XXX: Fuzzy hash drift info for all tiers
+  /** Evidence codes showing how match was made */
+  evidence_codes: EvidenceCode[];
+  /** SimHash details for tier 1.5 matches */
+  simhash_details?: SimHashDetails;
+  /** Fuzzy hash comparison info */
+  fuzzy_match_info?: FuzzyMatchInfo;
+  /** Vector match details for Tier 2 Qdrant matches */
+  vector_match_details?: VectorMatchDetails;
 }
 
 /**
- * Tier 1 index entry
- * AR-XXX: Added fuzzy_hash for drift detection at match time
+ * Tier 1 index entry.
+ *
+ * Includes fuzzy_hash for drift detection at match time.
  */
 export interface Tier1IndexEntry {
+  /** Index key (prefixed hash, e.g., "stable#abc123") */
   hash_key: string;
+  /** Device ID this hash maps to */
   device_id: string;
+  /** Cached risk score for fast response */
   risk_score?: number;
+  /** Cached flags for fast response */
   flags?: string[];
-  /** AR-XXX: Device's fuzzy_hash at time of index write, for drift comparison */
+  /** Device's fuzzy_hash at time of index write, for drift comparison */
   fuzzy_hash?: string;
-  ttl: number;
-}
-
-/**
- * Tier 2 bucket entry
- */
-export interface Tier2BucketEntry {
-  bucket_key: string;
-  device_ids: string[];
+  /** TTL timestamp (epoch seconds) */
   ttl: number;
 }

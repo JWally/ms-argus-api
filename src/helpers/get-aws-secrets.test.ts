@@ -1,4 +1,3 @@
-// src/services/get-aws-secrets.test.ts
 import {
   describe,
   it,
@@ -29,7 +28,6 @@ import {
 
 describe("getAwsSecrets", () => {
   beforeEach(() => {
-    // Reset mocks and cache before each test
     secretsManagerMock.reset();
     clearCache();
     process.env.SECRET_KEY_ARN = mockSecretArn;
@@ -96,15 +94,12 @@ describe("getAwsSecrets", () => {
         SecretString: JSON.stringify(mockSecrets),
       });
 
-      // First call - should hit Secrets Manager
       const result1 = await getAwsSecrets();
       expect(result1.ENCRYPTION_KEY).toBe("cached-key");
 
-      // Second call - should use cache
       const result2 = await getAwsSecrets();
       expect(result2.ENCRYPTION_KEY).toBe("cached-key");
 
-      // Verify Secrets Manager was only called once
       expect(
         secretsManagerMock.commandCalls(GetSecretValueCommand),
       ).toHaveLength(1);
@@ -122,16 +117,13 @@ describe("getAwsSecrets", () => {
         SecretString: JSON.stringify(mockSecrets),
       });
 
-      // First call - populate cache
       await getAwsSecrets();
       expect(
         secretsManagerMock.commandCalls(GetSecretValueCommand),
       ).toHaveLength(1);
 
-      // Clear cache
       clearCache();
 
-      // Second call - should hit Secrets Manager again
       await getAwsSecrets();
       expect(
         secretsManagerMock.commandCalls(GetSecretValueCommand),
@@ -199,7 +191,7 @@ describe("getAwsSecrets", () => {
     });
   });
 
-  describe("versioned secrets (AR-28)", () => {
+  describe("versioned secrets", () => {
     it("should handle versioned format with current and previous keys", async () => {
       const versionedSecrets = {
         version: 2,
@@ -283,7 +275,6 @@ describe("getAwsSecrets", () => {
 
       const result = await getAwsSecrets();
 
-      // Should only return current keys in flat format
       expect(result).toEqual({
         ENCRYPTION_KEY: "versioned-enc-key",
         HMAC_KEY: "versioned-hmac-key",

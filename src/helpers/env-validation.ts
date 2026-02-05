@@ -1,6 +1,3 @@
-// src/helpers/env-validation.ts
-// AR-163: Shared environment variable validation utility
-
 /**
  * Validates that required environment variables are set.
  * Throws an error with the list of missing variables if any are missing.

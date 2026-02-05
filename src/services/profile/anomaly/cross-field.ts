@@ -1,36 +1,49 @@
-// src/services/profile/anomaly/cross-field.ts
-// AR-145: Cross-field anomaly detection (Navigator vs Worker scope mismatches)
-// AR-143: Updated to use actual ms-argus-web payload structure (workerScope.scopes)
-
+/**
+ * Cross-field anomaly detection.
+ *
+ * Detects inconsistencies between Navigator and Worker scope properties.
+ * Spoofed browsers often modify navigator values but forget to modify
+ * the corresponding values in Worker scopes, creating detectable mismatches.
+ * @module
+ */
 import { Fingerprint } from "../../../types";
 import { AnomalySignal, AnomalyCodes, createSignal } from "./types";
 
-/**
- * Environment scope with comparable fields
- */
+/** Environment scope with fields that should match across contexts. */
 interface EnvironmentScope {
+  /** User agent string */
   userAgent?: string;
+  /** Platform identifier (e.g., "Win32") */
   platform?: string;
+  /** Number of logical CPU cores */
   hardwareConcurrency?: number;
+  /** Allow additional properties */
   [key: string]: unknown;
 }
 
 /**
- * Worker scope structure from web library
- * Contains scopes for different worker types
+ * Worker scope structure from web library.
+ *
+ * Contains scopes for different worker types captured by ms-argus-web.
  */
 interface WorkerScopeData extends EnvironmentScope {
+  /** Worker scopes by type */
   scopes?: {
-    main?: EnvironmentScope; // Main thread (redundant with navigator)
-    web?: EnvironmentScope; // Dedicated Worker (new Worker())
-    shared?: EnvironmentScope | null; // Shared Worker (null if unavailable)
-    service?: EnvironmentScope | string; // Service Worker ("unavailable" if blocked)
+    /** Main thread scope (reference) */
+    main?: EnvironmentScope;
+    /** Dedicated worker scope */
+    web?: EnvironmentScope;
+    /** Shared worker scope (null if unavailable) */
+    shared?: EnvironmentScope | null;
+    /** Service worker scope ("unavailable" string if blocked) */
+    service?: EnvironmentScope | string;
   };
 }
 
 /**
- * Device payload structure (V3 format from ms-argus-web)
- * The device section is passed directly from matching-worker (rawPayload.device)
+ * Device payload structure (V3 format from ms-argus-web).
+ *
+ * The device section is passed directly from matching-worker (rawPayload.device).
  * Structure:
  * - navigator: main thread navigator
  * - workerScope.scopes.web: dedicated worker
@@ -38,14 +51,14 @@ interface WorkerScopeData extends EnvironmentScope {
  * - workerScope.scopes.service: service worker ("unavailable" if blocked)
  */
 interface DevicePayload {
+  /** Main thread navigator properties */
   navigator?: EnvironmentScope;
+  /** Worker scope data */
   workerScope?: WorkerScopeData;
+  /** Allow additional properties */
   [key: string]: unknown;
 }
 
-/**
- * Environment names for display
- */
 type EnvironmentName =
   | "navigator"
   | "workerScope"
@@ -53,9 +66,6 @@ type EnvironmentName =
   | "sharedWorker"
   | "serviceWorker";
 
-/**
- * Human-readable environment names for evidence
- */
 const ENV_DISPLAY_NAMES: Record<EnvironmentName, string> = {
   navigator: "Navigator (main)",
   workerScope: "Worker",
@@ -83,8 +93,10 @@ const COMPARABLE_FIELDS: {
 ];
 
 /**
- * Truncate string for evidence display
- * Shows first N chars with ellipsis if truncated
+ * Truncate a value for display in anomaly details
+ * @param value - Value to truncate
+ * @param maxLen - Maximum string length (default 50)
+ * @returns Truncated string representation
  */
 function truncate(value: unknown, maxLen: number = 50): string {
   if (value === undefined || value === null) return "(undefined)";
@@ -101,54 +113,77 @@ function truncate(value: unknown, maxLen: number = 50): string {
  * - workerScope.scopes.shared (shared worker, null if unavailable)
  * - workerScope.scopes.service (service worker, "unavailable" if blocked)
  */
+/**
+ * Type guard to check if a value is a valid environment scope object
+ * @param val - Value to check
+ * @returns True if value is an object (not null)
+ */
+function isObjectScope(val: unknown): val is EnvironmentScope {
+  return val !== null && typeof val === "object";
+}
+
+/**
+ * Check if an environment scope has comparable fields for anomaly detection
+ * @param ws - Environment scope to check
+ * @returns True if scope has userAgent, platform, or hardwareConcurrency
+ */
+function hasComparableFields(ws: EnvironmentScope): boolean {
+  return (
+    !ws.scopes && !!(ws.userAgent || ws.platform || ws.hardwareConcurrency)
+  );
+}
+
+/**
+ * Extract worker scopes from device payload into environments map
+ * @param device - Device payload containing workerScope data
+ * @param environments - Map to populate with worker environments
+ */
+function extractWorkerScopes(
+  device: DevicePayload,
+  environments: Map<EnvironmentName, EnvironmentScope>,
+): void {
+  const scopes = device.workerScope?.scopes;
+  if (scopes) {
+    if (isObjectScope(scopes.web))
+      environments.set("dedicatedWorker", scopes.web);
+    if (isObjectScope(scopes.shared))
+      environments.set("sharedWorker", scopes.shared);
+    if (isObjectScope(scopes.service))
+      environments.set("serviceWorker", scopes.service);
+    return;
+  }
+
+  const ws = device.workerScope;
+  if (environments.size === 1 && isObjectScope(ws) && hasComparableFields(ws)) {
+    environments.set("workerScope", ws);
+  }
+}
+
+/**
+ * Extract all available environment scopes from device payload
+ * @param device - Device payload containing navigator and workerScope
+ * @returns Map of environment names to their scopes
+ */
 function extractEnvironments(
   device: DevicePayload,
 ): Map<EnvironmentName, EnvironmentScope> {
   const environments = new Map<EnvironmentName, EnvironmentScope>();
 
-  // Navigator (main thread)
-  if (device.navigator && typeof device.navigator === "object") {
+  if (isObjectScope(device.navigator)) {
     environments.set("navigator", device.navigator);
   }
 
-  // Worker scopes from workerScope.scopes
-  const scopes = device.workerScope?.scopes;
-  if (scopes) {
-    // Dedicated Worker (web)
-    if (scopes.web && typeof scopes.web === "object") {
-      environments.set("dedicatedWorker", scopes.web);
-    }
-
-    // Shared Worker (can be null if unavailable)
-    if (scopes.shared && typeof scopes.shared === "object") {
-      environments.set("sharedWorker", scopes.shared);
-    }
-
-    // Service Worker (can be "unavailable" string if blocked)
-    if (scopes.service && typeof scopes.service === "object") {
-      environments.set("serviceWorker", scopes.service);
-    }
-  }
-
-  // Also check legacy workerScope top-level (fallback for older payloads)
-  // Only use if no scopes were found and workerScope has comparable fields
-  if (
-    environments.size === 1 &&
-    device.workerScope &&
-    typeof device.workerScope === "object" &&
-    !device.workerScope.scopes &&
-    (device.workerScope.userAgent ||
-      device.workerScope.platform ||
-      device.workerScope.hardwareConcurrency)
-  ) {
-    environments.set("workerScope", device.workerScope);
-  }
-
+  extractWorkerScopes(device, environments);
   return environments;
 }
 
 /**
  * Compare two environments and return mismatches
+ * @param env1Name - Name of the first environment
+ * @param env1 - First environment scope
+ * @param env2Name - Name of the second environment
+ * @param env2 - Second environment scope
+ * @returns Array of anomaly signals for detected mismatches
  */
 function compareEnvironments(
   env1Name: EnvironmentName,
@@ -162,20 +197,16 @@ function compareEnvironments(
     const val1 = env1[field];
     const val2 = env2[field];
 
-    // Only compare if both environments have the field
     if (val1 !== undefined && val2 !== undefined && val1 !== val2) {
       const env1Display = ENV_DISPLAY_NAMES[env1Name];
       const env2Display = ENV_DISPLAY_NAMES[env2Name];
 
       signals.push(
-        createSignal(
-          "CROSS_FIELD",
-          AnomalyCodes.WORKER_MISMATCH,
-          severity,
-          `${env1Display} ${displayName} matches ${env2Display}`,
-          `${env1Display}: ${truncate(val1)} vs ${env2Display}: ${truncate(val2)}`,
-          [`${env1Name}.${field}`, `${env2Name}.${field}`],
-        ),
+        createSignal("CROSS_FIELD", AnomalyCodes.WORKER_MISMATCH, severity, {
+          expected: `${env1Display} ${displayName} matches ${env2Display}`,
+          actual: `${env1Display}: ${truncate(val1)} vs ${env2Display}: ${truncate(val2)}`,
+          fields: [`${env1Name}.${field}`, `${env2Name}.${field}`],
+        }),
       );
     }
   }
@@ -195,9 +226,8 @@ function compareEnvironments(
  * - Shared Workers (workerScope.scopes.shared)
  * - Service Workers (workerScope.scopes.service)
  * - Generic workerScope (legacy/fallback for older payloads)
- *
- * @param fingerprint - Normalized fingerprint (not used directly, but matches detector signature)
- * @param raw - Device payload from V3 format (rawPayload.device from matching-worker)
+ * @param fingerprint - Normalized fingerprint (matches detector signature)
+ * @param raw - Device payload from V3 format (rawPayload.device)
  * @returns Array of anomaly signals for detected mismatches
  */
 export function detectCrossFieldAnomalies(
@@ -206,22 +236,18 @@ export function detectCrossFieldAnomalies(
 ): AnomalySignal[] {
   const signals: AnomalySignal[] = [];
 
-  // Return empty if no raw payload
   if (!raw || typeof raw !== "object") {
     return signals;
   }
 
   const device = raw as DevicePayload;
 
-  // Extract all available environments
   const environments = extractEnvironments(device);
 
-  // Need at least 2 environments to compare
   if (environments.size < 2) {
     return signals;
   }
 
-  // Compare all pairs of environments
   const envNames = Array.from(environments.keys());
   const seenPairs = new Set<string>();
 
@@ -230,7 +256,6 @@ export function detectCrossFieldAnomalies(
       const env1Name = envNames[i];
       const env2Name = envNames[j];
 
-      // Create a canonical pair key to avoid duplicates
       const pairKey = [env1Name, env2Name].sort().join("|");
       if (seenPairs.has(pairKey)) continue;
       seenPairs.add(pairKey);

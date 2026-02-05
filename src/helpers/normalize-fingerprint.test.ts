@@ -1,7 +1,3 @@
-// src/helpers/normalize-fingerprint.test.ts
-// AR-73: Tests for fingerprint normalization
-// AR-XXX: Simplified to only test flat fingerprint handling (nested web format removed)
-
 import { describe, it, expect } from "vitest";
 import { normalizeFingerprint } from "./normalize-fingerprint";
 
@@ -93,8 +89,7 @@ describe("normalizeFingerprint", () => {
     });
   });
 
-  // AR-81: Sigint data extraction tests
-  describe("extracts sigint data (AR-81)", () => {
+  describe("extracts sigint data", () => {
     it("should extract sigint_id from sigint.tlsFingerprint.id", () => {
       const result = normalizeFingerprint(
         {},
@@ -213,7 +208,7 @@ describe("normalizeFingerprint", () => {
     });
 
     it("should handle undefined sigint gracefully", () => {
-      const result = normalizeFingerprint({ stable_hash: "test" }, undefined);
+      const result = normalizeFingerprint({ stable_hash: "test" });
       expect(result.stable_hash).toBe("test");
     });
 
@@ -283,7 +278,6 @@ describe("normalizeFingerprint", () => {
     });
   });
 
-  // AR-146: Strip nested objects from hybrid payloads to prevent DynamoDB marshalling errors
   describe("strips nested objects from hybrid payloads", () => {
     it("should strip nested objects when flat hashes are present", () => {
       // Real client payloads can have BOTH flat fields AND nested objects
@@ -295,7 +289,6 @@ describe("normalizeFingerprint", () => {
         public_key: "MFkwTest==",
         hardware_concurrency: 8,
         is_headless: false,
-        // Nested object with potentially huge numbers
         someNestedObject: {
           data: {
             bigNumber: 9.199870313877772e307, // > MAX_SAFE_INTEGER
@@ -305,14 +298,12 @@ describe("normalizeFingerprint", () => {
 
       const result = normalizeFingerprint(hybridPayload);
 
-      // Should preserve flat fields
       expect(result.stable_hash).toBe("stable123");
       expect(result.fuzzy_hash).toBe("fuzzy456");
       expect(result.public_key).toBe("MFkwTest==");
       expect(result.hardware_concurrency).toBe(8);
       expect(result.is_headless).toBe(false);
 
-      // Should NOT include nested object
       expect(
         (result as Record<string, unknown>).someNestedObject,
       ).toBeUndefined();
@@ -321,7 +312,6 @@ describe("normalizeFingerprint", () => {
     it("should strip arrays from hybrid payloads", () => {
       const hybridPayload = {
         stable_hash: "stable123",
-        // Arrays should be stripped
         someArray: [1, 2, 3],
         anotherArray: ["a", "b", "c"],
       };

@@ -28,6 +28,9 @@ export const BASE_BUNDLING_CONFIG: lambdaNode.BundlingOptions = {
   target: "node20",
   format: lambdaNode.OutputFormat.ESM,
   mainFields: ["module", "main"],
+  // Polyfill require() for dependencies that use CJS dynamic requires of Node builtins
+  banner:
+    "import { createRequire } from 'module'; const require = createRequire(import.meta.url);",
   esbuildArgs: {
     "--tree-shaking": "true",
   },
@@ -107,5 +110,69 @@ export function createWorkerEnv(
     POWERTOOLS_SERVICE_NAME: serviceName,
     POWERTOOLS_METRICS_NAMESPACE: stackName,
     LOG_LEVEL: "INFO",
+  };
+}
+
+/**
+ * Creates Lambda configuration for functions that use the Qdrant client.
+ * Uses CommonJS format to avoid ESM compatibility issues with the Qdrant client.
+ *
+ * @param options - Optional configuration overrides
+ * @returns Partial NodejsFunction props to spread
+ */
+export function createVectorLambdaConfig(
+  options: BaseLambdaConfigOptions = {},
+): Partial<lambdaNode.NodejsFunctionProps> {
+  const { tracing = true, keepNames = true } = options;
+
+  const bundling: lambdaNode.BundlingOptions = {
+    minify: true,
+    sourceMap: true,
+    target: "node20",
+    // Use CJS format for Qdrant client compatibility
+    format: lambdaNode.OutputFormat.CJS,
+    mainFields: ["main", "module"],
+    ...(keepNames && { keepNames: true }),
+  };
+
+  return {
+    runtime: lambda.Runtime.NODEJS_20_X,
+    architecture: lambda.Architecture.ARM_64,
+    bundling,
+    ...(tracing && { tracing: lambda.Tracing.ACTIVE }),
+  };
+}
+
+/**
+ * Creates Lambda configuration for functions that use ioredis (Valkey client).
+ * Marks Node.js builtins as external to avoid ESM bundling issues with ioredis.
+ *
+ * @param options - Optional configuration overrides
+ * @returns Partial NodejsFunction props to spread
+ */
+export function createValkeyLambdaConfig(
+  options: BaseLambdaConfigOptions = {},
+): Partial<lambdaNode.NodejsFunctionProps> {
+  const { tracing = true, keepNames = true } = options;
+
+  const bundling: lambdaNode.BundlingOptions = {
+    minify: true,
+    sourceMap: true,
+    target: "node20",
+    format: lambdaNode.OutputFormat.ESM,
+    mainFields: ["module", "main"],
+    banner:
+      "import { createRequire } from 'module'; const require = createRequire(import.meta.url);",
+    // ioredis uses dynamic require for Node.js builtins - mark them external
+    // so they're resolved at runtime rather than bundled
+    nodeModules: ["ioredis"],
+    ...(keepNames && { keepNames: true }),
+  };
+
+  return {
+    runtime: lambda.Runtime.NODEJS_20_X,
+    architecture: lambda.Architecture.ARM_64,
+    bundling,
+    ...(tracing && { tracing: lambda.Tracing.ACTIVE }),
   };
 }

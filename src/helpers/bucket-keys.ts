@@ -1,100 +1,6 @@
-// src/helpers/bucket-keys.ts
-// Shared bucket key utilities for matching and profile services
-// Single source of truth for Tier 2 bucket key generation
-
 import { fnv1a } from "./hash";
 import { SIMHASH_CONFIG } from "./constants";
 import type { Fingerprint } from "../types/fingerprint";
-import type { EvidenceCode } from "../types/matching";
-
-/**
- * Bucket key info with evidence code for match tracking
- */
-export interface BucketKeyInfo {
-  key: string;
-  evidenceCode: EvidenceCode;
-}
-
-/**
- * Build compound bucket keys with their evidence code types
- * Used for Tier 2 matching and evidence tracking
- */
-export function buildBucketKeysWithTypes(
-  fingerprint: Fingerprint,
-): BucketKeyInfo[] {
-  const buckets: BucketKeyInfo[] = [];
-
-  // IP + JA4 (network identity)
-  if (fingerprint.ip_address && fingerprint.ja4) {
-    buckets.push({
-      key: `ip_ja4#${fingerprint.ip_address}#${fingerprint.ja4}`,
-      evidenceCode: "IP_JA4_BUCKET",
-    });
-  }
-
-  // GPU + Screen + Timezone (hardware/locale identity)
-  if (
-    fingerprint.gpu_renderer &&
-    fingerprint.screen_dims &&
-    fingerprint.timezone
-  ) {
-    buckets.push({
-      key: `gpu_screen_tz#${fingerprint.gpu_renderer}#${fingerprint.screen_dims}#${fingerprint.timezone}`,
-      evidenceCode: "GPU_SCREEN_TZ_BUCKET",
-    });
-  }
-
-  // Audio + Canvas (rendering identity)
-  if (fingerprint.audio_hash && fingerprint.canvas_hash) {
-    buckets.push({
-      key: `audio_canvas#${fingerprint.audio_hash}#${fingerprint.canvas_hash}`,
-      evidenceCode: "AUDIO_CANVAS_BUCKET",
-    });
-  }
-
-  // Structural tier2 buckets (stable browser engine anchors)
-  // These signals are based on browser internals that cannot be randomized
-  // without breaking website functionality. Useful when canvas/audio are
-  // blocked (e.g., Brave private browsing).
-
-  // Maths + WindowFeatures (FPU + browser engine signals)
-  if (fingerprint.maths_hash && fingerprint.window_features_hash) {
-    buckets.push({
-      key: `maths_window#${fingerprint.maths_hash}#${fingerprint.window_features_hash}`,
-      evidenceCode: "MATHS_WINDOW_BUCKET",
-    });
-  }
-
-  // HtmlElement + CSS (DOM/CSS capabilities)
-  if (fingerprint.html_element_hash && fingerprint.css_hash) {
-    buckets.push({
-      key: `html_css#${fingerprint.html_element_hash}#${fingerprint.css_hash}`,
-      evidenceCode: "HTML_CSS_BUCKET",
-    });
-  }
-
-  // WebGL + Extensions + SVG (rendering capabilities)
-  if (
-    fingerprint.webgl_hash &&
-    fingerprint.webgl_extensions_count !== undefined &&
-    fingerprint.svg_hash
-  ) {
-    buckets.push({
-      key: `webgl_struct#${fingerprint.webgl_hash}#${fingerprint.webgl_extensions_count}#${fingerprint.svg_hash}`,
-      evidenceCode: "WEBGL_STRUCT_BUCKET",
-    });
-  }
-
-  return buckets;
-}
-
-/**
- * Build compound bucket keys for Tier 2 matching
- * Returns just the key strings without evidence codes
- */
-export function buildBucketKeys(fingerprint: Fingerprint): string[] {
-  return buildBucketKeysWithTypes(fingerprint).map((info) => info.key);
-}
 
 /**
  * Build session anchor bucket key for ephemeral matching
@@ -128,8 +34,6 @@ export function buildIpUaAnchorKey(fingerprint: Fingerprint): string | null {
   return `ip_ua_anchor#${fingerprint.ip_address}#${uaHash}`;
 }
 
-// ==================== SIMHASH LSH BAND KEYS (Tier 1.5) ====================
-
 /**
  * SimHash band key info for LSH indexing
  */
@@ -144,33 +48,36 @@ export interface SimHashBandKey {
 
 /**
  * Build SimHash LSH band keys from fuzzy_hash
- * Splits 64-bit hash into 4 bands of 16 bits each for locality-sensitive lookup.
+ * Splits 256-bit hash into 16 bands of 16 bits each for locality-sensitive lookup.
  *
  * Band partitioning allows similar hashes (small Hamming distance) to share
  * at least one band with high probability, enabling efficient candidate retrieval.
  *
- * @param fuzzyHash - 64-bit SimHash as hex string (e.g., "0x1234567890abcdef" or "1234567890abcdef")
- * @returns Array of 4 band keys, or null if fuzzy_hash is invalid
+ * @param fuzzyHash - 256-bit SimHash as hex string (64 hex chars)
+ * @returns Array of 16 band keys, or null if fuzzy_hash is invalid
  */
 export function buildSimHashBandKeys(
   fuzzyHash: string | undefined,
 ): SimHashBandKey[] | null {
   if (!fuzzyHash) return null;
 
-  // Normalize: remove 0x prefix if present, ensure lowercase
   const normalized = fuzzyHash.replace(/^0x/i, "").toLowerCase();
 
-  // Validate: must be 16 hex chars (64 bits)
-  if (!/^[0-9a-f]{16}$/.test(normalized)) {
+  // Accept 256-bit (64 chars) or legacy 64-bit (16 chars)
+  if (
+    !/^[0-9a-f]{64}$/.test(normalized) &&
+    !/^[0-9a-f]{16}$/.test(normalized)
+  ) {
     return null;
   }
 
   const bands: SimHashBandKey[] = [];
+  const charsPerBand = SIMHASH_CONFIG.HEX_CHARS_PER_BAND;
+  const numBands = normalized.length / charsPerBand;
 
-  // Split into 4 bands of 4 hex chars (16 bits) each
-  for (let i = 0; i < SIMHASH_CONFIG.NUM_BANDS; i++) {
-    const startChar = i * 4; // Each band is 4 hex chars
-    const bandValue = normalized.slice(startChar, startChar + 4);
+  for (let i = 0; i < numBands; i++) {
+    const startChar = i * charsPerBand;
+    const bandValue = normalized.slice(startChar, startChar + charsPerBand);
 
     bands.push({
       pk: `SIMHASH_BAND#${i}#${bandValue}`,
@@ -197,8 +104,6 @@ export function buildSimHashBandSK(
   deviceId: string,
   timestamp: number = Math.floor(Date.now() / 1000),
 ): string {
-  // Invert timestamp: MAX_SAFE_INTEGER - timestamp
-  // This ensures newest entries sort first (smallest SK values)
   const invertedTs = (9999999999999 - timestamp).toString().padStart(13, "0");
   return `t#${invertedTs}#${deviceId}`;
 }

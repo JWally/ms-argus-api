@@ -40,9 +40,6 @@ export interface StageConfig {
     sessionGet: {
       memorySize: number; // API handler - session retrieval (simple read, minimal CPU)
     };
-    cardinalityRecalc: {
-      memorySize: number; // Scheduled - batch processing (scan/query heavy)
-    };
     vectorWorker: {
       memorySize: number; // VPC Lambda - QDrant vector operations
       timeout: Duration;
@@ -107,6 +104,38 @@ export interface StageConfig {
       maxCapacityMultiplier: number; // Max capacity as multiplier of base (e.g., 2 = 200%)
     };
   };
+
+  // Valkey (ElastiCache Serverless) configuration for statistical anomaly detection
+  valkey: {
+    // Whether Valkey is enabled for this stage
+    enabled: boolean;
+    // Maximum data storage in GiB (ElastiCache Serverless billing unit)
+    maxDataStorageGiB: number;
+    // TTL for statistical keys in seconds (default 48h = 172800)
+    ttlSeconds: number;
+    // Score threshold below which combo is considered suspicious (0.01 = 1%)
+    scoreThreshold: number;
+    // Minimum distinct combos required before statistical detection activates
+    distinctThreshold: number;
+    // Network baseline anomaly detection settings
+    networkBaseline: {
+      // Whether network baseline detection is enabled
+      enabled: boolean;
+      // Score threshold for flagging anomalies (0.5 = 50% normalized surprise)
+      threshold: number;
+    };
+    // Statistical v2: Shannon scoring with dual-layer fingerprints (JA4 + H2)
+    statisticalV2: {
+      // Whether statistical v2 detection is enabled
+      enabled: boolean;
+      // Score threshold for flagging anomalies (0.6 = 60% surprise)
+      threshold: number;
+      // Sample thresholds for tiered TTLs [low, high]
+      tierThresholds: [number, number];
+      // TTLs in seconds for [cold, warm, hot] tiers
+      tierTTLs: [number, number, number];
+    };
+  };
 }
 
 /**
@@ -132,9 +161,6 @@ const devConfig: StageConfig = {
     },
     sessionGet: {
       memorySize: 256, // Simple DynamoDB read
-    },
-    cardinalityRecalc: {
-      memorySize: 256, // Scan-heavy but not CPU-intensive
     },
     vectorWorker: {
       memorySize: 512, // Network I/O to QDrant
@@ -193,6 +219,27 @@ const devConfig: StageConfig = {
       maxCapacityMultiplier: 2,
     },
   },
+
+  // Valkey - enabled in dev for statistical anomaly detection testing
+  valkey: {
+    enabled: true,
+    maxDataStorageGiB: 1, // Minimal storage for dev (~$6/mo)
+    ttlSeconds: 172800, // 48 hours
+    scoreThreshold: 0.01, // 1% - combo appears less than 1% of expected = suspicious
+    distinctThreshold: 50, // Need at least 50 distinct combos before detection activates
+    // Network baseline: enabled for dev testing
+    networkBaseline: {
+      enabled: true,
+      threshold: 0.5, // 50% normalized surprise triggers anomaly
+    },
+    // Statistical v2: enabled for dev testing
+    statisticalV2: {
+      enabled: true,
+      threshold: 0.6, // 60% surprise triggers anomaly
+      tierThresholds: [1000, 20000], // [warm threshold, hot threshold]
+      tierTTLs: [3 * 3600, 24 * 3600, 90 * 24 * 3600], // [3h, 24h, 90d]
+    },
+  },
 };
 
 /**
@@ -218,9 +265,6 @@ const prodConfig: StageConfig = {
     },
     sessionGet: {
       memorySize: 256, // Simple DynamoDB read
-    },
-    cardinalityRecalc: {
-      memorySize: 512, // Higher in prod for faster batch processing
     },
     vectorWorker: {
       memorySize: 512, // Network I/O to QDrant
@@ -279,6 +323,27 @@ const prodConfig: StageConfig = {
     autoScaling: {
       targetUtilizationPercent: 70,
       maxCapacityMultiplier: 2,
+    },
+  },
+
+  // Valkey - enabled in prod for statistical anomaly detection
+  valkey: {
+    enabled: true,
+    maxDataStorageGiB: 5, // Higher capacity for prod (~$12/mo)
+    ttlSeconds: 172800, // 48 hours
+    scoreThreshold: 0.01, // 1% - combo appears less than 1% of expected = suspicious
+    distinctThreshold: 50, // Need at least 50 distinct combos before detection activates
+    // Network baseline: disabled initially for shadow mode deployment
+    networkBaseline: {
+      enabled: false, // Enable after validating in dev
+      threshold: 0.5, // 50% normalized surprise triggers anomaly
+    },
+    // Statistical v2: disabled in prod (shadow mode)
+    statisticalV2: {
+      enabled: false, // Enable after validating in dev
+      threshold: 0.6, // 60% surprise triggers anomaly
+      tierThresholds: [1000, 20000], // [warm threshold, hot threshold]
+      tierTTLs: [3 * 3600, 24 * 3600, 90 * 24 * 3600], // [3h, 24h, 90d]
     },
   },
 };

@@ -44,3 +44,4 @@ wait-cleanup.js
 .env.local
 .env.*.local
 ideas/
+api-docs/

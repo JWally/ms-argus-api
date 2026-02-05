@@ -1,5 +1,3 @@
-// src/services/profile/flag-computation.ts
-// AR-120: Extracted flag computation logic from profile-service.ts
 import { Fingerprint, DeviceProfile, DeviceFlags } from "./types";
 import { detectAllAnomalies } from "./anomaly";
 
@@ -33,7 +31,6 @@ export const RISK_WEIGHTS = {
   [DeviceFlags.VERIFIED]: -0.2,
   /** Returning users get slight trust bonus */
   [DeviceFlags.RETURNING_USER]: -0.1,
-  // Anomaly detection weights (AR-141)
   /** Navigator API tampering */
   [DeviceFlags.NAVIGATOR_LIES]: 0.15,
   /** High proxy likelihood */
@@ -54,34 +51,42 @@ export const RISK_WEIGHTS = {
  * Detect bot-like signals in fingerprint
  * Returns array of detected bot flags
  */
+
+/** User agent patterns that indicate bot/crawler traffic */
+const BOT_UA_PATTERNS = ["bot", "crawler", "spider", "headless"];
+
+/**
+ * Check if user agent matches known bot patterns
+ * @param ua - User agent string to check
+ * @returns True if bot pattern detected
+ */
+function hasBotUserAgent(ua: string | undefined): boolean {
+  if (!ua) return false;
+  const lower = ua.toLowerCase();
+  return BOT_UA_PATTERNS.some((pattern) => lower.includes(pattern));
+}
+
+/**
+ * Detect bot-like signals in a fingerprint
+ * Checks GPU renderer (SwiftShader), screen size, user agent, and hardware specs
+ * @param fingerprint - The fingerprint to analyze
+ * @returns Array of detected bot flag strings
+ */
 export function detectBotSignals(fingerprint: Fingerprint): string[] {
   const flags: string[] = [];
 
-  // SwiftShader is a software renderer commonly used by headless browsers
   if (fingerprint.gpu_renderer?.toLowerCase().includes("swiftshader")) {
-    flags.push(DeviceFlags.HEADLESS_BROWSER);
-    flags.push(DeviceFlags.BOT_DETECTED);
+    flags.push(DeviceFlags.HEADLESS_BROWSER, DeviceFlags.BOT_DETECTED);
   }
 
-  // Very small viewport (800x600) is typical of automated browsers
   if (fingerprint.screen_dims === "800x600") {
     flags.push(DeviceFlags.BOT_DETECTED);
   }
 
-  // Check user agent for bot patterns
-  if (fingerprint.user_agent) {
-    const ua = fingerprint.user_agent.toLowerCase();
-    if (
-      ua.includes("bot") ||
-      ua.includes("crawler") ||
-      ua.includes("spider") ||
-      ua.includes("headless")
-    ) {
-      flags.push(DeviceFlags.BOT_DETECTED);
-    }
+  if (hasBotUserAgent(fingerprint.user_agent)) {
+    flags.push(DeviceFlags.BOT_DETECTED);
   }
 
-  // Single CPU core and very low memory are atypical for real devices
   if (
     fingerprint.hardware_concurrency === 1 &&
     fingerprint.device_memory !== undefined &&
@@ -90,43 +95,51 @@ export function detectBotSignals(fingerprint: Fingerprint): string[] {
     flags.push(DeviceFlags.BOT_DETECTED);
   }
 
-  // Remove duplicates
   return [...new Set(flags)];
 }
 
 /**
- * Compute all flags for a profile based on fingerprint and profile state
- * AR-145: Added raw parameter for cross-field anomaly detection
+ * Context for flag computation
+ */
+export interface FlagContext {
+  /** Whether this is a newly created device */
+  isNewDevice: boolean;
+  /** Whether significant drift was detected from existing profile */
+  hasDrift: boolean;
+  /** Raw payload for cross-field anomaly detection */
+  raw?: unknown;
+}
+
+/**
+ * Compute all flags for a device based on fingerprint and history
+ * Combines bot detection, anomaly detection, drift detection, and rate limiting
+ * @param fingerprint - The current fingerprint
+ * @param existingProfile - Existing device profile (null for new devices)
+ * @param ctx - Context including new device flag, drift flag, and raw payload
+ * @returns Array of flag strings (deduplicated)
  */
 export function computeFlags(
   fingerprint: Fingerprint,
   existingProfile: DeviceProfile | null,
-  isNewDevice: boolean,
-  hasDrift: boolean,
-  raw?: unknown,
+  ctx: FlagContext,
 ): string[] {
+  const { isNewDevice, hasDrift, raw } = ctx;
   const flags: string[] = [];
 
-  // NEW_DEVICE flag for first-time devices
   if (isNewDevice) {
     flags.push(DeviceFlags.NEW_DEVICE);
   }
 
-  // Bot detection flags
   const botFlags = detectBotSignals(fingerprint);
   flags.push(...botFlags);
 
-  // Anomaly detection flags (AR-142)
-  // AR-145: Pass raw for cross-field anomaly detection
   const anomalyResult = detectAllAnomalies(fingerprint, raw);
   flags.push(...anomalyResult.suggestedFlags);
 
-  // FINGERPRINT_MISMATCH flag when significant drift is detected
   if (existingProfile && hasDrift) {
     flags.push(DeviceFlags.FINGERPRINT_MISMATCH);
   }
 
-  // RAPID_REQUESTS flag - check if request rate is suspicious
   if (existingProfile) {
     const hoursSinceFirstSeen =
       (Date.now() - existingProfile.first_seen_at) / (1000 * 60 * 60);
@@ -148,7 +161,6 @@ export function computeFlags(
     flags.push(...positiveFlags);
   }
 
-  // Remove duplicates and return
   return [...new Set(flags)];
 }
 
@@ -161,15 +173,12 @@ export function computeRiskScore(
   existingProfile: DeviceProfile | null,
   isNewDevice: boolean,
 ): number {
-  // Treat as new device if explicitly marked or no existing profile
   const effectivelyNewDevice = isNewDevice || existingProfile === null;
 
-  // Start with base risk
   let riskScore = effectivelyNewDevice
     ? RISK_WEIGHTS.BASE_NEW_DEVICE
     : RISK_WEIGHTS.BASE_RETURNING;
 
-  // Apply flag-based adjustments using lookup table
   for (const flag of flags) {
     const weight = RISK_WEIGHTS[flag as keyof typeof RISK_WEIGHTS];
     if (weight !== undefined) {
@@ -186,6 +195,5 @@ export function computeRiskScore(
       existingProfile.risk_score * historicalWeight;
   }
 
-  // Clamp to valid range [0, 1]
   return Math.max(0, Math.min(1, riskScore));
 }

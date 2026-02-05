@@ -18,6 +18,8 @@ import { WorkersConstruct } from "../constructs/workers";
 import { CloudFrontWafConstruct } from "../constructs/cloudfront";
 import { AnalyticsConstruct } from "../constructs/analytics";
 import { VectorWorkerConstruct } from "../constructs/vector-worker";
+import { ValkeyConstruct } from "../constructs/valkey";
+import { ArgusVpc } from "../constructs/vpc";
 import { getStageConfig } from "../config";
 
 interface ArgusApiStackProps extends cdk.StackProps {
@@ -130,6 +132,57 @@ export class ArgusApiStack extends cdk.Stack {
     });
 
     // =========================================================================
+    // VECTOR WORKER (Optional - for QDrant integration)
+    // =========================================================================
+    // Only deploy if vectorEnvironment is specified
+    // Runs in ms-argus-vector VPC to access internal ALB
+    // Created before WorkersConstruct so we can pass the vector queue
+
+    let vectorWorker: VectorWorkerConstruct | undefined;
+    if (vectorEnvironment) {
+      vectorWorker = new VectorWorkerConstruct(this, "VectorWorker", {
+        stackName,
+        stage,
+        alarmsTopic,
+        vectorEnvironment,
+        // Pass vector results queue for publishing search results
+        vectorResultsQueue: queues.vectorResultsQueue,
+      });
+    }
+
+    // =========================================================================
+    // STAGE CONFIG
+    // =========================================================================
+    // AR-160: Get stage config for Lambda memory tuning and Valkey settings
+    const stageConfig = getStageConfig(stage);
+
+    // =========================================================================
+    // VALKEY (Optional - for statistical anomaly detection)
+    // =========================================================================
+    // ElastiCache Serverless with Valkey engine for tracking fingerprint combo frequencies
+    // Uses HyperLogLog for cardinality estimation
+    // Only deploy if valkey.enabled in stage config
+
+    let valkey: ValkeyConstruct | undefined;
+    let argusVpc: ArgusVpc | undefined;
+
+    if (stageConfig.valkey.enabled) {
+      // Import shared VPC from ms-argus-infra
+      argusVpc = new ArgusVpc(this, "ArgusVpc", {
+        environment,
+      });
+
+      valkey = new ValkeyConstruct(this, "Valkey", {
+        stackName,
+        stage,
+        stageConfig,
+        alarmsTopic,
+        vpc: argusVpc.vpc,
+        lambdaSecurityGroup: argusVpc.lambdaSecurityGroup,
+      });
+    }
+
+    // =========================================================================
     // COMPUTE LAYER
     // =========================================================================
 
@@ -138,19 +191,19 @@ export class ArgusApiStack extends cdk.Stack {
     // AR-71: Reverted to async (SQS) for scalability
     // AR-139: Payload archiving
     // AR-160: Pass stage config for Lambda memory tuning
-    const stageConfig = getStageConfig(stage);
     const httpApi = new HttpApiConstruct(this, "HttpApi", {
       stackName,
       stage,
       matchingQueue: queues.matchingQueue,
       sessionCacheTable: dynamodb.sessionCacheTable,
       sessionPayloadTable: dynamodb.sessionPayloadTable, // AR-XXX: Full payload for gRPC stub
+      vectorResultsTable: dynamodb.vectorResultsTable, // Vector search results
       alarmsTopic,
       payloadArchiveBucket: analytics.payloadArchiveBucket,
       config: stageConfig,
     });
 
-    // Worker Lambdas (no VPC - access DynamoDB/SQS via IAM)
+    // Worker Lambdas (VPC optional - needed for Valkey access)
     const workers = new WorkersConstruct(this, "Workers", {
       stackName,
       stage,
@@ -163,25 +216,23 @@ export class ArgusApiStack extends cdk.Stack {
       tier2BucketsTable: dynamodb.tier2BucketsTable,
       sessionCacheTable: dynamodb.sessionCacheTable,
       sessionPayloadTable: dynamodb.sessionPayloadTable, // AR-XXX: Full payload for gRPC stub
+      vectorResultsTable: dynamodb.vectorResultsTable, // Vector search results
       observationsDeliveryStreamName:
         analytics.deliveryStream.deliveryStreamName!, // AR-57
+      // Vector queue for Qdrant embeddings (enabled)
+      vectorQueue: vectorWorker?.vectorQueue,
+      // Vector results queue for search result writes
+      vectorResultsQueue: queues.vectorResultsQueue,
+      // Vector worker ARN for Tier 2 vector search (replaces compound buckets)
+      vectorWorkerArn: vectorWorker?.vectorWorker.functionArn,
+      vectorCollection: "fingerprints",
+      // Valkey configuration for statistical anomaly detection
+      valkeyEndpoint: valkey?.endpoint,
+      valkeySecurityGroup: valkey?.securityGroup,
+      vpc: argusVpc?.vpc,
+      lambdaSecurityGroup: argusVpc?.lambdaSecurityGroup,
+      stageConfig,
     });
-
-    // =========================================================================
-    // VECTOR WORKER (Optional - for QDrant integration)
-    // =========================================================================
-    // Only deploy if vectorEnvironment is specified
-    // Runs in ms-argus-vector VPC to access internal ALB
-
-    let vectorWorker: VectorWorkerConstruct | undefined;
-    if (vectorEnvironment) {
-      vectorWorker = new VectorWorkerConstruct(this, "VectorWorker", {
-        stackName,
-        stage,
-        alarmsTopic,
-        vectorEnvironment,
-      });
-    }
 
     // =========================================================================
     // AR-71: WARMUP RULE - Keep SQS polling pipeline warm
@@ -280,6 +331,16 @@ export class ArgusApiStack extends cdk.Stack {
       description: "DynamoDB session cache table name",
     });
 
+    new cdk.CfnOutput(this, "VectorResultsTableName", {
+      value: dynamodb.vectorResultsTable.tableName,
+      description: "DynamoDB vector results table name",
+    });
+
+    new cdk.CfnOutput(this, "VectorResultsQueueUrl", {
+      value: queues.vectorResultsQueue.queueUrl,
+      description: "SQS URL for vector results queue",
+    });
+
     new cdk.CfnOutput(this, "MatchingWorkerArn", {
       value: workers.matchingWorker.functionArn,
       description: "Matching worker Lambda ARN",
@@ -290,11 +351,13 @@ export class ArgusApiStack extends cdk.Stack {
       description: "Profile updater Lambda ARN",
     });
 
-    // AR-130: Cardinality recalculation Lambda output
-    new cdk.CfnOutput(this, "CardinalityRecalcArn", {
-      value: workers.cardinalityRecalc.functionArn,
-      description: "Cardinality recalculation Lambda ARN",
-    });
+    // Vector results writer Lambda output (if enabled)
+    if (workers.vectorResultsWriter) {
+      new cdk.CfnOutput(this, "VectorResultsWriterArn", {
+        value: workers.vectorResultsWriter.functionArn,
+        description: "Vector results writer Lambda ARN",
+      });
+    }
 
     // AR-57: Analytics outputs
     new cdk.CfnOutput(this, "ObservationsBucketName", {
@@ -313,6 +376,14 @@ export class ArgusApiStack extends cdk.Stack {
       description: "S3 bucket for payload archives",
     });
 
+    // Valkey outputs (conditional)
+    if (valkey) {
+      new cdk.CfnOutput(this, "ValkeyEndpoint", {
+        value: valkey.endpoint,
+        description: "ElastiCache Serverless (Valkey) endpoint",
+      });
+    }
+
     // Vector worker outputs (conditional)
     if (vectorWorker) {
       new cdk.CfnOutput(this, "VectorWorkerArn", {
@@ -330,6 +401,21 @@ export class ArgusApiStack extends cdk.Stack {
         description: "SQS ARN for vector operations queue",
         exportName: `${stackName}-vector-queue-arn`,
       });
+
+      // Vector test API outputs (experimental)
+      if (vectorWorker.vectorTestApi) {
+        new cdk.CfnOutput(this, "VectorTestApiEndpoint", {
+          value: vectorWorker.vectorTestApi.apiEndpoint,
+          description: "Vector test API endpoint (experimental)",
+        });
+      }
+
+      if (vectorWorker.vectorTestFunction) {
+        new cdk.CfnOutput(this, "VectorTestFunctionArn", {
+          value: vectorWorker.vectorTestFunction.functionArn,
+          description: "Vector test Lambda ARN",
+        });
+      }
     }
   }
 }
