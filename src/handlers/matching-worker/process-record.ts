@@ -3,6 +3,7 @@ import { Logger } from "@aws-lambda-powertools/logger";
 import { Metrics, MetricUnit } from "@aws-lambda-powertools/metrics";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { FirehoseClient } from "@aws-sdk/client-firehose";
+import { S3Client } from "@aws-sdk/client-s3";
 import {
   MatchingService,
   generateIdempotencyKey,
@@ -24,7 +25,8 @@ import {
 } from "./parse-record";
 import { recordTierMetric } from "./metrics";
 import { emitObservation } from "./observation";
-import { writeSessionPayload } from "./session";
+import { writeSessionPayload, buildSessionResponseData } from "./session";
+import { archivePayload } from "../ingestion/archive";
 
 /** Dependencies required for processing SQS records in the matching worker. */
 export interface ProcessRecordDeps {
@@ -38,6 +40,12 @@ export interface ProcessRecordDeps {
   firehose: FirehoseClient;
   /** Environment configuration for the matching worker */
   envConfig: MatchingWorkerEnvConfig;
+  /** S3 client for payload archiving (null if archiving disabled) */
+  s3: S3Client | null;
+  /** S3 bucket name for archived payloads */
+  archiveBucket: string | undefined;
+  /** Sampling rate for archiving (0.0 to 1.0) */
+  archiveSampleRate: number;
 }
 
 /**
@@ -118,6 +126,24 @@ function buildAnomalySignals(
   }));
 }
 
+/** Fire-and-forget archive of enriched session data to S3. */
+function archiveEnrichedPayload(
+  sessionId: string,
+  sessionParams: Parameters<typeof buildSessionResponseData>[0],
+  deps: ProcessRecordDeps,
+): void {
+  const enrichedData = buildSessionResponseData(sessionParams);
+  archivePayload(sessionId, enrichedData, {
+    s3: deps.s3,
+    bucket: deps.archiveBucket,
+    sampleRate: deps.archiveSampleRate,
+    logger: deps.logger,
+    metrics: deps.metrics,
+  }).catch(() => {
+    /* logged in archivePayload */
+  });
+}
+
 /** Persist matching results to cache, session table, and profile queue. */
 async function persistResults(
   service: MatchingService,
@@ -142,21 +168,20 @@ async function persistResults(
   if (!cacheWritten) {
     deps.metrics.addMetric("SessionCacheWriteSkipped", MetricUnit.Count, 1);
   }
-  await writeSessionPayload(
-    {
-      sessionId,
-      rawPayload: ctx.rawPayload,
-      matchResult,
-      anomalies,
-      statisticalContextV2: ctx.statisticalContextV2,
-    },
-    {
-      dynamodb: deps.dynamodb,
-      tableName: deps.envConfig.SESSION_PAYLOAD_TABLE,
-      logger: deps.logger,
-      metrics: deps.metrics,
-    },
-  );
+  const sessionParams = {
+    sessionId,
+    rawPayload: ctx.rawPayload,
+    matchResult,
+    anomalies,
+    statisticalContextV2: ctx.statisticalContextV2,
+  };
+  await writeSessionPayload(sessionParams, {
+    dynamodb: deps.dynamodb,
+    tableName: deps.envConfig.SESSION_PAYLOAD_TABLE,
+    logger: deps.logger,
+    metrics: deps.metrics,
+  });
+  archiveEnrichedPayload(sessionId, sessionParams, deps);
   await service.queueProfileUpdate(
     matchResult.device_id,
     ctx.payload,

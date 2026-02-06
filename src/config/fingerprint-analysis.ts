@@ -101,6 +101,13 @@ export interface FingerprintDefinition {
    * Higher = need more samples before flagging.
    */
   confidenceThreshold: number;
+
+  /**
+   * Optional transform to convert a raw extracted value into a string for counting.
+   * Use for numeric/continuous values that need discretization.
+   * If not provided, the value is extracted as a string directly.
+   */
+  transform?: (value: unknown) => string | null;
 }
 
 /**
@@ -265,7 +272,142 @@ export const FINGERPRINT_DEFINITIONS: Record<string, FingerprintDefinition> = {
       process.env.STAT_V2_CSS_CONFIDENCE || "0.25",
     ),
   },
-} as const;
+
+  /**
+   * TCP Maximum Segment Size
+   *
+   * Semi-discrete numeric value (1360, 1440, 1460, etc.).
+   * Varies by OS, network path, and VPN/tunnel usage.
+   * Grouped by UA + ASN since MSS depends on network path.
+   */
+  tcp_mss: {
+    path: "tcpProbe.rtt_fingerprint.snd_mss",
+    anomalyCode: "RARE_TCP_MSS_FOR_UA",
+    fieldName: "tcp_mss",
+    groupBy: [...DEFAULT_GROUP_BY, "asn"],
+    transform: (value: unknown): string | null => {
+      if (typeof value !== "number" || !Number.isFinite(value)) return null;
+      return String(Math.round(value));
+    },
+    maxSurpriseBits: parseFloat(process.env.STAT_V2_MSS_MAX_BITS || "6"),
+    saturationThreshold: parseInt(
+      process.env.STAT_V2_MSS_SATURATION || "50",
+      10,
+    ),
+    anomalyThreshold: parseFloat(process.env.STAT_V2_MSS_THRESHOLD || "0.4"),
+    confidenceThreshold: parseFloat(
+      process.env.STAT_V2_MSS_CONFIDENCE || "0.25",
+    ),
+  },
+
+  // ── Coherence signals (cross-field Shannon scoring) ──────────────────
+
+  /**
+   * Language for Timezone
+   *
+   * Low cardinality - language tags per timezone region.
+   * Catches spoofed locale: "cz-RU" from America/Chicago → max surprise.
+   * Handles "en" vs "en-US" gracefully since both are common in US TZs.
+   */
+  lang_for_tz: {
+    path: "workerScope.language",
+    source: "device",
+    anomalyCode: "RARE_LANG_FOR_TZ",
+    fieldName: "language",
+    groupBy: "device.workerScope.timezoneLocation",
+    maxSurpriseBits: 6,
+    saturationThreshold: 50,
+    anomalyThreshold: 0.5,
+    confidenceThreshold: 0.25,
+  },
+
+  /**
+   * Timezone for Country
+   *
+   * Low cardinality - timezone IDs per IP country.
+   * Subsumes rule-based IP_TIMEZONE_MISMATCH with nuance:
+   * Atlantic/Reykjavik from US IP → rare → flagged.
+   * America/New_York from US IP → common → pass.
+   */
+  tz_for_country: {
+    path: "workerScope.timezoneLocation",
+    source: "device",
+    anomalyCode: "RARE_TZ_FOR_COUNTRY",
+    fieldName: "timezone",
+    groupBy: "country",
+    maxSurpriseBits: 8,
+    saturationThreshold: 100,
+    anomalyThreshold: 0.5,
+    confidenceThreshold: 0.25,
+  },
+
+  /**
+   * JS Engine for Layout Engine
+   *
+   * Very low cardinality - only ~3 valid combos exist.
+   * SpiderMonkey + WebKit = 0 observations = max surprise.
+   * V8 + Blink = extremely common = no flag.
+   */
+  js_engine_for_layout: {
+    path: "consoleErrors.jsEngine",
+    source: "device",
+    anomalyCode: "RARE_ENGINE_COMBO",
+    fieldName: "js_engine",
+    groupBy: "device.consoleErrors.layoutEngine",
+    maxSurpriseBits: 6,
+    saturationThreshold: 50,
+    anomalyThreshold: 0.4,
+    confidenceThreshold: 0.2,
+  },
+
+  /**
+   * Resistance Engine for UA
+   *
+   * Very low cardinality - Gecko engine claiming Chrome UA = max surprise.
+   * Grouped by composite UA key to catch engine/UA mismatches.
+   */
+  engine_for_ua: {
+    path: "resistance.engine",
+    source: "device",
+    anomalyCode: "RARE_ENGINE_FOR_UA",
+    fieldName: "resistance_engine",
+    groupBy: DEFAULT_GROUP_BY,
+    maxSurpriseBits: 6,
+    saturationThreshold: 50,
+    anomalyThreshold: 0.4,
+    confidenceThreshold: 0.2,
+  },
+
+  /**
+   * TLS-to-TCP Timing Ratio
+   *
+   * Ratio of TLS handshake time to TCP RTT. Proxy/VPN adds extra
+   * TLS hops, inflating this ratio. Bucketed in 1.5 increments.
+   * Grouped by UA + ASN since ratio depends on network path.
+   */
+  tls_ratio: {
+    path: "tcpProbe.rtt_fingerprint.tls_to_tcp_ratio",
+    anomalyCode: "RARE_TLS_RATIO_FOR_UA",
+    fieldName: "tls_to_tcp_ratio",
+    groupBy: [...DEFAULT_GROUP_BY, "asn"],
+    transform: (value: unknown): string | null => {
+      if (typeof value !== "number" || !Number.isFinite(value)) return null;
+      const bucket = Math.floor(value / 1.5) * 1.5;
+      return `${bucket.toFixed(1)}-${(bucket + 1.5).toFixed(1)}`;
+    },
+    maxSurpriseBits: parseFloat(process.env.STAT_V2_TLS_RATIO_MAX_BITS || "6"),
+    saturationThreshold: parseInt(
+      process.env.STAT_V2_TLS_RATIO_SATURATION || "50",
+      10,
+    ),
+    anomalyThreshold: parseFloat(
+      process.env.STAT_V2_TLS_RATIO_THRESHOLD || "0.4",
+    ),
+    confidenceThreshold: parseFloat(
+      process.env.STAT_V2_TLS_RATIO_CONFIDENCE || "0.25",
+    ),
+  },
+};
 
 /**
  * Get all defined fingerprint type keys.

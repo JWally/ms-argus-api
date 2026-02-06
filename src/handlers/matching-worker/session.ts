@@ -122,7 +122,7 @@ function buildAnalysis(
   return analysis;
 }
 
-function buildSessionResponseData(params: {
+export function buildSessionResponseData(params: {
   sessionId: string;
   rawPayload: SqsPayload;
   matchResult: MatchResult;

@@ -34,6 +34,13 @@ export const AnomalyCodes = {
   RARE_FONTS_FOR_UA: "RARE_FONTS_FOR_UA",
   RARE_LIES_FOR_UA: "RARE_LIES_FOR_UA",
   RARE_CSS_FOR_UA: "RARE_CSS_FOR_UA",
+  RARE_TCP_MSS_FOR_UA: "RARE_TCP_MSS_FOR_UA",
+  RARE_TLS_RATIO_FOR_UA: "RARE_TLS_RATIO_FOR_UA",
+  // Coherence anomalies (cross-signal Shannon scoring)
+  RARE_LANG_FOR_TZ: "RARE_LANG_FOR_TZ",
+  RARE_TZ_FOR_COUNTRY: "RARE_TZ_FOR_COUNTRY",
+  RARE_ENGINE_COMBO: "RARE_ENGINE_COMBO",
+  RARE_ENGINE_FOR_UA: "RARE_ENGINE_FOR_UA",
 } as const;
 
 export type AnomalyCode = (typeof AnomalyCodes)[keyof typeof AnomalyCodes];

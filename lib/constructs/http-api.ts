@@ -12,7 +12,6 @@ import * as apigatewayv2 from "aws-cdk-lib/aws-apigatewayv2";
 import * as integrations from "aws-cdk-lib/aws-apigatewayv2-integrations";
 import * as sqs from "aws-cdk-lib/aws-sqs";
 import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
-import * as s3 from "aws-cdk-lib/aws-s3";
 import * as logs from "aws-cdk-lib/aws-logs";
 import * as cloudwatch from "aws-cdk-lib/aws-cloudwatch";
 import * as sns from "aws-cdk-lib/aws-sns";
@@ -31,8 +30,6 @@ interface HttpApiConstructProps {
   /** Optional: Vector results table for async vector search results */
   vectorResultsTable?: dynamodb.ITable;
   alarmsTopic: sns.ITopic;
-  /** AR-139: S3 bucket for payload archiving */
-  payloadArchiveBucket: s3.IBucket;
   /** AR-160: Stage-specific configuration for Lambda memory tuning */
   config: StageConfig;
 }
@@ -68,7 +65,6 @@ export class HttpApiConstruct extends Construct {
       sessionPayloadTable,
       vectorResultsTable,
       alarmsTopic,
-      payloadArchiveBucket,
       config,
     } = props;
 
@@ -97,18 +93,12 @@ export class HttpApiConstruct extends Construct {
         environment: {
           ...createPowertoolsEnv("argus-ingestion", `argus-${stage}`),
           SQS_QUEUE_URL: matchingQueue.queueUrl,
-          // AR-139: Payload archiving configuration
-          PAYLOAD_ARCHIVE_BUCKET: payloadArchiveBucket.bucketName,
-          PAYLOAD_ARCHIVE_SAMPLE_RATE: stage === "prod" ? "0" : "1.0",
         },
       },
     );
 
     // Grant SQS permissions
     matchingQueue.grantSendMessages(this.ingestionFunction);
-
-    // AR-139: Grant Lambda permission to write to payload archive bucket
-    payloadArchiveBucket.grantWrite(this.ingestionFunction);
 
     // AR-67: Session retrieval Lambda
     const sessionGetLogGroup = new logs.LogGroup(this, "SessionGetLogGroup", {

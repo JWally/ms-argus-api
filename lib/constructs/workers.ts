@@ -12,6 +12,7 @@ import * as cloudwatch from "aws-cdk-lib/aws-cloudwatch";
 import * as codedeploy from "aws-cdk-lib/aws-codedeploy";
 import * as sns from "aws-cdk-lib/aws-sns";
 import * as sqs from "aws-cdk-lib/aws-sqs";
+import * as s3 from "aws-cdk-lib/aws-s3";
 import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
 import { Duration } from "aws-cdk-lib";
@@ -55,6 +56,8 @@ interface WorkersConstructProps {
   lambdaSecurityGroup?: ec2.ISecurityGroup;
   /** Optional: Stage config (required if using Valkey for threshold settings). */
   stageConfig?: StageConfig;
+  /** Optional: S3 bucket for payload archiving */
+  payloadArchiveBucket?: s3.IBucket;
 }
 
 /**
@@ -77,6 +80,7 @@ export class WorkersConstruct extends Construct {
   public readonly matchingWorkerAlias: Alias;
   public readonly profileUpdaterAlias: Alias;
 
+  // eslint-disable-next-line complexity, sonarjs/cognitive-complexity
   constructor(scope: Construct, id: string, props: WorkersConstructProps) {
     super(scope, id);
 
@@ -103,6 +107,7 @@ export class WorkersConstruct extends Construct {
       vpc,
       lambdaSecurityGroup,
       stageConfig,
+      payloadArchiveBucket,
     } = props;
 
     // Secrets Manager reference
@@ -180,6 +185,11 @@ export class WorkersConstruct extends Construct {
           VECTOR_WORKER_ARN: vectorWorkerArn,
           VECTOR_COLLECTION: vectorCollection,
         }),
+        // AR-139: Payload archiving (enriched session data)
+        ...(payloadArchiveBucket && {
+          PAYLOAD_ARCHIVE_BUCKET: payloadArchiveBucket.bucketName,
+          PAYLOAD_ARCHIVE_SAMPLE_RATE: stage === "prod" ? "0" : "1.0",
+        }),
         // Valkey configuration for statistical anomaly detection
         ...(valkeyEndpoint && {
           VALKEY_ENDPOINT: valkeyEndpoint,
@@ -197,6 +207,10 @@ export class WorkersConstruct extends Construct {
           ),
           NETWORK_BASELINE_THRESHOLD: String(
             stageConfig?.valkey.networkBaseline?.threshold ?? 0.5,
+          ),
+          // Global sampling rate for baseline counters (1.0 = every request, 0.01 = 1%)
+          GLOBAL_SAMPLE_RATE: String(
+            stageConfig?.valkey.globalSampleRate ?? 0.01,
           ),
           // Statistical v2 anomaly detection (Shannon scoring)
           STATISTICAL_V2_ENABLED: String(
@@ -228,6 +242,11 @@ export class WorkersConstruct extends Construct {
     sessionPayloadTable.grantWriteData(this.matchingWorker); // AR-XXX: Full payload storage
     profileQueue.grantSendMessages(this.matchingWorker);
     matchingQueue.grantConsumeMessages(this.matchingWorker);
+
+    // AR-139: Grant S3 write for payload archiving
+    if (payloadArchiveBucket) {
+      payloadArchiveBucket.grantWrite(this.matchingWorker);
+    }
 
     // AR-57: Firehose permission for observations
     this.matchingWorker.addToRolePolicy(

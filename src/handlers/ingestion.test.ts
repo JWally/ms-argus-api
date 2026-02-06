@@ -23,13 +23,10 @@ vi.hoisted(() => {
   process.env.POWERTOOLS_METRICS_NAMESPACE = "argus-test";
   process.env.SQS_QUEUE_URL =
     "https://sqs.us-east-1.amazonaws.com/123456789/test-queue";
-  process.env.PAYLOAD_ARCHIVE_BUCKET = "test-archive-bucket";
-  process.env.PAYLOAD_ARCHIVE_SAMPLE_RATE = "1.0";
 });
 
 import { mockClient } from "aws-sdk-client-mock";
 import { SQSClient, SendMessageCommand } from "@aws-sdk/client-sqs";
-import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 import {
   APIGatewayProxyEventV2,
   APIGatewayProxyStructuredResultV2,
@@ -37,9 +34,8 @@ import {
 } from "aws-lambda";
 
 const sqsMock = mockClient(SQSClient);
-const s3Mock = mockClient(S3Client);
 
-import { handler, archivePayload } from "./ingestion";
+import { handler } from "./ingestion";
 
 const asResult = (result: unknown): APIGatewayProxyStructuredResultV2 =>
   result as APIGatewayProxyStructuredResultV2;
@@ -63,8 +59,6 @@ describe("ingestion handler", () => {
   beforeEach(() => {
     sqsMock.reset();
     sqsMock.on(SendMessageCommand).resolves({});
-    s3Mock.reset();
-    s3Mock.on(PutObjectCommand).resolves({});
     vi.clearAllMocks();
   });
 
@@ -644,63 +638,6 @@ describe("ingestion handler", () => {
       expect(result.statusCode).toBe(400);
       const body = JSON.parse(result.body ?? "");
       expect(body.error).toContain("session_id");
-    });
-  });
-
-  describe("payload archiving", () => {
-    it("should archive payload with correct Hive-partitioned S3 key format", async () => {
-      const sessionId = "archive-test-session-123";
-      const payload = { session_id: sessionId, data: "test-data" };
-
-      await archivePayload(sessionId, payload);
-
-      const s3Calls = s3Mock.commandCalls(PutObjectCommand);
-      expect(s3Calls.length).toBe(1);
-
-      // Verify key format: year=YYYY/month=MM/day=DD/hour=HH/{sessionId}.json.gz
-      const key = s3Calls[0].args[0].input.Key!;
-      expect(key).toMatch(
-        /^year=\d{4}\/month=\d{2}\/day=\d{2}\/hour=\d{2}\/archive-test-session-123\.json\.gz$/,
-      );
-    });
-
-    it("should compress payload with gzip", async () => {
-      const sessionId = "gzip-test-session";
-      const payload = { session_id: sessionId, test: "data" };
-
-      await archivePayload(sessionId, payload);
-
-      const s3Calls = s3Mock.commandCalls(PutObjectCommand);
-      expect(s3Calls.length).toBe(1);
-
-      expect(s3Calls[0].args[0].input.ContentEncoding).toBe("gzip");
-      expect(s3Calls[0].args[0].input.ContentType).toBe("application/json");
-
-      expect(s3Calls[0].args[0].input.Body).toBeInstanceOf(Buffer);
-    });
-
-    it("should log error but not throw when S3 upload fails", async () => {
-      s3Mock.reset();
-      s3Mock.on(PutObjectCommand).rejects(new Error("S3 unavailable"));
-
-      await expect(
-        archivePayload("error-test-session", { data: "test" }),
-      ).resolves.toBeUndefined();
-    });
-
-    it("should call archivePayload during successful ingestion", async () => {
-      const payload = createValidPayload("archive-integration-test");
-      const event = createApiEvent(JSON.stringify(payload));
-
-      const result = asResult(await handler(event, mockContext));
-
-      expect(result.statusCode).toBe(204);
-
-      // Wait a tick for async archive to complete
-      await new Promise((resolve) => setTimeout(resolve, 10));
-
-      const s3Calls = s3Mock.commandCalls(PutObjectCommand);
-      expect(s3Calls.length).toBeGreaterThanOrEqual(1);
     });
   });
 });

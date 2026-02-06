@@ -9,10 +9,8 @@ import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from "aws-lambda";
 import { Logger } from "@aws-lambda-powertools/logger";
 import { Metrics, MetricUnit } from "@aws-lambda-powertools/metrics";
 import { SQSClient, SendMessageCommand } from "@aws-sdk/client-sqs";
-import { S3Client } from "@aws-sdk/client-s3";
 import { HttpError } from "../../helpers/http-error";
 import { getSessionId, type ArgusPayload } from "../../helpers/payload-schema";
-import { archivePayload } from "./archive";
 
 /** API Gateway event extended with pre-parsed body from middleware. */
 export interface ExtendedEvent extends APIGatewayProxyEventV2 {
@@ -26,12 +24,6 @@ export interface BaseHandlerDeps {
   sqs: SQSClient;
   /** URL of the matching worker queue */
   sqsQueueUrl: string;
-  /** S3 client for payload archiving (null if archiving disabled) */
-  s3: S3Client | null;
-  /** S3 bucket name for archived payloads */
-  archiveBucket: string | undefined;
-  /** Sampling rate for archiving (0.0 to 1.0) */
-  archiveSampleRate: number;
   /** Logger instance for structured logging */
   logger: Logger;
   /** Metrics client for CloudWatch metrics */
@@ -111,15 +103,6 @@ export function createBaseHandler(deps: BaseHandlerDeps) {
       throw new HttpError(503, "Service temporarily unavailable");
     }
 
-    archivePayload(sessionId, payload, {
-      s3: deps.s3,
-      bucket: deps.archiveBucket,
-      sampleRate: deps.archiveSampleRate,
-      logger: deps.logger,
-      metrics: deps.metrics,
-    }).catch(() => {
-      /* logged in archivePayload */
-    });
     deps.metrics.addMetric("RequestQueued", MetricUnit.Count, 1);
     deps.metrics.addMetric(
       "IngestionDuration",

@@ -199,7 +199,6 @@ export class ArgusApiStack extends cdk.Stack {
       sessionPayloadTable: dynamodb.sessionPayloadTable, // AR-XXX: Full payload for gRPC stub
       vectorResultsTable: dynamodb.vectorResultsTable, // Vector search results
       alarmsTopic,
-      payloadArchiveBucket: analytics.payloadArchiveBucket,
       config: stageConfig,
     });
 
@@ -226,6 +225,8 @@ export class ArgusApiStack extends cdk.Stack {
       // Vector worker ARN for Tier 2 vector search (replaces compound buckets)
       vectorWorkerArn: vectorWorker?.vectorWorker.functionArn,
       vectorCollection: "fingerprints",
+      // AR-139: Payload archiving bucket for enriched session data
+      payloadArchiveBucket: analytics.payloadArchiveBucket,
       // Valkey configuration for statistical anomaly detection
       valkeyEndpoint: valkey?.endpoint,
       valkeySecurityGroup: valkey?.securityGroup,

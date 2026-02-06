@@ -400,6 +400,13 @@ function extractSingleFingerprint(
   if (source === "hashes") {
     return (data as Record<string, string>)[definition.path] || null;
   }
+
+  // If a transform is defined, extract raw value and transform it
+  if (definition.transform) {
+    const raw = getByPath<unknown>(data, definition.path);
+    return raw != null ? definition.transform(raw) : null;
+  }
+
   return getByPath<string>(data, definition.path) || null;
 }
 

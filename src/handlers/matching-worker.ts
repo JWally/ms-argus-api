@@ -22,6 +22,7 @@ import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { SQSClient } from "@aws-sdk/client-sqs";
 import { LambdaClient } from "@aws-sdk/client-lambda";
 import { FirehoseClient } from "@aws-sdk/client-firehose";
+import { S3Client } from "@aws-sdk/client-s3";
 import { DynamoCacheService } from "../services/cache";
 import { getMatchingWorkerEnv } from "../config/env";
 import {
@@ -43,6 +44,12 @@ const sqs = new SQSClient({});
 const firehose = new FirehoseClient({});
 // Lambda client for vector-worker invocation (Tier 2 vector search)
 const lambda = envConfig.VECTOR_WORKER_ARN ? new LambdaClient({}) : undefined;
+// S3 client for payload archiving (only created if bucket is configured)
+const archiveBucket = envConfig.PAYLOAD_ARCHIVE_BUCKET;
+const archiveSampleRate = parseFloat(
+  envConfig.PAYLOAD_ARCHIVE_SAMPLE_RATE ?? "0",
+);
+const s3 = archiveBucket ? new S3Client({}) : null;
 
 const cacheService = new DynamoCacheService(dynamodb, {
   tableName: envConfig.SESSION_CACHE_TABLE,
@@ -83,7 +90,16 @@ export const handler: SQSHandler = async (event) => {
     logger,
     metrics,
   });
-  const deps = { logger, metrics, dynamodb, firehose, envConfig };
+  const deps = {
+    logger,
+    metrics,
+    dynamodb,
+    firehose,
+    envConfig,
+    s3,
+    archiveBucket,
+    archiveSampleRate,
+  };
   return processSqsBatch(
     event.Records,
     (record) => processRecord(record, service, deps),

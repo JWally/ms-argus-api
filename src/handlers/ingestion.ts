@@ -3,7 +3,6 @@ import { Metrics } from "@aws-lambda-powertools/metrics";
 import { logMetrics } from "@aws-lambda-powertools/metrics/middleware";
 import { injectLambdaContext } from "@aws-lambda-powertools/logger/middleware";
 import { SQSClient } from "@aws-sdk/client-sqs";
-import { S3Client } from "@aws-sdk/client-s3";
 import middy from "@middy/core";
 import httpHeaderNormalizer from "@middy/http-header-normalizer";
 import validator from "@middy/validator";
@@ -16,16 +15,9 @@ import { jsonErrorHandler } from "../helpers/error-middleware";
 import { payloadJsonSchema } from "../helpers/payload-schema";
 import { binaryGzipBodyParser, jsonBodyParser } from "./ingestion/middleware";
 import { createBaseHandler } from "./ingestion/base-handler";
-import { archivePayload as _archivePayload } from "./ingestion/archive";
 
 validateRequiredEnvVars(["SQS_QUEUE_URL"]);
 const SQS_QUEUE_URL = process.env.SQS_QUEUE_URL!;
-
-const PAYLOAD_ARCHIVE_BUCKET = process.env.PAYLOAD_ARCHIVE_BUCKET;
-const PAYLOAD_ARCHIVE_SAMPLE_RATE = parseFloat(
-  process.env.PAYLOAD_ARCHIVE_SAMPLE_RATE ?? "0",
-);
-const s3 = PAYLOAD_ARCHIVE_BUCKET ? new S3Client({}) : null;
 
 const logger = new Logger({
   serviceName: process.env.POWERTOOLS_SERVICE_NAME ?? "argus-ingestion",
@@ -34,20 +26,6 @@ const metrics = new Metrics({
   namespace: process.env.POWERTOOLS_METRICS_NAMESPACE ?? "argus",
 });
 const sqs = new SQSClient({});
-
-/**
- * Archive a payload to S3 for debugging and analysis
- * @param sessionId - Session identifier for the archive key
- * @param payload - Payload to archive
- */
-export const archivePayload = (sessionId: string, payload: unknown) =>
-  _archivePayload(sessionId, payload, {
-    s3,
-    bucket: PAYLOAD_ARCHIVE_BUCKET,
-    sampleRate: PAYLOAD_ARCHIVE_SAMPLE_RATE,
-    logger,
-    metrics,
-  });
 
 // Configurable body size limits via env vars for dev data collection
 const MAX_BODY_BYTES = parseInt(
@@ -67,9 +45,6 @@ const CORS_CONFIG = {
 const baseHandler = createBaseHandler({
   sqs,
   sqsQueueUrl: SQS_QUEUE_URL,
-  s3,
-  archiveBucket: PAYLOAD_ARCHIVE_BUCKET,
-  archiveSampleRate: PAYLOAD_ARCHIVE_SAMPLE_RATE,
   logger,
   metrics,
 });

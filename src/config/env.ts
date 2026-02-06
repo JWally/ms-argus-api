@@ -27,6 +27,10 @@ export interface MatchingWorkerEnvConfig extends BaseEnvConfig {
   VECTOR_WORKER_ARN?: string;
   /** Optional: Qdrant collection name for fingerprint vectors */
   VECTOR_COLLECTION?: string;
+  /** Optional: S3 bucket for payload archiving */
+  PAYLOAD_ARCHIVE_BUCKET?: string;
+  /** Optional: Sampling rate for payload archiving (0.0 to 1.0) */
+  PAYLOAD_ARCHIVE_SAMPLE_RATE?: string;
 }
 
 /**
@@ -105,7 +109,13 @@ export function getMatchingWorkerEnv(): MatchingWorkerEnvConfig {
       "PROFILE_QUEUE_URL",
     ],
     "argus-matching",
-    ["OBSERVATIONS_STREAM_NAME", "VECTOR_WORKER_ARN", "VECTOR_COLLECTION"],
+    [
+      "OBSERVATIONS_STREAM_NAME",
+      "VECTOR_WORKER_ARN",
+      "VECTOR_COLLECTION",
+      "PAYLOAD_ARCHIVE_BUCKET",
+      "PAYLOAD_ARCHIVE_SAMPLE_RATE",
+    ],
   );
 }
 
