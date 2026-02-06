@@ -79,12 +79,16 @@ export interface FingerprintScore {
   uaCount: number;
   /** Count of this specific fingerprint globally */
   globalCount: number;
+  /** True when browser-group sample size is large enough to trust */
+  adequateSample: boolean;
 }
 
 /** Context for statistical v2 detection (pre-fetched) */
 export interface StatisticalContextV2 {
   /** Browser family extracted from User-Agent (e.g., 'chrome', 'firefox') */
   uaFamily: string;
+  /** Client-reported browser identity (e.g., 'Chrome 144 Brave', 'Firefox 147') */
+  userAgentParsed: string | null;
   /** Original User-Agent for logging */
   originalUA: string | null;
   /** Extracted fingerprint values keyed by type */
@@ -189,15 +193,17 @@ interface BlendedScoreResult {
   confidence: number;
   rawUaScore: number;
   rawGlobalScore: number;
+  adequateSample: boolean;
 }
 
 /**
- * Compute blended anomaly score using Bayesian approach.
+ * Compute anomaly score from browser-group baseline only.
  *
- * Smoothly transitions from global baseline (for new UA families) to
- * UA-specific baseline (for established UA families) based on sample size.
+ * Scores purely against the browser-specific baseline (no global blend).
+ * Confidence indicates how much data we have; adequateSample flags
+ * whether the baseline is large enough to trust.
  *
- * Formula: final = (ua_score × confidence) + (global_score × (1 - confidence))
+ * @param adequateConfidenceThreshold - confidence level at which we consider the sample adequate (default 0.5)
  */
 export function computeBlendedScore(
   input: BlendedScoreInput,
@@ -215,12 +221,11 @@ export function computeBlendedScore(
     definition.maxSurpriseBits,
   );
 
-  // Bayesian blend:
-  // - confidence=0 (new UA): 100% global score
-  // - confidence=1 (established UA): 100% UA-specific score
-  const score = rawUaScore * confidence + rawGlobalScore * (1 - confidence);
+  // Score directly from browser-group baseline — no global blend
+  const score = rawUaScore;
+  const adequateSample = confidence >= 0.5;
 
-  return { score, confidence, rawUaScore, rawGlobalScore };
+  return { score, confidence, rawUaScore, rawGlobalScore, adequateSample };
 }
 
 /**
@@ -378,31 +383,33 @@ interface ExtractionSources {
  * @param sources - Available data sources for extraction
  * @returns Map of fingerprint type to extracted value (or null if not present)
  */
+/** Extract a single fingerprint value from the appropriate source. */
+function extractSingleFingerprint(
+  definition: FingerprintDefinition,
+  sources: ExtractionSources,
+): string | null {
+  const source = definition.source || "network";
+  const sourceMap: Record<string, Record<string, unknown> | undefined> = {
+    hashes: sources.hashes as Record<string, unknown> | undefined,
+    device: sources.device,
+    network: sources.network as Record<string, unknown> | undefined,
+  };
+  const data = sourceMap[source];
+  if (!data) return null;
+
+  if (source === "hashes") {
+    return (data as Record<string, string>)[definition.path] || null;
+  }
+  return getByPath<string>(data, definition.path) || null;
+}
+
 function extractFingerprints(
   sources: ExtractionSources,
 ): Record<string, string | null> {
   const result: Record<string, string | null> = {};
-
   for (const [type, definition] of Object.entries(FINGERPRINT_DEFINITIONS)) {
-    const source = definition.source || "network";
-    let value: string | null = null;
-
-    if (source === "hashes" && sources.hashes) {
-      // Direct key lookup for hashes
-      value = sources.hashes[definition.path] || null;
-    } else if (source === "device" && sources.device) {
-      value = getByPath<string>(sources.device, definition.path) || null;
-    } else if (source === "network" && sources.network) {
-      value =
-        getByPath<string>(
-          sources.network as Record<string, unknown>,
-          definition.path,
-        ) || null;
-    }
-
-    result[type] = value;
+    result[type] = extractSingleFingerprint(definition, sources);
   }
-
   return result;
 }
 
@@ -496,6 +503,7 @@ function computeScores(
       globalTotal: data.globalTotal,
       uaCount: data.count,
       globalCount: data.globalCount,
+      adequateSample: blended.adequateSample,
     };
 
     metrics.addMetric(
@@ -536,6 +544,7 @@ interface ProcessInput {
   device: Record<string, Record<string, unknown> | undefined> | undefined;
   userAgent: string;
   uaFamily: string;
+  userAgentParsed: string | null;
   fingerprints: Record<string, string | null>;
   types: string[];
   groupingKeys: Record<string, string>;
@@ -550,6 +559,7 @@ async function processFingerprints(
     device,
     userAgent,
     uaFamily,
+    userAgentParsed,
     fingerprints,
     types,
     groupingKeys,
@@ -568,11 +578,10 @@ async function processFingerprints(
   }
 
   const fetcher = skipBaseline ? fetchStatisticalV2Data : recordFingerprintV2;
-  const dataPromises = types.map((type) =>
-    fingerprints[type]
-      ? fetcher(groupingKeys[type], type, fingerprints[type]!)
-      : Promise.resolve(null),
-  );
+  const dataPromises = types.map((type) => {
+    const fp = fingerprints[type];
+    return fp ? fetcher(groupingKeys[type], type, fp) : Promise.resolve(null);
+  });
 
   const dataResults = await Promise.all(dataPromises);
   const scores = computeScores(types, dataResults, fingerprints, groupingKeys);
@@ -585,6 +594,7 @@ async function processFingerprints(
 
   return {
     uaFamily,
+    userAgentParsed,
     originalUA: userAgent,
     fingerprints,
     groupingKeys,
@@ -615,6 +625,12 @@ export async function fetchStatisticalContextV2(
   if (!userAgent) return null;
 
   const uaFamily = parseUAFamily(userAgent).baselineKey;
+  const userAgentParsed = device?.navigator
+    ? getByPath<string>(
+        device as Record<string, unknown>,
+        "navigator.userAgentParsed",
+      ) || null
+    : null;
   const fingerprints = extractFingerprints({
     network,
     device: device as Record<string, unknown>,
@@ -640,6 +656,7 @@ export async function fetchStatisticalContextV2(
       device,
       userAgent,
       uaFamily,
+      userAgentParsed,
       fingerprints,
       types,
       groupingKeys: resolveAllGroupingKeys(types, keyCtx),

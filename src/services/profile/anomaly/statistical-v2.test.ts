@@ -43,6 +43,7 @@ function createScore(
     globalTotal: 10000,
     uaCount: 10,
     globalCount: 100,
+    adequateSample: confidence >= 0.5,
     ...overrides,
   };
 }
@@ -136,7 +137,7 @@ describe("statistical-v2", () => {
       saturationThreshold: 500,
     });
 
-    it("returns 100% global score when no UA samples", () => {
+    it("scores from UA baseline only, even with no UA samples", () => {
       const result = computeBlendedScore({
         uaCount: 0,
         uaTotal: 0,
@@ -145,10 +146,11 @@ describe("statistical-v2", () => {
         definition,
       });
       expect(result.confidence).toBe(0);
-      expect(result.score).toBeCloseTo(result.rawGlobalScore, 3);
+      expect(result.score).toBeCloseTo(result.rawUaScore, 3);
+      expect(result.adequateSample).toBe(false);
     });
 
-    it("returns 100% UA score when at saturation", () => {
+    it("scores from UA baseline at saturation", () => {
       const result = computeBlendedScore({
         uaCount: 50,
         uaTotal: 500,
@@ -158,9 +160,10 @@ describe("statistical-v2", () => {
       });
       expect(result.confidence).toBe(1.0);
       expect(result.score).toBeCloseTo(result.rawUaScore, 3);
+      expect(result.adequateSample).toBe(true);
     });
 
-    it("returns 50/50 blend at 25% of saturation", () => {
+    it("marks adequate_sample true at 50% confidence (25% of saturation)", () => {
       const result = computeBlendedScore({
         uaCount: 10,
         uaTotal: 125,
@@ -169,9 +172,20 @@ describe("statistical-v2", () => {
         definition,
       });
       expect(result.confidence).toBe(0.5);
-      const expectedBlend =
-        0.5 * result.rawUaScore + 0.5 * result.rawGlobalScore;
-      expect(result.score).toBeCloseTo(expectedBlend, 3);
+      expect(result.score).toBeCloseTo(result.rawUaScore, 3);
+      expect(result.adequateSample).toBe(true);
+    });
+
+    it("marks adequate_sample false below 50% confidence", () => {
+      const result = computeBlendedScore({
+        uaCount: 5,
+        uaTotal: 50,
+        globalCount: 100,
+        globalTotal: 1000,
+        definition,
+      });
+      expect(result.confidence).toBeLessThan(0.5);
+      expect(result.adequateSample).toBe(false);
     });
   });
 
@@ -215,6 +229,7 @@ describe("statistical-v2", () => {
     it("returns empty array when scores below threshold", () => {
       const context: StatisticalContextV2 = {
         uaFamily: "chrome",
+        userAgentParsed: null,
         originalUA: "Mozilla/5.0 Chrome/144",
         fingerprints: {
           ja4: "t13d1516h2_8daaf6152771",
@@ -235,6 +250,7 @@ describe("statistical-v2", () => {
     it("returns RARE_JA4_FOR_UA signal when JA4 score exceeds threshold", () => {
       const context: StatisticalContextV2 = {
         uaFamily: "chrome",
+        userAgentParsed: null,
         originalUA: "Mozilla/5.0 Chrome/144",
         fingerprints: {
           ja4: "t13d1516h2_rare_fingerprint",
@@ -258,6 +274,7 @@ describe("statistical-v2", () => {
     it("returns RARE_H2_FOR_UA signal when H2 score exceeds threshold", () => {
       const context: StatisticalContextV2 = {
         uaFamily: "firefox",
+        userAgentParsed: null,
         originalUA: "Mozilla/5.0 Firefox/147",
         fingerprints: {
           ja4: null,
@@ -285,6 +302,7 @@ describe("statistical-v2", () => {
     it("returns combined signal when both slightly anomalous", () => {
       const context: StatisticalContextV2 = {
         uaFamily: "chrome",
+        userAgentParsed: null,
         originalUA: "Mozilla/5.0 Chrome/144",
         fingerprints: {
           ja4: "ja4_value",
@@ -306,6 +324,7 @@ describe("statistical-v2", () => {
     it("does not return combined signal when individual already flagged", () => {
       const context: StatisticalContextV2 = {
         uaFamily: "chrome",
+        userAgentParsed: null,
         originalUA: "Mozilla/5.0 Chrome/144",
         fingerprints: {
           ja4: "ja4_value",

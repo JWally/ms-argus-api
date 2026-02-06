@@ -29,6 +29,11 @@ const metrics = new Metrics({
 // Singleton client instance
 let client: Redis | null = null;
 
+/** Global sampling rate for write-side counters. 1.0 = every request, 0.01 = 1%. */
+function getGlobalSampleRate(): number {
+  return parseFloat(process.env.GLOBAL_SAMPLE_RATE || "0.01");
+}
+
 /**
  * Get or create the singleton Valkey client.
  *
@@ -127,7 +132,7 @@ const EMPTY_HISTOGRAM: HistogramData = {
  * Record network metrics to histograms.
  *
  * Updates both ASN-specific and global histograms.
- * Global updates are sampled at 1% to reduce write load.
+ * Global updates are sampled at GLOBAL_SAMPLE_RATE to reduce write load.
  *
  * Key schema:
  * - asn:{asn}:{deviceType}:tls:hist → HASH { bucket_id: count }
@@ -172,16 +177,18 @@ export async function recordNetworkMetrics(
     pipeline.expire(asnMssKey, ttl);
     pipeline.expire(asnTotalKey, ttl);
 
-    // Sample global updates at 1% to reduce write load
-    if (Math.random() < 0.01) {
+    // Sample global updates to reduce write load (configurable per stage)
+    const sampleRate = getGlobalSampleRate();
+    if (Math.random() < sampleRate) {
       const globalTlsKey = `global:${deviceType}:tls:hist`;
       const globalMssKey = `global:${deviceType}:mss:hist`;
       const globalTotalKey = `global:${deviceType}:total`;
 
-      // Increment by 100 to compensate for 1% sampling
-      pipeline.hincrby(globalTlsKey, tlsRatioBucket, 100);
-      pipeline.hincrby(globalMssKey, mssBucket, 100);
-      pipeline.incrby(globalTotalKey, 100);
+      // Compensate for sampling (e.g., 1% sampling → increment by 100)
+      const compensation = Math.round(1 / sampleRate);
+      pipeline.hincrby(globalTlsKey, tlsRatioBucket, compensation);
+      pipeline.hincrby(globalMssKey, mssBucket, compensation);
+      pipeline.incrby(globalTotalKey, compensation);
       pipeline.expire(globalTlsKey, ttl);
       pipeline.expire(globalMssKey, ttl);
       pipeline.expire(globalTotalKey, ttl);
@@ -339,8 +346,6 @@ export function isStatisticalV2Enabled(): boolean {
 interface V2Keys {
   groupCount: string;
   groupTotal: string;
-  globalCount: string;
-  globalTotal: string;
 }
 
 function buildV2Keys(
@@ -352,8 +357,6 @@ function buildV2Keys(
   return {
     groupCount: `stat:v2:${keyHash}:${type}:${fingerprint}`,
     groupTotal: `stat:v2:${keyHash}:${type}:_total`,
-    globalCount: `stat:v2:_global:${type}:${fingerprint}`,
-    globalTotal: `stat:v2:_global:${type}:_total`,
   };
 }
 
@@ -361,15 +364,10 @@ async function setV2TTLs(
   redisClient: Redis,
   keys: V2Keys,
   count: number,
-  includeGlobal: boolean,
 ): Promise<void> {
   const ttlPipeline = redisClient.pipeline();
   ttlPipeline.expire(keys.groupCount, getTieredTTL(count));
   ttlPipeline.expire(keys.groupTotal, 24 * 3600);
-  if (includeGlobal) {
-    ttlPipeline.expire(keys.globalCount, 7 * 24 * 3600);
-    ttlPipeline.expire(keys.globalTotal, 7 * 24 * 3600);
-  }
   await ttlPipeline.exec();
 }
 
@@ -379,16 +377,16 @@ function parseV2PipelineResults(
   return {
     count: parseInt((results[0]?.[1] as string) || "0", 10) + 1,
     total: parseInt((results[1]?.[1] as string) || "0", 10) + 1,
-    globalCount: Math.max(1, parseInt((results[2]?.[1] as string) || "0", 10)),
-    globalTotal: Math.max(1, parseInt((results[3]?.[1] as string) || "0", 10)),
+    globalCount: 0,
+    globalTotal: 0,
   };
 }
 
 const NEUTRAL_V2_DATA: StatisticalV2Data = {
   count: 1,
   total: 1,
-  globalCount: 1,
-  globalTotal: 1,
+  globalCount: 0,
+  globalTotal: 0,
 };
 
 /** Record a fingerprint observation and get statistical v2 data. */
@@ -406,16 +404,8 @@ export async function recordFingerprintV2(
     const pipeline = redisClient.pipeline();
     pipeline.get(keys.groupCount);
     pipeline.get(keys.groupTotal);
-    pipeline.get(keys.globalCount);
-    pipeline.get(keys.globalTotal);
     pipeline.incr(keys.groupCount);
     pipeline.incr(keys.groupTotal);
-
-    const shouldUpdateGlobal = Math.random() < 0.01;
-    if (shouldUpdateGlobal) {
-      pipeline.incrby(keys.globalCount, 100);
-      pipeline.incrby(keys.globalTotal, 100);
-    }
 
     const results = await pipeline.exec();
     if (!results) {
@@ -424,7 +414,7 @@ export async function recordFingerprintV2(
     }
 
     const data = parseV2PipelineResults(results as [Error | null, unknown][]);
-    await setV2TTLs(redisClient, keys, data.count, shouldUpdateGlobal);
+    await setV2TTLs(redisClient, keys, data.count);
     metrics.addMetric(
       "ValkeyStatisticalV2OperationMs",
       MetricUnit.Milliseconds,
@@ -465,21 +455,12 @@ export async function fetchStatisticalV2Data(
 
     const startTime = Date.now();
 
-    // Hash the grouping key for compact Redis keys
-    const keyHash = fnv1a(groupingKey);
+    const keys = buildV2Keys(groupingKey, type, fingerprint);
 
-    // Key names
-    const groupCountKey = `stat:v2:${keyHash}:${type}:${fingerprint}`;
-    const groupTotalKey = `stat:v2:${keyHash}:${type}:_total`;
-    const globalCountKey = `stat:v2:_global:${type}:${fingerprint}`;
-    const globalTotalKey = `stat:v2:_global:${type}:_total`;
-
-    // Pipeline all reads
+    // Pipeline reads for group counts only
     const pipeline = redisClient.pipeline();
-    pipeline.get(groupCountKey);
-    pipeline.get(groupTotalKey);
-    pipeline.get(globalCountKey);
-    pipeline.get(globalTotalKey);
+    pipeline.get(keys.groupCount);
+    pipeline.get(keys.groupTotal);
 
     const results = await pipeline.exec();
 
@@ -490,15 +471,15 @@ export async function fetchStatisticalV2Data(
       duration,
     );
 
-    if (!results || results.length < 4) {
+    if (!results || results.length < 2) {
       return null;
     }
 
     return {
       count: parseInt((results[0]?.[1] as string) || "0", 10),
       total: parseInt((results[1]?.[1] as string) || "0", 10),
-      globalCount: parseInt((results[2]?.[1] as string) || "0", 10),
-      globalTotal: parseInt((results[3]?.[1] as string) || "0", 10),
+      globalCount: 0,
+      globalTotal: 0,
     };
   } catch (error) {
     logger.warn("Valkey statistical v2 fetch failed", {

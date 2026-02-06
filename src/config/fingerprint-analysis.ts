@@ -115,6 +115,13 @@ export interface FingerprintDefinition {
  * - High cardinality (many unique values): higher maxBits, higher saturation, higher thresholds
  * - Low cardinality (few unique values): lower maxBits, lower saturation, lower thresholds
  */
+/** Default composite grouping key: UA string + browser family + client-parsed browser identity */
+const DEFAULT_GROUP_BY: string[] = [
+  "userAgent",
+  "uaFamily",
+  "navigator.userAgentParsed",
+];
+
 export const FINGERPRINT_DEFINITIONS: Record<string, FingerprintDefinition> = {
   /**
    * JA4 TLS Fingerprint
@@ -126,7 +133,7 @@ export const FINGERPRINT_DEFINITIONS: Record<string, FingerprintDefinition> = {
     path: "tlsFingerprint.ja4",
     anomalyCode: "RARE_JA4_FOR_UA",
     fieldName: "ja4",
-    groupBy: ["userAgent", "uaFamily"],
+    groupBy: DEFAULT_GROUP_BY,
     maxSurpriseBits: parseFloat(process.env.STAT_V2_JA4_MAX_BITS || "12"),
     saturationThreshold: parseInt(
       process.env.STAT_V2_JA4_SATURATION || "500",
@@ -148,7 +155,7 @@ export const FINGERPRINT_DEFINITIONS: Record<string, FingerprintDefinition> = {
     path: "h2Probe.h2_fingerprint.fingerprint",
     anomalyCode: "RARE_H2_FOR_UA",
     fieldName: "http2_fingerprint",
-    groupBy: ["userAgent", "uaFamily"],
+    groupBy: DEFAULT_GROUP_BY,
     maxSurpriseBits: parseFloat(process.env.STAT_V2_H2_MAX_BITS || "8"),
     saturationThreshold: parseInt(
       process.env.STAT_V2_H2_SATURATION || "100",
@@ -177,7 +184,7 @@ export const FINGERPRINT_DEFINITIONS: Record<string, FingerprintDefinition> = {
     anomalyCode: "RARE_MATHS_FOR_UA",
     fieldName: "maths_hash",
     source: "hashes",
-    groupBy: ["userAgent", "uaFamily"],
+    groupBy: DEFAULT_GROUP_BY,
     maxSurpriseBits: parseFloat(process.env.STAT_V2_MATHS_MAX_BITS || "6"),
     saturationThreshold: parseInt(
       process.env.STAT_V2_MATHS_SATURATION || "50",
@@ -200,7 +207,7 @@ export const FINGERPRINT_DEFINITIONS: Record<string, FingerprintDefinition> = {
     anomalyCode: "RARE_FONTS_FOR_UA",
     fieldName: "fonts_hash",
     source: "hashes",
-    groupBy: ["userAgent", "uaFamily"],
+    groupBy: DEFAULT_GROUP_BY,
     maxSurpriseBits: parseFloat(process.env.STAT_V2_FONTS_MAX_BITS || "10"),
     saturationThreshold: parseInt(
       process.env.STAT_V2_FONTS_SATURATION || "100",
@@ -224,7 +231,7 @@ export const FINGERPRINT_DEFINITIONS: Record<string, FingerprintDefinition> = {
     anomalyCode: "RARE_LIES_FOR_UA",
     fieldName: "lies_hash",
     source: "hashes",
-    groupBy: ["userAgent", "uaFamily"],
+    groupBy: DEFAULT_GROUP_BY,
     maxSurpriseBits: parseFloat(process.env.STAT_V2_LIES_MAX_BITS || "8"),
     saturationThreshold: parseInt(
       process.env.STAT_V2_LIES_SATURATION || "50",
@@ -247,7 +254,7 @@ export const FINGERPRINT_DEFINITIONS: Record<string, FingerprintDefinition> = {
     anomalyCode: "RARE_CSS_FOR_UA",
     fieldName: "css_hash",
     source: "hashes",
-    groupBy: ["userAgent", "uaFamily"],
+    groupBy: DEFAULT_GROUP_BY,
     maxSurpriseBits: parseFloat(process.env.STAT_V2_CSS_MAX_BITS || "10"),
     saturationThreshold: parseInt(
       process.env.STAT_V2_CSS_SATURATION || "100",

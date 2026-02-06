@@ -68,7 +68,7 @@ function buildBrowserAnomalies(
 
 function buildNormalities(ctx: StatisticalContextV2): Record<string, unknown> {
   const normalities: Record<string, unknown> = {
-    user_agent_family: ctx.uaFamily,
+    user_agent_family: ctx.userAgentParsed || ctx.uaFamily,
   };
   for (const [type, score] of Object.entries(ctx.scores)) {
     if (score) {
@@ -77,10 +77,9 @@ function buildNormalities(ctx: StatisticalContextV2): Record<string, unknown> {
         grouped_by: score.groupingKey,
         score: score.score,
         confidence: score.confidence,
-        raw_ua_score: score.rawUaScore,
-        raw_global_score: score.rawGlobalScore,
+        adequate_sample: score.adequateSample,
+        ua_count: score.uaCount,
         ua_total: score.uaTotal,
-        global_total: score.globalTotal,
       };
     }
   }
