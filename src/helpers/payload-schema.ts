@@ -91,11 +91,26 @@ export interface SigintTiming {
   totalMs?: number;
 }
 
+export interface SigintH2Probe {
+  h2_fingerprint?: {
+    settings_order?: string[];
+    header_table_size?: number;
+    initial_window_size?: number;
+    max_frame_size?: number;
+    window_update?: number;
+    pseudo_header_order?: string;
+    header_order?: string[];
+    fingerprint?: string;
+    protocol?: string;
+  } | null;
+}
+
 export interface PayloadSigint {
   tlsFingerprint?: SigintTlsFingerprint;
   tcpProbe?: SigintTcpProbe;
   stun?: SigintStun;
   faviconCache?: SigintFaviconCache;
+  h2Probe?: SigintH2Probe | null;
   timing?: SigintTiming;
   errors?: unknown[];
 }
@@ -182,6 +197,10 @@ export const payloadJsonSchema = {
           properties: {
             id: { type: ["string", "null"] },
           },
+        },
+        h2Probe: {
+          type: ["object", "null"],
+          additionalProperties: true,
         },
         timing: {
           type: ["object", "null"],

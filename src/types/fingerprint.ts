@@ -30,6 +30,21 @@ export interface Fingerprint {
   canvas_simhash?: string; // From _canvas2d - 2D canvas rendering SimHash
   webgl_simhash?: string; // From _canvasWebgl - WebGL rendering SimHash
   audio_simhash?: string; // From _offlineAudioContext - Audio context SimHash
+  maths_simhash?: string; // From _maths - Math library SimHash
+  window_features_simhash?: string; // From _windowFeatures - Window API SimHash
+  html_element_simhash?: string; // From _htmlElementVersion - HTML element SimHash
+  css_simhash?: string; // From _css - CSS feature detection SimHash
+  svg_simhash?: string; // From _svg - SVG rendering SimHash
+  intl_simhash?: string; // From _intl - Intl/locale SimHash
+  features_simhash?: string; // From _features - Browser features SimHash
+  client_rects_simhash?: string; // From _clientRects - DOM clientRects SimHash
+  fonts_simhash?: string; // From _fonts - Font detection SimHash
+  // H2 fingerprint fields (from sigint h2Probe)
+  h2_settings_order?: string[]; // e.g. ["1:65536", "2:0", "4:131072", "5:16384"]
+  h2_window_update?: number; // e.g. 12517377
+  h2_pseudo_header_order?: string; // e.g. "m,p,a,s"
+  h2_header_order?: string[]; // e.g. ["user-agent", "accept", ...]
+  h2_fingerprint_raw?: string; // e.g. "1:65536;2:0;4:131072;5:16384|12517377|0|m,p,a,s"
   ip_address?: string;
   ja4?: string;
   gpu_renderer?: string;
