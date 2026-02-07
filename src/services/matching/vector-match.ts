@@ -44,7 +44,6 @@ const PRIMARY_EMBEDDING_FEATURES = [
   "gpu_renderer",
   "audio_hash",
   "user_agent",
-  "stable_hash",
   "screen_dims",
   "hardware_concurrency",
 ];

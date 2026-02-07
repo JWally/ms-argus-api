@@ -216,6 +216,104 @@ describe("extractFingerprint", () => {
     });
   });
 
+  describe("expanded SimHash extraction", () => {
+    it("should extract all SimHash variants from underscore-prefixed hash fields", () => {
+      const payload = basePayload({
+        hashes: {
+          stable: "s",
+          fuzzy: "f",
+          _maths: "maths-sim",
+          _windowFeatures: "wf-sim",
+          _htmlElementVersion: "html-sim",
+          _css: "css-sim",
+          _svg: "svg-sim",
+          _intl: "intl-sim",
+          _features: "feat-sim",
+          _clientRects: "cr-sim",
+          _fonts: "fonts-sim",
+          _canvas2d: "canvas-sim",
+          _canvasWebgl: "webgl-sim",
+          _offlineAudioContext: "audio-sim",
+        },
+      });
+      const fp = extractFingerprint(payload);
+      expect(fp.maths_simhash).toBe("maths-sim");
+      expect(fp.window_features_simhash).toBe("wf-sim");
+      expect(fp.html_element_simhash).toBe("html-sim");
+      expect(fp.css_simhash).toBe("css-sim");
+      expect(fp.svg_simhash).toBe("svg-sim");
+      expect(fp.intl_simhash).toBe("intl-sim");
+      expect(fp.features_simhash).toBe("feat-sim");
+      expect(fp.client_rects_simhash).toBe("cr-sim");
+      expect(fp.fonts_simhash).toBe("fonts-sim");
+      expect(fp.canvas_simhash).toBe("canvas-sim");
+      expect(fp.webgl_simhash).toBe("webgl-sim");
+      expect(fp.audio_simhash).toBe("audio-sim");
+    });
+
+    it("should not set SimHash fields when underscore-prefixed hashes are absent", () => {
+      const payload = basePayload({
+        hashes: { stable: "s", fuzzy: "f", maths: "sha-hash" },
+      });
+      const fp = extractFingerprint(payload);
+      expect(fp.maths_simhash).toBeUndefined();
+      expect(fp.maths_hash).toBe("sha-hash");
+    });
+  });
+
+  describe("H2 probe extraction", () => {
+    it("should extract H2 fingerprint fields from sigint h2Probe", () => {
+      const payload = basePayload({
+        sigint: {
+          h2Probe: {
+            h2_fingerprint: {
+              settings_order: ["1:65536", "2:0", "4:131072"],
+              window_update: 12517377,
+              pseudo_header_order: "m,p,a,s",
+              header_order: ["user-agent", "accept", "accept-encoding"],
+              fingerprint: "1:65536;2:0;4:131072|12517377|0|m,p,a,s",
+              protocol: "h2",
+            },
+          },
+        },
+      });
+      const fp = extractFingerprint(payload);
+      expect(fp.h2_settings_order).toEqual(["1:65536", "2:0", "4:131072"]);
+      expect(fp.h2_window_update).toBe(12517377);
+      expect(fp.h2_pseudo_header_order).toBe("m,p,a,s");
+      expect(fp.h2_header_order).toEqual([
+        "user-agent",
+        "accept",
+        "accept-encoding",
+      ]);
+      expect(fp.h2_fingerprint_raw).toBe(
+        "1:65536;2:0;4:131072|12517377|0|m,p,a,s",
+      );
+    });
+
+    it("should handle missing h2Probe gracefully", () => {
+      const payload = basePayload({
+        sigint: { tlsFingerprint: { ip: "1.2.3.4" } },
+      });
+      const fp = extractFingerprint(payload);
+      expect(fp.h2_settings_order).toBeUndefined();
+      expect(fp.h2_window_update).toBeUndefined();
+      expect(fp.h2_pseudo_header_order).toBeUndefined();
+      expect(fp.h2_header_order).toBeUndefined();
+      expect(fp.h2_fingerprint_raw).toBeUndefined();
+    });
+
+    it("should handle null h2_fingerprint gracefully", () => {
+      const payload = basePayload({
+        sigint: {
+          h2Probe: { h2_fingerprint: null },
+        },
+      });
+      const fp = extractFingerprint(payload);
+      expect(fp.h2_settings_order).toBeUndefined();
+    });
+  });
+
   describe("existing extraction", () => {
     it("should extract stable and fuzzy hashes", () => {
       const payload = basePayload();

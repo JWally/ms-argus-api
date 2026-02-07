@@ -60,7 +60,7 @@ describe("computeEmbedding", () => {
   it("includes version number", () => {
     const result = computeEmbedding(baseFingerprint);
     expect(result.version).toBe(EMBEDDING_VERSION);
-    expect(result.version).toBe(4);
+    expect(result.version).toBe(5);
   });
 
   it("produces deterministic output for same input", () => {
@@ -89,7 +89,7 @@ describe("computeEmbedding", () => {
 
   it("normalizes numeric values to 0-1 range", () => {
     const result = computeEmbedding(baseFingerprint);
-    // Hardware section starts at 96, first few values are normalized numerics
+    // v5: Hardware section starts at 96, first few values are normalized numerics
     const hwConcurrency = result.vector[96];
     const deviceMemory = result.vector[97];
     expect(hwConcurrency).toBeGreaterThanOrEqual(0);
@@ -100,11 +100,117 @@ describe("computeEmbedding", () => {
 
   it("pads remaining dimensions with zeros", () => {
     const result = computeEmbedding(baseFingerprint);
-    // Reserved section (254-255) should be zeros
-    // Structure: 48+48+32+32+22+72 = 254 used dims
+    // v5 reserved section (254-255) should be zeros
+    // Structure: 48+48+14+46+22+76 = 254 used dims
     const reserved = result.vector.slice(254);
     expect(reserved.every((v) => v === 0)).toBe(true);
     expect(reserved.length).toBe(2);
+  });
+
+  it("prefers SimHash over SHA-256 in structural section", () => {
+    const withSimHash: Fingerprint = {
+      ...baseFingerprint,
+      maths_simhash: "aaaa1111bbbb2222", // SimHash variant
+      maths_hash: "5e6f7890", // SHA-256 hash
+    };
+    const withoutSimHash: Fingerprint = {
+      ...baseFingerprint,
+      maths_hash: "5e6f7890",
+    };
+
+    const resultWith = computeEmbedding(withSimHash);
+    const resultWithout = computeEmbedding(withoutSimHash);
+
+    // Structural section dims 8-15 are maths (second 8-dim block)
+    const mathsWithSimHash = resultWith.vector.slice(8, 16);
+    const mathsWithoutSimHash = resultWithout.vector.slice(8, 16);
+
+    // SimHash should produce different encoding than SHA-256
+    expect(mathsWithSimHash).not.toEqual(mathsWithoutSimHash);
+
+    // When only SHA-256 is available, it should still produce valid bipolar
+    for (const val of mathsWithoutSimHash) {
+      expect(val === -1 || val === 1).toBe(true);
+    }
+  });
+
+  it("falls back to SHA-256 when SimHash is absent", () => {
+    const shaOnly: Fingerprint = {
+      ...baseFingerprint,
+      maths_simhash: undefined,
+      maths_hash: "5e6f7890",
+    };
+    const result = computeEmbedding(shaOnly);
+
+    // Maths is second structural block (dims 8-15)
+    const mathsSection = result.vector.slice(8, 16);
+    // Should be non-zero (from SHA-256 hash)
+    expect(mathsSection.some((v) => v !== 0)).toBe(true);
+  });
+
+  it("encodes H2 fingerprint data", () => {
+    const withH2: Fingerprint = {
+      ...baseFingerprint,
+      h2_settings_order: [
+        "1:65536",
+        "2:0",
+        "3:100",
+        "4:131072",
+        "5:16384",
+        "6:8192",
+      ],
+      h2_window_update: 12517377,
+      h2_pseudo_header_order: "m,p,a,s",
+      h2_header_order: ["user-agent", "accept", "accept-encoding"],
+    };
+
+    const resultWith = computeEmbedding(withH2);
+    const resultWithout = computeEmbedding(baseFingerprint);
+
+    // v5: Network starts at 110, H2 is after ja3(8)+ja4(8)+ip(8)+asn(3) = 27
+    // H2 starts at dim 110+27 = 137, spans 14 dims (137-150)
+    const h2With = resultWith.vector.slice(137, 151);
+    const h2Without = resultWithout.vector.slice(137, 151);
+
+    // H2 section should differ when H2 data is present
+    expect(h2With).not.toEqual(h2Without);
+
+    // H2 settings should be normalized values (0-1 range for settings)
+    for (const val of h2With.slice(0, 6)) {
+      expect(val).toBeGreaterThanOrEqual(0);
+      expect(val).toBeLessThanOrEqual(1);
+    }
+  });
+
+  it("produces zeros for H2 when not present", () => {
+    const result = computeEmbedding(baseFingerprint);
+    // H2 starts at 137, spans 14 dims
+    const h2Section = result.vector.slice(137, 151);
+    expect(h2Section.every((v) => v === 0)).toBe(true);
+  });
+
+  it("does not include stable_hash in identity section", () => {
+    const fp1: Fingerprint = {
+      ...baseFingerprint,
+      stable_hash: "aaaa1111",
+      fuzzy_hash: "fedcba987654",
+    };
+    const fp2: Fingerprint = {
+      ...baseFingerprint,
+      stable_hash: "bbbb2222", // different stable_hash
+      fuzzy_hash: "fedcba987654", // same fuzzy
+    };
+
+    const result1 = computeEmbedding(fp1);
+    const result2 = computeEmbedding(fp2);
+
+    // v5: Identity section starts at 178, spans 76 dims
+    const identity1 = result1.vector.slice(178, 254);
+    const identity2 = result2.vector.slice(178, 254);
+
+    // With same fuzzy_hash, identity section should be identical
+    // (stable_hash no longer encoded)
+    expect(identity1).toEqual(identity2);
   });
 });
 
@@ -113,12 +219,12 @@ describe("areEmbeddingsCompatible", () => {
     const a: EmbeddingResult = {
       vector: new Array(256).fill(0),
       dimensions: 256,
-      version: 4,
+      version: 5,
     };
     const b: EmbeddingResult = {
       vector: new Array(256).fill(0),
       dimensions: 256,
-      version: 4,
+      version: 5,
     };
     expect(areEmbeddingsCompatible(a, b)).toBe(true);
   });
@@ -127,12 +233,12 @@ describe("areEmbeddingsCompatible", () => {
     const a: EmbeddingResult = {
       vector: new Array(256).fill(0),
       dimensions: 256,
-      version: 3,
+      version: 4,
     };
     const b: EmbeddingResult = {
       vector: new Array(256).fill(0),
       dimensions: 256,
-      version: 4,
+      version: 5,
     };
     expect(areEmbeddingsCompatible(a, b)).toBe(false);
   });
@@ -141,12 +247,12 @@ describe("areEmbeddingsCompatible", () => {
     const a: EmbeddingResult = {
       vector: new Array(128).fill(0),
       dimensions: 128,
-      version: 4,
+      version: 5,
     };
     const b: EmbeddingResult = {
       vector: new Array(256).fill(0),
       dimensions: 256,
-      version: 4,
+      version: 5,
     };
     expect(areEmbeddingsCompatible(a, b)).toBe(false);
   });

@@ -120,6 +120,15 @@ const HASH_FIELD_MAP: [keyof ArgusPayload["hashes"], keyof Fingerprint][] = [
  * SimHashes are 256-bit locality-sensitive hashes for similarity matching
  */
 const SIMHASH_FIELD_MAP: [string, keyof Fingerprint][] = [
+  ["_maths", "maths_simhash"],
+  ["_windowFeatures", "window_features_simhash"],
+  ["_htmlElementVersion", "html_element_simhash"],
+  ["_css", "css_simhash"],
+  ["_svg", "svg_simhash"],
+  ["_intl", "intl_simhash"],
+  ["_features", "features_simhash"],
+  ["_clientRects", "client_rects_simhash"],
+  ["_fonts", "fonts_simhash"],
   ["_canvas2d", "canvas_simhash"],
   ["_canvasWebgl", "webgl_simhash"],
   ["_offlineAudioContext", "audio_simhash"],
@@ -188,7 +197,30 @@ function extractTlsFields(
 }
 
 /**
- * Extract signal intelligence data (TLS, TCP, favicon cache, STUN)
+ * Extract H2 probe data (HTTP/2 fingerprint) from sigint
+ * @param sigint - The sigint section from the payload
+ * @param fp - The fingerprint object to populate
+ */
+function extractH2Probe(
+  sigint: NonNullable<ArgusPayload["sigint"]>,
+  fp: Fingerprint,
+) {
+  const h2 = sigint.h2Probe?.h2_fingerprint;
+  if (!h2) return;
+
+  if (Array.isArray(h2.settings_order))
+    fp.h2_settings_order = h2.settings_order;
+  if (typeof h2.window_update === "number")
+    fp.h2_window_update = h2.window_update;
+  if (typeof h2.pseudo_header_order === "string")
+    fp.h2_pseudo_header_order = h2.pseudo_header_order;
+  if (Array.isArray(h2.header_order)) fp.h2_header_order = h2.header_order;
+  if (typeof h2.fingerprint === "string")
+    fp.h2_fingerprint_raw = h2.fingerprint;
+}
+
+/**
+ * Extract signal intelligence data (TLS, TCP, H2, favicon cache, STUN)
  * @param sigint - The sigint section from the payload
  * @param fp - The fingerprint object to populate
  */
@@ -196,6 +228,7 @@ function extractSigint(sigint: ArgusPayload["sigint"], fp: Fingerprint) {
   if (!sigint) return;
   extractTlsFields(sigint.tlsFingerprint, fp);
   extractTcpProbe(sigint, fp);
+  extractH2Probe(sigint, fp);
   if (sigint.faviconCache?.id) fp.favicon_cache_id = sigint.faviconCache.id;
   extractStun(sigint, fp);
 }
