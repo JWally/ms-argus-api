@@ -305,16 +305,17 @@ export const FINGERPRINT_DEFINITIONS: Record<string, FingerprintDefinition> = {
   /**
    * Language for Timezone
    *
-   * Low cardinality - language tags per timezone region.
-   * Catches spoofed locale: "cz-RU" from America/Chicago → max surprise.
+   * Low cardinality - language tags per browser+timezone combo.
+   * Catches spoofed locale: "cz-RU" from Chrome/America/Chicago → max surprise.
    * Handles "en" vs "en-US" gracefully since both are common in US TZs.
+   * Grouped by UA identity + timezone to avoid false positives across locales.
    */
   lang_for_tz: {
     path: "workerScope.language",
     source: "device",
     anomalyCode: "RARE_LANG_FOR_TZ",
     fieldName: "language",
-    groupBy: "device.workerScope.timezoneLocation",
+    groupBy: [...DEFAULT_GROUP_BY, "workerScope.timezoneLocation"],
     maxSurpriseBits: 6,
     saturationThreshold: 50,
     anomalyThreshold: 0.5,
@@ -324,17 +325,18 @@ export const FINGERPRINT_DEFINITIONS: Record<string, FingerprintDefinition> = {
   /**
    * Timezone for Country
    *
-   * Low cardinality - timezone IDs per IP country.
+   * Low cardinality - timezone IDs per browser+country combo.
    * Subsumes rule-based IP_TIMEZONE_MISMATCH with nuance:
-   * Atlantic/Reykjavik from US IP → rare → flagged.
-   * America/New_York from US IP → common → pass.
+   * Atlantic/Reykjavik from Chrome/US → rare → flagged.
+   * America/New_York from Chrome/US → common → pass.
+   * Grouped by UA identity + country to detect TZ spoofing per browser.
    */
   tz_for_country: {
     path: "workerScope.timezoneLocation",
     source: "device",
     anomalyCode: "RARE_TZ_FOR_COUNTRY",
     fieldName: "timezone",
-    groupBy: "country",
+    groupBy: [...DEFAULT_GROUP_BY, "country"],
     maxSurpriseBits: 8,
     saturationThreshold: 100,
     anomalyThreshold: 0.5,
@@ -353,7 +355,7 @@ export const FINGERPRINT_DEFINITIONS: Record<string, FingerprintDefinition> = {
     source: "device",
     anomalyCode: "RARE_ENGINE_COMBO",
     fieldName: "js_engine",
-    groupBy: "device.consoleErrors.layoutEngine",
+    groupBy: "consoleErrors.layoutEngine",
     maxSurpriseBits: 6,
     saturationThreshold: 50,
     anomalyThreshold: 0.4,
@@ -438,4 +440,14 @@ export const COMBINED_THRESHOLD = parseFloat(
  */
 export const COMBINED_MIN_CONFIDENCE = parseFloat(
   process.env.STAT_V2_COMBINED_MIN_CONFIDENCE || "0.3",
+);
+
+/**
+ * Minimum individual score to contribute to combined scoring.
+ * Prevents low-scoring (common) signals from accumulating into
+ * false positives via the product formula when many signals are present.
+ * Score of 0.15 ≈ 1.8 bits surprise ≈ 29% probability — quite common.
+ */
+export const COMBINED_MIN_SCORE = parseFloat(
+  process.env.STAT_V2_COMBINED_MIN_SCORE || "0.15",
 );

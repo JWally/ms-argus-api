@@ -40,6 +40,7 @@ import {
   getGroupingStrategy,
   COMBINED_THRESHOLD,
   COMBINED_MIN_CONFIDENCE,
+  COMBINED_MIN_SCORE,
   type FingerprintDefinition,
   type GroupingStrategy,
 } from "../../../config/fingerprint-analysis";
@@ -238,18 +239,23 @@ export function computeBlendedScore(
  * - JA4=0.5, H2=0.5 → combined=0.75 (suspicious!)
  * - JA4=0.8, H2=0.0 → combined=0.80 (single strong signal)
  *
- * Only includes signals with sufficient confidence.
+ * Only includes signals with sufficient confidence and minimum score.
+ * The minimum score filter prevents many low-scoring (common) signals
+ * from accumulating into false positives via the product formula.
  *
  * @param scores - Array of fingerprint scores
  * @param minConfidence - Minimum confidence to include a score
+ * @param minScore - Minimum score to include (default from config)
  * @returns Combined score, or null if insufficient data
  */
 export function computeCombinedScore(
   scores: (FingerprintScore | null)[],
   minConfidence: number,
+  minScore: number = COMBINED_MIN_SCORE,
 ): number | null {
   const validScores = scores.filter(
-    (s): s is FingerprintScore => s !== null && s.confidence >= minConfidence,
+    (s): s is FingerprintScore =>
+      s !== null && s.confidence >= minConfidence && s.score >= minScore,
   );
 
   if (validScores.length < 2) {

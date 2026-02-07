@@ -215,8 +215,31 @@ describe("statistical-v2", () => {
     it("handles one strong and one weak signal", () => {
       const ja4 = createScore("ja4", 0.8, 0.8);
       const h2 = createScore("h2", 0.0, 0.8);
-      // combined = 1 - (1-0.8)*(1-0.0) = 1 - 0.2 = 0.8
-      expect(computeCombinedScore([ja4, h2], 0.3)).toBeCloseTo(0.8, 3);
+      // h2 score=0.0 is below minScore (0.15), so only ja4 remains → null (< 2 signals)
+      expect(computeCombinedScore([ja4, h2], 0.3)).toBeNull();
+    });
+
+    it("excludes signals below minimum score threshold", () => {
+      const ja4 = createScore("ja4", 0.5, 0.8);
+      const h2 = createScore("h2", 0.1, 0.8); // Below default minScore (0.15)
+      // Only ja4 qualifies → null (< 2 signals)
+      expect(computeCombinedScore([ja4, h2], 0.3)).toBeNull();
+    });
+
+    it("includes signals at or above minimum score threshold", () => {
+      const ja4 = createScore("ja4", 0.5, 0.8);
+      const h2 = createScore("h2", 0.2, 0.8); // Above minScore (0.15)
+      // combined = 1 - (1-0.5)*(1-0.2) = 1 - 0.4 = 0.6
+      expect(computeCombinedScore([ja4, h2], 0.3)).toBeCloseTo(0.6, 3);
+    });
+
+    it("respects custom minScore parameter", () => {
+      const ja4 = createScore("ja4", 0.5, 0.8);
+      const h2 = createScore("h2", 0.3, 0.8);
+      // With minScore=0.4, only ja4 qualifies → null
+      expect(computeCombinedScore([ja4, h2], 0.3, 0.4)).toBeNull();
+      // With minScore=0.1, both qualify → 1 - (0.5)(0.7) = 0.65
+      expect(computeCombinedScore([ja4, h2], 0.3, 0.1)).toBeCloseTo(0.65, 3);
     });
   });
 
