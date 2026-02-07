@@ -443,7 +443,7 @@ describe("MatchingService", () => {
       expect(penalized).toBe(result);
     });
 
-    it("should reduce confidence for privacy_browser", () => {
+    it("should return unchanged confidence when privacy penalties are disabled", () => {
       const result = {
         device_id: "dev_123",
         confidence: 0.95,
@@ -457,72 +457,12 @@ describe("MatchingService", () => {
       const fingerprint: Fingerprint = {
         stable_hash: "abc",
         privacy_browser: "brave",
-      };
-      const penalized = service.applyPrivacyPenalty(result, fingerprint);
-
-      expect(penalized.confidence).toBeCloseTo(0.8, 10);
-      expect(penalized).not.toBe(result);
-    });
-
-    it("should reduce confidence for is_private_browsing", () => {
-      const result = {
-        device_id: "dev_123",
-        confidence: 0.95,
-        match_tier: 1,
-        is_new_device: false,
-        risk_score: 0.3,
-        flags: [] as string[],
-        evidence_codes: ["STABLE_HASH_MATCH"] as EvidenceCode[],
-      };
-
-      const fingerprint: Fingerprint = {
-        stable_hash: "abc",
         is_private_browsing: true,
       };
       const penalized = service.applyPrivacyPenalty(result, fingerprint);
 
-      expect(penalized.confidence).toBeCloseTo(0.85, 10);
-    });
-
-    it("should apply cumulative penalties for both signals", () => {
-      const result = {
-        device_id: "dev_123",
-        confidence: 0.95,
-        match_tier: 1,
-        is_new_device: false,
-        risk_score: 0.3,
-        flags: [] as string[],
-        evidence_codes: ["STABLE_HASH_MATCH"] as EvidenceCode[],
-      };
-
-      const fingerprint: Fingerprint = {
-        stable_hash: "abc",
-        privacy_browser: "tor",
-        is_private_browsing: true,
-      };
-      const penalized = service.applyPrivacyPenalty(result, fingerprint);
-
-      expect(penalized.confidence).toBeCloseTo(0.7, 10);
-    });
-
-    it("should not reduce confidence below 0", () => {
-      const result = {
-        device_id: "dev_123",
-        confidence: 0.1,
-        match_tier: 2,
-        is_new_device: false,
-        risk_score: 0.5,
-        flags: [] as string[],
-        evidence_codes: ["VECTOR_SIMILARITY"] as EvidenceCode[],
-      };
-
-      const fingerprint: Fingerprint = {
-        privacy_browser: "firefox_rfp",
-        is_private_browsing: true,
-      };
-      const penalized = service.applyPrivacyPenalty(result, fingerprint);
-
-      expect(penalized.confidence).toBe(0);
+      // PRIVACY_BROWSER_PENALTY and PRIVATE_BROWSING_PENALTY are both 0
+      expect(penalized.confidence).toBe(0.95);
     });
   });
 
@@ -645,8 +585,8 @@ describe("MatchingService", () => {
       };
       const { result } = await service.runTieredMatching(fingerprint);
 
-      // Base confidence is 0.99, minus 0.15 for privacy_browser, minus 0.1 for private_browsing
-      expect(result.confidence).toBeCloseTo(0.74, 10);
+      // Privacy penalties are disabled (both constants = 0), so confidence stays at base
+      expect(result.confidence).toBeCloseTo(0.99, 10);
     });
 
     it("should fall through to Tier 1 when evercookie not found", async () => {

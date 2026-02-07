@@ -185,12 +185,12 @@ describe("remaining constants have correct values", () => {
     expect(TIER2_STATS_SK).toBe("_stats");
   });
 
-  it("PRIVACY_BROWSER_PENALTY should be 0.15", () => {
-    expect(PRIVACY_BROWSER_PENALTY).toBe(0.15);
+  it("PRIVACY_BROWSER_PENALTY should be 0 (disabled)", () => {
+    expect(PRIVACY_BROWSER_PENALTY).toBe(0);
   });
 
-  it("PRIVATE_BROWSING_PENALTY should be 0.1", () => {
-    expect(PRIVATE_BROWSING_PENALTY).toBe(0.1);
+  it("PRIVATE_BROWSING_PENALTY should be 0 (disabled)", () => {
+    expect(PRIVATE_BROWSING_PENALTY).toBe(0);
   });
 
   it("TIER2_BUCKET_TTL_DAYS should be 7", () => {

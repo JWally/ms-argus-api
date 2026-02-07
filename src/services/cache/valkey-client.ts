@@ -40,7 +40,7 @@ function getGlobalSampleRate(): number {
  * Uses ioredis with automatic reconnection.
  * Returns null if VALKEY_ENDPOINT is not configured.
  */
-export function getClient(): Redis | null {
+function getClient(): Redis | null {
   const endpoint = process.env.VALKEY_ENDPOINT;
   if (!endpoint) {
     return null;
