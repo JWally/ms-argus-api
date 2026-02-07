@@ -1,6 +1,5 @@
 // lib/constructs/workers.ts
-// AR-52: Simplified - removed VPC/Redis, uses DynamoDB for all caching
-// AR-160: Centralized Lambda memory settings in stage config
+
 import * as path from "path";
 import { Construct } from "constructs";
 import * as lambda from "aws-cdk-lib/aws-lambda-nodejs";
@@ -34,10 +33,10 @@ interface WorkersConstructProps {
   profilesTable: dynamodb.ITable;
   tier1IndexTable: dynamodb.ITable;
   tier2BucketsTable: dynamodb.ITable;
-  sessionCacheTable: dynamodb.ITable; // AR-52: Replaces Redis
+  sessionCacheTable: dynamodb.ITable;
   sessionPayloadTable: dynamodb.ITable; // AR-XXX: Full payload for gRPC stub
   vectorResultsTable: dynamodb.ITable; // Vector search results for session retrieval
-  observationsDeliveryStreamName: string; // AR-57: Firehose for observations
+  observationsDeliveryStreamName: string;
   /** Optional: Vector queue for Qdrant upserts. When provided, profile-updater queues embeddings. */
   vectorQueue?: sqs.IQueue;
   /** Optional: Vector results queue for search result writes. */
@@ -63,7 +62,7 @@ interface WorkersConstructProps {
 /**
  * Worker Lambdas for Argus async processing
  *
- * AR-52: Simplified architecture - no VPC required
+ * Simplified architecture - no VPC required
  * - Matching Worker: SQS -> tiered matching -> DynamoDB (session cache)
  * - Profile Updater: SQS -> mutation gate -> DynamoDB
  *
@@ -117,8 +116,6 @@ export class WorkersConstruct extends Construct {
       `${stage}/${projectName}`,
     );
 
-    // AR-167: Use shared Lambda configuration
-    // Common Lambda configuration - AR-52: No VPC needed
     const commonConfig = createBaseLambdaConfig({
       tracing: true,
       keepNames: true,
@@ -167,7 +164,7 @@ export class WorkersConstruct extends Construct {
       environment: {
         ...createWorkerEnv(stage, stackName, `${stackName}-matching`),
         SECRET_KEY_ARN: secret.secretArn,
-        // AR-52: DynamoDB session cache replaces Redis
+
         SESSION_CACHE_TABLE: sessionCacheTable.tableName,
         // AR-XXX: Full payload table for gRPC stub
         SESSION_PAYLOAD_TABLE: sessionPayloadTable.tableName,
@@ -175,7 +172,7 @@ export class WorkersConstruct extends Construct {
         TIER1_INDEX_TABLE: tier1IndexTable.tableName,
         TIER2_BUCKETS_TABLE: tier2BucketsTable.tableName,
         PROFILE_QUEUE_URL: profileQueue.queueUrl,
-        // AR-57: Firehose for match observations
+
         OBSERVATIONS_STREAM_NAME: observationsDeliveryStreamName,
         // AR-XXX: SimHash LSH Tier 1.5 - same-browser drift detection
         SIMHASH_ENABLED: "true",
@@ -185,7 +182,7 @@ export class WorkersConstruct extends Construct {
           VECTOR_WORKER_ARN: vectorWorkerArn,
           VECTOR_COLLECTION: vectorCollection,
         }),
-        // AR-139: Payload archiving (enriched session data)
+
         ...(payloadArchiveBucket && {
           PAYLOAD_ARCHIVE_BUCKET: payloadArchiveBucket.bucketName,
           PAYLOAD_ARCHIVE_SAMPLE_RATE: stage === "prod" ? "0" : "1.0",
@@ -238,17 +235,15 @@ export class WorkersConstruct extends Construct {
     profilesTable.grantReadData(this.matchingWorker);
     tier1IndexTable.grantReadData(this.matchingWorker);
     tier2BucketsTable.grantReadData(this.matchingWorker);
-    sessionCacheTable.grantReadWriteData(this.matchingWorker); // AR-52
+    sessionCacheTable.grantReadWriteData(this.matchingWorker);
     sessionPayloadTable.grantWriteData(this.matchingWorker); // AR-XXX: Full payload storage
     profileQueue.grantSendMessages(this.matchingWorker);
     matchingQueue.grantConsumeMessages(this.matchingWorker);
 
-    // AR-139: Grant S3 write for payload archiving
     if (payloadArchiveBucket) {
       payloadArchiveBucket.grantWrite(this.matchingWorker);
     }
 
-    // AR-57: Firehose permission for observations
     this.matchingWorker.addToRolePolicy(
       new iam.PolicyStatement({
         effect: iam.Effect.ALLOW,
@@ -283,7 +278,7 @@ export class WorkersConstruct extends Construct {
       environment: {
         ...createWorkerEnv(stage, stackName, `${stackName}-profile-updater`),
         SECRET_KEY_ARN: secret.secretArn,
-        // AR-52: DynamoDB session cache replaces Redis
+
         SESSION_CACHE_TABLE: sessionCacheTable.tableName,
         PROFILES_TABLE: profilesTable.tableName,
         TIER1_INDEX_TABLE: tier1IndexTable.tableName,
@@ -310,7 +305,7 @@ export class WorkersConstruct extends Construct {
     profilesTable.grantReadWriteData(this.profileUpdater);
     tier1IndexTable.grantReadWriteData(this.profileUpdater);
     tier2BucketsTable.grantReadWriteData(this.profileUpdater);
-    sessionCacheTable.grantReadWriteData(this.profileUpdater); // AR-52
+    sessionCacheTable.grantReadWriteData(this.profileUpdater);
     profileQueue.grantConsumeMessages(this.profileUpdater);
 
     // Optional: Grant send permission to vector queue for Qdrant embeddings
@@ -363,7 +358,6 @@ export class WorkersConstruct extends Construct {
       vectorResultsQueue.grantConsumeMessages(this.vectorResultsWriter);
     }
 
-    // AR-154: Alarm for Firehose observation emit errors
     // Data loss in analytics pipeline when Firehose writes fail
     this.createObservationEmitErrorAlarm(stackName, alarmsTopic);
 
@@ -383,7 +377,6 @@ export class WorkersConstruct extends Construct {
       config.alarms.lambda,
     );
 
-    // AR-123: New device rate anomaly detection alarm (fraud indicator)
     // Uses CloudWatch anomaly detection to alert on sudden spikes in new device creation
     this.createNewDeviceAnomalyAlarm(
       stackName,
@@ -396,7 +389,7 @@ export class WorkersConstruct extends Construct {
     this.createSimHashAlarms(stackName, alarmsTopic);
 
     // =====================================
-    // CANARY DEPLOYMENTS (AR-24)
+
     // =====================================
     this.matchingWorkerAlias = new Alias(this, "MatchingWorkerLive", {
       aliasName: "live",
@@ -517,7 +510,7 @@ export class WorkersConstruct extends Construct {
   }
 
   /**
-   * AR-123: Create anomaly detection alarm for NEW_DEVICE_RATE metric
+   * Create anomaly detection alarm for NEW_DEVICE_RATE metric
    * Alerts when new device creation rate exceeds normal baseline (potential fraud indicator)
    */
   private createNewDeviceAnomalyAlarm(
@@ -582,7 +575,7 @@ export class WorkersConstruct extends Construct {
   }
 
   /**
-   * AR-154: Create alarm for Firehose observation emit errors
+   * Create alarm for Firehose observation emit errors
    * Alerts when observation data fails to write to Firehose (data loss)
    */
   private createObservationEmitErrorAlarm(

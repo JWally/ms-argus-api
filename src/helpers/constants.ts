@@ -42,10 +42,10 @@ export const TIER2_CARDINALITY_PENALTY = 0.3;
 export const TIER2_STATS_SK = "_stats";
 
 /** Confidence penalty for privacy browser detection (Brave, Firefox RFP, Tor, etc.) */
-export const PRIVACY_BROWSER_PENALTY = 0.15;
+export const PRIVACY_BROWSER_PENALTY = 0;
 
 /** Confidence penalty for private/incognito browsing mode */
-export const PRIVATE_BROWSING_PENALTY = 0.1;
+export const PRIVATE_BROWSING_PENALTY = 0;
 
 /** Profile TTL in DynamoDB: 60 days */
 export const PROFILE_TTL_DAYS = 60;

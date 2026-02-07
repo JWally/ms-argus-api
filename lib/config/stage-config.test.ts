@@ -73,7 +73,6 @@ describe("stage-config", () => {
         expect(dev.lambda.profile.memorySize).toBe(128);
       });
 
-      // AR-160: Test new Lambda memory configurations
       it("should have API Lambda memory configurations", () => {
         expect(dev.lambda.ingestion.memorySize).toBe(256);
         expect(dev.lambda.sessionGet.memorySize).toBe(256);
@@ -82,8 +81,6 @@ describe("stage-config", () => {
       it("should have no provisioned concurrency", () => {
         expect(dev.lambda.provisionedConcurrency).toBe(0);
       });
-
-      // AR-161: Removed ECS and Redis tests - no longer part of architecture
 
       it("should have shorter retention periods", () => {
         expect(dev.sqs.retentionPeriod.toDays()).toBe(1);
@@ -113,7 +110,6 @@ describe("stage-config", () => {
         expect(prod.lambda.profile.memorySize).toBe(256);
       });
 
-      // AR-160: Test new Lambda memory configurations
       it("should have API Lambda memory configurations", () => {
         expect(prod.lambda.ingestion.memorySize).toBe(256);
         expect(prod.lambda.sessionGet.memorySize).toBe(256);
@@ -122,8 +118,6 @@ describe("stage-config", () => {
       it("should have provisioned concurrency", () => {
         expect(prod.lambda.provisionedConcurrency).toBeGreaterThan(0);
       });
-
-      // AR-161: Removed ECS and Redis tests - no longer part of architecture
 
       it("should have longer retention periods", () => {
         expect(prod.sqs.retentionPeriod.toDays()).toBeGreaterThanOrEqual(7);
@@ -140,8 +134,7 @@ describe("stage-config", () => {
     });
 
     describe("batching windows", () => {
-      it("should have zero batching window for minimal latency (AR-71)", () => {
-        // AR-71: Set to 0 to minimize latency - don't wait for batching
+      it("should have zero batching window for minimal latency", () => {
         expect(configs.dev.sqs.batchingWindow.matching.toSeconds()).toBe(0);
         expect(configs.dev.sqs.batchingWindow.profile.toSeconds()).toBe(0);
         expect(configs.prod.sqs.batchingWindow.matching.toSeconds()).toBe(0);

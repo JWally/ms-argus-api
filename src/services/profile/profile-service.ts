@@ -8,6 +8,7 @@ import { DynamoCacheService } from "../cache";
 import { Fingerprint, ProfileUpdatePayload, DeviceProfile } from "./types";
 import { hasSignificantDrift } from "./drift-detection";
 import { computeFlags, computeRiskScore } from "./flag-computation";
+import { updateIpHistory } from "./ip-history";
 import {
   buildIdentityIndexEntries,
   buildHashIndexEntries,
@@ -65,6 +66,60 @@ interface ProfileUpdateResult {
   simhashBandWrites?: number;
 }
 
+/** Build the profile data record for DynamoDB, including IP history and timestamps. */
+function buildProfileData(opts: {
+  deviceId: string;
+  fingerprint: Fingerprint;
+  existingProfile: DeviceProfile | null;
+  flags: string[];
+  isNewDevice: boolean;
+  now: number;
+  ttl: number;
+}): Record<string, unknown> {
+  const {
+    deviceId,
+    fingerprint,
+    existingProfile,
+    flags,
+    isNewDevice,
+    now,
+    ttl,
+  } = opts;
+
+  // Only update last_seen if hour changed (reduce write amplification)
+  const currentHour = Math.floor(now / 3600000);
+  const existingHour = existingProfile
+    ? Math.floor(existingProfile.last_seen_at / 3600000)
+    : 0;
+
+  const existingHistory = existingProfile?.ip_history ?? [];
+  const ipHistory =
+    fingerprint.ip_address && fingerprint.asn !== undefined
+      ? updateIpHistory(
+          existingHistory,
+          fingerprint.ip_address,
+          fingerprint.asn,
+          now,
+        )
+      : existingHistory;
+
+  return {
+    device_id: deviceId,
+    ...fingerprint,
+    first_seen_at: existingProfile?.first_seen_at ?? now,
+    last_seen_at:
+      currentHour !== existingHour
+        ? now
+        : (existingProfile?.last_seen_at ?? now),
+    request_count: (existingProfile?.request_count ?? 0) + 1,
+    updated_at: now,
+    ttl,
+    flags,
+    risk_score: computeRiskScore(flags, existingProfile, isNewDevice),
+    ip_history: ipHistory,
+  };
+}
+
 /**
  * Profile service handles device profile updates
  * Implements mutation gating to reduce unnecessary writes
@@ -119,16 +174,9 @@ export class ProfileService {
       hasDrift = false,
       rawFingerprint,
     } = params;
-    const ttlSeconds = this.deps.config.profileTtlDays * 24 * 60 * 60;
-    const ttl = Math.floor(Date.now() / 1000) + ttlSeconds;
     const now = Date.now();
-
-    // Only update last_seen if hour changed (reduce write amplification)
-    const currentHour = Math.floor(now / 3600000);
-    const existingHour = existingProfile
-      ? Math.floor(existingProfile.last_seen_at / 3600000)
-      : 0;
-    const shouldUpdateLastSeen = currentHour !== existingHour;
+    const ttl =
+      Math.floor(now / 1000) + this.deps.config.profileTtlDays * 86400;
 
     const flags = computeFlags(fingerprint, existingProfile, {
       isNewDevice,
@@ -136,19 +184,15 @@ export class ProfileService {
       raw: rawFingerprint,
     });
 
-    const profileData: Record<string, unknown> = {
-      device_id: deviceId,
-      ...fingerprint,
-      first_seen_at: existingProfile?.first_seen_at ?? now,
-      last_seen_at: shouldUpdateLastSeen
-        ? now
-        : (existingProfile?.last_seen_at ?? now),
-      request_count: (existingProfile?.request_count ?? 0) + 1,
-      updated_at: now,
-      ttl,
+    const profileData = buildProfileData({
+      deviceId,
+      fingerprint,
+      existingProfile,
       flags,
-      risk_score: computeRiskScore(flags, existingProfile, isNewDevice),
-    };
+      isNewDevice,
+      now,
+      ttl,
+    });
 
     await this.deps.dynamodb.send(
       new PutItemCommand({

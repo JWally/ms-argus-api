@@ -16,6 +16,8 @@ import {
   type NetworkBaselineDetectorContext,
   type StatisticalContextV2,
 } from "../../services/profile/anomaly";
+import { loadProfile } from "../../services/matching/profile-loader";
+import type { DeviceProfile } from "../../types/profile";
 import type { SessionAnomalySignal } from "../../types";
 import type { MatchingWorkerEnvConfig } from "../../config/env";
 import {
@@ -108,16 +110,27 @@ async function runMatching(
  * @param statisticalContextV2 - Pre-fetched statistical v2 context for Shannon scoring
  * @returns Array of anomaly signals for the session
  */
+interface AnomalySignalContext {
+  fingerprint: ParsedRecord["fingerprint"];
+  rawPayload: SqsPayload;
+  networkBaseline: NetworkBaselineDetectorContext | null;
+  statisticalV2: StatisticalContextV2 | null;
+  ipHistoryProfile?: DeviceProfile | null;
+}
+
 function buildAnomalySignals(
-  fingerprint: ParsedRecord["fingerprint"],
-  rawPayload: SqsPayload,
-  networkBaselineContext: NetworkBaselineDetectorContext | null,
-  statisticalContextV2: StatisticalContextV2 | null,
+  ctx: AnomalySignalContext,
 ): SessionAnomalySignal[] {
-  const result = detectAllAnomalies(fingerprint, rawPayload.device, undefined, {
-    networkBaseline: networkBaselineContext,
-    statisticalV2: statisticalContextV2,
-  });
+  const result = detectAllAnomalies(
+    ctx.fingerprint,
+    ctx.rawPayload.device,
+    undefined,
+    {
+      networkBaseline: ctx.networkBaseline,
+      statisticalV2: ctx.statisticalV2,
+      ipHistoryProfile: ctx.ipHistoryProfile ?? null,
+    },
+  );
   return result.signals.map((s) => ({
     type: s.type,
     code: s.code,
@@ -255,10 +268,30 @@ async function checkDuplicate(
   return false;
 }
 
+/** Load profile for IP history anomaly context. Returns null for new devices. */
+async function loadProfileForAnomalies(
+  deps: ProcessRecordDeps,
+  deviceId: string,
+): Promise<DeviceProfile | null> {
+  try {
+    const profileData = await loadProfile(
+      {
+        dynamodb: deps.dynamodb,
+        profilesTable: deps.envConfig.PROFILES_TABLE,
+      },
+      deviceId,
+    );
+    return profileData as DeviceProfile | null;
+  } catch {
+    return null;
+  }
+}
+
 /** Fetch anomaly contexts and build signals. */
 async function fetchAndBuildAnomalies(
   fingerprint: ParsedRecord["fingerprint"],
   rawPayload: SqsPayload,
+  ipHistoryProfile?: DeviceProfile | null,
 ): Promise<{
   anomalies: SessionAnomalySignal[];
   statisticalContextV2: StatisticalContextV2 | null;
@@ -273,12 +306,13 @@ async function fetchAndBuildAnomalies(
     ),
   ]);
   return {
-    anomalies: buildAnomalySignals(
+    anomalies: buildAnomalySignals({
       fingerprint,
       rawPayload,
-      networkBaselineContext,
-      statisticalContextV2,
-    ),
+      networkBaseline: networkBaselineContext,
+      statisticalV2: statisticalContextV2,
+      ipHistoryProfile,
+    }),
     statisticalContextV2,
   };
 }
@@ -305,9 +339,15 @@ export async function processRecord(
     deps,
   );
 
+  // Load profile for IP history anomaly detection (skip for new devices)
+  const existingProfile = matchResult.is_new_device
+    ? null
+    : await loadProfileForAnomalies(deps, matchResult.device_id);
+
   const { anomalies, statisticalContextV2 } = await fetchAndBuildAnomalies(
     fingerprint,
     rawPayload,
+    existingProfile,
   );
   await persistResults(
     service,

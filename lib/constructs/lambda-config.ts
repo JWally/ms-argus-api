@@ -1,5 +1,5 @@
 // lib/constructs/lambda-config.ts
-// AR-167: Shared Lambda configuration factory for CDK constructs
+
 // Provides consistent Lambda settings across all functions
 
 import * as lambda from "aws-cdk-lib/aws-lambda";

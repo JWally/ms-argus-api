@@ -117,6 +117,8 @@ function buildAnalysis(
     analysis.fuzzy_match_info = matchResult.fuzzy_match_info;
   if (matchResult.vector_match_details)
     analysis.vector_match_details = matchResult.vector_match_details;
+  if (matchResult.ip_history_context)
+    analysis.ip_history_context = matchResult.ip_history_context;
   if (statisticalContextV2)
     analysis.normalities = buildNormalities(statisticalContextV2);
   return analysis;

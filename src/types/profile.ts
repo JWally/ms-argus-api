@@ -31,6 +31,16 @@ export interface ProfileUpdatePayload {
   evidence_codes?: string[];
 }
 
+/** Single entry in the IP history ring buffer */
+export interface IpHistoryEntry {
+  /** IP address */
+  ip: string;
+  /** Autonomous System Number */
+  asn: number;
+  /** Last seen timestamp (epoch ms) */
+  ts: number;
+}
+
 /** Device profile stored in DynamoDB. */
 export interface DeviceProfile {
   /** Unique device identifier (UUID) */
@@ -87,4 +97,6 @@ export interface DeviceProfile {
   updated_at: number;
   /** TTL timestamp (epoch seconds) for DynamoDB expiration */
   ttl: number;
+  /** Recent IP address history (newest-first, max 10 entries) */
+  ip_history?: IpHistoryEntry[];
 }

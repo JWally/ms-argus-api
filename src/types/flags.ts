@@ -40,6 +40,12 @@ export const DeviceFlags = {
   IP_TIMEZONE_MISMATCH: "ip_timezone_mismatch",
   /** Server-side and client-side timezone don't match */
   SERVER_CLIENT_TZ_MISMATCH: "server_client_tz_mismatch",
+
+  // IP/ASN history flags
+  /** Device appeared on a new ASN not seen in its IP history */
+  NEW_ASN_FOR_DEVICE: "new_asn_for_device",
+  /** Device cycling through excessive unique IPs (>=100 in 24h) */
+  IP_CHURN: "ip_churn",
 } as const;
 
 /** Union type of all device flag values. */

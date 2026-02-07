@@ -1,5 +1,5 @@
 // lib/constructs/queues.ts
-// AR-44: Uses centralized stage config for environment-specific values
+
 import { Construct } from "constructs";
 import * as sqs from "aws-cdk-lib/aws-sqs";
 import * as cloudwatch from "aws-cdk-lib/aws-cloudwatch";
@@ -32,7 +32,6 @@ export class QueuesConstruct extends Construct {
 
     const { stackName, stage, alarmsTopic } = props;
 
-    // AR-44: Use centralized stage config for all tunable values
     const config = getStageConfig(stage);
 
     // Dead Letter Queue for matching failures
@@ -87,7 +86,6 @@ export class QueuesConstruct extends Construct {
       },
     });
 
-    // Alarms - AR-44: Pass config for thresholds
     this.createQueueAlarms(
       this.matchingQueue,
       "Matching",
@@ -121,7 +119,6 @@ export class QueuesConstruct extends Construct {
     alarmsTopic: sns.ITopic,
     alarmConfig: { backlogThreshold: number; messageAgeSeconds: number },
   ) {
-    // High backlog alarm - AR-44: threshold from config
     const backlogAlarm = new cloudwatch.Alarm(this, `${prefix}QueueBacklog`, {
       metric: queue.metricApproximateNumberOfMessagesVisible({
         period: Duration.minutes(5),
@@ -133,7 +130,6 @@ export class QueuesConstruct extends Construct {
     });
     backlogAlarm.addAlarmAction(new actions.SnsAction(alarmsTopic));
 
-    // Age of oldest message alarm - AR-44: threshold from config
     const ageAlarm = new cloudwatch.Alarm(this, `${prefix}QueueAge`, {
       metric: queue.metricApproximateAgeOfOldestMessage({
         period: Duration.minutes(5),

@@ -1,5 +1,5 @@
 // lib/constructs/analytics.ts
-// AR-57: Analytics pipeline for match observations (Firehose -> S3 -> Athena)
+
 import { Construct } from "constructs";
 import * as s3 from "aws-cdk-lib/aws-s3";
 import * as kinesisfirehose from "aws-cdk-lib/aws-kinesisfirehose";
@@ -16,7 +16,7 @@ interface AnalyticsConstructProps {
 /**
  * Analytics pipeline for match observations
  *
- * AR-57: Provides observability into matching decisions for:
+ * Provides observability into matching decisions for:
  * - Model evaluation and tuning
  * - False-positive investigations
  * - Backfills and replays
@@ -27,7 +27,7 @@ interface AnalyticsConstructProps {
  */
 export class AnalyticsConstruct extends Construct {
   public readonly observationsBucket: s3.Bucket;
-  public readonly payloadArchiveBucket: s3.Bucket; // AR-139
+  public readonly payloadArchiveBucket: s3.Bucket;
   public readonly deliveryStream: kinesisfirehose.CfnDeliveryStream;
   public readonly deliveryStreamArn: string;
   public readonly glueDatabase: glue.CfnDatabase;
@@ -40,7 +40,7 @@ export class AnalyticsConstruct extends Construct {
 
     // =====================================
     // S3 BUCKET FOR OBSERVATIONS
-    // AR-138: Include account/region to avoid global S3 name collisions
+
     // =====================================
     const accountId = Stack.of(this).account;
     const region = Stack.of(this).region;
@@ -72,7 +72,7 @@ export class AnalyticsConstruct extends Construct {
     });
 
     // =====================================
-    // AR-139: S3 BUCKET FOR PAYLOAD ARCHIVES
+
     // Raw fingerprint payloads for debugging and ML training
     // =====================================
     this.payloadArchiveBucket = new s3.Bucket(this, "PayloadArchiveBucket", {

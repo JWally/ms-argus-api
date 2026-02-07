@@ -36,6 +36,9 @@ export const AnomalyCodes = {
   RARE_CSS_FOR_UA: "RARE_CSS_FOR_UA",
   RARE_TCP_MSS_FOR_UA: "RARE_TCP_MSS_FOR_UA",
   RARE_TLS_RATIO_FOR_UA: "RARE_TLS_RATIO_FOR_UA",
+  // IP/ASN history anomalies
+  NEW_ASN_FOR_DEVICE: "NEW_ASN_FOR_DEVICE",
+  IP_CHURN: "IP_CHURN",
   // Coherence anomalies (cross-signal Shannon scoring)
   RARE_LANG_FOR_TZ: "RARE_LANG_FOR_TZ",
   RARE_TZ_FOR_COUNTRY: "RARE_TZ_FOR_COUNTRY",

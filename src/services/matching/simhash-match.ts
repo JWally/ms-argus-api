@@ -323,19 +323,21 @@ function scoreCandidates(
 }
 
 /**
- * Compute confidence based on Hamming distance and band match count
- * - Distance 0: 0.90 confidence
- * - Distance 1: 0.85 confidence
- * - Distance 2: 0.80 confidence
- * - Distance 3: 0.75 confidence
- * - Distance 4: 0.70 confidence
- * Bonus for more band matches
+ * Compute confidence based on Hamming distance and band match count.
+ * Penalty is normalized to hash bit-width so 256-bit and 64-bit hashes
+ * produce equivalent confidence for the same proportional distance.
+ *
+ * At 256-bit: distance 0 → 0.90, distance 4 → 0.85, distance 8 → 0.80
+ * At  64-bit: distance 0 → 0.90, distance 1 → 0.85, distance 2 → 0.80
+ *
+ * Bonus for more band matches (up to +0.04).
  */
 function computeConfidence(
   hammingDistance: number,
   bandMatches: number,
 ): number {
-  const baseConfidence = 0.9 - hammingDistance * 0.05;
+  const penaltyPerBit = 0.05 / (SIMHASH_CONFIG.TOTAL_BITS / 64);
+  const baseConfidence = 0.9 - hammingDistance * penaltyPerBit;
   const bandBonus = Math.min((bandMatches - 2) * 0.02, 0.04);
   return Math.max(0.6, Math.min(0.95, baseConfidence + bandBonus));
 }

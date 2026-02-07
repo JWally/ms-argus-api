@@ -21,6 +21,8 @@ import {
   detectStatisticalAnomaliesV2,
   type StatisticalContextV2,
 } from "./statistical-v2";
+import { detectIpHistoryAnomalies } from "./ip-history-detector";
+import type { DeviceProfile } from "../../../types/profile";
 
 const logger = new Logger({
   serviceName: process.env.POWERTOOLS_SERVICE_NAME || "argus-anomaly-detector",
@@ -62,15 +64,23 @@ const detectors: DetectorFn[] = [
   detectNetworkAnomalies,
 ];
 
+/** Run a detector with error isolation, appending results to signals. */
+function runSafe(
+  signals: AnomalySignal[],
+  name: string,
+  fn: () => AnomalySignal[],
+): void {
+  try {
+    signals.push(...fn());
+  } catch (error) {
+    logger.error(`${name} failed`, { error });
+    metrics.addMetric("AnomalyDetectorError", MetricUnit.Count, 1);
+  }
+}
+
 /**
- * Run all registered anomaly detectors
- * Errors in individual detectors are caught and logged, not propagated
- * @param fingerprint - Normalized fingerprint data
- * @param raw - Raw payload with nested structure (for cross-field checks)
- * @param sigint - Signal intelligence data (for network checks)
- * @param networkBaselineContext - Pre-fetched network baseline context (for ASN-based checks)
- * @param statisticalContextV2 - Pre-fetched statistical v2 context (Shannon scoring)
- * @returns Aggregated anomaly result with signals, score, and suggested flags
+ * Run all registered anomaly detectors.
+ * Errors in individual detectors are caught and logged, not propagated.
  */
 export function detectAllAnomalies(
   fingerprint: Fingerprint,
@@ -79,42 +89,27 @@ export function detectAllAnomalies(
   contextOpts?: {
     networkBaseline?: NetworkBaselineDetectorContext | null;
     statisticalV2?: StatisticalContextV2 | null;
+    ipHistoryProfile?: DeviceProfile | null;
   },
 ): AnomalyResult {
   const signals: AnomalySignal[] = [];
 
   for (const detector of detectors) {
-    try {
-      signals.push(...detector(fingerprint, raw, sigint));
-    } catch (error) {
-      // Detector errors shouldn't block matching
-      logger.error("Anomaly detector failed", {
-        error,
-        detectorName: detector.name,
-      });
-      metrics.addMetric("AnomalyDetectorError", MetricUnit.Count, 1);
-    }
+    runSafe(signals, detector.name, () => detector(fingerprint, raw, sigint));
   }
 
-  // Run network baseline detection with pre-fetched context
-  try {
-    signals.push(
-      ...detectNetworkBaselineAnomalies(contextOpts?.networkBaseline ?? null),
-    );
-  } catch (error) {
-    logger.error("Network baseline anomaly detector failed", { error });
-    metrics.addMetric("AnomalyDetectorError", MetricUnit.Count, 1);
-  }
-
-  // Run statistical v2 detection with pre-fetched context (Shannon scoring)
-  try {
-    signals.push(
-      ...detectStatisticalAnomaliesV2(contextOpts?.statisticalV2 ?? null),
-    );
-  } catch (error) {
-    logger.error("Statistical v2 anomaly detector failed", { error });
-    metrics.addMetric("AnomalyDetectorError", MetricUnit.Count, 1);
-  }
+  runSafe(signals, "NetworkBaseline", () =>
+    detectNetworkBaselineAnomalies(contextOpts?.networkBaseline ?? null),
+  );
+  runSafe(signals, "StatisticalV2", () =>
+    detectStatisticalAnomaliesV2(contextOpts?.statisticalV2 ?? null),
+  );
+  runSafe(signals, "IpHistory", () =>
+    detectIpHistoryAnomalies(
+      fingerprint,
+      contextOpts?.ipHistoryProfile ?? null,
+    ),
+  );
 
   return {
     signals,

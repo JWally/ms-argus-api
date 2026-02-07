@@ -58,7 +58,7 @@ import {
 import { SQSClient, SendMessageCommand } from "@aws-sdk/client-sqs";
 import { FirehoseClient, PutRecordCommand } from "@aws-sdk/client-firehose";
 import { marshall } from "@aws-sdk/util-dynamodb";
-import { SQSEvent, SQSRecord, Context } from "aws-lambda";
+import { SQSEvent, SQSBatchResponse, SQSRecord, Context } from "aws-lambda";
 
 const dynamoMock = mockClient(DynamoDBClient);
 const sqsMock = mockClient(SQSClient);
@@ -175,10 +175,10 @@ describe("matching-worker handler", () => {
       sqsMock.on(SendMessageCommand).resolves({ MessageId: "profile-msg-1" });
 
       const event = createSQSEvent([createSQSRecord(payload)]);
-      const result = await handler(event, mockContext, () => {});
+      const result = await handler(event, mockContext);
 
       expect(result).toBeDefined();
-      expect(result!.batchItemFailures).toHaveLength(0);
+      expect((result as SQSBatchResponse).batchItemFailures).toHaveLength(0);
 
       const sqsCalls = sqsMock.commandCalls(SendMessageCommand);
       expect(sqsCalls.length).toBeGreaterThanOrEqual(1);
@@ -201,9 +201,9 @@ describe("matching-worker handler", () => {
         createSQSRecord(payload2, "msg-2"),
       ]);
 
-      const result = await handler(event, mockContext, () => {});
+      const result = await handler(event, mockContext);
 
-      expect(result!.batchItemFailures).toHaveLength(0);
+      expect((result as SQSBatchResponse).batchItemFailures).toHaveLength(0);
     });
 
     it("should skip processing for cache hit (Tier 0)", async () => {
@@ -235,9 +235,9 @@ describe("matching-worker handler", () => {
       });
 
       const event = createSQSEvent([createSQSRecord(payload)]);
-      const result = await handler(event, mockContext, () => {});
+      const result = await handler(event, mockContext);
 
-      expect(result!.batchItemFailures).toHaveLength(0);
+      expect((result as SQSBatchResponse).batchItemFailures).toHaveLength(0);
 
       expect(sqsMock.calls()).toHaveLength(0);
     });
@@ -255,9 +255,9 @@ describe("matching-worker handler", () => {
       sqsMock.on(SendMessageCommand).resolves({ MessageId: "msg-1" });
 
       const event = createSQSEvent([createSQSRecord(payload)]);
-      const result = await handler(event, mockContext, () => {});
+      const result = await handler(event, mockContext);
 
-      expect(result!.batchItemFailures).toHaveLength(0);
+      expect((result as SQSBatchResponse).batchItemFailures).toHaveLength(0);
 
       const sqsCalls = sqsMock.commandCalls(SendMessageCommand);
       expect(sqsCalls.length).toBeGreaterThanOrEqual(1);
@@ -271,10 +271,12 @@ describe("matching-worker handler", () => {
       dynamoMock.on(GetItemCommand).rejects(new Error("DynamoDB error"));
 
       const event = createSQSEvent([createSQSRecord(payload, "failing-msg")]);
-      const result = await handler(event, mockContext, () => {});
+      const result = await handler(event, mockContext);
 
-      expect(result!.batchItemFailures).toHaveLength(1);
-      expect(result!.batchItemFailures[0].itemIdentifier).toBe("failing-msg");
+      expect((result as SQSBatchResponse).batchItemFailures).toHaveLength(1);
+      expect(
+        (result as SQSBatchResponse).batchItemFailures[0].itemIdentifier,
+      ).toBe("failing-msg");
     });
 
     it("should return failed items only for records that fail", async () => {
@@ -319,10 +321,12 @@ describe("matching-worker handler", () => {
         createSQSRecord(failPayload, "fail-msg"),
       ]);
 
-      const result = await handler(event, mockContext, () => {});
+      const result = await handler(event, mockContext);
 
-      expect(result!.batchItemFailures).toHaveLength(1);
-      expect(result!.batchItemFailures[0].itemIdentifier).toBe("fail-msg");
+      expect((result as SQSBatchResponse).batchItemFailures).toHaveLength(1);
+      expect(
+        (result as SQSBatchResponse).batchItemFailures[0].itemIdentifier,
+      ).toBe("fail-msg");
     });
 
     it("should handle invalid JSON in record body without retrying", async () => {
@@ -333,10 +337,10 @@ describe("matching-worker handler", () => {
         },
       ]);
 
-      const result = await handler(event, mockContext, () => {});
+      const result = await handler(event, mockContext);
 
       // Should NOT be in batch failures (don't retry poison messages)
-      expect(result!.batchItemFailures).toHaveLength(0);
+      expect((result as SQSBatchResponse).batchItemFailures).toHaveLength(0);
       expect(mockAddMetric).toHaveBeenCalledWith(
         "MalformedPayload",
         "Count",
@@ -350,9 +354,9 @@ describe("matching-worker handler", () => {
       dynamoMock.on(GetItemCommand).rejects(new Error("Matching failed"));
 
       const event = createSQSEvent([createSQSRecord(payload)]);
-      const result = await handler(event, mockContext, () => {});
+      const result = await handler(event, mockContext);
 
-      expect(result!.batchItemFailures).toHaveLength(1);
+      expect((result as SQSBatchResponse).batchItemFailures).toHaveLength(1);
     });
   });
 
@@ -375,9 +379,9 @@ describe("matching-worker handler", () => {
       sqsMock.on(SendMessageCommand).resolves({ MessageId: "msg-1" });
 
       const event = createSQSEvent([createSQSRecord(payload)]);
-      const result = await handler(event, mockContext, () => {});
+      const result = await handler(event, mockContext);
 
-      expect(result!.batchItemFailures).toHaveLength(0);
+      expect((result as SQSBatchResponse).batchItemFailures).toHaveLength(0);
     });
   });
 
@@ -392,9 +396,9 @@ describe("matching-worker handler", () => {
       const event = createSQSEvent([
         createSQSRecord(warmupMessage, "warmup-msg"),
       ]);
-      const result = await handler(event, mockContext, () => {});
+      const result = await handler(event, mockContext);
 
-      expect(result!.batchItemFailures).toHaveLength(0);
+      expect((result as SQSBatchResponse).batchItemFailures).toHaveLength(0);
 
       expect(dynamoMock.calls()).toHaveLength(0);
 
@@ -421,9 +425,9 @@ describe("matching-worker handler", () => {
         createSQSRecord(regularPayload, "regular-msg"),
       ]);
 
-      const result = await handler(event, mockContext, () => {});
+      const result = await handler(event, mockContext);
 
-      expect(result!.batchItemFailures).toHaveLength(0);
+      expect((result as SQSBatchResponse).batchItemFailures).toHaveLength(0);
 
       expect(dynamoMock.calls().length).toBeGreaterThan(0);
     });
@@ -443,7 +447,7 @@ describe("matching-worker handler", () => {
       sqsMock.on(SendMessageCommand).resolves({ MessageId: "msg-1" });
 
       const event = createSQSEvent([createSQSRecord(payload)]);
-      await handler(event, mockContext, () => {});
+      await handler(event, mockContext);
 
       expect(mockAddMetric).toHaveBeenCalledWith("NEW_DEVICE_RATE", "Count", 1);
       expect(mockAddMetric).toHaveBeenCalledWith("NewDevice", "Count", 1);
@@ -463,7 +467,7 @@ describe("matching-worker handler", () => {
       sqsMock.on(SendMessageCommand).resolves({ MessageId: "msg-1" });
 
       const event = createSQSEvent([createSQSRecord(payload)]);
-      await handler(event, mockContext, () => {});
+      await handler(event, mockContext);
 
       expect(mockAddMetric).not.toHaveBeenCalledWith(
         "NEW_DEVICE_RATE",
@@ -490,8 +494,8 @@ describe("matching-worker handler", () => {
       sqsMock.on(SendMessageCommand).resolves({ MessageId: "m1" });
 
       const event = createSQSEvent([createSQSRecord(payload)]);
-      const result = await handler(event, mockContext, () => {});
-      expect(result!.batchItemFailures).toHaveLength(0);
+      const result = await handler(event, mockContext);
+      expect((result as SQSBatchResponse).batchItemFailures).toHaveLength(0);
     });
 
     it("should extract reflexiveIp (web format) as stun_public_ip", async () => {
@@ -508,8 +512,8 @@ describe("matching-worker handler", () => {
       sqsMock.on(SendMessageCommand).resolves({ MessageId: "m1" });
 
       const event = createSQSEvent([createSQSRecord(payload)]);
-      const result = await handler(event, mockContext, () => {});
-      expect(result!.batchItemFailures).toHaveLength(0);
+      const result = await handler(event, mockContext);
+      expect((result as SQSBatchResponse).batchItemFailures).toHaveLength(0);
     });
 
     it("should extract localIps[0] (API array format) as stun_local_ip", async () => {
@@ -526,8 +530,8 @@ describe("matching-worker handler", () => {
       sqsMock.on(SendMessageCommand).resolves({ MessageId: "m1" });
 
       const event = createSQSEvent([createSQSRecord(payload)]);
-      const result = await handler(event, mockContext, () => {});
-      expect(result!.batchItemFailures).toHaveLength(0);
+      const result = await handler(event, mockContext);
+      expect((result as SQSBatchResponse).batchItemFailures).toHaveLength(0);
     });
 
     it("should extract localIp (web string format) as stun_local_ip", async () => {
@@ -544,8 +548,8 @@ describe("matching-worker handler", () => {
       sqsMock.on(SendMessageCommand).resolves({ MessageId: "m1" });
 
       const event = createSQSEvent([createSQSRecord(payload)]);
-      const result = await handler(event, mockContext, () => {});
-      expect(result!.batchItemFailures).toHaveLength(0);
+      const result = await handler(event, mockContext);
+      expect((result as SQSBatchResponse).batchItemFailures).toHaveLength(0);
     });
   });
 
@@ -570,8 +574,8 @@ describe("matching-worker handler", () => {
       sqsMock.on(SendMessageCommand).resolves({ MessageId: "m1" });
 
       const event = createSQSEvent([createSQSRecord(payload)]);
-      const result = await handler(event, mockContext, () => {});
-      expect(result!.batchItemFailures).toHaveLength(0);
+      const result = await handler(event, mockContext);
+      expect((result as SQSBatchResponse).batchItemFailures).toHaveLength(0);
     });
 
     it("should extract flat TCP probe format (proxyScore/vpnScore/rttMs)", async () => {
@@ -592,8 +596,8 @@ describe("matching-worker handler", () => {
       sqsMock.on(SendMessageCommand).resolves({ MessageId: "m1" });
 
       const event = createSQSEvent([createSQSRecord(payload)]);
-      const result = await handler(event, mockContext, () => {});
-      expect(result!.batchItemFailures).toHaveLength(0);
+      const result = await handler(event, mockContext);
+      expect((result as SQSBatchResponse).batchItemFailures).toHaveLength(0);
     });
 
     it("should extract faviconCache id", async () => {
@@ -610,8 +614,8 @@ describe("matching-worker handler", () => {
       sqsMock.on(SendMessageCommand).resolves({ MessageId: "m1" });
 
       const event = createSQSEvent([createSQSRecord(payload)]);
-      const result = await handler(event, mockContext, () => {});
-      expect(result!.batchItemFailures).toHaveLength(0);
+      const result = await handler(event, mockContext);
+      expect((result as SQSBatchResponse).batchItemFailures).toHaveLength(0);
     });
   });
 
@@ -631,8 +635,8 @@ describe("matching-worker handler", () => {
       sqsMock.on(SendMessageCommand).resolves({ MessageId: "m1" });
 
       const event = createSQSEvent([createSQSRecord(payload)]);
-      const result = await handler(event, mockContext, () => {});
-      expect(result!.batchItemFailures).toHaveLength(0);
+      const result = await handler(event, mockContext);
+      expect((result as SQSBatchResponse).batchItemFailures).toHaveLength(0);
     });
 
     it("should compute isHeadless from nested headless signals (some true)", async () => {
@@ -656,8 +660,8 @@ describe("matching-worker handler", () => {
       sqsMock.on(SendMessageCommand).resolves({ MessageId: "m1" });
 
       const event = createSQSEvent([createSQSRecord(payload)]);
-      const result = await handler(event, mockContext, () => {});
-      expect(result!.batchItemFailures).toHaveLength(0);
+      const result = await handler(event, mockContext);
+      expect((result as SQSBatchResponse).batchItemFailures).toHaveLength(0);
     });
 
     it("should not flag headless when all nested signals are false", async () => {
@@ -680,8 +684,8 @@ describe("matching-worker handler", () => {
       sqsMock.on(SendMessageCommand).resolves({ MessageId: "m1" });
 
       const event = createSQSEvent([createSQSRecord(payload)]);
-      const result = await handler(event, mockContext, () => {});
-      expect(result!.batchItemFailures).toHaveLength(0);
+      const result = await handler(event, mockContext);
+      expect((result as SQSBatchResponse).batchItemFailures).toHaveLength(0);
     });
   });
 
@@ -701,8 +705,8 @@ describe("matching-worker handler", () => {
       sqsMock.on(SendMessageCommand).resolves({ MessageId: "m1" });
 
       const event = createSQSEvent([createSQSRecord(payload)]);
-      const result = await handler(event, mockContext, () => {});
-      expect(result!.batchItemFailures).toHaveLength(0);
+      const result = await handler(event, mockContext);
+      expect((result as SQSBatchResponse).batchItemFailures).toHaveLength(0);
     });
 
     it("should extract lies.totalLies (web client format)", async () => {
@@ -720,8 +724,8 @@ describe("matching-worker handler", () => {
       sqsMock.on(SendMessageCommand).resolves({ MessageId: "m1" });
 
       const event = createSQSEvent([createSQSRecord(payload)]);
-      const result = await handler(event, mockContext, () => {});
-      expect(result!.batchItemFailures).toHaveLength(0);
+      const result = await handler(event, mockContext);
+      expect((result as SQSBatchResponse).batchItemFailures).toHaveLength(0);
     });
   });
 
@@ -734,9 +738,9 @@ describe("matching-worker handler", () => {
       };
 
       const event = createSQSEvent([createSQSRecord(payload)]);
-      const result = await handler(event, mockContext, () => {});
+      const result = await handler(event, mockContext);
 
-      expect(result!.batchItemFailures).toHaveLength(0);
+      expect((result as SQSBatchResponse).batchItemFailures).toHaveLength(0);
       expect(mockAddMetric).toHaveBeenCalledWith(
         "MissingSessionId",
         "Count",
@@ -762,9 +766,9 @@ describe("matching-worker handler", () => {
       });
 
       const event = createSQSEvent([createSQSRecord(payload)]);
-      const result = await handler(event, mockContext, () => {});
+      const result = await handler(event, mockContext);
 
-      expect(result!.batchItemFailures).toHaveLength(0);
+      expect((result as SQSBatchResponse).batchItemFailures).toHaveLength(0);
 
       const putCalls = dynamoMock.commandCalls(PutItemCommand);
       const payloadWrite = putCalls.find(
@@ -794,9 +798,9 @@ describe("matching-worker handler", () => {
 
       const payload = createFingerprintPayload();
       const event = createSQSEvent([createSQSRecord(payload)]);
-      const result = await handler(event, mockContext, () => {});
+      const result = await handler(event, mockContext);
 
-      expect(result!.batchItemFailures).toHaveLength(0);
+      expect((result as SQSBatchResponse).batchItemFailures).toHaveLength(0);
       expect(mockAddMetric).toHaveBeenCalledWith(
         "SessionPayloadWriteError",
         "Count",
@@ -814,9 +818,9 @@ describe("matching-worker handler", () => {
 
       const payload = createFingerprintPayload();
       const event = createSQSEvent([createSQSRecord(payload)]);
-      const result = await handler(event, mockContext, () => {});
+      const result = await handler(event, mockContext);
 
-      expect(result!.batchItemFailures).toHaveLength(0);
+      expect((result as SQSBatchResponse).batchItemFailures).toHaveLength(0);
 
       // Wait for fire-and-forget to settle
       await new Promise((resolve) => setTimeout(resolve, 50));
@@ -837,10 +841,10 @@ describe("matching-worker handler", () => {
 
       const payload = createFingerprintPayload();
       const event = createSQSEvent([createSQSRecord(payload)]);
-      const result = await handler(event, mockContext, () => {});
+      const result = await handler(event, mockContext);
 
       // Should still succeed (emitObservation is fire-and-forget)
-      expect(result!.batchItemFailures).toHaveLength(0);
+      expect((result as SQSBatchResponse).batchItemFailures).toHaveLength(0);
 
       // Wait for fire-and-forget to settle
       await new Promise((resolve) => setTimeout(resolve, 50));

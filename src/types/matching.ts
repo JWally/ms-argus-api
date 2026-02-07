@@ -206,6 +206,14 @@ export interface MatchResult {
   fuzzy_match_info?: FuzzyMatchInfo;
   /** Vector match details for Tier 2 Qdrant matches */
   vector_match_details?: VectorMatchDetails;
+  /** IP history context for session response */
+  ip_history_context?: {
+    known_ip: boolean;
+    known_asn: boolean;
+    unique_ips_24h: number;
+    unique_asns_24h: number;
+    confidence_adjustment: number;
+  };
 }
 
 /**

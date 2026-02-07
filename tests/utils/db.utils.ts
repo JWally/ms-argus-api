@@ -1,5 +1,4 @@
 // tests/utils/db.utils.ts
-// AR-60: Database utilities for test setup and teardown
 
 import {
   DynamoDBClient,

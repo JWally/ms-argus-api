@@ -48,7 +48,7 @@ Tier 0.5 uses persistent identity signals that provide near-certain device ident
 
 **Why 0.99 confidence**: Evercookies are intentionally persistent and unique. False positives are essentially impossible since each evercookie_id is a generated UUID tied to a specific device visit.
 
-#### Public Key (AR-64)
+#### Public Key
 
 **Signal**: `public_key` (ECDSA P-256, Base64 SPKI format)
 
@@ -63,7 +63,7 @@ Tier 0.5 uses persistent identity signals that provide near-certain device ident
 
 **Why 0.99 confidence**: Each public key is cryptographically unique. The only false positive scenario would require key extraction from the device, which is practically impossible.
 
-#### Sigint ID (AR-81)
+#### Sigint ID
 
 **Signal**: `sigint_id` (third-party cookie from CloudFront edge)
 
@@ -258,7 +258,7 @@ Legend: ✅ Works | ⚠️ Degraded/Randomized | ❌ Blocked
 
 4. **Add signal quality flags**: Track when signals are likely randomized (e.g., Brave's audio randomization) and downweight those buckets.
 
-## Tier-Gated Identity Association (AR-149/AR-150)
+## Tier-Gated Identity Association
 
 ### Problem: Viral Spreading of Device IDs
 

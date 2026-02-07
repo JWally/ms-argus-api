@@ -12,7 +12,7 @@ interface SecretConstructProps {
 /**
  * Secret construct for encryption and HMAC keys.
  *
- * IMPORTANT: Automatic key rotation has been disabled (AR-18).
+ * IMPORTANT: Automatic key rotation has been disabled.
  *
  * Reason: The previous 48-hour rotation destroyed old keys, making historical
  * encrypted data unrecoverable. This prevented debugging, reprocessing, and

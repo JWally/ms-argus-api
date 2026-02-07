@@ -1,5 +1,4 @@
 // tests/utils/fingerprint.factory.ts
-// AR-60: Test factories for generating fingerprints with various signal combinations
 
 import { Fingerprint } from "../../src/types/fingerprint";
 

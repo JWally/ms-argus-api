@@ -1,190 +1,151 @@
 # ms-argus-api
 
-High-throughput device fingerprint ingestion and matching pipeline for fraud detection.
+High-throughput serverless device fingerprinting and fraud detection platform. Ingests browser fingerprints, performs multi-tier device matching, maintains device profiles, and computes risk scores with anomaly detection.
 
 ## Architecture
 
 ```
-                                    ┌──────────────────────────────────────────────────────────────┐
-                                    │                         AWS Cloud                            │
-┌──────────┐   ┌────────────┐      │  ┌───────────────────────────────────────────────────────┐   │
-│  Browser │──▶│ CloudFront │──────┼─▶│  API Gateway (HTTP API)                               │   │
-│          │   │   + WAF    │      │  │  - Binary media type support (gzip)                   │   │
-└──────────┘   └────────────┘      │  │  - CORS configuration                                 │   │
-                                   │  └───────────────────┬───────────────────────────────────┘   │
-                                   │                      │                                        │
-                                   │          ┌───────────┴───────────┐                           │
-                                   │          ▼                       ▼                           │
-                                   │  ┌───────────────┐      ┌───────────────┐                   │
-                                   │  │    Lambda     │      │    Lambda     │                   │
-                                   │  │  (Ingestion)  │      │ (Session Get) │                   │
-                                   │  │  POST /v1/    │      │ GET /v1/      │                   │
-                                   │  │    collect    │      │ session/{id}  │                   │
-                                   │  └───────┬───────┘      └───────┬───────┘                   │
-                                   │          │                      │                            │
-                                   │          ▼                      ▼                            │
-                                   │  ┌───────────────┐      ┌───────────────┐                   │
-                                   │  │     SQS       │      │   DynamoDB    │                   │
-                                   │  │   (Matching)  │      │ SessionCache  │                   │
-                                   │  └───────┬───────┘      └───────────────┘                   │
-                                   │          │                                                   │
-                                   │          ▼                                                   │
-                                   │  ┌─────────────────────────────────────┐                    │
-                                   │  │  Lambda (Matching Worker)           │                    │
-                                   │  │  - T0: Session cache check          │                    │
-                                   │  │  - T0.5: Evercookie lookup          │                    │
-                                   │  │  - T1: Hash match (stable/fuzzy)    │                    │
-                                   │  │  - T2: Compound filter match        │                    │
-                                   │  │  - Write result → SessionCache      │                    │
-                                   │  └────────────┬────┬───────────────────┘                    │
-                                   │   Read/Write ◀┘    └▶ Queue                                 │
-                                   │  ┌────────────┐    ┌──────────────────┐                     │
-                                   │  │  DynamoDB  │    │ SQS (Profile Q)  │                     │
-                                   │  │  Tables    │    └────────┬─────────┘                     │
-                                   │  └────────────┘             │                               │
-                                   │                             ▼                               │
-                                   │  ┌─────────────────────────────────────┐                    │
-                                   │  │  Lambda (Profile Updater)           │                    │
-                                   │  │  - Mutation gating (1hr)            │                    │
-                                   │  │  - Drift detection                  │                    │
-                                   │  │  - Update profiles + indexes        │                    │
-                                   │  └────────────────┬────────────────────┘                    │
-                                   │                   │                                         │
-                                   │                   ▼                                         │
-                                   │  ┌─────────────────────────────────────┐                    │
-                                   │  │            DynamoDB                 │                    │
-                                   │  │  - Profiles (device data)           │                    │
-                                   │  │  - Tier1Index (hash lookups)        │                    │
-                                   │  │  - Tier2Buckets (compound filters)  │                    │
-                                   │  │  - SessionCache (results + gates)   │                    │
-                                   │  └─────────────────────────────────────┘                    │
-                                   │                                                             │
-                                   │   ┌─────────────────────────────────────────────────────┐   │
-                                   │   │         Analytics Pipeline                          │   │
-                                   │   │   Firehose → S3 (Parquet) → Athena                 │   │
-                                   │   └─────────────────────────────────────────────────────┘   │
-                                   └──────────────────────────────────────────────────────────────┘
+                                    +--------------------------------------------------------------+
+                                    |                         AWS Cloud                            |
++----------+   +------------+      |  +-------------------------------------------------------+   |
+|  Browser |-->| CloudFront |------+->|  API Gateway (HTTP API)                               |   |
+|          |   |   + WAF    |      |  |  - Binary media type support (gzip)                   |   |
++----------+   +------------+      |  |  - CORS configuration                                 |   |
+                                   |  +-------------------+-----------------------------------+   |
+                                   |                      |                                        |
+                                   |          +-----------+-----------+                            |
+                                   |          v                       v                            |
+                                   |  +---------------+      +---------------+                    |
+                                   |  |    Lambda     |      |    Lambda     |                    |
+                                   |  |  (Ingestion)  |      | (Session Get) |                    |
+                                   |  |  POST /v1/    |      | GET /v1/      |                    |
+                                   |  |    collect    |      | session/{id}  |                    |
+                                   |  +-------+-------+      +-------+-------+                    |
+                                   |          |                      |                             |
+                                   |          v                      v                             |
+                                   |  +---------------+      +---------------+                    |
+                                   |  |     SQS       |      |   DynamoDB    |                    |
+                                   |  |   (Matching)  |      | SessionCache  |                    |
+                                   |  +-------+-------+      +-------+-------+                    |
+                                   |          |                      ^                             |
+                                   |          v                      |                             |
+                                   |  +--------------------------------------+                    |
+                                   |  |  Lambda (Matching Worker)            |                    |
+                                   |  |  T0.5: Identity (key/cookie/sigint)  |                    |
+                                   |  |  T1:   Hash match (stable/fuzzy/JA4) |                    |
+                                   |  |  T1.5: SimHash LSH (256-bit fuzzy)   |                    |
+                                   |  |  T2:   Vector search (Qdrant)        |                    |
+                                   |  |  T2:   Session anchors (IP+UA)       |                    |
+                                   |  |  Write result -> SessionCache        |                    |
+                                   |  +----------+---+-----------------------+                    |
+                                   |   Read/Write ^   | Queue                                     |
+                                   |  +----------+|   |  +--------------+   +------------------+  |
+                                   |  | DynamoDB  |   +->| SQS (Profile)|-->| Lambda (Profile  |  |
+                                   |  |  Tables   |      +--------------+   |  Updater)        |  |
+                                   |  +----------++                         | - Mutation gate   |  |
+                                   |             ^                          | - Drift detection |  |
+                                   |             +--------------------------| - Index writes    |  |
+                                   |                                        +------------------+  |
+                                   |                                                              |
+                                   |   +------------------------------------------------------+   |
+                                   |   |  Optional                                            |   |
+                                   |   |  - Qdrant vector search (VPC Lambda)                 |   |
+                                   |   |  - Valkey/ElastiCache (statistical anomaly tracking) |   |
+                                   |   |  - Firehose -> S3 Parquet -> Athena (analytics)      |   |
+                                   |   +------------------------------------------------------+   |
+                                   +--------------------------------------------------------------+
 ```
 
-## Components
+### Key Design Decisions
 
-### Ingestion Lambda (`src/handlers/ingestion.ts`)
+- **Serverless-first**: Removed VPC, NAT Gateway, ALB, ECS, Redis from the core path. VPC only used for optional Qdrant vector search.
+- **HTTP API over REST API**: ~$1/million vs ~$3.50/million (60% cost reduction).
+- **DynamoDB over Redis**: Zero idle cost, no VPC required for the hot path.
+- **Asynchronous matching**: Ingestion returns 204 immediately; matching happens via SQS. Clients poll `GET /v1/session/{id}` for results.
 
-Serverless HTTP handler for fingerprint collection:
+## Matching Pipeline
 
-- **Routes**: `/health`, `/v1/collect`
-- **Behavior**: Validate → Decompress (if gzip) → Extract tenant → Send to SQS → Return 204
-- **Features**:
-  - Binary gzip payload support (`application/octet-stream` + `Content-Encoding: gzip`)
-  - Web library format normalization (nested `loose`, `hashes`, `botSignals` objects)
-  - API key authentication with multi-tenant support
-  - Request deduplication middleware
-  - CORS support
+### Tiered Matching Strategy
 
-### Session Get Lambda (`src/handlers/session-get.ts`)
+The matching worker runs a waterfall of progressively weaker signal checks. First match wins.
 
-Returns match results for a session:
+| Tier | Method         | Confidence | Description                                           |
+| ---- | -------------- | ---------- | ----------------------------------------------------- |
+| T0   | Session Cache  | N/A        | Already processed (DynamoDB cache hit)                |
+| T0.5 | Public Key     | 0.99       | ECDSA P-256 cryptographic identity                    |
+| T0.5 | Evercookie     | 0.99       | Hard-to-clear browser storage                         |
+| T0.5 | Sigint ID      | 0.98       | Third-party cookie from edge                          |
+| T1   | Stable Hash    | 0.95       | Multiple stable browser signals combined              |
+| T1   | Fuzzy Hash     | 0.85       | Broader signal set, less strict                       |
+| T1   | JA4 Hash       | 0.80       | TLS fingerprint                                       |
+| T1.5 | SimHash LSH    | 0.80       | 256-bit locality-sensitive hashing (Hamming distance) |
+| T2   | Vector Search  | 0.75       | Qdrant cosine similarity (optional, requires VPC)     |
+| T2   | Session Anchor | 0.75       | IP + UA hash + screen (10-min window)                 |
+| T2   | IP+UA Anchor   | 0.70       | IP + UA hash only (3-min window)                      |
+| New  | Generate ULID  | 0.0        | No match found, new device created                    |
 
-- **Route**: `GET /v1/session/{session_id}`
-- **Returns**: Match status, device_id, confidence, risk_score, flags, evidence_codes
+### SimHash LSH (T1.5)
 
-### Matching Worker (`src/handlers/matching-worker.ts`)
+256-bit fuzzy hashes are split into 16 bands of 16 bits each. Two hashes that differ by fewer than 16 bits (Hamming distance) are likely to share at least 2 bands, making them lookup candidates. This enables sub-linear fuzzy matching without full pairwise comparison.
 
-Processes fingerprints from SQS and performs device matching:
+Configuration is tunable at runtime via environment variables (`SIMHASH_ENABLED`, `SIMHASH_SHADOW`, `SIMHASH_ROLLOUT`, `SIMHASH_HAMMING_THRESHOLD`, `SIMHASH_MAX_CANDIDATES`).
 
-**Tiered Matching Strategy:**
+### Session Anchors (T2)
 
-| Tier | Method         | Confidence | Description                          |
-| ---- | -------------- | ---------- | ------------------------------------ |
-| T0   | Session Cache  | N/A        | Session already processed (DynamoDB) |
-| T0.5 | Public Key     | 0.99       | ECDSA P-256 cryptographic identity   |
-| T0.5 | Evercookie     | 0.99       | Hard-to-clear browser storage        |
-| T0.5 | Sigint ID      | 0.99       | Third-party cookie from edge         |
-| T1   | Stable Hash    | 0.95       | Multiple stable signals combined     |
-| T1   | Fuzzy Hash     | 0.85       | Similar signals, less strict         |
-| T1   | JA4 Hash       | 0.80       | TLS fingerprint                      |
-| T2   | Session Anchor | 0.75       | IP + UA hash + screen (5-min TTL)    |
-| T2   | IP+UA Anchor   | 0.70       | IP + UA hash only (5-min TTL)        |
-| T2   | Maths+Window   | 0.70       | Math quirks + window features        |
-| T2   | HTML+CSS       | 0.70       | HTML element + CSS support           |
-| T2   | GPU+Screen+TZ  | 0.65       | Hardware + location signals          |
-| T2   | Audio+Canvas   | 0.65       | Audio context + canvas hash          |
-| T2   | WebGL Struct   | 0.60       | WebGL parameters + extensions        |
-| T2   | IP+JA4         | 0.60       | Network + TLS combination            |
-| New  | Generate ULID  | 1.0        | No match found, create new device    |
+Short-lived entries in DynamoDB that associate an IP + UA hash (+ optional screen dimensions) with a device ID. Used to match devices that return within minutes when stronger signals aren't available. Application-enforced TTLs (10 min / 3 min) with longer DynamoDB cleanup TTLs.
 
-**Output**: Writes result to SessionCache and queues profile update.
+## Anomaly Detection
 
-### Anomaly Detection (`src/services/profile/anomaly/`)
+Server-side fraud detection runs during matching to identify spoofing attempts. Anomaly signals are returned in the session response and contribute to `risk_score`.
 
-Server-side fraud detection that runs during matching to identify spoofing attempts:
+| Detector         | Signals                                                                     | Description                                                              |
+| ---------------- | --------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| Quick Wins       | `NAVIGATOR_LIES`, `HEADLESS_DETECTED`, `HIGH_PROXY_SCORE`, `HIGH_VPN_SCORE` | Fast checks: headless browser, navigator API tampering, proxy/VPN scores |
+| Cross-Field      | `WORKER_MISMATCH`                                                           | Navigator vs Worker/SharedWorker/ServiceWorker scope mismatches          |
+| Network          | `IP_TIMEZONE_MISMATCH`, `SERVER_CLIENT_TZ_MISMATCH`                         | IP geolocation timezone vs reported timezone                             |
+| Baseline Rules   | `WORKER_UA_MISMATCH`                                                        | User-Agent mismatch between main thread and worker contexts              |
+| Statistical V2   | Shannon entropy scoring                                                     | Detects rare fingerprint combinations using Valkey frequency counters    |
+| Network Baseline | ASN consistency scoring                                                     | Per-browser network profile baselines via Valkey                         |
 
-**Detection Types:**
+### Multi-Worker Environment Detection
 
-| Detector    | Code                   | Description                                |
-| ----------- | ---------------------- | ------------------------------------------ |
-| Quick Wins  | `NAVIGATOR_LIES`       | Browser API tampering detected by client   |
-| Quick Wins  | `HEADLESS_DETECTED`    | Headless browser indicators                |
-| Quick Wins  | `HIGH_PROXY_SCORE`     | Likely proxy usage (score > 0.7)           |
-| Quick Wins  | `HIGH_VPN_SCORE`       | Likely VPN usage                           |
-| Cross-Field | `WORKER_MISMATCH`      | Navigator vs Worker scope mismatches       |
-| Network     | `IP_TIMEZONE_MISMATCH` | IP geolocation timezone vs client timezone |
+Compares attributes across all JavaScript execution contexts (main thread, Dedicated Workers, Shared Workers, Service Workers). Spoofers who modify the main thread navigator but forget to patch worker contexts are detected.
 
-**Multi-Worker Environment Detection:**
+## Profile Management
 
-Compares attributes across all JavaScript execution contexts:
+### Profile Updater
 
-- Navigator (main thread)
-- Dedicated Workers (`new Worker()`)
-- Shared Workers (`new SharedWorker()`)
-- Service Workers
+Maintains device profiles and search indexes. Triggered by SQS from the matching worker.
 
-Spoofers who modify the main thread navigator but forget to patch worker contexts are detected.
-
-**Output**: Anomaly signals are included in the session response and contribute to `risk_score`.
-
-### Profile Updater (`src/handlers/profile-updater.ts`)
-
-Maintains device profiles and search indexes:
-
-- **Mutation Gating**: DynamoDB key prevents writes for 1 hour after update
-- **Drift Detection**: Skips update if <2 signals changed
-- **Updates**:
-  - `Profiles` table: Full device profile with TTL
-  - `Tier1Index`: O(1) hash lookups (evercookie, stable/fuzzy hash, JA4)
-  - `Tier2Buckets`: Compound filter buckets for multi-signal matching
+- **Mutation gating**: DynamoDB conditional write prevents updates for 1 hour after last write, reducing hot-partition writes.
+- **Drift detection**: Skips update if stable_hash hasn't changed AND fewer than 2 secondary signals differ.
+- **Index writes**: Updates Tier1Index (O(1) hash lookups) and Tier2Buckets (SimHash band entries, session anchors).
 
 ### Data Layer
 
-| Component                 | Purpose                         | TTL                               |
-| ------------------------- | ------------------------------- | --------------------------------- |
-| **DynamoDB SessionCache** | Session results, mutation gates | 15 min (sessions), 1 hour (gates) |
-| **DynamoDB Profiles**     | Device profiles                 | 60 days                           |
-| **DynamoDB Tier1Index**   | Hash-based lookups              | 60 days                           |
-| **DynamoDB Tier2Buckets** | Compound filter matching        | 7 days (anchor: 5 min)            |
-| **S3**                    | Analytics (Parquet)             | Configurable                      |
+| Table          | Key Schema                           | Purpose                                     | TTL                             |
+| -------------- | ------------------------------------ | ------------------------------------------- | ------------------------------- |
+| SessionCache   | `cache_key` (PK)                     | Match results + mutation gates              | 15 min (sessions), 1 hr (gates) |
+| SessionPayload | `session_id` (PK)                    | Full fingerprint payloads                   | 30 min                          |
+| Profiles       | `device_id` (PK)                     | Device profile blobs                        | 60 days                         |
+| Tier1Index     | `hash_key` (PK)                      | Hash-to-device lookups (e.g., `stable#abc`) | 60 days                         |
+| Tier2Buckets   | `bucket_key` (PK) + `device_id` (SK) | SimHash bands, session anchors              | 90 days (bands), 1 hr (anchors) |
+| VectorResults  | `session_id` (PK)                    | Qdrant search results                       | Short                           |
 
-#### Tier2Buckets Schema
-
-Uses an **adjacency list pattern** to avoid DynamoDB's 400KB item size limit:
-
-- **PK**: `bucket_key` (e.g., `tenant#ip_ja4#192.168.1.1#ja4_hash`)
-- **SK**: `device_id`
-
-Each device in a bucket is stored as a separate item, allowing unlimited devices per bucket via `Query` operations.
+Tier2Buckets uses an **adjacency list pattern** to avoid DynamoDB's 400KB item size limit. Each device in a bucket is a separate item, supporting unlimited devices per bucket via Query operations.
 
 ## API
 
 ### `POST /v1/collect`
 
-Collect fingerprint data from a client.
+Collect a fingerprint. Returns immediately; matching is async.
 
-**Content Types Supported:**
+**Content Types:**
 
 - `application/json` - Plain JSON
-- `application/octet-stream` with `Content-Encoding: gzip` - Binary gzip (recommended)
+- `application/octet-stream` with `Content-Encoding: gzip` - Binary gzip (recommended for production)
 
-**Request (Web Library Format):**
+**Request:**
 
 ```json
 {
@@ -244,7 +205,7 @@ Retrieve match results for a session.
   "confidence": 0.95,
   "match_tier": "STABLE_HASH",
   "risk_score": 15,
-  "flags": ["CANVAS_BLOCKED"],
+  "flags": ["returning_user"],
   "evidence_codes": ["STABLE_HASH_MATCH"],
   "anomalies": [
     {
@@ -263,12 +224,93 @@ Retrieve match results for a session.
 
 ### `GET /health`
 
-Health check endpoint.
+Health check. Returns `{ "status": "healthy" }`.
 
-**Response:**
+## Risk Flags
 
-```json
-{ "status": "healthy" }
+| Flag                   | Category | Description                              |
+| ---------------------- | -------- | ---------------------------------------- |
+| `new_device`           | Neutral  | Device just created                      |
+| `verified`             | Positive | Additional authentication passed         |
+| `returning_user`       | Positive | Seen in previous sessions                |
+| `bot_detected`         | Negative | Automated bot behavior                   |
+| `headless_browser`     | Negative | Headless browser environment             |
+| `fingerprint_mismatch` | Negative | Doesn't match stored profile             |
+| `rapid_requests`       | Negative | Unusually high request rate              |
+| `navigator_lies`       | Anomaly  | Navigator API tampering                  |
+| `likely_proxy`         | Anomaly  | Proxy detected                           |
+| `likely_vpn`           | Anomaly  | VPN detected                             |
+| `worker_mismatch`      | Anomaly  | Worker context doesn't match main thread |
+| `ip_timezone_mismatch` | Anomaly  | IP geo vs client timezone                |
+| `new_asn_for_device`   | Anomaly  | Device on a new ASN                      |
+| `ip_churn`             | Anomaly  | Cycling through excessive IPs            |
+
+## Project Structure
+
+```
+src/
+  handlers/
+    ingestion.ts              # POST /v1/collect - validates, decompresses, queues
+    session-get.ts            # GET /v1/session/{id} - returns match results
+    matching-worker.ts        # SQS consumer - runs tiered matching
+    profile-updater.ts        # SQS consumer - updates profiles and indexes
+    vector-worker.ts          # Optional VPC Lambda - Qdrant vector operations
+  services/
+    matching/
+      matching-service.ts     # Orchestrates tiered matching waterfall
+      index-lookup.ts         # T0.5 identity + T1 hash lookups
+      simhash-match.ts        # T1.5 SimHash LSH fuzzy matching
+      vector-match.ts         # T2 Qdrant vector similarity
+      session-anchors.ts      # T2 ephemeral IP+UA matching
+      fingerprint-extractor.ts
+      profile-loader.ts
+    profile/
+      profile-service.ts      # Device profile CRUD + index management
+      drift-detection.ts      # Detects significant fingerprint changes
+      flag-computation.ts     # Computes risk flags
+      index-writers.ts        # Writes Tier1Index and Tier2Buckets entries
+      anomaly/
+        detector.ts           # Orchestrates all anomaly detectors
+        quick-wins.ts         # Headless, proxy, VPN, navigator lies
+        cross-field.ts        # Navigator vs worker scope mismatches
+        network.ts            # IP timezone mismatch
+        baseline-rules.ts     # Worker UA mismatch detection
+        statistical-v2.ts     # Shannon entropy via Valkey
+        network-baseline-detector.ts  # ASN consistency baselines
+    cache/
+      dynamo-cache.ts         # Session cache + mutation gates (DynamoDB)
+      valkey-client.ts        # Optional Valkey (Redis) for frequency tracking
+    vector/
+      qdrant-client.ts        # Qdrant HTTP API client
+      embedding.ts            # Fingerprint -> 256-dim vector embedding
+  types/
+    fingerprint.ts            # 120+ fingerprint signal types
+    matching.ts               # Evidence codes, anomaly signals, match results
+    matching-tiers.ts         # Tier constants (CACHE, IDENTITY, HASH, SIMHASH, VECTOR)
+    profile.ts                # DeviceProfile schema
+    flags.ts                  # Risk flag enum
+  helpers/
+    constants.ts              # TTLs, thresholds, SimHash config, feature flags
+    payload-schema.ts         # V3 payload validation schema
+    normalize-fingerprint.ts  # Input sanitization
+    hash.ts                   # FNV-1a, Hamming distance
+    bucket-keys.ts            # Key builders for SimHash bands, session anchors
+    sqs-batch.ts              # SQS batch processing with partial failure reporting
+    batch-write.ts            # DynamoDB batch write helper
+lib/
+  stacks/
+    app-stack.ts              # Main CDK stack (composes all constructs)
+  constructs/
+    dynamodb.ts               # 6 DynamoDB tables with auto-scaling
+    http-api.ts               # API Gateway routes + binary support
+    queues.ts                 # SQS queues + DLQs + alarms
+    workers.ts                # Lambda functions + provisioned concurrency
+    cloudfront.ts             # CDN + WAF
+    analytics.ts              # Firehose -> S3 Parquet pipeline
+    vector-worker.ts          # Optional VPC Lambda for Qdrant
+    valkey.ts                 # Optional ElastiCache Serverless
+  config/
+    stage-config.ts           # Dev vs Prod settings
 ```
 
 ## Development
@@ -279,50 +321,43 @@ Health check endpoint.
 - AWS CLI configured
 - AWS CDK CLI (`npm install -g aws-cdk`)
 
-### Install Dependencies
+### Install & Build
 
 ```bash
 npm install
+npm run build
 ```
 
 ### Run Tests
 
 ```bash
-# Unit tests (590+ tests)
-npm test
-
-# Unit tests with coverage
-npm run test:coverage
-
-# Integration tests (requires deployed stack)
-cd ~/Dev/ms-argus-automation && npm test
+npm test                # Unit tests (660+ tests)
+npm run test:coverage   # With coverage report
+npm run test:watch      # Watch mode
+npm run test:ui         # Vitest UI
 ```
 
-### Lint & Format
+### Code Quality
 
 ```bash
-# Check
-npm run lint:test
-npm run format:check
+npm run quality         # Runs all quality checks:
+                        #   lint + dependency analysis + dead code + duplication
 
-# Fix
-npm run lint:fix
-npm run format
+npm run lint:test       # ESLint (dry run)
+npm run lint:fix        # ESLint (auto-fix)
+npm run format          # Prettier (fix)
+npm run format:check    # Prettier (check)
+npm run deps            # Dependency cruiser (circular dependency check)
+npm run dead-code       # Knip (unused exports/imports)
+npm run duplication     # JSCPD (copy-paste detection)
+npm run mutate          # Stryker mutation testing
+npm run docs            # TypeDoc HTML generation
 ```
 
-### Build
+### Git Hooks (Lefthook)
 
-```bash
-npm run build
-```
-
-## Deployment
-
-### Bootstrap CDK (first time)
-
-```bash
-cdk bootstrap
-```
+**Pre-commit** (parallel): TypeScript build, ESLint, Prettier
+**Pre-push** (parallel): Tests, build, dependency analysis, dead code check, duplication check
 
 ### Deploy
 
@@ -336,54 +371,118 @@ npx cdk deploy ms-argus-api-prod --require-approval never
 
 ### Configuration
 
-Update `bin/config.ts` with:
+Stage-specific settings are in `lib/config/stage-config.ts`. Key differences:
 
-- AWS Account ID
-- Region
-- Root domain (for custom domain setup)
+| Setting                 | Dev                      | Prod                                                      |
+| ----------------------- | ------------------------ | --------------------------------------------------------- |
+| DynamoDB billing        | On-demand                | On-demand (switch to provisioned after capacity analysis) |
+| WAF                     | Disabled                 | Enabled (600 req/5min rate limit)                         |
+| SQS retention           | 1 day                    | 7 days                                                    |
+| SQS max receive         | 1 (fail fast)            | 3 (retry)                                                 |
+| Matching Lambda         | 1024 MB / 25 concurrency | 512 MB / 1000 concurrency                                 |
+| Provisioned concurrency | 0                        | 2                                                         |
+| Valkey sample rate      | 100%                     | 1%                                                        |
+| Statistical V2          | Enabled                  | Shadow mode                                               |
+| Network baseline        | Enabled                  | Shadow mode                                               |
 
-## Infrastructure
+## Environment Variables
 
-The CDK stack (`lib/stacks/app-stack.ts`) provisions:
+### All Handlers
 
-- **API Gateway**: HTTP API with Lambda integrations
-- **Lambda**: Ingestion, Session Get, Matching Worker, Profile Updater
-- **SQS**: Matching queue + Profile queue (with DLQs)
-- **DynamoDB**: Profiles, Tier1Index, Tier2Buckets, SessionCache tables
-- **CloudFront + WAF**: Edge protection with rate limiting
-- **VPC Endpoints**: DynamoDB, SQS, Secrets Manager (cost optimization)
-- **Firehose + S3**: Analytics pipeline to Parquet
-- **Route53 + ACM**: Custom domain with SSL
+| Variable                       | Description                                |
+| ------------------------------ | ------------------------------------------ |
+| `SESSION_CACHE_TABLE`          | DynamoDB table for session cache           |
+| `PROFILES_TABLE`               | DynamoDB table for device profiles         |
+| `TIER1_INDEX_TABLE`            | DynamoDB table for hash indexes            |
+| `TIER2_BUCKETS_TABLE`          | DynamoDB table for SimHash bands / anchors |
+| `POWERTOOLS_SERVICE_NAME`      | Lambda Powertools service name             |
+| `POWERTOOLS_METRICS_NAMESPACE` | CloudWatch namespace                       |
+
+### Ingestion
+
+| Variable                 | Description                               |
+| ------------------------ | ----------------------------------------- |
+| `SQS_QUEUE_URL`          | SQS queue URL for matching worker         |
+| `MAX_BODY_BYTES`         | Max request body (default: 256KB)         |
+| `MAX_DECOMPRESSED_BYTES` | Max gzip decompressed size (default: 2MB) |
+
+### Matching Worker
+
+| Variable                      | Description                              |
+| ----------------------------- | ---------------------------------------- |
+| `PROFILE_QUEUE_URL`           | SQS queue URL for profile updater        |
+| `SESSION_PAYLOAD_TABLE`       | DynamoDB table for full payloads         |
+| `OBSERVATIONS_STREAM_NAME`    | Optional Firehose delivery stream        |
+| `VECTOR_WORKER_ARN`           | Optional Lambda ARN for vector search    |
+| `VECTOR_COLLECTION`           | Optional Qdrant collection name          |
+| `PAYLOAD_ARCHIVE_BUCKET`      | Optional S3 bucket for payload archiving |
+| `PAYLOAD_ARCHIVE_SAMPLE_RATE` | Archive sampling rate (0.0-1.0)          |
+
+### SimHash Feature Flags
+
+| Variable                    | Default   | Description                        |
+| --------------------------- | --------- | ---------------------------------- |
+| `SIMHASH_ENABLED`           | `"true"`  | Master kill switch                 |
+| `SIMHASH_SHADOW`            | `"false"` | Compute but don't use for matching |
+| `SIMHASH_ROLLOUT`           | `"100"`   | Percentage rollout (0-100)         |
+| `SIMHASH_LATENCY_BYPASS_MS` | `"150"`   | Timeout bypass threshold           |
+| `SIMHASH_HAMMING_THRESHOLD` | `"16"`    | Max Hamming distance for match     |
+| `SIMHASH_MAX_CANDIDATES`    | `"100"`   | Max candidates to score            |
+
+### Anomaly Detection (Valkey)
+
+| Variable             | Default  | Description              |
+| -------------------- | -------- | ------------------------ |
+| `VALKEY_ENDPOINT`    | -        | Redis/Valkey endpoint    |
+| `GLOBAL_SAMPLE_RATE` | `"0.01"` | Write-side sampling rate |
 
 ## Observability
 
-- **Logging**: AWS Lambda Powertools with structured JSON
-- **Metrics**: CloudWatch metrics via Powertools (auto-published via Middy middleware)
+- **Logging**: AWS Lambda Powertools structured JSON logs
+- **Metrics**: CloudWatch custom metrics via Powertools (auto-published via Middy)
 - **Tracing**: AWS X-Ray active tracing on all Lambda functions
-- **Alarms**: SNS topic for CloudWatch alarms + anomaly detection for new device rate
+- **Alarms**: SNS topic for CloudWatch alarms (Lambda errors/throttles, SQS backlog, DynamoDB throttles, new device rate anomaly)
 
-## Git Hooks
+## Known Issues
 
-Pre-commit and pre-push hooks via [Lefthook](https://github.com/evilmartians/lefthook):
+### Incomplete Features
 
-- **Pre-commit**: TypeScript build, ESLint, Prettier
-- **Pre-push**: Full test suite
+1. **IP History Tracking** - Partially implemented, imports exist but source files are missing:
+   - `services/profile/ip-history.ts` (imported in profile-service.ts, vector-match.ts)
+   - `services/profile/anomaly/ip-history-detector.ts` (imported in detector.ts, index.ts)
+   - Related flags (`new_asn_for_device`, `ip_churn`) are defined but detection not wired up
 
-## Related Repositories
+2. **Matching Worker Admin Handler** - `matching-worker/types.ts` and `matching-worker/admin-handler.ts` are imported but don't exist. Admin operations (cache flush, etc.) are referenced but not implemented.
 
-- `ms-argus-web` - Browser fingerprinting library
-- `ms-argus-automation` - Integration test suite
+### Code Quality
+
+3. **Privacy penalties disabled** - `PRIVACY_BROWSER_PENALTY` and `PRIVATE_BROWSING_PENALTY` are hardcoded to 0 in `constants.ts`. Tests expect 0.15 and 0.1 respectively (2 test failures).
+
+4. **Complexity violations** - 3 functions exceed eslint cyclomatic/cognitive complexity limits:
+   - `handleSyncInvoke()` in vector-worker sync handler (14 cyclomatic, max 10)
+   - `detectWorkerUaMismatch()` in baseline-rules.ts (11 cyclomatic, max 10)
+   - `normalizeBrowserName()` in ua-family.ts (12 cyclomatic, max 10)
+
+5. **Unused exports** - `getClient()` in `valkey-client.ts` is exported but never used externally.
+
+6. **Code duplication** - 9 clones at 0.49% (async Lambda invocation pattern, config setup pattern, Lambda client creation).
 
 ## Cost Estimate (30B requests/year)
 
-| Component     | Cost/Year |
-| ------------- | --------- |
-| CloudFront    | ~$22,500  |
-| API Gateway   | ~$30,000  |
-| Lambda        | ~$20,000  |
-| SQS           | ~$10,000  |
-| DynamoDB      | ~$15,000  |
-| S3 + Firehose | ~$2,000   |
-| **Total**     | ~$99,500  |
+| Component     | Cost/Year    |
+| ------------- | ------------ |
+| CloudFront    | ~$22,500     |
+| API Gateway   | ~$30,000     |
+| Lambda        | ~$20,000     |
+| SQS           | ~$10,000     |
+| DynamoDB      | ~$15,000     |
+| S3 + Firehose | ~$2,000      |
+| **Total**     | **~$99,500** |
 
 ~$3.32/million requests
+
+## Related Repositories
+
+- [`ms-argus-web`](../ms-argus-web) - Browser fingerprinting library (generates the fingerprints this API ingests)
+- [`ms-argus-demo`](../ms-argus-demo) - Demo site for testing fingerprint collection
+- `ms-argus-automation` - Integration test suite

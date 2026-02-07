@@ -8,6 +8,13 @@ import { Logger } from "@aws-lambda-powertools/logger";
 import { Metrics, MetricUnit } from "@aws-lambda-powertools/metrics";
 import { computeEmbedding, assessEmbeddingQuality } from "../vector/embedding";
 import { loadProfile } from "./profile-loader";
+import {
+  computeIpConfidenceModifier,
+  hasSeenIp,
+  hasSeenAsn,
+  countRecentUniqueIps,
+  countRecentUniqueAsns,
+} from "../profile/ip-history";
 import { computeFuzzyMatchInfo } from "../../helpers/hash";
 import { MatchTier } from "../../types/matching-tiers";
 import type {
@@ -266,6 +273,26 @@ function buildVectorDetails(
   };
 }
 
+function buildIpHistoryContext(
+  profile: Awaited<ReturnType<typeof loadProfile>>,
+  fingerprint: Fingerprint,
+  modifier: ReturnType<typeof computeIpConfidenceModifier>,
+): MatchResult["ip_history_context"] {
+  const ipHistory = profile?.ip_history ?? [];
+  if (ipHistory.length === 0 || !fingerprint.ip_address) return undefined;
+  const now = Date.now();
+  return {
+    known_ip: hasSeenIp(ipHistory, fingerprint.ip_address),
+    known_asn:
+      fingerprint.asn !== undefined
+        ? hasSeenAsn(ipHistory, fingerprint.asn)
+        : false,
+    unique_ips_24h: countRecentUniqueIps(ipHistory, now),
+    unique_asns_24h: countRecentUniqueAsns(ipHistory, now),
+    confidence_adjustment: modifier.adjustment,
+  };
+}
+
 async function buildVectorMatchResult(
   opts: BuildMatchResultOptions,
 ): Promise<MatchResult> {
@@ -276,11 +303,20 @@ async function buildVectorMatchResult(
     deviceId,
   );
 
-  const confidence = computeVectorConfidence(score);
+  // Apply IP history confidence modifier
+  const profileAsDevice = profile
+    ? ({
+        ip_history: profile.ip_history,
+      } as import("../../types/profile").DeviceProfile)
+    : null;
+  const modifier = computeIpConfidenceModifier(profileAsDevice, fingerprint);
+  const confidence = Math.max(
+    0,
+    Math.min(1, computeVectorConfidence(score) + modifier.adjustment),
+  );
+
   const evidenceCodes: EvidenceCode[] = ["VECTOR_SIMILARITY"];
-  if (score >= HIGH_SCORE_THRESHOLD) {
-    evidenceCodes.push("HIGH_SIMILARITY");
-  }
+  if (score >= HIGH_SCORE_THRESHOLD) evidenceCodes.push("HIGH_SIMILARITY");
 
   return {
     device_id: deviceId,
@@ -295,6 +331,7 @@ async function buildVectorMatchResult(
       profile?.fuzzy_hash,
     ),
     vector_match_details: buildVectorDetails(score, searchResponse),
+    ip_history_context: buildIpHistoryContext(profile, fingerprint, modifier),
   };
 }
 

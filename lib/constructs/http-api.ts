@@ -1,7 +1,5 @@
 // lib/constructs/http-api.ts
-// AR-52: HTTP API Gateway + Lambda for fingerprint ingestion
-// AR-67: Added session retrieval endpoint
-// AR-160: Added configurable Lambda memory settings
+
 // Replaces ALB + ECS Fargate (Go) - ~90% cost reduction
 
 import * as path from "path";
@@ -30,7 +28,7 @@ interface HttpApiConstructProps {
   /** Optional: Vector results table for async vector search results */
   vectorResultsTable?: dynamodb.ITable;
   alarmsTopic: sns.ITopic;
-  /** AR-160: Stage-specific configuration for Lambda memory tuning */
+  /** Stage-specific configuration for Lambda memory tuning */
   config: StageConfig;
 }
 
@@ -76,8 +74,7 @@ export class HttpApiConstruct extends Construct {
     });
 
     // Lambda function for ingestion
-    // AR-71: Reverted to async (SQS) for scalability at 30B RPY
-    // AR-167: Use shared Lambda configuration
+
     this.ingestionFunction = new lambdaNode.NodejsFunction(
       this,
       "IngestionFunction",
@@ -86,7 +83,7 @@ export class HttpApiConstruct extends Construct {
         functionName: `${stackName}-ingestion`,
         handler: "handler",
         entry: path.join(__dirname, "../../src/handlers/ingestion.ts"),
-        // AR-160: Use configurable memory from stage config
+
         memorySize: config.lambda.ingestion.memorySize,
         timeout: Duration.seconds(10),
         logGroup,
@@ -100,14 +97,12 @@ export class HttpApiConstruct extends Construct {
     // Grant SQS permissions
     matchingQueue.grantSendMessages(this.ingestionFunction);
 
-    // AR-67: Session retrieval Lambda
     const sessionGetLogGroup = new logs.LogGroup(this, "SessionGetLogGroup", {
       logGroupName: `/aws/lambda/${stackName}-session-get`,
       retention: logs.RetentionDays.ONE_MONTH,
       removalPolicy: RemovalPolicy.DESTROY,
     });
 
-    // AR-167: Use shared Lambda configuration
     this.sessionGetFunction = new lambdaNode.NodejsFunction(
       this,
       "SessionGetFunction",
@@ -116,7 +111,7 @@ export class HttpApiConstruct extends Construct {
         functionName: `${stackName}-session-get`,
         handler: "handler",
         entry: path.join(__dirname, "../../src/handlers/session-get.ts"),
-        // AR-160: Use configurable memory from stage config
+
         memorySize: config.lambda.sessionGet.memorySize,
         timeout: Duration.seconds(10),
         logGroup: sessionGetLogGroup,
@@ -151,8 +146,7 @@ export class HttpApiConstruct extends Construct {
           apigatewayv2.CorsHttpMethod.POST,
           apigatewayv2.CorsHttpMethod.OPTIONS,
         ],
-        // AR-91: Added Content-Encoding for binary gzip payloads
-        // AR-188: Added X-Argus-Schema-Version for v2 payload versioning
+
         allowHeaders: [
           "Content-Type",
           "Content-Encoding",
@@ -181,7 +175,6 @@ export class HttpApiConstruct extends Construct {
       integration: lambdaIntegration,
     });
 
-    // AR-67: Session retrieval route
     const sessionGetIntegration = new integrations.HttpLambdaIntegration(
       "SessionGetIntegration",
       this.sessionGetFunction,

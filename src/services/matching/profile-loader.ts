@@ -21,6 +21,8 @@ export interface ProfileData {
   flags: string[];
   /** SimHash fuzzy hash for drift detection */
   fuzzy_hash?: string;
+  /** IP history ring buffer */
+  ip_history?: import("../../types/profile").IpHistoryEntry[];
 }
 
 /**
@@ -43,7 +45,7 @@ export async function loadProfile(
       Key: {
         device_id: { S: deviceId },
       },
-      ProjectionExpression: "risk_score, flags, fuzzy_hash",
+      ProjectionExpression: "risk_score, flags, fuzzy_hash, ip_history",
     }),
   );
 
@@ -53,6 +55,7 @@ export async function loadProfile(
       risk_score: item.risk_score,
       flags: item.flags ?? [],
       fuzzy_hash: item.fuzzy_hash,
+      ip_history: item.ip_history,
     };
   }
   return null;

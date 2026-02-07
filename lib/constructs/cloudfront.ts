@@ -1,5 +1,5 @@
 // lib/constructs/cloudfront.ts
-// AR-52: Updated to support HTTP API origin (replacing ALB)
+
 import * as cdk from "aws-cdk-lib";
 import * as cloudfront from "aws-cdk-lib/aws-cloudfront";
 import * as origins from "aws-cdk-lib/aws-cloudfront-origins";
@@ -13,7 +13,7 @@ import { StageConfig } from "../config";
 interface CloudFrontWafConstructProps {
   environment: string;
   stackName: string;
-  httpApiEndpoint: string; // AR-52: HTTP API endpoint (e.g., "https://xxx.execute-api.us-east-1.amazonaws.com")
+  httpApiEndpoint: string;
   rootDomain?: string;
   apiSubdomain?: string;
   hostedZone?: route53.IHostedZone;
@@ -44,7 +44,6 @@ export class CloudFrontWafConstruct extends Construct {
     const fullDomainName =
       rootDomain && apiSubdomain ? `${apiSubdomain}.${rootDomain}` : undefined;
 
-    // AR-51: Only create WAF in production to reduce costs (~$30/month in dev)
     if (stageConfig.waf.enabled) {
       this.webAcl = new wafv2.CfnWebACL(this, "WebACL", {
         scope: "CLOUDFRONT",
@@ -91,7 +90,7 @@ export class CloudFrontWafConstruct extends Construct {
               metricName: `${stackName}-CommonRuleSet`,
             },
           },
-          // Rate limiting per IP (AR-137: wired to config)
+
           {
             name: "RateLimitIP",
             priority: 2,
@@ -116,7 +115,7 @@ export class CloudFrontWafConstruct extends Construct {
               metricName: `${stackName}-IpRateLimit`,
             },
           },
-          // Body size limit (AR-137: wired to config)
+
           {
             name: "LimitBodySize100KB",
             priority: 3,
@@ -139,7 +138,6 @@ export class CloudFrontWafConstruct extends Construct {
       });
     }
 
-    // AR-52: Extract domain from HTTP API endpoint using CloudFormation intrinsics
     // httpApiEndpoint format: "https://xxx.execute-api.us-east-1.amazonaws.com"
     // We can't use new URL() because httpApiEndpoint is a CDK token at synth time
     // Use Fn.select to extract domain from "https://xxx.execute-api.region.amazonaws.com"

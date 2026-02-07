@@ -1,5 +1,4 @@
 // tests/utils/index.ts
-// AR-60: Central exports for test utilities
 
 export {
   createFingerprint,

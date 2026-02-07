@@ -1,6 +1,5 @@
 // lib/config/stage-config.ts
-// AR-43: Centralized stage-specific configuration
-// AR-160: Added Lambda power tuning configurations for all functions
+
 // This provides a single source of truth for environment-specific values
 //
 // Lambda Power Tuning Notes:
@@ -22,7 +21,7 @@ import { Duration } from "aws-cdk-lib";
  */
 export interface StageConfig {
   // Lambda configuration
-  // AR-160: All Lambda memory settings centralized for power tuning
+
   lambda: {
     matching: {
       memorySize: number; // SQS consumer - tier matching (CPU-bound with hashing)
@@ -59,9 +58,7 @@ export interface StageConfig {
     };
   };
 
-  // AR-161: Removed dead ECS and Redis configuration
   // These were kept for historical reference but are no longer used
-  // since moving to Lambda + DynamoDB architecture (AR-52)
 
   // CloudWatch alarm thresholds
   alarms: {
@@ -75,23 +72,22 @@ export interface StageConfig {
       backlogThreshold: number;
       messageAgeSeconds: number;
     };
-    // AR-161: Removed dead redis and ecs alarm thresholds
+
     dynamodb: {
       throttleThreshold: number;
       errorThreshold: number;
     };
-    // AR-123: New device rate anomaly detection
+
     newDeviceAnomalyStdDev: number;
   };
 
   // WAF configuration
   waf: {
-    enabled: boolean; // AR-51: WAF disabled in non-prod to reduce costs
+    enabled: boolean;
     rateLimitPerFiveMinutes: number;
     bodySizeLimitBytes: number;
   };
 
-  // AR-133: DynamoDB billing configuration
   dynamodb: {
     // If true, use provisioned capacity with auto-scaling; if false, use PAY_PER_REQUEST
     useProvisionedCapacity: boolean;
@@ -148,7 +144,6 @@ export interface StageConfig {
 const devConfig: StageConfig = {
   lambda: {
     matching: {
-      // AR-160: Higher memory in dev for faster iteration during debugging
       // Production should use power tuning results; dev optimizes for cold start speed
       memorySize: 1024,
       timeout: Duration.seconds(20),
@@ -178,13 +173,10 @@ const devConfig: StageConfig = {
     retentionPeriod: Duration.days(1),
     maxReceiveCount: 1, // Fail fast in dev for debugging
     batchingWindow: {
-      // AR-71: Set to 0 to minimize latency - don't wait for batching
       matching: Duration.seconds(0),
       profile: Duration.seconds(0),
     },
   },
-
-  // AR-161: Removed dead ECS and Redis configuration
 
   alarms: {
     lambda: {
@@ -201,18 +193,18 @@ const devConfig: StageConfig = {
       throttleThreshold: 2,
       errorThreshold: 1,
     },
-    // AR-123: Anomaly detection for new device rate (fraud indicator)
+
     newDeviceAnomalyStdDev: 2,
   },
 
   waf: {
-    enabled: false, // AR-51: WAF disabled in dev to reduce costs (~$30/month savings)
-    rateLimitPerFiveMinutes: 100000, // AR-137: Effectively disabled in dev for testing
+    enabled: false,
+    rateLimitPerFiveMinutes: 100000,
     bodySizeLimitBytes: 102400, // 100KB
   },
 
   // DynamoDB billing - use PAY_PER_REQUEST for dev to avoid throughput limits during testing
-  // AR-133 originally set provisioned capacity, but Scan operations in test helpers hit limits
+
   dynamodb: {
     useProvisionedCapacity: false, // On-demand for dev - no throughput limits
     baseReadCapacity: 0,
@@ -253,7 +245,6 @@ const devConfig: StageConfig = {
 const prodConfig: StageConfig = {
   lambda: {
     matching: {
-      // AR-160: Recommend running power tuning with production workload
       // Current setting is cost-optimized; may need increase for latency SLAs
       memorySize: 512,
       timeout: Duration.seconds(45),
@@ -283,13 +274,10 @@ const prodConfig: StageConfig = {
     retentionPeriod: Duration.days(7),
     maxReceiveCount: 3,
     batchingWindow: {
-      // AR-71: Set to 0 to minimize latency - don't wait for batching
       matching: Duration.seconds(0),
       profile: Duration.seconds(0),
     },
   },
-
-  // AR-161: Removed dead ECS and Redis configuration
 
   alarms: {
     lambda: {
@@ -306,7 +294,7 @@ const prodConfig: StageConfig = {
       throttleThreshold: 10,
       errorThreshold: 5,
     },
-    // AR-123: Anomaly detection for new device rate (fraud indicator)
+
     newDeviceAnomalyStdDev: 2,
   },
 
@@ -316,7 +304,6 @@ const prodConfig: StageConfig = {
     bodySizeLimitBytes: 102400, // 100KB
   },
 
-  // AR-133: DynamoDB - keep PAY_PER_REQUEST in prod until capacity analysis is done
   // Per FINAL-PLAN.md: Switch to provisioned 4 weeks before go-live after capacity analysis
   // Process: Set base capacity at 150% of p99, auto-scale to 200%
   // Expected savings: ~$31K/year once implemented

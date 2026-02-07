@@ -73,17 +73,7 @@ Used only internally by `corsMiddleware`. Remove the `export` keyword.
 
 ## Phase 2: Strip All Ticket-Reference Comments
 
-Every comment matching `AR-\d+:` or `AR-XXX:` gets deleted. These are changelog entries, not documentation. The git history exists for a reason.
-
-There are 50+ instances across the codebase. Examples:
-
-```
-// AR-119: Refactored to orchestration only - delegates to tier modules
-// AR-121: Replaced UUID with ULID for time-sortable device IDs
-// AR-XXX: Added fuzzy_match_info for drift detection
-// AR-52: Replaced Redis with DynamoDB session cache
-// AR-65: Apply confidence penalty for privacy browser detection
-```
+Every comment matching ticket reference patterns gets deleted. These are changelog entries, not documentation. The git history exists for a reason.
 
 **Rule going forward:** Comments explain _why_ something is non-obvious, never _when_ or _what ticket_.
 
@@ -91,7 +81,7 @@ Exceptions: Keep a comment only if the ticket reference is removed but the _expl
 
 ```typescript
 // Before:
-/** AR-82: Session anchor DynamoDB cleanup TTL: 1 hour (3600 seconds)
+/** Session anchor DynamoDB cleanup TTL: 1 hour (3600 seconds)
  * DynamoDB TTL is eventually consistent, so we set a longer TTL for cleanup
  * while enforcing the actual validity window in application code */
 

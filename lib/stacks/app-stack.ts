@@ -1,7 +1,5 @@
 // lib/stacks/app-stack.ts
-// AR-52: Simplified architecture - removed VPC, ALB, ECS, Redis
-// AR-57: Added analytics pipeline for match observations
-// AR-71: Added SQS warmup rule to keep matching pipeline warm
+
 import * as cdk from "aws-cdk-lib";
 import * as sns from "aws-cdk-lib/aws-sns";
 import * as route53 from "aws-cdk-lib/aws-route53";
@@ -38,7 +36,7 @@ interface ArgusApiStackProps extends cdk.StackProps {
 }
 
 /**
- * Argus API Stack - V5 Architecture (AR-52)
+ * Argus API Stack - V5 Architecture
  *
  * Simplified serverless architecture:
  * Browser → CloudFront → HTTP API → Lambda (ingestion) → SQS → Lambda (workers) → DynamoDB
@@ -109,7 +107,6 @@ export class ArgusApiStack extends cdk.Stack {
     // DATA LAYER
     // =========================================================================
 
-    // AR-133: Pass stage to DynamoDB construct for conditional provisioned capacity
     const dynamodb = new DynamoDbConstruct(this, "DynamoDB", {
       stackName,
       alarmsTopic,
@@ -123,7 +120,7 @@ export class ArgusApiStack extends cdk.Stack {
     });
 
     // =========================================================================
-    // ANALYTICS LAYER (AR-57)
+
     // =========================================================================
 
     const analytics = new AnalyticsConstruct(this, "Analytics", {
@@ -153,7 +150,7 @@ export class ArgusApiStack extends cdk.Stack {
     // =========================================================================
     // STAGE CONFIG
     // =========================================================================
-    // AR-160: Get stage config for Lambda memory tuning and Valkey settings
+
     const stageConfig = getStageConfig(stage);
 
     // =========================================================================
@@ -187,10 +184,7 @@ export class ArgusApiStack extends cdk.Stack {
     // =========================================================================
 
     // HTTP API + Lambda for ingestion (replaces ALB + ECS)
-    // AR-67: Added session retrieval endpoint
-    // AR-71: Reverted to async (SQS) for scalability
-    // AR-139: Payload archiving
-    // AR-160: Pass stage config for Lambda memory tuning
+
     const httpApi = new HttpApiConstruct(this, "HttpApi", {
       stackName,
       stage,
@@ -217,7 +211,7 @@ export class ArgusApiStack extends cdk.Stack {
       sessionPayloadTable: dynamodb.sessionPayloadTable, // AR-XXX: Full payload for gRPC stub
       vectorResultsTable: dynamodb.vectorResultsTable, // Vector search results
       observationsDeliveryStreamName:
-        analytics.deliveryStream.deliveryStreamName!, // AR-57
+        analytics.deliveryStream.deliveryStreamName!,
       // Vector queue for Qdrant embeddings (enabled)
       vectorQueue: vectorWorker?.vectorQueue,
       // Vector results queue for search result writes
@@ -225,7 +219,7 @@ export class ArgusApiStack extends cdk.Stack {
       // Vector worker ARN for Tier 2 vector search (replaces compound buckets)
       vectorWorkerArn: vectorWorker?.vectorWorker.functionArn,
       vectorCollection: "fingerprints",
-      // AR-139: Payload archiving bucket for enriched session data
+
       payloadArchiveBucket: analytics.payloadArchiveBucket,
       // Valkey configuration for statistical anomaly detection
       valkeyEndpoint: valkey?.endpoint,
@@ -236,7 +230,7 @@ export class ArgusApiStack extends cdk.Stack {
     });
 
     // =========================================================================
-    // AR-71: WARMUP RULE - Keep SQS polling pipeline warm
+
     // =========================================================================
     // Sends warmup message to matching queue every minute to keep:
     // - SQS pollers active (they process the warmup message)
@@ -306,7 +300,6 @@ export class ArgusApiStack extends cdk.Stack {
       description: "Ingestion Lambda ARN",
     });
 
-    // AR-67: Session retrieval Lambda output
     new cdk.CfnOutput(this, "SessionGetFunctionArn", {
       value: httpApi.sessionGetFunction.functionArn,
       description: "Session retrieval Lambda ARN",
@@ -360,7 +353,6 @@ export class ArgusApiStack extends cdk.Stack {
       });
     }
 
-    // AR-57: Analytics outputs
     new cdk.CfnOutput(this, "ObservationsBucketName", {
       value: analytics.observationsBucket.bucketName,
       description: "S3 bucket for match observations",
@@ -371,7 +363,6 @@ export class ArgusApiStack extends cdk.Stack {
       description: "Firehose delivery stream for observations",
     });
 
-    // AR-139: Payload archive bucket output
     new cdk.CfnOutput(this, "PayloadArchiveBucketName", {
       value: analytics.payloadArchiveBucket.bucketName,
       description: "S3 bucket for payload archives",
