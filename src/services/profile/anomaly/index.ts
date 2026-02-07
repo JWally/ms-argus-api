@@ -15,4 +15,3 @@ export {
   fetchStatisticalContextV2,
   type StatisticalContextV2,
 } from "./statistical-v2";
-export { detectIpHistoryAnomalies } from "./ip-history-detector";
