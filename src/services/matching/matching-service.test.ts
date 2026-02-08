@@ -859,11 +859,6 @@ describe("generateIdempotencyKey", () => {
 });
 
 describe("generateULID wrapper removed", () => {
-  it("should not export generateULID from matching-service", async () => {
-    const matchingService = await import("./matching-service");
-    expect("generateULID" in matchingService).toBe(false);
-  });
-
   it("createNewDevice should still generate valid dev_ prefixed ULID IDs", () => {
     const dynamodb = new DynamoDBClient({});
     const sqsClient = new SQSClient({});

@@ -19,7 +19,7 @@ pre-push:
   parallel: true
   commands:
     test:
-      run: npm test
+      run: npm run test:coverage
     typecheck:
       run: npm run build
     deps:
