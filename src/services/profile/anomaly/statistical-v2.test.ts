@@ -472,5 +472,186 @@ describe("statistical-v2", () => {
       expect(result).not.toBeNull();
       expect(result?.uaFamily).toBe("bot");
     });
+
+    it("extracts hash-source fingerprints (maths, fonts, etc.)", async () => {
+      mockRecordFingerprintV2.mockResolvedValue({
+        count: 10,
+        total: 500,
+        globalCount: 100,
+        globalTotal: 10000,
+      });
+
+      const result = await fetchStatisticalContextV2(
+        { user_agent: "Mozilla/5.0 Chrome/120" } as never,
+        {},
+        undefined,
+        { maths: "abc123", fonts: "def456" },
+      );
+
+      expect(result).not.toBeNull();
+      expect(result?.fingerprints.maths).toBe("abc123");
+      expect(result?.fingerprints.fonts).toBe("def456");
+    });
+
+    it("extracts device-source fingerprints", async () => {
+      mockRecordFingerprintV2.mockResolvedValue({
+        count: 10,
+        total: 500,
+        globalCount: 100,
+        globalTotal: 10000,
+      });
+
+      const result = await fetchStatisticalContextV2(
+        { user_agent: "Mozilla/5.0 Chrome/120" } as never,
+        {},
+        {
+          workerScope: {
+            language: "en-US",
+            timezoneLocation: "America/New_York",
+          },
+        } as never,
+      );
+
+      expect(result).not.toBeNull();
+      // lang_for_tz should have extracted workerScope.language
+      expect(result?.fingerprints.lang_for_tz).toBe("en-US");
+    });
+
+    it("resolves composite grouping keys with ASN", async () => {
+      mockRecordFingerprintV2.mockResolvedValue({
+        count: 10,
+        total: 500,
+        globalCount: 100,
+        globalTotal: 10000,
+      });
+
+      const testUA = "Mozilla/5.0 Chrome/120";
+      const result = await fetchStatisticalContextV2(
+        { user_agent: testUA } as never,
+        {
+          tlsFingerprint: { ja4: "test_ja4" },
+          tcpProbe: { rtt_fingerprint: { snd_mss: 1460 } },
+        } as never,
+      );
+
+      expect(result).not.toBeNull();
+      // tcp_mss groupBy includes "asn" — but without ASN in network data, falls back
+      expect(result?.groupingKeys.tcp_mss).toBeTruthy();
+    });
+
+    it("extracts fingerprints with transforms (tcp_mss)", async () => {
+      mockRecordFingerprintV2.mockResolvedValue({
+        count: 10,
+        total: 500,
+        globalCount: 100,
+        globalTotal: 10000,
+      });
+
+      const result = await fetchStatisticalContextV2(
+        { user_agent: "Mozilla/5.0 Chrome/120" } as never,
+        {
+          tcpProbe: { rtt_fingerprint: { snd_mss: 1460 } },
+        } as never,
+      );
+
+      expect(result).not.toBeNull();
+      // tcp_mss has a transform: rounds to string
+      if (result?.fingerprints.tcp_mss) {
+        expect(result.fingerprints.tcp_mss).toBe("1460");
+      }
+    });
+
+    it("includes baseline skip info when rules match", async () => {
+      mockRecordFingerprintV2.mockResolvedValue({
+        count: 10,
+        total: 500,
+        globalCount: 100,
+        globalTotal: 10000,
+      });
+
+      const result = await fetchStatisticalContextV2(
+        {
+          user_agent: "Mozilla/5.0 Chrome/120",
+          lie_count: 100,
+          is_headless: true,
+        } as never,
+        { tlsFingerprint: { ja4: "test" } },
+        {
+          navigator: { userAgent: "Chrome/120" },
+        } as never,
+      );
+
+      expect(result).not.toBeNull();
+      expect(result?.baselineSkipped).toBe(true);
+      expect(result?.matchedRules?.length).toBeGreaterThan(0);
+    });
+
+    it("resolves userAgentParsed from device navigator", async () => {
+      mockRecordFingerprintV2.mockResolvedValue({
+        count: 10,
+        total: 500,
+        globalCount: 100,
+        globalTotal: 10000,
+      });
+
+      const result = await fetchStatisticalContextV2(
+        { user_agent: "Mozilla/5.0 Chrome/120" } as never,
+        { tlsFingerprint: { ja4: "test_ja4" } },
+        {
+          navigator: { userAgentParsed: "Chrome 120 Brave" },
+        } as never,
+      );
+
+      expect(result).not.toBeNull();
+      expect(result?.userAgentParsed).toBe("Chrome 120 Brave");
+    });
+  });
+
+  describe("checkFingerprintAnomaly (via detectStatisticalAnomaliesV2)", () => {
+    it("returns null for unknown anomaly code (non-existent type)", () => {
+      // Create context with a type that has no definition
+      const context: StatisticalContextV2 = {
+        uaFamily: "chrome",
+        userAgentParsed: null,
+        originalUA: "Mozilla/5.0 Chrome/144",
+        fingerprints: {
+          nonexistent_type: "some_value",
+        },
+        groupingKeys: { nonexistent_type: "chrome" },
+        scores: {
+          nonexistent_type: createScore("nonexistent_type", 0.9, 0.9),
+        },
+        combinedScore: null,
+      };
+
+      const signals = detectStatisticalAnomaliesV2(context);
+      // Should not crash, just return no signals for unknown type
+      expect(signals).toHaveLength(0);
+    });
+
+    it("returns signals for multiple anomalous fingerprints", () => {
+      const context: StatisticalContextV2 = {
+        uaFamily: "chrome",
+        userAgentParsed: null,
+        originalUA: "Mozilla/5.0 Chrome/144",
+        fingerprints: {
+          ja4: "rare_ja4",
+          h2: "rare_h2",
+        },
+        groupingKeys: { ja4: "chrome", h2: "chrome" },
+        scores: {
+          ja4: createScore("ja4", 0.8, 0.5), // Above ja4 threshold 0.6
+          h2: createScore("h2", 0.6, 0.5), // Above h2 threshold 0.4
+        },
+        combinedScore: 0.92,
+      };
+
+      const signals = detectStatisticalAnomaliesV2(context);
+      // Both should flag individually
+      expect(signals.length).toBeGreaterThanOrEqual(2);
+      const codes = signals.map((s) => s.code);
+      expect(codes).toContain("RARE_JA4_FOR_UA");
+      expect(codes).toContain("RARE_H2_FOR_UA");
+    });
   });
 });

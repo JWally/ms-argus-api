@@ -12,7 +12,13 @@ import {
   MatchingServiceConfig,
   MatchingServiceDeps,
 } from "./matching-service";
-import { Fingerprint, MatchResult, SessionCacheValue } from "./types";
+import {
+  Fingerprint,
+  MatchResult,
+  SessionCacheValue,
+  PgQueryCandidate,
+  EvidenceCode,
+} from "./types";
 import { MatchTier } from "../../types/matching-tiers";
 import { DynamoCacheService } from "../cache";
 import {
@@ -22,11 +28,18 @@ import {
 } from "../../../tests/utils";
 
 vi.mock("../postgres", () => ({
-  pgUnifiedMatch: vi.fn().mockResolvedValue(null),
+  pgUnifiedMatch: vi.fn().mockResolvedValue({
+    match: null,
+    pgQueryContext: { candidates: [], total_rows: 0 },
+  }),
 }));
 
 import { pgUnifiedMatch } from "../postgres";
 const mockPgUnifiedMatch = vi.mocked(pgUnifiedMatch);
+
+const emptyPgCtx = { candidates: [] as PgQueryCandidate[], total_rows: 0 };
+const pgNoMatch = { match: null, pgQueryContext: emptyPgCtx };
+const pgMatch = (m: MatchResult) => ({ match: m, pgQueryContext: emptyPgCtx });
 
 const dynamoMock = mockClient(DynamoDBClient);
 const sqsMock = mockClient(SQSClient);
@@ -86,7 +99,7 @@ describe("Tier Priority Tests", () => {
   beforeEach(() => {
     dynamoMock.reset();
     sqsMock.reset();
-    mockPgUnifiedMatch.mockReset().mockResolvedValue(null);
+    mockPgUnifiedMatch.mockReset().mockResolvedValue(pgNoMatch);
     mockCache = createMockCacheService();
     dynamodb = new DynamoDBClient({});
     sqs = new SQSClient({});
@@ -119,15 +132,17 @@ describe("Tier Priority Tests", () => {
         });
 
       // PG would also match, but identity wins first
-      mockPgUnifiedMatch.mockResolvedValue({
-        device_id: "dev_stable",
-        confidence: 0.95,
-        match_tier: MatchTier.HASH,
-        is_new_device: false,
-        risk_score: 0.2,
-        flags: [],
-        evidence_codes: ["STABLE_HASH_MATCH"],
-      });
+      mockPgUnifiedMatch.mockResolvedValue(
+        pgMatch({
+          device_id: "dev_stable",
+          confidence: 0.95,
+          match_tier: MatchTier.HASH,
+          is_new_device: false,
+          risk_score: 0.2,
+          flags: [],
+          evidence_codes: ["STABLE_HASH_MATCH"],
+        }),
+      );
 
       const fingerprint: Fingerprint = {
         evercookie_id: "cookie123",
@@ -145,15 +160,17 @@ describe("Tier Priority Tests", () => {
     it("should fall back to Tier 1 (stable_hash via PG) when evercookie not found", async () => {
       dynamoMock.on(GetItemCommand).resolves({ Item: undefined });
 
-      mockPgUnifiedMatch.mockResolvedValue({
-        device_id: "dev_stable",
-        confidence: 0.95,
-        match_tier: MatchTier.HASH,
-        is_new_device: false,
-        risk_score: 0.3,
-        flags: [],
-        evidence_codes: ["STABLE_HASH_MATCH"],
-      });
+      mockPgUnifiedMatch.mockResolvedValue(
+        pgMatch({
+          device_id: "dev_stable",
+          confidence: 0.95,
+          match_tier: MatchTier.HASH,
+          is_new_device: false,
+          risk_score: 0.3,
+          flags: [],
+          evidence_codes: ["STABLE_HASH_MATCH"],
+        }),
+      );
 
       const fingerprint: Fingerprint = {
         evercookie_id: "cookie123",
@@ -173,15 +190,17 @@ describe("Tier Priority Tests", () => {
     it("should return stable_hash match when PG finds exact stable match", async () => {
       dynamoMock.on(GetItemCommand).resolves({ Item: undefined });
 
-      mockPgUnifiedMatch.mockResolvedValue({
-        device_id: "dev_stable",
-        confidence: 0.95,
-        match_tier: MatchTier.HASH,
-        is_new_device: false,
-        risk_score: 0.3,
-        flags: [],
-        evidence_codes: ["STABLE_HASH_MATCH"],
-      });
+      mockPgUnifiedMatch.mockResolvedValue(
+        pgMatch({
+          device_id: "dev_stable",
+          confidence: 0.95,
+          match_tier: MatchTier.HASH,
+          is_new_device: false,
+          risk_score: 0.3,
+          flags: [],
+          evidence_codes: ["STABLE_HASH_MATCH"],
+        }),
+      );
 
       const fingerprint: Fingerprint = {
         stable_hash: "stable123",
@@ -199,15 +218,17 @@ describe("Tier Priority Tests", () => {
     it("should return SimHash match when PG finds fuzzy match only", async () => {
       dynamoMock.on(GetItemCommand).resolves({ Item: undefined });
 
-      mockPgUnifiedMatch.mockResolvedValue({
-        device_id: "dev_fuzzy",
-        confidence: 0.85,
-        match_tier: MatchTier.SIMHASH,
-        is_new_device: false,
-        risk_score: 0.35,
-        flags: [],
-        evidence_codes: ["SIMHASH_MATCH"],
-      });
+      mockPgUnifiedMatch.mockResolvedValue(
+        pgMatch({
+          device_id: "dev_fuzzy",
+          confidence: 0.85,
+          match_tier: MatchTier.SIMHASH,
+          is_new_device: false,
+          risk_score: 0.35,
+          flags: [],
+          evidence_codes: ["SIMHASH_MATCH"],
+        }),
+      );
 
       const fingerprint: Fingerprint = {
         stable_hash: "stable123",
@@ -226,15 +247,17 @@ describe("Tier Priority Tests", () => {
     it("should use Tier 1 match when PG stable_hash found", async () => {
       dynamoMock.on(GetItemCommand).resolves({ Item: undefined });
 
-      mockPgUnifiedMatch.mockResolvedValue({
-        device_id: "dev_tier1",
-        confidence: 0.95,
-        match_tier: MatchTier.HASH,
-        is_new_device: false,
-        risk_score: 0.3,
-        flags: [],
-        evidence_codes: ["STABLE_HASH_MATCH"],
-      });
+      mockPgUnifiedMatch.mockResolvedValue(
+        pgMatch({
+          device_id: "dev_tier1",
+          confidence: 0.95,
+          match_tier: MatchTier.HASH,
+          is_new_device: false,
+          risk_score: 0.3,
+          flags: [],
+          evidence_codes: ["STABLE_HASH_MATCH"],
+        }),
+      );
 
       const fingerprint: Fingerprint = {
         stable_hash: "stable123",
@@ -273,7 +296,7 @@ describe("Signal Presence Matrix", () => {
   beforeEach(() => {
     dynamoMock.reset();
     sqsMock.reset();
-    mockPgUnifiedMatch.mockReset().mockResolvedValue(null);
+    mockPgUnifiedMatch.mockReset().mockResolvedValue(pgNoMatch);
     mockCache = createMockCacheService();
     dynamodb = new DynamoDBClient({});
     sqs = new SQSClient({});
@@ -354,15 +377,17 @@ describe("Signal Presence Matrix", () => {
         }
 
         if (usePg) {
-          mockPgUnifiedMatch.mockResolvedValue({
-            device_id: "dev_match",
-            confidence: expectedConfidence,
-            match_tier: expectedTier as number,
-            is_new_device: false,
-            risk_score: 0.3,
-            flags: [],
-            evidence_codes: [expectedEvidence],
-          } as MatchResult);
+          mockPgUnifiedMatch.mockResolvedValue(
+            pgMatch({
+              device_id: "dev_match",
+              confidence: expectedConfidence,
+              match_tier: expectedTier as number,
+              is_new_device: false,
+              risk_score: 0.3,
+              flags: [],
+              evidence_codes: [expectedEvidence as EvidenceCode],
+            }),
+          );
         }
 
         const { result } = await service.runTieredMatching(
@@ -402,7 +427,7 @@ describe("Fingerprint Drift Scenarios", () => {
   beforeEach(() => {
     dynamoMock.reset();
     sqsMock.reset();
-    mockPgUnifiedMatch.mockReset().mockResolvedValue(null);
+    mockPgUnifiedMatch.mockReset().mockResolvedValue(pgNoMatch);
     mockCache = createMockCacheService();
     dynamodb = new DynamoDBClient({});
     sqs = new SQSClient({});
@@ -428,15 +453,17 @@ describe("Fingerprint Drift Scenarios", () => {
       const drifted = createDriftedFingerprint(original, { changeIp: true });
       dynamoMock.on(GetItemCommand).resolves({ Item: undefined });
 
-      mockPgUnifiedMatch.mockResolvedValue({
-        device_id: "dev_original",
-        confidence: 0.95,
-        match_tier: MatchTier.HASH,
-        is_new_device: false,
-        risk_score: 0.3,
-        flags: [],
-        evidence_codes: ["STABLE_HASH_MATCH"],
-      });
+      mockPgUnifiedMatch.mockResolvedValue(
+        pgMatch({
+          device_id: "dev_original",
+          confidence: 0.95,
+          match_tier: MatchTier.HASH,
+          is_new_device: false,
+          risk_score: 0.3,
+          flags: [],
+          evidence_codes: ["STABLE_HASH_MATCH"],
+        }),
+      );
 
       const { result } = await service.runTieredMatching(drifted);
 
@@ -458,15 +485,17 @@ describe("Fingerprint Drift Scenarios", () => {
       });
       dynamoMock.on(GetItemCommand).resolves({ Item: undefined });
 
-      mockPgUnifiedMatch.mockResolvedValue({
-        device_id: "dev_original",
-        confidence: 0.95,
-        match_tier: MatchTier.HASH,
-        is_new_device: false,
-        risk_score: 0.3,
-        flags: [],
-        evidence_codes: ["STABLE_HASH_MATCH"],
-      });
+      mockPgUnifiedMatch.mockResolvedValue(
+        pgMatch({
+          device_id: "dev_original",
+          confidence: 0.95,
+          match_tier: MatchTier.HASH,
+          is_new_device: false,
+          risk_score: 0.3,
+          flags: [],
+          evidence_codes: ["STABLE_HASH_MATCH"],
+        }),
+      );
 
       const { result } = await service.runTieredMatching(drifted);
 
@@ -488,15 +517,17 @@ describe("Fingerprint Drift Scenarios", () => {
       });
       dynamoMock.on(GetItemCommand).resolves({ Item: undefined });
 
-      mockPgUnifiedMatch.mockResolvedValue({
-        device_id: "dev_traveler",
-        confidence: 0.95,
-        match_tier: MatchTier.HASH,
-        is_new_device: false,
-        risk_score: 0.3,
-        flags: [],
-        evidence_codes: ["STABLE_HASH_MATCH"],
-      });
+      mockPgUnifiedMatch.mockResolvedValue(
+        pgMatch({
+          device_id: "dev_traveler",
+          confidence: 0.95,
+          match_tier: MatchTier.HASH,
+          is_new_device: false,
+          risk_score: 0.3,
+          flags: [],
+          evidence_codes: ["STABLE_HASH_MATCH"],
+        }),
+      );
 
       const { result } = await service.runTieredMatching(drifted);
 
@@ -518,15 +549,17 @@ describe("Fingerprint Drift Scenarios", () => {
       });
       dynamoMock.on(GetItemCommand).resolves({ Item: undefined });
 
-      mockPgUnifiedMatch.mockResolvedValue({
-        device_id: "dev_browser",
-        confidence: 0.95,
-        match_tier: MatchTier.HASH,
-        is_new_device: false,
-        risk_score: 0.3,
-        flags: [],
-        evidence_codes: ["STABLE_HASH_MATCH"],
-      });
+      mockPgUnifiedMatch.mockResolvedValue(
+        pgMatch({
+          device_id: "dev_browser",
+          confidence: 0.95,
+          match_tier: MatchTier.HASH,
+          is_new_device: false,
+          risk_score: 0.3,
+          flags: [],
+          evidence_codes: ["STABLE_HASH_MATCH"],
+        }),
+      );
 
       const { result } = await service.runTieredMatching(drifted);
 
@@ -563,7 +596,7 @@ describe("Edge Cases", () => {
   beforeEach(() => {
     dynamoMock.reset();
     sqsMock.reset();
-    mockPgUnifiedMatch.mockReset().mockResolvedValue(null);
+    mockPgUnifiedMatch.mockReset().mockResolvedValue(pgNoMatch);
     mockCache = createMockCacheService();
     dynamodb = new DynamoDBClient({});
     sqs = new SQSClient({});
@@ -612,15 +645,17 @@ describe("Edge Cases", () => {
     it("should handle long stable_hash values (PG)", async () => {
       dynamoMock.on(GetItemCommand).resolves({ Item: undefined });
 
-      mockPgUnifiedMatch.mockResolvedValue({
-        device_id: "dev_long",
-        confidence: 0.95,
-        match_tier: MatchTier.HASH,
-        is_new_device: false,
-        risk_score: 0.3,
-        flags: [],
-        evidence_codes: ["STABLE_HASH_MATCH"],
-      });
+      mockPgUnifiedMatch.mockResolvedValue(
+        pgMatch({
+          device_id: "dev_long",
+          confidence: 0.95,
+          match_tier: MatchTier.HASH,
+          is_new_device: false,
+          risk_score: 0.3,
+          flags: [],
+          evidence_codes: ["STABLE_HASH_MATCH"],
+        }),
+      );
 
       const fingerprint: Fingerprint = { stable_hash: "a".repeat(256) };
 
@@ -634,15 +669,17 @@ describe("Edge Cases", () => {
     it("should handle special characters in hash values (PG)", async () => {
       dynamoMock.on(GetItemCommand).resolves({ Item: undefined });
 
-      mockPgUnifiedMatch.mockResolvedValue({
-        device_id: "dev_special",
-        confidence: 0.95,
-        match_tier: MatchTier.HASH,
-        is_new_device: false,
-        risk_score: 0.3,
-        flags: [],
-        evidence_codes: ["STABLE_HASH_MATCH"],
-      });
+      mockPgUnifiedMatch.mockResolvedValue(
+        pgMatch({
+          device_id: "dev_special",
+          confidence: 0.95,
+          match_tier: MatchTier.HASH,
+          is_new_device: false,
+          risk_score: 0.3,
+          flags: [],
+          evidence_codes: ["STABLE_HASH_MATCH"],
+        }),
+      );
 
       const fingerprint: Fingerprint = { stable_hash: "abc#123$def%456" };
 

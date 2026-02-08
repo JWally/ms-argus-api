@@ -119,6 +119,8 @@ function buildAnalysis(
     analysis.vector_match_details = matchResult.vector_match_details;
   if (matchResult.ip_history_context)
     analysis.ip_history_context = matchResult.ip_history_context;
+  if (matchResult.pg_query_context)
+    analysis.pg_query_context = matchResult.pg_query_context;
   if (statisticalContextV2)
     analysis.normalities = buildNormalities(statisticalContextV2);
   return analysis;

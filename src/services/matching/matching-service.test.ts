@@ -823,6 +823,64 @@ describe("MatchingService", () => {
   });
 });
 
+describe("upsertVector", () => {
+  it("should return true silently when vector is not configured", async () => {
+    const dynamodb = new DynamoDBClient({});
+    const sqs = new SQSClient({});
+    const mockCache = createMockCacheService();
+
+    // No vectorWorkerArn, no vectorCollection → vector not configured
+    const deps: MatchingServiceDeps = {
+      dynamodb,
+      sqs,
+      cache: mockCache,
+      config: testConfig,
+    };
+    const service = new MatchingService(deps);
+
+    const result = await service.upsertVector("dev_123", {
+      stable_hash: "abc",
+      fuzzy_hash: "def",
+    });
+    expect(result).toBe(true);
+  });
+});
+
+describe("applyPrivacyPenalty (penalty = 0)", () => {
+  it("should return result unchanged when penalty constants are both 0", () => {
+    const dynamodb = new DynamoDBClient({});
+    const sqs = new SQSClient({});
+    const mockCache = createMockCacheService();
+    const deps: MatchingServiceDeps = {
+      dynamodb,
+      sqs,
+      cache: mockCache,
+      config: testConfig,
+    };
+    const svc = new MatchingService(deps);
+
+    const result = {
+      device_id: "dev_123",
+      confidence: 0.95,
+      match_tier: 1,
+      is_new_device: false,
+      risk_score: 0.3,
+      flags: [] as string[],
+      evidence_codes: ["STABLE_HASH_MATCH"] as EvidenceCode[],
+    };
+
+    // Both privacy signals present, but penalty constants are 0
+    const fingerprint: Fingerprint = {
+      stable_hash: "abc",
+      privacy_browser: "brave",
+      is_private_browsing: true,
+    };
+
+    const penalized = svc.applyPrivacyPenalty(result, fingerprint);
+    expect(penalized.confidence).toBe(0.95);
+  });
+});
+
 describe("generateIdempotencyKey", () => {
   it("should generate consistent hash for same input", () => {
     const fingerprint: Fingerprint = {

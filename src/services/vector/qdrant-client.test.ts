@@ -14,6 +14,14 @@ vi.mock("@qdrant/js-client-rest", () => ({
     retrieve: vi.fn().mockResolvedValue([]),
     collectionExists: vi.fn().mockResolvedValue({ exists: true }),
     createCollection: vi.fn().mockResolvedValue(undefined),
+    deleteCollection: vi.fn().mockResolvedValue(undefined),
+    getCollections: vi
+      .fn()
+      .mockResolvedValue({ collections: [{ name: "col1" }, { name: "col2" }] }),
+    getCollection: vi.fn().mockResolvedValue({
+      points_count: 42,
+      indexed_vectors_count: 100,
+    }),
   })),
 }));
 
@@ -115,6 +123,24 @@ describe("QdrantClient", () => {
       await client.createCollection("col", {
         vectors: { size: 128, distance: "Cosine" },
       });
+    });
+
+    it("deleteCollection delegates to official client", async () => {
+      const client = createClient();
+      await client.deleteCollection("col");
+    });
+
+    it("listCollections returns collection names", async () => {
+      const client = createClient();
+      const names = await client.listCollections();
+      expect(names).toEqual(["col1", "col2"]);
+    });
+
+    it("getCollectionInfo returns points and vectors counts", async () => {
+      const client = createClient();
+      const info = await client.getCollectionInfo("col");
+      expect(info.points_count).toBe(42);
+      expect(info.vectors_count).toBe(100);
     });
   });
 

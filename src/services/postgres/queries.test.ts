@@ -11,39 +11,40 @@ describe("pgUnifiedMatch", () => {
     vi.clearAllMocks();
   });
 
-  it("should return null when both hashes are missing", async () => {
-    const result = await pgUnifiedMatch(
+  it("should return null match when both hashes are missing", async () => {
+    const { match } = await pgUnifiedMatch(
       mockPool as any,
       {
         stable_hash: undefined,
         fuzzy_hash: undefined,
       } as any,
     );
-    expect(result).toBeNull();
+    expect(match).toBeNull();
     expect(mockPool.query).not.toHaveBeenCalled();
   });
 
-  it("should return null when fuzzy_hash is invalid and no stable_hash", async () => {
-    const result = await pgUnifiedMatch(
+  it("should return null match when fuzzy_hash is invalid and no stable_hash", async () => {
+    const { match } = await pgUnifiedMatch(
       mockPool as any,
       {
         stable_hash: undefined,
         fuzzy_hash: "not-a-valid-hex",
       } as any,
     );
-    expect(result).toBeNull();
+    expect(match).toBeNull();
   });
 
-  it("should return null when query returns no rows", async () => {
+  it("should return null match when query returns no rows", async () => {
     mockPool.query.mockResolvedValue({ rows: [] });
-    const result = await pgUnifiedMatch(
+    const { match, pgQueryContext } = await pgUnifiedMatch(
       mockPool as any,
       {
         stable_hash: "hash-abc",
         fuzzy_hash: undefined,
       } as any,
     );
-    expect(result).toBeNull();
+    expect(match).toBeNull();
+    expect(pgQueryContext.total_rows).toBe(0);
   });
 
   it("should return stable hash match result for exact match", async () => {
@@ -60,7 +61,7 @@ describe("pgUnifiedMatch", () => {
       ],
     });
 
-    const result = await pgUnifiedMatch(
+    const { match, pgQueryContext } = await pgUnifiedMatch(
       mockPool as any,
       {
         stable_hash: "hash-abc",
@@ -68,11 +69,13 @@ describe("pgUnifiedMatch", () => {
       } as any,
     );
 
-    expect(result).not.toBeNull();
-    expect(result!.match_tier).toBe(MatchTier.HASH);
-    expect(result!.confidence).toBe(0.95);
-    expect(result!.device_id).toBe("dev_001");
-    expect(result!.evidence_codes).toContain("STABLE_HASH_MATCH");
+    expect(match).not.toBeNull();
+    expect(match!.match_tier).toBe(MatchTier.HASH);
+    expect(match!.confidence).toBe(0.95);
+    expect(match!.device_id).toBe("dev_001");
+    expect(match!.evidence_codes).toContain("STABLE_HASH_MATCH");
+    expect(pgQueryContext.total_rows).toBe(1);
+    expect(pgQueryContext.candidates[0].exact_match).toBe(true);
   });
 
   it("should return simhash match for fuzzy candidate with low hamming distance", async () => {
@@ -97,7 +100,7 @@ describe("pgUnifiedMatch", () => {
       ],
     });
 
-    const result = await pgUnifiedMatch(
+    const { match, pgQueryContext } = await pgUnifiedMatch(
       mockPool as any,
       {
         stable_hash: "hash-abc",
@@ -105,13 +108,15 @@ describe("pgUnifiedMatch", () => {
       } as any,
     );
 
-    expect(result).not.toBeNull();
-    expect(result!.match_tier).toBe(MatchTier.SIMHASH);
-    expect(result!.device_id).toBe("dev_002");
-    expect(result!.evidence_codes).toContain("SIMHASH_MATCH");
+    expect(match).not.toBeNull();
+    expect(match!.match_tier).toBe(MatchTier.SIMHASH);
+    expect(match!.device_id).toBe("dev_002");
+    expect(match!.evidence_codes).toContain("SIMHASH_MATCH");
+    expect(pgQueryContext.candidates[0].hamming_distance).toBe(0);
+    expect(pgQueryContext.candidates[0].similarity).toBe(1);
   });
 
-  it("should return null when normalizedFuzzy is null and no stable match in rows", async () => {
+  it("should return null match when normalizedFuzzy is null and no stable match in rows", async () => {
     mockPool.query.mockResolvedValue({
       rows: [
         {
@@ -125,7 +130,7 @@ describe("pgUnifiedMatch", () => {
       ],
     });
 
-    const result = await pgUnifiedMatch(
+    const { match } = await pgUnifiedMatch(
       mockPool as any,
       {
         stable_hash: "hash-abc",
@@ -133,7 +138,7 @@ describe("pgUnifiedMatch", () => {
       } as any,
     );
 
-    expect(result).toBeNull();
+    expect(match).toBeNull();
   });
 
   it("should skip candidates with no fuzzy_hash", async () => {
@@ -152,7 +157,7 @@ describe("pgUnifiedMatch", () => {
       ],
     });
 
-    const result = await pgUnifiedMatch(
+    const { match } = await pgUnifiedMatch(
       mockPool as any,
       {
         stable_hash: "hash-abc",
@@ -160,7 +165,7 @@ describe("pgUnifiedMatch", () => {
       } as any,
     );
 
-    expect(result).toBeNull();
+    expect(match).toBeNull();
   });
 
   it("should use zero bands when fuzzy hash is null", async () => {
@@ -209,7 +214,7 @@ describe("pgUnifiedMatch", () => {
       ],
     });
 
-    const result = await pgUnifiedMatch(
+    const { match } = await pgUnifiedMatch(
       mockPool as any,
       {
         stable_hash: "hash-abc",
@@ -217,8 +222,8 @@ describe("pgUnifiedMatch", () => {
       } as any,
     );
 
-    expect(result!.device_id).toBe("dev_stable");
-    expect(result!.match_tier).toBe(MatchTier.HASH);
+    expect(match!.device_id).toBe("dev_stable");
+    expect(match!.match_tier).toBe(MatchTier.HASH);
   });
 });
 

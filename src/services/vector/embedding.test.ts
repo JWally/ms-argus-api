@@ -387,4 +387,146 @@ describe("assessEmbeddingQuality", () => {
     // 2 identity + 2 structural + 1 rendering + 2 hardware = 7 out of 15 max
     expect(result.score).toBeCloseTo(7 / 15, 2);
   });
+
+  it("rejects when only stable_hash is present (missing fuzzy_hash)", () => {
+    const fp: Fingerprint = {
+      stable_hash: "abc123",
+      // fuzzy_hash missing
+      maths_hash: "hash1",
+      window_features_hash: "hash2",
+      html_element_hash: "hash3",
+      canvas_hash: "canvas",
+      hardware_concurrency: 8,
+      user_agent: "Mozilla/5.0",
+      screen_dims: "1920x1080",
+    };
+
+    const result = assessEmbeddingQuality(fp);
+    expect(result.acceptable).toBe(false);
+    expect(result.reason).toContain("identity");
+  });
+
+  it("rejects when only fuzzy_hash is present (missing stable_hash)", () => {
+    const fp: Fingerprint = {
+      fuzzy_hash: "def456",
+      // stable_hash missing
+      maths_hash: "hash1",
+      window_features_hash: "hash2",
+      html_element_hash: "hash3",
+      canvas_hash: "canvas",
+      hardware_concurrency: 8,
+      user_agent: "Mozilla/5.0",
+      screen_dims: "1920x1080",
+    };
+
+    const result = assessEmbeddingQuality(fp);
+    expect(result.acceptable).toBe(false);
+    expect(result.reason).toContain("identity");
+  });
+
+  it("rejects with 1 structural hash (below minimum of 2)", () => {
+    const fp: Fingerprint = {
+      stable_hash: "abc",
+      fuzzy_hash: "def",
+      maths_hash: "hash1", // Only 1 structural
+      canvas_hash: "canvas",
+      hardware_concurrency: 8,
+      user_agent: "Mozilla/5.0",
+      screen_dims: "1920x1080",
+    };
+
+    const result = assessEmbeddingQuality(fp);
+    expect(result.acceptable).toBe(false);
+    expect(result.structuralCount).toBe(1);
+    expect(result.reason).toContain("structural");
+  });
+
+  it("rejects when rendering is 0 and structural is < 4", () => {
+    const fp: Fingerprint = {
+      stable_hash: "abc",
+      fuzzy_hash: "def",
+      maths_hash: "h1",
+      window_features_hash: "h2",
+      html_element_hash: "h3",
+      // 3 structural, 0 rendering — not enough structural to compensate
+      hardware_concurrency: 8,
+      device_memory: 16,
+      screen_dims: "1920x1080",
+      user_agent: "Mozilla/5.0",
+    };
+
+    const result = assessEmbeddingQuality(fp);
+    expect(result.acceptable).toBe(false);
+    expect(result.structuralCount).toBe(3);
+    expect(result.renderingCount).toBe(0);
+    expect(result.reason).toContain("rendering");
+  });
+
+  it("accepts when rendering is 0 but structural is >= 4", () => {
+    const fp: Fingerprint = {
+      stable_hash: "abc",
+      fuzzy_hash: "def",
+      maths_hash: "h1",
+      window_features_hash: "h2",
+      html_element_hash: "h3",
+      css_hash: "h4",
+      // 4 structural, 0 rendering — structural compensates
+      hardware_concurrency: 8,
+      device_memory: 16,
+      screen_dims: "1920x1080",
+      user_agent: "Mozilla/5.0",
+    };
+
+    const result = assessEmbeddingQuality(fp);
+    expect(result.acceptable).toBe(true);
+    expect(result.structuralCount).toBe(4);
+    expect(result.renderingCount).toBe(0);
+  });
+
+  it("rejects when hardware signals are only 1 (below minimum of 2)", () => {
+    const fp: Fingerprint = {
+      stable_hash: "abc",
+      fuzzy_hash: "def",
+      maths_hash: "h1",
+      window_features_hash: "h2",
+      html_element_hash: "h3",
+      css_hash: "h4",
+      canvas_hash: "canvas",
+      hardware_concurrency: 8,
+      // Only 1 hardware signal (concurrency), missing memory, screen, user_agent
+    };
+
+    const result = assessEmbeddingQuality(fp);
+    expect(result.acceptable).toBe(false);
+    expect(result.hardwareCount).toBe(1);
+    expect(result.reason).toContain("hardware");
+  });
+
+  it("accepts high-quality fingerprint with all signals", () => {
+    const fp: Fingerprint = {
+      stable_hash: "abc",
+      fuzzy_hash: "def",
+      maths_hash: "h1",
+      window_features_hash: "h2",
+      html_element_hash: "h3",
+      css_hash: "h4",
+      svg_hash: "h5",
+      intl_hash: "h6",
+      canvas_hash: "canvas",
+      webgl_hash: "webgl",
+      audio_hash: "audio",
+      hardware_concurrency: 8,
+      device_memory: 16,
+      screen_dims: "1920x1080",
+      user_agent: "Mozilla/5.0 Chrome/120",
+    };
+
+    const result = assessEmbeddingQuality(fp);
+    expect(result.acceptable).toBe(true);
+    expect(result.score).toBe(1.0);
+    expect(result.structuralCount).toBe(6);
+    expect(result.renderingCount).toBe(3);
+    expect(result.hardwareCount).toBe(4);
+    expect(result.reason).toBeUndefined();
+  });
 });

@@ -172,6 +172,115 @@ describe("valkey-client", () => {
     });
   });
 
+  describe("Redis client configuration", () => {
+    it("should register error, reconnecting, and connect event handlers", async () => {
+      process.env.VALKEY_ENDPOINT = "redis.example.com";
+      mockPipeline.exec.mockResolvedValue([
+        [null, "1"],
+        [null, "1"],
+        [null, 2],
+        [null, 2],
+      ]);
+
+      // Force client creation
+      await recordFingerprintV2("ua:chrome", "ja4", "fp-test");
+
+      // Check that event handlers were registered
+      const onCalls = mockRedisInstance.on.mock.calls;
+      const events = onCalls.map((call: unknown[]) => call[0]);
+      expect(events).toContain("error");
+      expect(events).toContain("reconnecting");
+      expect(events).toContain("connect");
+    });
+
+    it("should fire error handler without throwing", async () => {
+      process.env.VALKEY_ENDPOINT = "redis.example.com";
+      mockPipeline.exec.mockResolvedValue([
+        [null, "1"],
+        [null, "1"],
+        [null, 2],
+        [null, 2],
+      ]);
+
+      await recordFingerprintV2("ua:chrome", "ja4", "fp-test");
+
+      // Find and call the error handler
+      const errorCall = mockRedisInstance.on.mock.calls.find(
+        (call: unknown[]) => call[0] === "error",
+      );
+      expect(errorCall).toBeTruthy();
+      // Calling the error handler should not throw
+      expect(() => errorCall![1](new Error("connection lost"))).not.toThrow();
+    });
+
+    it("should fire reconnecting handler without throwing", async () => {
+      process.env.VALKEY_ENDPOINT = "redis.example.com";
+      mockPipeline.exec.mockResolvedValue([
+        [null, "1"],
+        [null, "1"],
+        [null, 2],
+        [null, 2],
+      ]);
+
+      await recordFingerprintV2("ua:chrome", "ja4", "fp-test");
+
+      const reconnectingCall = mockRedisInstance.on.mock.calls.find(
+        (call: unknown[]) => call[0] === "reconnecting",
+      );
+      expect(reconnectingCall).toBeTruthy();
+      expect(() => reconnectingCall![1]()).not.toThrow();
+    });
+
+    it("should fire connect handler without throwing", async () => {
+      process.env.VALKEY_ENDPOINT = "redis.example.com";
+      mockPipeline.exec.mockResolvedValue([
+        [null, "1"],
+        [null, "1"],
+        [null, 2],
+        [null, 2],
+      ]);
+
+      await recordFingerprintV2("ua:chrome", "ja4", "fp-test");
+
+      const connectCall = mockRedisInstance.on.mock.calls.find(
+        (call: unknown[]) => call[0] === "connect",
+      );
+      expect(connectCall).toBeTruthy();
+      expect(() => connectCall![1]()).not.toThrow();
+    });
+  });
+
+  describe("retry strategy", () => {
+    it("should be configured via the Redis constructor", async () => {
+      process.env.VALKEY_ENDPOINT = "redis.example.com";
+      mockPipeline.exec.mockResolvedValue([
+        [null, "1"],
+        [null, "1"],
+        [null, 2],
+        [null, 2],
+      ]);
+
+      await recordFingerprintV2("ua:chrome", "ja4", "fp-test");
+
+      // The Redis constructor is called with config including retryStrategy
+      const Redis = (await import("ioredis")).default;
+      const constructorCalls = (Redis as unknown as ReturnType<typeof vi.fn>)
+        .mock.calls;
+      expect(constructorCalls.length).toBeGreaterThan(0);
+      const config = constructorCalls[0][0];
+      expect(config.retryStrategy).toBeDefined();
+
+      // Test retry strategy: returns exponential backoff for <= 10 attempts
+      const retryStrategy = config.retryStrategy;
+      expect(retryStrategy(1)).toBe(100);
+      expect(retryStrategy(3)).toBe(300);
+      expect(retryStrategy(10)).toBe(1000);
+
+      // Test retry strategy: returns null (stop) for > 10 attempts
+      expect(retryStrategy(11)).toBeNull();
+    });
+  });
+
   describe("closeClient", () => {
     it("should do nothing when no client exists", async () => {
       delete process.env.VALKEY_ENDPOINT;

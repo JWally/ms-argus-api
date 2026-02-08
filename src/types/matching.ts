@@ -184,6 +184,23 @@ export interface VectorMatchDetails {
   primary_match_features: string[];
 }
 
+/** Summary of a candidate row from the PG unified match query. */
+export interface PgQueryCandidate {
+  device_id: string;
+  band_matches: number;
+  exact_match: boolean;
+  hamming_distance?: number;
+  similarity?: number;
+}
+
+/** Context from the PG unified match query, included in archive payloads. */
+export interface PgQueryContext {
+  /** All candidate rows returned by the query */
+  candidates: PgQueryCandidate[];
+  /** Total rows returned by the SQL query */
+  total_rows: number;
+}
+
 /** Result of device matching. */
 export interface MatchResult {
   /** Matched or newly created device ID */
@@ -214,6 +231,8 @@ export interface MatchResult {
     unique_asns_24h: number;
     confidence_adjustment: number;
   };
+  /** PG unified match query context (candidates considered) */
+  pg_query_context?: PgQueryContext;
 }
 
 /**

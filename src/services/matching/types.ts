@@ -9,4 +9,6 @@ export {
   SimHashDetails,
   FuzzyMatchInfo,
   VectorMatchDetails,
+  PgQueryContext,
+  PgQueryCandidate,
 } from "../../types";

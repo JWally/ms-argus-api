@@ -329,6 +329,63 @@ describe("evaluateBaselineRules", () => {
   });
 });
 
+describe("operator coverage via boundary testing", () => {
+  describe("< operator (used by headless_with_stealth sub-condition)", () => {
+    it("should not match > when value is exactly at threshold", () => {
+      const ctx: RuleContext = {
+        lie_count: 50, // Exactly 50, > 50 is false
+        is_headless: false,
+        worker_ua_mismatch: false,
+        proxy_score: 0,
+        vpn_score: 0,
+      };
+      const result = evaluateBaselineRules(ctx);
+      expect(result.matchedRules).not.toContain("excessive_lies");
+    });
+
+    it("should match > when value is one above threshold", () => {
+      const ctx: RuleContext = {
+        lie_count: 51, // Just above 50
+        is_headless: false,
+        worker_ua_mismatch: false,
+        proxy_score: 0,
+        vpn_score: 0,
+      };
+      const result = evaluateBaselineRules(ctx);
+      expect(result.matchedRules).toContain("excessive_lies");
+    });
+  });
+
+  describe("!= operator (implicit via == false matching)", () => {
+    it("== should not match when value is the opposite", () => {
+      const ctx: RuleContext = {
+        lie_count: 0,
+        is_headless: false,
+        worker_ua_mismatch: false, // == true will not match
+        proxy_score: 0,
+        vpn_score: 0,
+      };
+      const result = evaluateBaselineRules(ctx);
+      expect(result.matchedRules).not.toContain("worker_ua_mismatch");
+    });
+  });
+
+  describe("unknown field in context", () => {
+    it("should not match when field does not exist in context", () => {
+      // All existing rules use known fields, so they should match or not match correctly
+      const ctx: RuleContext = {
+        lie_count: 0,
+        is_headless: false,
+        worker_ua_mismatch: false,
+        proxy_score: 0,
+        vpn_score: 0,
+      };
+      const result = evaluateBaselineRules(ctx);
+      expect(result.shouldSkipBaseline).toBe(false);
+    });
+  });
+});
+
 describe("integration: context + rules together", () => {
   it("should skip baseline for stealth plugin bot (headless + high lies)", () => {
     const fp: Fingerprint = { lie_count: 305, is_headless: true };

@@ -153,9 +153,18 @@ export class MatchingService {
     if (identityResult) return this.wrapResult(identityResult, fingerprint);
 
     // T1 + T1.5: unified PostgreSQL query (stable hash + SimHash LSH)
+    // Always capture pgQueryContext for archive, even when no match
+    let pgQueryContext: MatchResult["pg_query_context"];
     if (this.pgPool) {
-      const pgResult = await pgUnifiedMatch(this.pgPool, fingerprint);
-      if (pgResult) return this.wrapResult(pgResult, fingerprint);
+      const { match, pgQueryContext: ctx } = await pgUnifiedMatch(
+        this.pgPool,
+        fingerprint,
+      );
+      pgQueryContext = ctx;
+      if (match) {
+        match.pg_query_context = pgQueryContext;
+        return this.wrapResult(match, fingerprint);
+      }
     }
 
     // Tier 2: Vector similarity search (requires vector infrastructure)
@@ -169,21 +178,30 @@ export class MatchingService {
       );
       tier2Result = vectorResult.result;
       timedOut = vectorResult.timedOut;
-      if (tier2Result)
+      if (tier2Result) {
+        tier2Result.pg_query_context = pgQueryContext;
         return this.wrapResult(tier2Result, fingerprint, timedOut);
+      }
     }
 
     const sessionResult = await sessionAnchorLookup(
       this.anchorDeps,
       fingerprint,
     );
-    if (sessionResult)
+    if (sessionResult) {
+      sessionResult.pg_query_context = pgQueryContext;
       return this.wrapResult(sessionResult, fingerprint, timedOut);
+    }
 
     const ipUaResult = await ipUaAnchorLookup(this.anchorDeps, fingerprint);
-    if (ipUaResult) return this.wrapResult(ipUaResult, fingerprint, timedOut);
+    if (ipUaResult) {
+      ipUaResult.pg_query_context = pgQueryContext;
+      return this.wrapResult(ipUaResult, fingerprint, timedOut);
+    }
 
-    return { result: this.createNewDevice(), tier2TimedOut: timedOut };
+    const newDevice = this.createNewDevice();
+    newDevice.pg_query_context = pgQueryContext;
+    return { result: newDevice, tier2TimedOut: timedOut };
   }
 
   createNewDevice(): MatchResult {

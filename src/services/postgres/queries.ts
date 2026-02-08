@@ -12,7 +12,11 @@ import { Logger } from "@aws-lambda-powertools/logger";
 import { hammingDistance, computeFuzzyMatchInfo } from "../../helpers/hash";
 import { SIMHASH_CONFIG } from "../../helpers/constants";
 import { MatchTier } from "../../types/matching-tiers";
-import type { Fingerprint, MatchResult } from "../matching/types";
+import type {
+  Fingerprint,
+  MatchResult,
+  PgQueryContext,
+} from "../matching/types";
 
 const logger = new Logger({
   serviceName: process.env.POWERTOOLS_SERVICE_NAME || "postgres-queries",
@@ -210,6 +214,37 @@ function scoreCandidates(
   return bestResult;
 }
 
+/** Build PgQueryContext from raw query rows and the incoming fuzzy hash. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function buildPgQueryContext(
+  rows: any[],
+  incomingHex: string | null,
+): PgQueryContext {
+  return {
+    candidates: rows.map((row) => {
+      const candidate: PgQueryContext["candidates"][number] = {
+        device_id: row.device_id,
+        band_matches: Number(row.band_matches),
+        exact_match: Boolean(row.exact_match),
+      };
+      if (incomingHex && row.fuzzy_hash) {
+        const matchedHex = bitStringToHex(row.fuzzy_hash);
+        const hd = hammingDistance(incomingHex, matchedHex);
+        candidate.hamming_distance = hd;
+        candidate.similarity = 1 - hd / SIMHASH_CONFIG.TOTAL_BITS;
+      }
+      return candidate;
+    }),
+    total_rows: rows.length,
+  };
+}
+
+/** Result of pgUnifiedMatch including query context for archiving. */
+export interface PgUnifiedMatchResult {
+  match: MatchResult | null;
+  pgQueryContext: PgQueryContext;
+}
+
 /**
  * Unified T1 + T1.5 match against device_hashes.
  *
@@ -218,32 +253,61 @@ function scoreCandidates(
  *    band_matches >= MIN_BANDS_MATCH, sorted by band_matches DESC.
  * 2. Application computes Hamming distance on the small result set (~10 rows).
  * 3. Best match wins: stable hash (0.95) > SimHash scored by Hamming distance.
+ *
+ * Always returns pgQueryContext with candidate details for archive payloads.
  */
+const EMPTY_PG_CONTEXT: PgQueryContext = { candidates: [], total_rows: 0 };
+
+function resolveIncomingHex(
+  fingerprint: Fingerprint,
+  normalizedFuzzy: string | null,
+): string | null {
+  return (
+    normalizedFuzzy ??
+    fingerprint.fuzzy_hash?.replace(/^0x/i, "").toLowerCase() ??
+    null
+  );
+}
+
+function pickMatch(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  rows: any[],
+  fingerprint: Fingerprint,
+  normalizedFuzzy: string | null,
+): MatchResult | null {
+  const stableRow = rows.find((r) => r.exact_match && fingerprint.stable_hash);
+  if (stableRow) return buildStableMatchResult(stableRow, fingerprint);
+  if (!normalizedFuzzy) return null;
+  return scoreCandidates(rows, fingerprint);
+}
+
 export async function pgUnifiedMatch(
   pool: Pool,
   fingerprint: Fingerprint,
-): Promise<MatchResult | null> {
-  if (!fingerprint.stable_hash && !fingerprint.fuzzy_hash) return null;
+): Promise<PgUnifiedMatchResult> {
+  if (!fingerprint.stable_hash && !fingerprint.fuzzy_hash)
+    return { match: null, pgQueryContext: EMPTY_PG_CONTEXT };
 
   const normalizedFuzzy = normalizeFuzzyHash(fingerprint.fuzzy_hash);
-  if (!fingerprint.stable_hash && !normalizedFuzzy) return null;
+  if (!fingerprint.stable_hash && !normalizedFuzzy)
+    return { match: null, pgQueryContext: EMPTY_PG_CONTEXT };
 
   const params = buildMatchParams(
     fingerprint.stable_hash ?? null,
     normalizedFuzzy,
   );
   const result = await pool.query(UNIFIED_MATCH_SQL, params);
-  if (result.rows.length === 0) return null;
-
-  // Prefer stable hash exact match
-  const stableRow = result.rows.find(
-    (r) => r.exact_match && fingerprint.stable_hash,
+  const pgQueryContext = buildPgQueryContext(
+    result.rows,
+    resolveIncomingHex(fingerprint, normalizedFuzzy),
   );
-  if (stableRow) return buildStableMatchResult(stableRow, fingerprint);
 
-  // Score SimHash candidates by Hamming distance in application code
-  if (!normalizedFuzzy) return null;
-  return scoreCandidates(result.rows, fingerprint);
+  if (result.rows.length === 0) return { match: null, pgQueryContext };
+
+  return {
+    match: pickMatch(result.rows, fingerprint, normalizedFuzzy),
+    pgQueryContext,
+  };
 }
 
 function buildStableMatchResult(
