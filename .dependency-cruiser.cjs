@@ -11,7 +11,8 @@ module.exports = {
     {
       name: "types-no-imports",
       severity: "error",
-      comment: "Types should be pure definitions - no imports from application code.",
+      comment:
+        "Types should be pure definitions - no imports from application code.",
       from: { path: "^src/types/" },
       to: { path: "^src/(handlers|services|helpers|config)/" },
     },
@@ -25,7 +26,8 @@ module.exports = {
     {
       name: "helpers-no-handler-or-service-imports",
       severity: "error",
-      comment: "Helpers are low-level utilities - they should not depend on handlers or services.",
+      comment:
+        "Helpers are low-level utilities - they should not depend on handlers or services.",
       from: { path: "^src/helpers/", pathNot: "\\.test\\.ts$" },
       to: { path: "^src/(handlers|services)/" },
     },
@@ -57,7 +59,8 @@ module.exports = {
     {
       name: "matching-service-no-tier-imports",
       severity: "warn",
-      comment: "MatchingService should use interfaces, not import tier implementations directly.",
+      comment:
+        "MatchingService should use interfaces, not import tier implementations directly.",
       from: { path: "^src/services/matching/matching-service\\.ts$" },
       to: { path: "^src/services/matching/tier.*\\.ts$" },
     },

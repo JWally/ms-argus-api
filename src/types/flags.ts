@@ -36,11 +36,6 @@ export const DeviceFlags = {
   WORKER_MISMATCH: "worker_mismatch",
   /** Screen dimensions don't match CSS media queries */
   SCREEN_CSS_MISMATCH: "screen_css_mismatch",
-  /** IP geolocation doesn't match reported timezone */
-  IP_TIMEZONE_MISMATCH: "ip_timezone_mismatch",
-  /** Server-side and client-side timezone don't match */
-  SERVER_CLIENT_TZ_MISMATCH: "server_client_tz_mismatch",
-
   // IP/ASN history flags
   /** Device appeared on a new ASN not seen in its IP history */
   NEW_ASN_FOR_DEVICE: "new_asn_for_device",

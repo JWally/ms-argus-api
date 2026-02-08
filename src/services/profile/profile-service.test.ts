@@ -20,7 +20,7 @@ import {
   computeFlags,
   computeRiskScore,
 } from "./flag-computation";
-import { buildTier1IndexEntries } from "./index-writers";
+import { buildIdentityIndexEntries } from "./index-writers";
 
 const dynamoMock = mockClient(DynamoDBClient);
 
@@ -216,35 +216,37 @@ describe("ProfileService", () => {
     });
   });
 
-  describe("buildTier1IndexEntries", () => {
+  describe("buildIdentityIndexEntries", () => {
     const ttl = 1705000000;
 
-    it("should return empty array when no hashes present", () => {
-      const fingerprint: Fingerprint = {};
-      const entries = buildTier1IndexEntries("dev_123", fingerprint, ttl);
+    it("should return empty array when no identity fields present", () => {
+      const fingerprint: Fingerprint = { stable_hash: "stable123" };
+      const entries = buildIdentityIndexEntries("dev_123", fingerprint, ttl);
       expect(entries).toEqual([]);
     });
 
     it("should build evercookie entry", () => {
       const fingerprint: Fingerprint = { evercookie_id: "cookie123" };
-      const entries = buildTier1IndexEntries("dev_123", fingerprint, ttl);
+      const entries = buildIdentityIndexEntries("dev_123", fingerprint, ttl);
 
       expect(entries).toHaveLength(1);
       expect(entries[0]).toEqual({
         hash_key: "evercookie#cookie123",
         device_id: "dev_123",
+        fuzzy_hash: undefined,
         ttl,
       });
     });
 
     it("should build sigint_id entry", () => {
       const fingerprint: Fingerprint = { sigint_id: "abc123-def456-789" };
-      const entries = buildTier1IndexEntries("dev_123", fingerprint, ttl);
+      const entries = buildIdentityIndexEntries("dev_123", fingerprint, ttl);
 
       expect(entries).toHaveLength(1);
       expect(entries[0]).toEqual({
         hash_key: "sigint#abc123-def456-789",
         device_id: "dev_123",
+        fuzzy_hash: undefined,
         ttl,
       });
     });
@@ -252,25 +254,28 @@ describe("ProfileService", () => {
     it("should build public_key entry", () => {
       const publicKey = "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE...base64...";
       const fingerprint: Fingerprint = { public_key: publicKey };
-      const entries = buildTier1IndexEntries("dev_123", fingerprint, ttl);
+      const entries = buildIdentityIndexEntries("dev_123", fingerprint, ttl);
 
       expect(entries).toHaveLength(1);
       expect(entries[0]).toEqual({
         hash_key: `pubkey#${publicKey}`,
         device_id: "dev_123",
+        fuzzy_hash: undefined,
         ttl,
       });
     });
 
-    it("should build stable_hash entry", () => {
-      const fingerprint: Fingerprint = { stable_hash: "stable456" };
-      const entries = buildTier1IndexEntries("dev_123", fingerprint, ttl);
+    it("should NOT build stable_hash or fuzzy_hash entries (those go to PG)", () => {
+      const fingerprint: Fingerprint = {
+        stable_hash: "stable456",
+        fuzzy_hash: "fuzzy789",
+      };
+      const entries = buildIdentityIndexEntries("dev_123", fingerprint, ttl);
 
-      expect(entries).toHaveLength(1);
-      expect(entries[0].hash_key).toBe("stable#stable456");
+      expect(entries).toEqual([]);
     });
 
-    it("should build all entries when all hashes present", () => {
+    it("should build only identity entries when all fields present", () => {
       const publicKey = "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE...";
       const fingerprint: Fingerprint = {
         evercookie_id: "cookie",
@@ -281,17 +286,16 @@ describe("ProfileService", () => {
         ja4: "ja4hash",
       };
 
-      const entries = buildTier1IndexEntries("dev_123", fingerprint, ttl);
+      const entries = buildIdentityIndexEntries("dev_123", fingerprint, ttl);
 
-      // 5 entries - ja4 is not indexed in Tier1 (not unique enough)
-      expect(entries).toHaveLength(5);
+      // 3 identity entries only - hash entries go to PG device_hashes
+      expect(entries).toHaveLength(3);
       const hashKeys = entries.map((e) => e.hash_key);
       expect(hashKeys).toContain("evercookie#cookie");
       expect(hashKeys).toContain("sigint#sigint-uuid-123");
       expect(hashKeys).toContain(`pubkey#${publicKey}`);
-      expect(hashKeys).toContain("stable#stable");
-      expect(hashKeys).toContain("fuzzy#fuzzy");
-      expect(hashKeys).not.toContain("ja4#ja4hash");
+      expect(hashKeys).not.toContain("stable#stable");
+      expect(hashKeys).not.toContain("fuzzy#fuzzy");
     });
   });
 
@@ -383,8 +387,8 @@ describe("ProfileService", () => {
     });
   });
 
-  describe("updateTier1IndexesWithEvidence", () => {
-    it("should write all indexes when evidence is PUBLIC_KEY_MATCH (Tier 0.5)", async () => {
+  describe("updateIdentityIndexes", () => {
+    it("should write identity indexes when evidence is PUBLIC_KEY_MATCH (Tier 0.5)", async () => {
       dynamoMock.on(BatchWriteItemCommand).resolves({});
 
       const fingerprint: Fingerprint = {
@@ -394,16 +398,17 @@ describe("ProfileService", () => {
         fuzzy_hash: "fuzzy456",
       };
 
-      const count = await service.updateTier1IndexesWithEvidence(
+      const count = await service.updateIdentityIndexes(
         "dev_123",
         fingerprint,
         ["PUBLIC_KEY_MATCH"],
       );
 
-      expect(count).toBe(4);
+      // Only 2 identity entries (pubkey# + evercookie#), hash entries go to PG
+      expect(count).toBe(2);
     });
 
-    it("should write all indexes when evidence is STABLE_HASH_MATCH (Tier 1)", async () => {
+    it("should write identity indexes when evidence is STABLE_HASH_MATCH (Tier 1)", async () => {
       dynamoMock.on(BatchWriteItemCommand).resolves({});
 
       const fingerprint: Fingerprint = {
@@ -412,16 +417,17 @@ describe("ProfileService", () => {
         fuzzy_hash: "fuzzy456",
       };
 
-      const count = await service.updateTier1IndexesWithEvidence(
+      const count = await service.updateIdentityIndexes(
         "dev_123",
         fingerprint,
         ["STABLE_HASH_MATCH"],
       );
 
-      expect(count).toBe(3);
+      // Only 1 identity entry (pubkey#)
+      expect(count).toBe(1);
     });
 
-    it("should write all indexes when evidence is SESSION_ANCHOR_BUCKET", async () => {
+    it("should write identity indexes when evidence is SESSION_ANCHOR_BUCKET", async () => {
       dynamoMock.on(BatchWriteItemCommand).resolves({});
 
       const fingerprint: Fingerprint = {
@@ -429,18 +435,17 @@ describe("ProfileService", () => {
         stable_hash: "stable123",
       };
 
-      const count = await service.updateTier1IndexesWithEvidence(
+      const count = await service.updateIdentityIndexes(
         "dev_123",
         fingerprint,
         ["SESSION_ANCHOR_BUCKET"],
       );
 
-      expect(count).toBe(2);
+      // Only 1 identity entry (evercookie#)
+      expect(count).toBe(1);
     });
 
-    it("should only write hash indexes when evidence is IP_JA4_BUCKET (Tier 2 unbounded)", async () => {
-      dynamoMock.on(BatchWriteItemCommand).resolves({});
-
+    it("should return 0 when evidence is IP_JA4_BUCKET (Tier 2 unbounded, not in allowed list)", async () => {
       const fingerprint: Fingerprint = {
         public_key: "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE...",
         evercookie_id: "cookie123",
@@ -449,45 +454,46 @@ describe("ProfileService", () => {
         fuzzy_hash: "fuzzy456",
       };
 
-      const count = await service.updateTier1IndexesWithEvidence(
+      const count = await service.updateIdentityIndexes(
         "dev_123",
         fingerprint,
         ["IP_JA4_BUCKET"],
       );
 
-      // Only hash indexes (stable, fuzzy) - NO identity indexes
-      expect(count).toBe(2);
-
-      const calls = dynamoMock.commandCalls(BatchWriteItemCommand);
-      expect(calls).toHaveLength(1);
-      const items =
-        calls[0].args[0].input.RequestItems?.[testConfig.tier1IndexTable];
-      const hashKeys = items?.map((item) => item.PutRequest?.Item?.hash_key?.S);
-      expect(hashKeys).toContain("stable#stable123");
-      expect(hashKeys).toContain("fuzzy#fuzzy456");
-      expect(hashKeys).not.toContain(expect.stringContaining("pubkey#"));
-      expect(hashKeys).not.toContain(expect.stringContaining("evercookie#"));
-      expect(hashKeys).not.toContain(expect.stringContaining("sigint#"));
+      // IP_JA4_BUCKET is not in ASSOCIATION_ALLOWED_EVIDENCE — no identity writes
+      expect(count).toBe(0);
     });
 
-    it("should only write hash indexes when evidence is GPU_SCREEN_TZ_BUCKET", async () => {
-      dynamoMock.on(BatchWriteItemCommand).resolves({});
-
+    it("should return 0 when evidence is GPU_SCREEN_TZ_BUCKET (Tier 2 unbounded)", async () => {
       const fingerprint: Fingerprint = {
         public_key: "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE...",
         stable_hash: "stable123",
       };
 
-      const count = await service.updateTier1IndexesWithEvidence(
+      const count = await service.updateIdentityIndexes(
         "dev_123",
         fingerprint,
         ["GPU_SCREEN_TZ_BUCKET"],
       );
 
+      expect(count).toBe(0);
+    });
+
+    it("should write identity indexes when evidence_codes is undefined (backward compat)", async () => {
+      dynamoMock.on(BatchWriteItemCommand).resolves({});
+
+      const fingerprint: Fingerprint = {
+        public_key: "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE...",
+        stable_hash: "stable123",
+      };
+
+      const count = await service.updateIdentityIndexes("dev_123", fingerprint);
+
+      // Only 1 identity entry (pubkey#)
       expect(count).toBe(1);
     });
 
-    it("should write all indexes when evidence_codes is undefined (backward compat)", async () => {
+    it("should write identity indexes when evidence_codes is empty array", async () => {
       dynamoMock.on(BatchWriteItemCommand).resolves({});
 
       const fingerprint: Fingerprint = {
@@ -495,43 +501,29 @@ describe("ProfileService", () => {
         stable_hash: "stable123",
       };
 
-      const count = await service.updateTier1IndexesWithEvidence(
-        "dev_123",
-        fingerprint,
-      );
-
-      expect(count).toBe(2);
-    });
-
-    it("should write all indexes when evidence_codes is empty array", async () => {
-      dynamoMock.on(BatchWriteItemCommand).resolves({});
-
-      const fingerprint: Fingerprint = {
-        public_key: "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE...",
-        stable_hash: "stable123",
-      };
-
-      const count = await service.updateTier1IndexesWithEvidence(
+      const count = await service.updateIdentityIndexes(
         "dev_123",
         fingerprint,
         [],
       );
 
-      expect(count).toBe(2);
+      // Only 1 identity entry (pubkey#)
+      expect(count).toBe(1);
     });
 
-    it("should return 0 when only identity fields present but evidence is Tier 2", async () => {
+    it("should return 0 when only hash fields present (no identity fields)", async () => {
       const fingerprint: Fingerprint = {
-        public_key: "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE...",
-        evercookie_id: "cookie123",
+        stable_hash: "stable123",
+        fuzzy_hash: "fuzzy456",
       };
 
-      const count = await service.updateTier1IndexesWithEvidence(
+      const count = await service.updateIdentityIndexes(
         "dev_123",
         fingerprint,
-        ["IP_JA4_BUCKET"],
+        ["PUBLIC_KEY_MATCH"],
       );
 
+      // No identity fields → no identity entries to write
       expect(count).toBe(0);
     });
   });
@@ -608,7 +600,8 @@ describe("ProfileService", () => {
       const result = await service.processProfileUpdate(payload);
 
       expect(result.skipped).toBe(false);
-      expect(result.tier1Writes).toBe(2);
+      // Only 1 identity entry (evercookie#) — stable_hash goes to PG device_hashes
+      expect(result.tier1Writes).toBe(1);
       expect(mockCache.tryAcquireMutationGate).toHaveBeenCalledWith("dev_new");
     });
 
@@ -646,7 +639,8 @@ describe("ProfileService", () => {
       const result = await service.processProfileUpdate(payload);
 
       expect(result.skipped).toBe(false);
-      expect(result.tier1Writes).toBe(1);
+      // No identity fields in fingerprint — only hash fields, which go to PG
+      expect(result.tier1Writes).toBe(0);
     });
   });
 

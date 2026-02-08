@@ -16,6 +16,7 @@ import {
   validateSessionResponse,
   type SessionResponse,
 } from "../../helpers/payload-schema";
+import { SessionCacheValue } from "../../types/matching";
 
 /**
  * Extracts and validates the session ID from the API Gateway event.
@@ -181,9 +182,8 @@ export async function fetchPayload(
  * }
  * ```
  */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function buildFallbackResponse(
-  session: any,
+  session: SessionCacheValue,
   sessionId: string,
   metrics: Metrics,
 ): APIGatewayProxyResultV2 {

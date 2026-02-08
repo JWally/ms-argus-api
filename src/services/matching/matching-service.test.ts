@@ -17,13 +17,10 @@ import {
   publicKeyLookup,
   cookieLookup,
   sigintIdLookup,
-  hashMatch,
-  simHashMatch,
   sessionAnchorLookup,
   ipUaAnchorLookup,
   loadProfile,
   type IndexLookupDeps,
-  type SimHashMatchDeps,
   type SessionAnchorDeps,
   type ProfileLoaderDeps,
 } from ".";
@@ -83,7 +80,6 @@ describe("MatchingService", () => {
   let mockCache: ReturnType<typeof createMockCacheService>;
   let service: MatchingService;
   let indexLookupDeps: IndexLookupDeps;
-  let _simHashDeps: SimHashMatchDeps;
   let _anchorDeps: SessionAnchorDeps;
   let profileDeps: ProfileLoaderDeps;
 
@@ -97,10 +93,6 @@ describe("MatchingService", () => {
     sqs = new SQSClient({});
 
     indexLookupDeps = { dynamodb, tier1IndexTable: testConfig.tier1IndexTable };
-    _simHashDeps = {
-      dynamodb,
-      tier2BucketsTable: testConfig.tier2BucketsTable,
-    };
     _anchorDeps = {
       dynamodb,
       tier2BucketsTable: testConfig.tier2BucketsTable,
@@ -285,91 +277,6 @@ describe("MatchingService", () => {
       const result = await publicKeyLookup(indexLookupDeps, publicKey);
       expect(result?.risk_score).toBe(0.3);
       expect(result?.flags).toEqual([]);
-    });
-  });
-
-  describe("hashMatch", () => {
-    it("should return null when no hash matches", async () => {
-      dynamoMock.on(GetItemCommand).resolves({ Item: undefined });
-
-      const fingerprint: Fingerprint = {
-        stable_hash: "stable123",
-        fuzzy_hash: "fuzzy456",
-      };
-
-      const result = await hashMatch(indexLookupDeps, fingerprint);
-      expect(result).toBeNull();
-    });
-
-    it("should match on stable_hash with 0.95 confidence", async () => {
-      dynamoMock.on(GetItemCommand).resolves({
-        Item: marshall({
-          hash_key: "stable#stable123",
-          device_id: "dev_stable",
-          risk_score: 0.25,
-        }),
-      });
-
-      const fingerprint: Fingerprint = { stable_hash: "stable123" };
-      const result = await hashMatch(indexLookupDeps, fingerprint);
-
-      expect(result).not.toBeNull();
-      expect(result?.device_id).toBe("dev_stable");
-      expect(result?.confidence).toBe(0.95);
-      expect(result?.match_tier).toBe(1);
-      expect(result?.evidence_codes).toEqual(["STABLE_HASH_MATCH"]);
-    });
-
-    it("should match on fuzzy_hash with 0.85 confidence when stable_hash not found", async () => {
-      dynamoMock
-        .on(GetItemCommand, {
-          TableName: testConfig.tier1IndexTable,
-          Key: {
-            hash_key: { S: "stable#stable123" },
-          },
-        })
-        .resolves({ Item: undefined })
-        .on(GetItemCommand, {
-          TableName: testConfig.tier1IndexTable,
-          Key: {
-            hash_key: { S: "fuzzy#fuzzy456" },
-          },
-        })
-        .resolves({
-          Item: marshall({
-            hash_key: "fuzzy#fuzzy456",
-            device_id: "dev_fuzzy",
-          }),
-        });
-
-      const fingerprint: Fingerprint = {
-        stable_hash: "stable123",
-        fuzzy_hash: "fuzzy456",
-      };
-
-      const result = await hashMatch(indexLookupDeps, fingerprint);
-
-      expect(result).not.toBeNull();
-      expect(result?.device_id).toBe("dev_fuzzy");
-      expect(result?.confidence).toBe(0.85);
-      expect(result?.evidence_codes).toEqual(["FUZZY_HASH_MATCH"]);
-    });
-
-    it("should prefer stable_hash over fuzzy_hash when both available", async () => {
-      dynamoMock.on(GetItemCommand).resolves({
-        Item: marshall({
-          hash_key: "stable#stable123",
-          device_id: "dev_stable",
-        }),
-      });
-
-      const fingerprint: Fingerprint = {
-        stable_hash: "stable123",
-        fuzzy_hash: "fuzzy456",
-      };
-
-      const result = await hashMatch(indexLookupDeps, fingerprint);
-      expect(result?.confidence).toBe(0.95);
     });
   });
 
@@ -589,25 +496,9 @@ describe("MatchingService", () => {
       expect(result.confidence).toBeCloseTo(0.99, 10);
     });
 
-    it("should fall through to Tier 1 when evercookie not found", async () => {
-      dynamoMock
-        .on(GetItemCommand, {
-          Key: {
-            hash_key: { S: "evercookie#cookie123" },
-          },
-        })
-        .resolves({ Item: undefined })
-        .on(GetItemCommand, {
-          Key: {
-            hash_key: { S: "stable#stable456" },
-          },
-        })
-        .resolves({
-          Item: marshall({
-            hash_key: "stable#stable456",
-            device_id: "dev_stable",
-          }),
-        });
+    it("should fall through to new device when identity fails and no PG pool", async () => {
+      dynamoMock.on(GetItemCommand).resolves({ Item: undefined });
+      dynamoMock.on(QueryCommand).resolves({ Items: [] });
 
       const fingerprint: Fingerprint = {
         evercookie_id: "cookie123",
@@ -615,7 +506,9 @@ describe("MatchingService", () => {
       };
 
       const { result } = await service.runTieredMatching(fingerprint);
-      expect(result.match_tier).toBe(1);
+      // No PG pool configured → skips T1/T1.5 → falls through to new device
+      expect(result.is_new_device).toBe(true);
+      expect(result.match_tier).toBe(-1);
     });
 
     it("should create new device when all tiers fail", async () => {
@@ -1224,29 +1117,17 @@ describe("MatchingService anchor recency sorting", () => {
 
 describe("Tier function direct calls", () => {
   let dynamodb: DynamoDBClient;
-  let simHashDeps: SimHashMatchDeps;
   let anchorDeps: SessionAnchorDeps;
 
   beforeEach(() => {
     dynamoMock.reset();
     sqsMock.reset();
     dynamodb = new DynamoDBClient({});
-    simHashDeps = { dynamodb, tier2BucketsTable: testConfig.tier2BucketsTable };
     anchorDeps = {
       dynamodb,
       tier2BucketsTable: testConfig.tier2BucketsTable,
       profilesTable: testConfig.profilesTable,
     };
-  });
-
-  describe("simHashMatch", () => {
-    it("should return null when no SimHash match found", async () => {
-      dynamoMock.on(QueryCommand).resolves({ Items: [] });
-
-      const fingerprint: Fingerprint = { fuzzy_hash: "abcdef1234567890" };
-      const result = await simHashMatch(simHashDeps, fingerprint);
-      expect(result).toBeNull();
-    });
   });
 
   describe("sessionAnchorLookup", () => {

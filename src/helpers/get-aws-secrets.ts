@@ -116,14 +116,15 @@ export const getVersionedSecrets = async (): Promise<VersionedSecrets> => {
   const isCacheValid =
     cachedSecrets && Date.now() - cacheTimestamp < KEY_CACHE_DURATION;
 
-  if (isCacheValid) {
-    return cachedSecrets!;
+  if (isCacheValid && cachedSecrets) {
+    return cachedSecrets;
   }
 
   try {
     const command = new GetSecretValueCommand({ SecretId: secretKeyArn });
     const data = await client.send(command);
-    const secret = JSON.parse(data.SecretString!) as
+    if (!data.SecretString) throw new Error("Secret value is empty");
+    const secret = JSON.parse(data.SecretString) as
       | VersionedSecrets
       | LegacySecrets;
     cachedSecrets = parseSecretResponse(secret);

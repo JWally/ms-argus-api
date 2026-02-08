@@ -326,7 +326,7 @@ export const FINGERPRINT_DEFINITIONS: Record<string, FingerprintDefinition> = {
    * Timezone for Country
    *
    * Low cardinality - timezone IDs per browser+country combo.
-   * Subsumes rule-based IP_TIMEZONE_MISMATCH with nuance:
+   * Catches spoofed timezone with nuance:
    * Atlantic/Reykjavik from Chrome/US → rare → flagged.
    * America/New_York from Chrome/US → common → pass.
    * Grouped by UA identity + country to detect TZ spoofing per browser.
@@ -355,7 +355,7 @@ export const FINGERPRINT_DEFINITIONS: Record<string, FingerprintDefinition> = {
     source: "device",
     anomalyCode: "RARE_ENGINE_COMBO",
     fieldName: "js_engine",
-    groupBy: "consoleErrors.layoutEngine",
+    groupBy: [...DEFAULT_GROUP_BY, "consoleErrors.layoutEngine"],
     maxSurpriseBits: 6,
     saturationThreshold: 50,
     anomalyThreshold: 0.4,
@@ -373,6 +373,130 @@ export const FINGERPRINT_DEFINITIONS: Record<string, FingerprintDefinition> = {
     source: "device",
     anomalyCode: "RARE_ENGINE_FOR_UA",
     fieldName: "resistance_engine",
+    groupBy: DEFAULT_GROUP_BY,
+    maxSurpriseBits: 6,
+    saturationThreshold: 50,
+    anomalyThreshold: 0.4,
+    confidenceThreshold: 0.2,
+  },
+
+  /**
+   * CSS Computed Style Key Count
+   *
+   * Low cardinality - Firefox ~1089 keys, Chrome ~550.
+   * Wrong count for claimed browser = wrong engine.
+   */
+  css_key_count: {
+    path: "css.computedStyle.keys.$len",
+    source: "device",
+    anomalyCode: "RARE_CSS_KEY_COUNT_FOR_UA",
+    fieldName: "css_key_count",
+    groupBy: DEFAULT_GROUP_BY,
+    transform: (value: unknown): string | null => {
+      if (typeof value !== "number" || !Number.isFinite(value)) return null;
+      return String(value);
+    },
+    maxSurpriseBits: 6,
+    saturationThreshold: 50,
+    anomalyThreshold: 0.4,
+    confidenceThreshold: 0.2,
+  },
+
+  /**
+   * CSS Interface Name
+   *
+   * Very low cardinality - `CSS2Properties` = Firefox, `CSSStyleDeclaration` = Chrome/Safari.
+   * Mismatch with claimed UA = engine spoofing.
+   */
+  css_interface: {
+    path: "css.computedStyle.interfaceName",
+    source: "device",
+    anomalyCode: "RARE_CSS_IFACE_FOR_UA",
+    fieldName: "css_interface",
+    groupBy: DEFAULT_GROUP_BY,
+    maxSurpriseBits: 6,
+    saturationThreshold: 50,
+    anomalyThreshold: 0.4,
+    confidenceThreshold: 0.2,
+  },
+
+  /**
+   * Navigator Vendor
+   *
+   * Very low cardinality - `""` = Firefox, `"Google Inc."` = Chrome, `"Apple Computer, Inc."` = Safari.
+   * Wrong vendor for claimed UA = spoofing.
+   */
+  nav_vendor: {
+    path: "navigator.vendor",
+    source: "device",
+    anomalyCode: "RARE_VENDOR_FOR_UA",
+    fieldName: "nav_vendor",
+    groupBy: DEFAULT_GROUP_BY,
+    maxSurpriseBits: 6,
+    saturationThreshold: 50,
+    anomalyThreshold: 0.4,
+    confidenceThreshold: 0.2,
+  },
+
+  /**
+   * Window Feature Prefixes
+   *
+   * Low cardinality - moz/webkit/apple prefix counts are engine-specific.
+   * Chrome has webkit-prefixed APIs, Firefox has moz-prefixed APIs.
+   */
+  feature_prefixes: {
+    path: "windowFeatures",
+    source: "device",
+    anomalyCode: "RARE_FEATURE_PREFIX_FOR_UA",
+    fieldName: "feature_prefixes",
+    groupBy: DEFAULT_GROUP_BY,
+    transform: (value: unknown): string | null => {
+      if (value === null || typeof value !== "object") return null;
+      const obj = value as Record<string, unknown>;
+      const moz = typeof obj.moz === "number" ? obj.moz : 0;
+      const webkit = typeof obj.webkit === "number" ? obj.webkit : 0;
+      const apple = typeof obj.apple === "number" ? obj.apple : 0;
+      return `moz:${moz},webkit:${webkit},apple:${apple}`;
+    },
+    maxSurpriseBits: 6,
+    saturationThreshold: 50,
+    anomalyThreshold: 0.4,
+    confidenceThreshold: 0.2,
+  },
+
+  /**
+   * Timing Resolution
+   *
+   * Very low cardinality - Firefox = 1ms (privacy), Chrome = sub-ms.
+   * Wrong resolution for claimed browser = spoofing.
+   */
+  timing_resolution: {
+    path: "timing.resolution",
+    source: "device",
+    anomalyCode: "RARE_TIMING_FOR_UA",
+    fieldName: "timing_resolution",
+    groupBy: DEFAULT_GROUP_BY,
+    transform: (value: unknown): string | null => {
+      if (typeof value !== "number" || !Number.isFinite(value)) return null;
+      return String(value);
+    },
+    maxSurpriseBits: 6,
+    saturationThreshold: 50,
+    anomalyThreshold: 0.4,
+    confidenceThreshold: 0.2,
+  },
+
+  /**
+   * WebGL Vendor
+   *
+   * Very low cardinality - `"Mozilla"` = Firefox, `"WebKit"` = Chrome/Safari.
+   * Wrong vendor for claimed browser = engine spoofing.
+   */
+  webgl_vendor: {
+    path: "canvasWebgl.parameters.VENDOR",
+    source: "device",
+    anomalyCode: "RARE_WEBGL_VENDOR_FOR_UA",
+    fieldName: "webgl_vendor",
     groupBy: DEFAULT_GROUP_BY,
     maxSurpriseBits: 6,
     saturationThreshold: 50,

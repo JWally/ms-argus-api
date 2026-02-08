@@ -119,11 +119,9 @@ export class ValkeyConstruct extends Construct {
     // CLOUDWATCH ALARMS
     // =========================================================================
 
-    this.createAlarms(
-      stackName,
-      serverlessCache.serverlessCacheName!,
-      alarmsTopic,
-    );
+    const cacheName = serverlessCache.serverlessCacheName;
+    if (!cacheName) throw new Error("Serverless cache missing name");
+    this.createAlarms(stackName, cacheName, alarmsTopic);
 
     // =========================================================================
     // OUTPUTS
@@ -140,15 +138,14 @@ export class ValkeyConstruct extends Construct {
     cacheName: string,
     alarmsTopic: sns.ITopic,
   ): void {
-    // Note: ElastiCache Serverless metrics use the cache name as a dimension
-    // Metric namespace is AWS/ElastiCache
+    const ELASTICACHE_NS = "AWS/ElastiCache";
 
     // 1. High CPU utilization alarm
     const cpuAlarm = new cloudwatch.Alarm(this, "ValkeyCpuHigh", {
       alarmName: `${stackName}-valkey-cpu-high`,
       alarmDescription: "Valkey CPU utilization > 80%",
       metric: new cloudwatch.Metric({
-        namespace: "AWS/ElastiCache",
+        namespace: ELASTICACHE_NS,
         metricName: "CPUUtilization",
         dimensionsMap: {
           CacheClusterId: cacheName,
@@ -168,7 +165,7 @@ export class ValkeyConstruct extends Construct {
       alarmName: `${stackName}-valkey-memory-high`,
       alarmDescription: "Valkey memory utilization > 80%",
       metric: new cloudwatch.Metric({
-        namespace: "AWS/ElastiCache",
+        namespace: ELASTICACHE_NS,
         metricName: "DatabaseMemoryUsagePercentage",
         dimensionsMap: {
           CacheClusterId: cacheName,
@@ -191,7 +188,7 @@ export class ValkeyConstruct extends Construct {
         alarmName: `${stackName}-valkey-connection-errors`,
         alarmDescription: "Valkey connection errors detected",
         metric: new cloudwatch.Metric({
-          namespace: "AWS/ElastiCache",
+          namespace: ELASTICACHE_NS,
           metricName: "CurrConnections",
           dimensionsMap: {
             CacheClusterId: cacheName,
@@ -215,7 +212,7 @@ export class ValkeyConstruct extends Construct {
       alarmDescription:
         "Valkey ECPU throttling detected - consider increasing limits",
       metric: new cloudwatch.Metric({
-        namespace: "AWS/ElastiCache",
+        namespace: ELASTICACHE_NS,
         metricName: "ThrottledCmds",
         dimensionsMap: {
           CacheClusterId: cacheName,

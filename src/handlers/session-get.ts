@@ -34,8 +34,8 @@ function getEnvConfig(): SessionGetEnvConfig {
   validateRequiredEnvVars(["SESSION_CACHE_TABLE", "SESSION_PAYLOAD_TABLE"]);
 
   return {
-    SESSION_CACHE_TABLE: process.env.SESSION_CACHE_TABLE!,
-    SESSION_PAYLOAD_TABLE: process.env.SESSION_PAYLOAD_TABLE!,
+    SESSION_CACHE_TABLE: process.env.SESSION_CACHE_TABLE as string,
+    SESSION_PAYLOAD_TABLE: process.env.SESSION_PAYLOAD_TABLE as string,
     VECTOR_RESULTS_TABLE: process.env.VECTOR_RESULTS_TABLE,
     POWERTOOLS_SERVICE_NAME:
       process.env.POWERTOOLS_SERVICE_NAME ?? "argus-session-get",

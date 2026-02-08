@@ -8,10 +8,6 @@
 export * from "./types";
 export { detectAllAnomalies } from "./detector";
 export {
-  fetchNetworkBaselineContext,
-  type NetworkBaselineDetectorContext,
-} from "./network-baseline-detector";
-export {
   fetchStatisticalContextV2,
   type StatisticalContextV2,
 } from "./statistical-v2";

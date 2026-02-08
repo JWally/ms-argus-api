@@ -45,6 +45,12 @@ interface WorkersConstructProps {
   vectorWorkerArn?: string;
   /** Optional: Qdrant collection name for fingerprint vectors. Defaults to 'fingerprints'. */
   vectorCollection?: string;
+  /** Optional: PostgreSQL endpoint for SimHash matching. */
+  postgresEndpoint?: string;
+  /** Optional: PostgreSQL credentials secret ARN. */
+  postgresSecretArn?: string;
+  /** Optional: PostgreSQL database name. */
+  postgresDatabaseName?: string;
   /** Optional: Valkey endpoint for statistical anomaly detection. */
   valkeyEndpoint?: string;
   /** Optional: Security group for Valkey access. */
@@ -174,9 +180,6 @@ export class WorkersConstruct extends Construct {
         PROFILE_QUEUE_URL: profileQueue.queueUrl,
 
         OBSERVATIONS_STREAM_NAME: observationsDeliveryStreamName,
-        // AR-XXX: SimHash LSH Tier 1.5 - same-browser drift detection
-        SIMHASH_ENABLED: "true",
-        SIMHASH_SHADOW: "false", // Set to "true" to log without affecting matching
         // Vector search for Tier 2 (replaces compound buckets when enabled)
         ...(vectorWorkerArn && {
           VECTOR_WORKER_ARN: vectorWorkerArn,
@@ -186,6 +189,13 @@ export class WorkersConstruct extends Construct {
         ...(payloadArchiveBucket && {
           PAYLOAD_ARCHIVE_BUCKET: payloadArchiveBucket.bucketName,
           PAYLOAD_ARCHIVE_SAMPLE_RATE: stage === "prod" ? "0" : "1.0",
+        }),
+        // PostgreSQL configuration for T1/T1.5 matching (device_hashes table)
+        ...(props.postgresEndpoint && {
+          POSTGRES_HOST: props.postgresEndpoint,
+          POSTGRES_PORT: "5432",
+          POSTGRES_DB: props.postgresDatabaseName as string,
+          POSTGRES_SECRET_ARN: props.postgresSecretArn as string,
         }),
         // Valkey configuration for statistical anomaly detection
         ...(valkeyEndpoint && {
@@ -197,13 +207,6 @@ export class WorkersConstruct extends Construct {
           ),
           STATISTICAL_DISTINCT_THRESHOLD: String(
             stageConfig?.valkey.distinctThreshold ?? 50,
-          ),
-          // Network baseline anomaly detection
-          NETWORK_BASELINE_ENABLED: String(
-            stageConfig?.valkey.networkBaseline?.enabled ?? false,
-          ),
-          NETWORK_BASELINE_THRESHOLD: String(
-            stageConfig?.valkey.networkBaseline?.threshold ?? 0.5,
           ),
           // Global sampling rate for baseline counters (1.0 = every request, 0.01 = 1%)
           GLOBAL_SAMPLE_RATE: String(
@@ -265,11 +268,32 @@ export class WorkersConstruct extends Construct {
       );
     }
 
+    // Grant Secrets Manager read for PostgreSQL credentials
+    if (props.postgresSecretArn) {
+      const pgSecret = secretsmanager.Secret.fromSecretCompleteArn(
+        this,
+        "PgSecretMatching",
+        props.postgresSecretArn,
+      );
+      pgSecret.grantRead(this.matchingWorker);
+    }
+
     // =====================================
     // PROFILE UPDATER LAMBDA
     // =====================================
+    // VPC configuration for profile updater (required for PostgreSQL access)
+    const profileUpdaterVpcConfig =
+      vpc && lambdaSecurityGroup && props.postgresEndpoint
+        ? {
+            vpc,
+            vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
+            securityGroups: [lambdaSecurityGroup],
+          }
+        : {};
+
     this.profileUpdater = new lambda.NodejsFunction(this, "ProfileUpdater", {
       ...commonConfig,
+      ...profileUpdaterVpcConfig,
       entry: path.join(__dirname, "../../src/handlers/profile-updater.ts"),
       functionName: `${stackName}-profile-updater`,
       memorySize: config.lambda.profile.memorySize,
@@ -283,10 +307,15 @@ export class WorkersConstruct extends Construct {
         PROFILES_TABLE: profilesTable.tableName,
         TIER1_INDEX_TABLE: tier1IndexTable.tableName,
         TIER2_BUCKETS_TABLE: tier2BucketsTable.tableName,
-        // AR-XXX: SimHash LSH Tier 1.5 - writes band entries when enabled
-        SIMHASH_ENABLED: "true",
         // Optional: Vector queue for Qdrant embeddings (feature flag)
         ...(vectorQueue && { VECTOR_QUEUE_URL: vectorQueue.queueUrl }),
+        // PostgreSQL configuration for device_hashes writes (T1/T1.5)
+        ...(props.postgresEndpoint && {
+          POSTGRES_HOST: props.postgresEndpoint,
+          POSTGRES_PORT: "5432",
+          POSTGRES_DB: props.postgresDatabaseName as string,
+          POSTGRES_SECRET_ARN: props.postgresSecretArn as string,
+        }),
       },
     });
 
@@ -311,6 +340,16 @@ export class WorkersConstruct extends Construct {
     // Optional: Grant send permission to vector queue for Qdrant embeddings
     if (vectorQueue) {
       vectorQueue.grantSendMessages(this.profileUpdater);
+    }
+
+    // Grant Secrets Manager read for PostgreSQL credentials
+    if (props.postgresSecretArn) {
+      const pgSecret = secretsmanager.Secret.fromSecretCompleteArn(
+        this,
+        "PgSecretProfile",
+        props.postgresSecretArn,
+      );
+      pgSecret.grantRead(this.profileUpdater);
     }
 
     // =====================================
@@ -383,10 +422,6 @@ export class WorkersConstruct extends Construct {
       alarmsTopic,
       config.alarms.newDeviceAnomalyStdDev,
     );
-
-    // AR-XXX: SimHash LSH Tier 1.5 alarms
-    // Monitor performance and quality of same-browser drift matching
-    this.createSimHashAlarms(stackName, alarmsTopic);
 
     // =====================================
 
@@ -598,99 +633,5 @@ export class WorkersConstruct extends Construct {
       treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
     });
     alarm.addAlarmAction(new actions.SnsAction(alarmsTopic));
-  }
-
-  /**
-   * AR-XXX: Create alarms for SimHash LSH Tier 1.5 matching
-   * Monitors performance and quality of same-browser drift detection
-   */
-  private createSimHashAlarms(
-    stackName: string,
-    alarmsTopic: sns.ITopic,
-  ): void {
-    const namespace = "Argus";
-
-    // 1. SimHash Latency High - P99 > 100ms over 5 min
-    // Indicates DynamoDB band query performance issues
-    const latencyAlarm = new cloudwatch.Alarm(this, "SimHashLatencyHigh", {
-      alarmName: `${stackName}-simhash-latency-high`,
-      alarmDescription:
-        "SimHash P99 latency > 100ms - check DynamoDB throttling or band distribution",
-      metric: new cloudwatch.Metric({
-        namespace,
-        metricName: "SimHash.BandQueryLatencyMs",
-        statistic: "p99",
-        period: Duration.minutes(5),
-      }),
-      threshold: 100,
-      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
-      evaluationPeriods: 1,
-      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
-    });
-    latencyAlarm.addAlarmAction(new actions.SnsAction(alarmsTopic));
-
-    // 2. Candidate Explosion - Avg > 50 candidates over 5 min
-    // Indicates hot bands or need to add more bands
-    const candidateAlarm = new cloudwatch.Alarm(
-      this,
-      "SimHashCandidateExplosion",
-      {
-        alarmName: `${stackName}-simhash-candidate-explosion`,
-        alarmDescription:
-          "SimHash avg candidates > 50 - consider adding bands or tightening thresholds",
-        metric: new cloudwatch.Metric({
-          namespace,
-          metricName: "SimHash.CandidatesPerQuery",
-          statistic: "Average",
-          period: Duration.minutes(5),
-        }),
-        threshold: 50,
-        comparisonOperator:
-          cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
-        evaluationPeriods: 1,
-        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
-      },
-    );
-    candidateAlarm.addAlarmAction(new actions.SnsAction(alarmsTopic));
-
-    // 3. Bypass Rate High - > 5% of requests bypassed over 15 min
-    // Indicates consistent latency issues causing automatic bypass
-    // Use math expression: bypass / (bypass + hits) > 0.05
-    const bypassAlarm = new cloudwatch.Alarm(this, "SimHashBypassRateHigh", {
-      alarmName: `${stackName}-simhash-bypass-rate-high`,
-      alarmDescription:
-        "SimHash bypass rate > 5% - tier is slow and failing open too often",
-      metric: new cloudwatch.Metric({
-        namespace,
-        metricName: "SimHash.LatencyBypass",
-        statistic: "Sum",
-        period: Duration.minutes(15),
-      }),
-      // Alert if more than 50 bypasses in 15 minutes
-      // (more pragmatic than percentage for initial deployment)
-      threshold: 50,
-      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
-      evaluationPeriods: 1,
-      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
-    });
-    bypassAlarm.addAlarmAction(new actions.SnsAction(alarmsTopic));
-
-    // 4. SimHash Error Rate - any errors indicate bugs
-    const errorAlarm = new cloudwatch.Alarm(this, "SimHashError", {
-      alarmName: `${stackName}-simhash-error`,
-      alarmDescription:
-        "SimHash tier throwing errors - failing open but needs investigation",
-      metric: new cloudwatch.Metric({
-        namespace,
-        metricName: "SimHash.Error",
-        statistic: "Sum",
-        period: Duration.minutes(5),
-      }),
-      threshold: 0,
-      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
-      evaluationPeriods: 2,
-      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
-    });
-    errorAlarm.addAlarmAction(new actions.SnsAction(alarmsTopic));
   }
 }

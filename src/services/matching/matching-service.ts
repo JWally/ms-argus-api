@@ -4,7 +4,9 @@ import { SQSClient, SendMessageCommand } from "@aws-sdk/client-sqs";
 import { LambdaClient } from "@aws-sdk/client-lambda";
 import { Logger } from "@aws-lambda-powertools/logger";
 import { Metrics } from "@aws-lambda-powertools/metrics";
+import type { Pool } from "pg";
 import { DynamoCacheService } from "../cache";
+import { pgUnifiedMatch } from "../postgres";
 import { Fingerprint, FingerprintPayload, MatchResult } from "./types";
 import { MatchTier } from "../../types/matching-tiers";
 import {
@@ -23,10 +25,8 @@ import {
   publicKeyLookup,
   cookieLookup,
   sigintIdLookup,
-  hashMatch,
   IndexLookupDeps,
 } from "./index-lookup";
-import { simHashMatch, SimHashMatchDeps } from "./simhash-match";
 import {
   vectorMatchWithTimeout,
   upsertDeviceVector,
@@ -57,25 +57,24 @@ export interface MatchingServiceDeps {
   lambda?: LambdaClient;
   logger?: Logger;
   metrics?: Metrics;
+  /** PostgreSQL pool for T1/T1.5 matching (required for hash + SimHash) */
+  pgPool?: Pool;
 }
 
 export class MatchingService {
   private cacheDeps: SessionCacheDeps;
   private indexLookupDeps: IndexLookupDeps;
-  private simHashDeps: SimHashMatchDeps;
   private vectorDeps: VectorMatchDeps | null;
   private anchorDeps: SessionAnchorDeps;
   private readonly useVectorSearch: boolean;
+  private readonly pgPool: Pool | null;
 
   constructor(private deps: MatchingServiceDeps) {
+    this.pgPool = deps.pgPool ?? null;
     this.cacheDeps = { cache: deps.cache };
     this.indexLookupDeps = {
       dynamodb: deps.dynamodb,
       tier1IndexTable: deps.config.tier1IndexTable,
-    };
-    this.simHashDeps = {
-      dynamodb: deps.dynamodb,
-      tier2BucketsTable: deps.config.tier2BucketsTable,
     };
     this.anchorDeps = {
       dynamodb: deps.dynamodb,
@@ -83,25 +82,21 @@ export class MatchingService {
       profilesTable: deps.config.profilesTable,
     };
 
-    this.useVectorSearch = !!(
-      deps.config.vectorWorkerArn &&
-      deps.config.vectorCollection &&
-      deps.lambda &&
-      deps.logger &&
-      deps.metrics
-    );
-
-    if (this.useVectorSearch) {
+    const { vectorWorkerArn, vectorCollection } = deps.config;
+    const { lambda, logger, metrics } = deps;
+    if (vectorWorkerArn && vectorCollection && lambda && logger && metrics) {
+      this.useVectorSearch = true;
       this.vectorDeps = {
-        lambda: deps.lambda!,
+        lambda,
         dynamodb: deps.dynamodb,
-        vectorWorkerArn: deps.config.vectorWorkerArn!,
-        collection: deps.config.vectorCollection!,
+        vectorWorkerArn,
+        collection: vectorCollection,
         profilesTable: deps.config.profilesTable,
-        logger: deps.logger!,
-        metrics: deps.metrics!,
+        logger,
+        metrics,
       };
     } else {
+      this.useVectorSearch = false;
       this.vectorDeps = null;
     }
   }
@@ -150,18 +145,18 @@ export class MatchingService {
     };
   }
 
-  /** Waterfall: identity → hash → simhash → vector → anchors → new device */
+  /** Waterfall: identity → PG unified (hash + simhash) → vector → anchors → new device */
   async runTieredMatching(
     fingerprint: Fingerprint,
   ): Promise<{ result: MatchResult; tier2TimedOut: boolean }> {
     const identityResult = await this.runIdentityLookups(fingerprint);
     if (identityResult) return this.wrapResult(identityResult, fingerprint);
 
-    const hashResult = await hashMatch(this.indexLookupDeps, fingerprint);
-    if (hashResult) return this.wrapResult(hashResult, fingerprint);
-
-    const simHashResult = await simHashMatch(this.simHashDeps, fingerprint);
-    if (simHashResult) return this.wrapResult(simHashResult, fingerprint);
+    // T1 + T1.5: unified PostgreSQL query (stable hash + SimHash LSH)
+    if (this.pgPool) {
+      const pgResult = await pgUnifiedMatch(this.pgPool, fingerprint);
+      if (pgResult) return this.wrapResult(pgResult, fingerprint);
+    }
 
     // Tier 2: Vector similarity search (requires vector infrastructure)
     let tier2Result: MatchResult | null = null;
@@ -210,14 +205,14 @@ export class MatchingService {
     idempotencyKey: string;
     anomalies?: SessionAnomalySignal[];
   }): Promise<boolean> {
-    return cacheWriteMatchResult(this.cacheDeps, params);
+    return cacheWriteMatchResult(this.cacheDeps, params); // eslint-disable-line no-restricted-syntax
   }
 
   writeDegradedResult(
     sessionId: string,
     idempotencyKey: string,
   ): Promise<boolean> {
-    return cacheWriteDegradedResult(this.cacheDeps, sessionId, idempotencyKey);
+    return cacheWriteDegradedResult(this.cacheDeps, sessionId, idempotencyKey); // eslint-disable-line no-restricted-syntax
   }
 
   async queueProfileUpdate(

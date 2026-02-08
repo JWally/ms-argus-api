@@ -117,29 +117,3 @@ export const SIMHASH_CONFIG = {
   /** Last-seen recency window in days for loose Hamming threshold (>1 bit) */
   RECENCY_WINDOW_DAYS: 30,
 } as const;
-
-/**
- * SimHash Feature Flags - runtime configuration via environment variables
- * Provides kill switch, shadow mode, and gradual rollout controls
- */
-export const getSimHashFlags = () => ({
-  /** Master enable/disable (kill switch) */
-  ENABLED: process.env.SIMHASH_ENABLED === "true",
-  /** Shadow mode - compute and log but don't use result for matching */
-  SHADOW_MODE: process.env.SIMHASH_SHADOW === "true",
-  /** Percentage rollout (0-100) for gradual enablement */
-  ROLLOUT_PERCENT: parseInt(process.env.SIMHASH_ROLLOUT || "100", 10),
-  /** Automatic bypass if tier query exceeds this latency (ms) */
-  LATENCY_BYPASS_MS: parseInt(process.env.SIMHASH_LATENCY_BYPASS || "150", 10),
-  /** Override Hamming threshold from env (for tuning without redeploy) */
-  HAMMING_THRESHOLD: parseInt(
-    process.env.SIMHASH_HAMMING_THRESHOLD ||
-      String(SIMHASH_CONFIG.HAMMING_THRESHOLD),
-    10,
-  ),
-  /** Override max candidates from env */
-  MAX_CANDIDATES: parseInt(
-    process.env.SIMHASH_MAX_CANDIDATES || String(SIMHASH_CONFIG.MAX_CANDIDATES),
-    10,
-  ),
-});

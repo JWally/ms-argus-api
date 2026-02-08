@@ -17,8 +17,9 @@ import { CloudFrontWafConstruct } from "../constructs/cloudfront";
 import { AnalyticsConstruct } from "../constructs/analytics";
 import { VectorWorkerConstruct } from "../constructs/vector-worker";
 import { ValkeyConstruct } from "../constructs/valkey";
+import { PostgresConstruct } from "../constructs/postgres";
 import { ArgusVpc } from "../constructs/vpc";
-import { getStageConfig } from "../config";
+import { getStageConfig, StageConfig } from "../config";
 
 interface ArgusApiStackProps extends cdk.StackProps {
   environment: string;
@@ -154,30 +155,19 @@ export class ArgusApiStack extends cdk.Stack {
     const stageConfig = getStageConfig(stage);
 
     // =========================================================================
-    // VALKEY (Optional - for statistical anomaly detection)
+    // VPC-DEPENDENT INFRASTRUCTURE (Valkey, PostgreSQL)
     // =========================================================================
-    // ElastiCache Serverless with Valkey engine for tracking fingerprint combo frequencies
-    // Uses HyperLogLog for cardinality estimation
-    // Only deploy if valkey.enabled in stage config
 
-    let valkey: ValkeyConstruct | undefined;
-    let argusVpc: ArgusVpc | undefined;
+    const { argusVpc, valkey, postgres } = this.createVpcInfrastructure({
+      environment,
+      stackName,
+      stage,
+      stageConfig,
+      alarmsTopic,
+    });
 
-    if (stageConfig.valkey.enabled) {
-      // Import shared VPC from ms-argus-infra
-      argusVpc = new ArgusVpc(this, "ArgusVpc", {
-        environment,
-      });
-
-      valkey = new ValkeyConstruct(this, "Valkey", {
-        stackName,
-        stage,
-        stageConfig,
-        alarmsTopic,
-        vpc: argusVpc.vpc,
-        lambdaSecurityGroup: argusVpc.lambdaSecurityGroup,
-      });
-    }
+    const deliveryStreamName = analytics.deliveryStream
+      .deliveryStreamName as string;
 
     // =========================================================================
     // COMPUTE LAYER
@@ -210,8 +200,7 @@ export class ArgusApiStack extends cdk.Stack {
       sessionCacheTable: dynamodb.sessionCacheTable,
       sessionPayloadTable: dynamodb.sessionPayloadTable, // AR-XXX: Full payload for gRPC stub
       vectorResultsTable: dynamodb.vectorResultsTable, // Vector search results
-      observationsDeliveryStreamName:
-        analytics.deliveryStream.deliveryStreamName!,
+      observationsDeliveryStreamName: deliveryStreamName,
       // Vector queue for Qdrant embeddings (enabled)
       vectorQueue: vectorWorker?.vectorQueue,
       // Vector results queue for search result writes
@@ -221,6 +210,10 @@ export class ArgusApiStack extends cdk.Stack {
       vectorCollection: "fingerprints",
 
       payloadArchiveBucket: analytics.payloadArchiveBucket,
+      // PostgreSQL configuration for SimHash matching
+      postgresEndpoint: postgres?.endpoint,
+      postgresSecretArn: postgres?.secret.secretArn,
+      postgresDatabaseName: postgres?.databaseName,
       // Valkey configuration for statistical anomaly detection
       valkeyEndpoint: valkey?.endpoint,
       valkeySecurityGroup: valkey?.securityGroup,
@@ -359,7 +352,7 @@ export class ArgusApiStack extends cdk.Stack {
     });
 
     new cdk.CfnOutput(this, "ObservationsDeliveryStreamName", {
-      value: analytics.deliveryStream.deliveryStreamName!,
+      value: deliveryStreamName,
       description: "Firehose delivery stream for observations",
     });
 
@@ -373,6 +366,19 @@ export class ArgusApiStack extends cdk.Stack {
       new cdk.CfnOutput(this, "ValkeyEndpoint", {
         value: valkey.endpoint,
         description: "ElastiCache Serverless (Valkey) endpoint",
+      });
+    }
+
+    // Postgres outputs (conditional)
+    if (postgres) {
+      new cdk.CfnOutput(this, "PostgresEndpoint", {
+        value: postgres.endpoint,
+        description: "RDS PostgreSQL endpoint",
+      });
+
+      new cdk.CfnOutput(this, "PostgresSecretArn", {
+        value: postgres.secret.secretArn,
+        description: "RDS PostgreSQL credentials secret ARN",
       });
     }
 
@@ -409,5 +415,58 @@ export class ArgusApiStack extends cdk.Stack {
         });
       }
     }
+  }
+
+  /**
+   * Creates VPC-dependent infrastructure: Valkey and PostgreSQL.
+   * Both share the same VPC imported from ms-argus-infra.
+   */
+  private createVpcInfrastructure(params: {
+    environment: string;
+    stackName: string;
+    stage: string;
+    stageConfig: StageConfig;
+    alarmsTopic: sns.ITopic;
+  }): {
+    argusVpc: ArgusVpc | undefined;
+    valkey: ValkeyConstruct | undefined;
+    postgres: PostgresConstruct | undefined;
+  } {
+    const { environment, stackName, stage, stageConfig, alarmsTopic } = params;
+
+    let argusVpc: ArgusVpc | undefined;
+    let valkey: ValkeyConstruct | undefined;
+    let postgres: PostgresConstruct | undefined;
+
+    const needsVpc = stageConfig.valkey.enabled || stageConfig.rds.enabled;
+    if (needsVpc) {
+      argusVpc = new ArgusVpc(this, "ArgusVpc", { environment });
+    }
+
+    if (stageConfig.valkey.enabled) {
+      if (!argusVpc) throw new Error("VPC required for Valkey");
+      valkey = new ValkeyConstruct(this, "Valkey", {
+        stackName,
+        stage,
+        stageConfig,
+        alarmsTopic,
+        vpc: argusVpc.vpc,
+        lambdaSecurityGroup: argusVpc.lambdaSecurityGroup,
+      });
+    }
+
+    if (stageConfig.rds.enabled) {
+      if (!argusVpc) throw new Error("VPC required for Postgres");
+      postgres = new PostgresConstruct(this, "Postgres", {
+        stackName,
+        stage,
+        stageConfig,
+        alarmsTopic,
+        vpc: argusVpc.vpc,
+        lambdaSecurityGroup: argusVpc.lambdaSecurityGroup,
+      });
+    }
+
+    return { argusVpc, valkey, postgres };
   }
 }

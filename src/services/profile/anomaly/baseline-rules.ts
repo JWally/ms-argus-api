@@ -71,51 +71,36 @@ export function buildRuleContext(
   };
 }
 
-/**
- * Detect mismatch between navigator.userAgent and worker scope userAgents.
- *
- * Compares `device.navigator.userAgent` against each available worker scope:
- * - `device.workerScope.scopes.web.userAgent`
- * - `device.workerScope.scopes.shared.userAgent`
- * - `device.workerScope.scopes.service.userAgent`
- *
- * Returns true if any worker scope has a different userAgent than navigator.
- */
-function detectWorkerUaMismatch(device?: PayloadDevice): boolean {
-  if (!device) return false;
-
-  const navigator = device.navigator as Record<string, unknown> | undefined;
-  const navUa = navigator?.userAgent;
-  if (typeof navUa !== "string") return false;
-
-  const workerScope = device.workerScope as Record<string, unknown> | undefined;
-  if (!workerScope) return false;
-
+/** Extract all worker-scope userAgent strings from the device payload. */
+function getWorkerUAs(workerScope: Record<string, unknown>): string[] {
   const scopes = workerScope.scopes as
     | Record<string, Record<string, unknown> | null | undefined>
     | undefined;
-
   if (!scopes) {
-    // Fallback: top-level workerScope.userAgent
-    const wsUa = workerScope.userAgent;
-    if (typeof wsUa === "string") {
-      return wsUa !== navUa;
-    }
-    return false;
+    const ua = workerScope.userAgent;
+    return typeof ua === "string" ? [ua] : [];
   }
-
-  const scopeKeys = ["web", "shared", "service"] as const;
-  for (const key of scopeKeys) {
+  const uas: string[] = [];
+  for (const key of ["web", "shared", "service"]) {
     const scope = scopes[key];
     if (scope && typeof scope === "object") {
-      const scopeUa = (scope as Record<string, unknown>).userAgent;
-      if (typeof scopeUa === "string" && scopeUa !== navUa) {
-        return true;
-      }
+      const ua = (scope as Record<string, unknown>).userAgent;
+      if (typeof ua === "string") uas.push(ua);
     }
   }
+  return uas;
+}
 
-  return false;
+/** Returns true if any worker scope has a different userAgent than navigator. */
+function detectWorkerUaMismatch(device?: PayloadDevice): boolean {
+  const navUa = (device?.navigator as Record<string, unknown> | undefined)
+    ?.userAgent;
+  if (typeof navUa !== "string") return false;
+
+  const ws = device?.workerScope as Record<string, unknown> | undefined;
+  if (!ws) return false;
+
+  return getWorkerUAs(ws).some((ua) => ua !== navUa);
 }
 
 // ============================================================================

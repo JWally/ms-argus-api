@@ -20,6 +20,7 @@
 import { SQSEvent, SQSBatchResponse, Context } from "aws-lambda";
 import { Logger } from "@aws-lambda-powertools/logger";
 import { Metrics, MetricUnit } from "@aws-lambda-powertools/metrics";
+import type { Pool } from "pg";
 import { processSqsBatch } from "../helpers/sqs-batch";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { SQSClient } from "@aws-sdk/client-sqs";
@@ -27,6 +28,7 @@ import { LambdaClient } from "@aws-sdk/client-lambda";
 import { FirehoseClient } from "@aws-sdk/client-firehose";
 import { S3Client } from "@aws-sdk/client-s3";
 import { DynamoCacheService } from "../services/cache";
+import { getPool } from "../services/postgres";
 import { getMatchingWorkerEnv } from "../config/env";
 import {
   SESSION_TTL_SECONDS,
@@ -63,6 +65,14 @@ const cacheService = new DynamoCacheService(dynamodb, {
   mutationGateTtlSeconds: MUTATION_GATE_TTL_SECONDS,
 });
 
+// PostgreSQL pool for shadow-mode T1/T1.5 comparison (singleton, lazy init)
+let pgPool: Pool | null | undefined;
+async function getPgPool(): Promise<Pool | null> {
+  if (pgPool !== undefined) return pgPool;
+  pgPool = await getPool();
+  return pgPool;
+}
+
 /**
  * AWS Lambda handler for the matching worker.
  *
@@ -94,6 +104,7 @@ export async function handler(
   }
 
   // Otherwise, process as SQS event
+  const pool = await getPgPool();
   const service = createMatchingService({
     dynamodb,
     sqs,
@@ -102,6 +113,7 @@ export async function handler(
     envConfig,
     logger,
     metrics,
+    pgPool: pool,
   });
   const deps = {
     logger,

@@ -7,7 +7,7 @@
  * @module helpers/ua-family
  */
 
-import UAParser = require("ua-parser-js");
+import * as UAParser from "ua-parser-js";
 
 export interface UAFamily {
   /** Browser name: 'Chrome', 'Firefox', 'Safari', 'Edge', etc. */
@@ -49,50 +49,32 @@ const BOT_PATTERNS = [
   /playwright/i,
 ];
 
-/**
- * Normalize browser name for consistent baseline keys.
- * Groups Chromium variants together, handles edge cases.
- */
+/** Substring-match rules: if the lowercased name includes the key, return the value. */
+const BROWSER_INCLUDES: [string, string][] = [
+  ["chromium", "chrome"],
+  ["chrome webview", "chrome"],
+  ["chrome headless", "chrome"],
+  ["edge", "edge"],
+  ["firefox", "firefox"],
+  ["opera", "opera"],
+];
+
+/** Exact-match rules: lowercased name must equal the key. */
+const BROWSER_EXACT: Record<string, string> = {
+  safari: "safari",
+  "mobile safari": "safari",
+  ie: "ie",
+  "internet explorer": "ie",
+};
+
+/** Normalize browser name for consistent baseline keys. */
 function normalizeBrowserName(browser: string | undefined): string {
   if (!browser) return "unknown";
-
   const lower = browser.toLowerCase();
-
-  // Group Chromium-based browsers
-  if (
-    lower.includes("chromium") ||
-    lower === "chrome webview" ||
-    lower === "chrome headless"
-  ) {
-    return "chrome";
+  if (BROWSER_EXACT[lower]) return BROWSER_EXACT[lower];
+  for (const [substr, key] of BROWSER_INCLUDES) {
+    if (lower.includes(substr)) return key;
   }
-
-  // Group Edge variants
-  if (lower.includes("edge")) {
-    return "edge";
-  }
-
-  // Group Firefox variants
-  if (lower.includes("firefox")) {
-    return "firefox";
-  }
-
-  // Group Safari variants (but not Chrome which contains Safari in UA)
-  if (lower === "safari" || lower === "mobile safari") {
-    return "safari";
-  }
-
-  // Group Opera variants
-  if (lower.includes("opera")) {
-    return "opera";
-  }
-
-  // IE variants
-  if (lower === "ie" || lower === "internet explorer") {
-    return "ie";
-  }
-
-  // Return as-is for others (Samsung Browser, UC Browser, etc.)
   return lower.replace(/\s+/g, "_");
 }
 

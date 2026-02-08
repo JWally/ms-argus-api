@@ -4,7 +4,6 @@ const {
   mockAddMetric,
   mockPublishStoredMetrics,
   mockDetectAllAnomalies,
-  mockFetchNetworkBaselineContext,
   mockFetchStatisticalContextV2,
 } = vi.hoisted(() => ({
   mockAddMetric: vi.fn(),
@@ -14,13 +13,11 @@ const {
     aggregateScore: 0,
     suggestedFlags: [],
   }),
-  mockFetchNetworkBaselineContext: vi.fn().mockResolvedValue(null),
   mockFetchStatisticalContextV2: vi.fn().mockResolvedValue(null),
 }));
 
 vi.mock("../services/profile/anomaly", () => ({
   detectAllAnomalies: mockDetectAllAnomalies,
-  fetchNetworkBaselineContext: mockFetchNetworkBaselineContext,
   fetchStatisticalContextV2: mockFetchStatisticalContextV2,
 }));
 
@@ -91,7 +88,6 @@ describe("matching-worker handler", () => {
     vi.clearAllMocks();
     mockAddMetric.mockClear();
     mockPublishStoredMetrics.mockClear();
-    mockFetchNetworkBaselineContext.mockClear();
     mockFetchStatisticalContextV2.mockClear();
   });
 
@@ -454,13 +450,12 @@ describe("matching-worker handler", () => {
     });
 
     it("should NOT emit NEW_DEVICE_RATE when is_new_device=false", async () => {
-      const payload = createFingerprintPayload({
-        identifiers: { session_id: "test-session-123" },
-      });
+      // Use default payload which has evercookie_id for T0.5 identity match
+      const payload = createFingerprintPayload();
 
       dynamoMock.on(GetItemCommand).resolves({
         Item: marshall({
-          hash_value: "hash-abc123",
+          hash_key: "evercookie#test-evercookie-123",
           device_id: "existing-device-123",
         }),
       });
@@ -475,7 +470,7 @@ describe("matching-worker handler", () => {
         1,
       );
       expect(mockAddMetric).not.toHaveBeenCalledWith("NewDevice", "Count", 1);
-      expect(mockAddMetric).toHaveBeenCalledWith("Tier1Hit", "Count", 1);
+      expect(mockAddMetric).toHaveBeenCalledWith("Tier05Hit", "Count", 1);
     });
   });
 

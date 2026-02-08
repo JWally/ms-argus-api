@@ -9,6 +9,7 @@ import { Logger } from "@aws-lambda-powertools/logger";
 import { Metrics, MetricUnit } from "@aws-lambda-powertools/metrics";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoCacheService } from "../../services/cache/dynamo-cache";
+import { SessionCacheValue } from "../../types/matching";
 import {
   extractSessionId,
   lookupSession,
@@ -32,10 +33,9 @@ interface HandlerDeps {
 /**
  * Emits CloudWatch metrics and structured logs for a session retrieval.
  */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 function emitSessionMetrics(
   params: {
-    session: any;
+    session: SessionCacheValue;
     sessionId: string;
     duration: number;
     hasPayload: boolean;

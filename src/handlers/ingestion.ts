@@ -17,7 +17,7 @@ import { binaryGzipBodyParser, jsonBodyParser } from "./ingestion/middleware";
 import { createBaseHandler } from "./ingestion/base-handler";
 
 validateRequiredEnvVars(["SQS_QUEUE_URL"]);
-const SQS_QUEUE_URL = process.env.SQS_QUEUE_URL!;
+const SQS_QUEUE_URL = process.env.SQS_QUEUE_URL as string;
 
 const logger = new Logger({
   serviceName: process.env.POWERTOOLS_SERVICE_NAME ?? "argus-ingestion",

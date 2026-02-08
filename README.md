@@ -65,9 +65,30 @@ High-throughput serverless device fingerprinting and fraud detection platform. I
 
 ## Matching Pipeline
 
-### Tiered Matching Strategy
+### Tiered Matching Waterfall
 
-The matching worker runs a waterfall of progressively weaker signal checks. First match wins.
+The matching worker runs a waterfall of progressively weaker signal checks. First match wins — once a tier returns a result, all lower tiers are skipped.
+
+**T0 — Session Cache.** If we've already matched this exact session, return the cached result from DynamoDB. Avoids re-running the entire pipeline on duplicate or retry SQS messages.
+
+**T0.5 — Identity Signals.** Looks up persistent identifiers that the browser has stored or that were injected by edge infrastructure: ECDSA P-256 public key (`pubkey#`), evercookie ID (`evercookie#`), or sigint ID from a third-party cookie (`sigint#`). These are direct key lookups in the Tier1Index table. When present, they're the strongest signal we have — confidence 0.98-0.99.
+
+**T1 — Hash Match.** Two sequential point lookups against the Tier1Index table. First tries `stable#<hash>` — an exact match on a composite of the most stable browser signals (canvas, WebGL, audio context, math constants). If that misses, tries `fuzzy#<hash>` — a broader set of signals that's less strict but catches more devices. Also checks JA4 TLS fingerprint hash. Confidence ranges from 0.80 (JA4) to 0.95 (stable hash), with fuzzy matches scored by how many signals drifted.
+
+**T1.5 — SimHash LSH (Locality-Sensitive Hashing).** For devices whose fingerprint has drifted enough that no exact hash matches, but is still recognizably similar. The 256-bit fuzzy hash is split into 16 bands of 16 bits each. The system queries DynamoDB for devices sharing at least 2 of 16 bands, then scores candidates by Hamming distance on the full 256-bit hash. Two hashes differing by fewer than 16 bits (out of 256) are considered a match. This enables sub-linear fuzzy matching without pairwise comparison across all devices. Confidence: 0.80. Tunable at runtime via environment variables (`SIMHASH_ENABLED`, `SIMHASH_SHADOW`, `SIMHASH_ROLLOUT`, `SIMHASH_HAMMING_THRESHOLD`, `SIMHASH_MAX_CANDIDATES`).
+
+**T2 — Vector Search (optional).** If Qdrant is configured, the full fingerprint is embedded into a 256-dimensional vector and searched by cosine similarity. This is the most expensive tier and requires VPC infrastructure. Confidence: 0.75. Times out after a configurable threshold to avoid blocking the pipeline.
+
+**T2 fallback — Anchor Buckets.** If vector search isn't configured or misses, two short-lived anchor lookups fire as a last resort:
+
+- **Session anchor** (10-min validity, confidence 0.65): composite key of IP + user agent hash + screen dimensions. Catches returning visitors within the same browsing session.
+- **IP+UA anchor** (3-min validity, confidence 0.60): just IP + user agent hash. The loosest match — only useful for very recent revisits where nothing else stuck.
+
+These are stored in the Tier2Buckets table with application-enforced TTLs (much shorter than the DynamoDB TTL cleanup).
+
+**New Device.** If every tier misses, a new device ID (`dev_<ULID>`) is minted with confidence 0 and a neutral 0.5 risk score.
+
+### Quick Reference
 
 | Tier | Method         | Confidence | Description                                           |
 | ---- | -------------- | ---------- | ----------------------------------------------------- |
@@ -80,32 +101,22 @@ The matching worker runs a waterfall of progressively weaker signal checks. Firs
 | T1   | JA4 Hash       | 0.80       | TLS fingerprint                                       |
 | T1.5 | SimHash LSH    | 0.80       | 256-bit locality-sensitive hashing (Hamming distance) |
 | T2   | Vector Search  | 0.75       | Qdrant cosine similarity (optional, requires VPC)     |
-| T2   | Session Anchor | 0.75       | IP + UA hash + screen (10-min window)                 |
-| T2   | IP+UA Anchor   | 0.70       | IP + UA hash only (3-min window)                      |
+| T2   | Session Anchor | 0.65       | IP + UA hash + screen (10-min window)                 |
+| T2   | IP+UA Anchor   | 0.60       | IP + UA hash only (3-min window)                      |
 | New  | Generate ULID  | 0.0        | No match found, new device created                    |
-
-### SimHash LSH (T1.5)
-
-256-bit fuzzy hashes are split into 16 bands of 16 bits each. Two hashes that differ by fewer than 16 bits (Hamming distance) are likely to share at least 2 bands, making them lookup candidates. This enables sub-linear fuzzy matching without full pairwise comparison.
-
-Configuration is tunable at runtime via environment variables (`SIMHASH_ENABLED`, `SIMHASH_SHADOW`, `SIMHASH_ROLLOUT`, `SIMHASH_HAMMING_THRESHOLD`, `SIMHASH_MAX_CANDIDATES`).
-
-### Session Anchors (T2)
-
-Short-lived entries in DynamoDB that associate an IP + UA hash (+ optional screen dimensions) with a device ID. Used to match devices that return within minutes when stronger signals aren't available. Application-enforced TTLs (10 min / 3 min) with longer DynamoDB cleanup TTLs.
 
 ## Anomaly Detection
 
 Server-side fraud detection runs during matching to identify spoofing attempts. Anomaly signals are returned in the session response and contribute to `risk_score`.
 
-| Detector         | Signals                                                                     | Description                                                              |
-| ---------------- | --------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
-| Quick Wins       | `NAVIGATOR_LIES`, `HEADLESS_DETECTED`, `HIGH_PROXY_SCORE`, `HIGH_VPN_SCORE` | Fast checks: headless browser, navigator API tampering, proxy/VPN scores |
-| Cross-Field      | `WORKER_MISMATCH`                                                           | Navigator vs Worker/SharedWorker/ServiceWorker scope mismatches          |
-| Network          | `IP_TIMEZONE_MISMATCH`, `SERVER_CLIENT_TZ_MISMATCH`                         | IP geolocation timezone vs reported timezone                             |
-| Baseline Rules   | `WORKER_UA_MISMATCH`                                                        | User-Agent mismatch between main thread and worker contexts              |
-| Statistical V2   | Shannon entropy scoring                                                     | Detects rare fingerprint combinations using Valkey frequency counters    |
-| Network Baseline | ASN consistency scoring                                                     | Per-browser network profile baselines via Valkey                         |
+| Detector            | Signals                                                   | Description                                                           |
+| ------------------- | --------------------------------------------------------- | --------------------------------------------------------------------- |
+| Fingerprint Signals | `HEADLESS_DETECTED`, `HIGH_PROXY_SCORE`, `HIGH_VPN_SCORE` | Pre-computed signal checks: headless browser, proxy/VPN scores        |
+| Worker Scope        | `WORKER_MISMATCH`                                         | Navigator vs Worker/SharedWorker/ServiceWorker scope mismatches       |
+| Network             | `IP_TIMEZONE_MISMATCH`, `SERVER_CLIENT_TZ_MISMATCH`       | IP geolocation timezone vs reported timezone                          |
+| Baseline Rules      | `WORKER_UA_MISMATCH`                                      | User-Agent mismatch between main thread and worker contexts           |
+| Statistical V2      | Shannon entropy scoring                                   | Detects rare fingerprint combinations using Valkey frequency counters |
+| Network Baseline    | ASN consistency scoring                                   | Per-browser network profile baselines via Valkey                      |
 
 ### Multi-Worker Environment Detection
 
@@ -271,8 +282,8 @@ src/
       index-writers.ts        # Writes Tier1Index and Tier2Buckets entries
       anomaly/
         detector.ts           # Orchestrates all anomaly detectors
-        quick-wins.ts         # Headless, proxy, VPN, navigator lies
-        cross-field.ts        # Navigator vs worker scope mismatches
+        fingerprint-signals.ts       # Headless, proxy, VPN detection
+        worker-scope-consistency.ts  # Navigator vs worker scope mismatches
         network.ts            # IP timezone mismatch
         baseline-rules.ts     # Worker UA mismatch detection
         statistical-v2.ts     # Shannon entropy via Valkey
@@ -331,7 +342,7 @@ npm run build
 ### Run Tests
 
 ```bash
-npm test                # Unit tests (660+ tests)
+npm test                # Unit tests (860+ tests)
 npm run test:coverage   # With coverage report
 npm run test:watch      # Watch mode
 npm run test:ui         # Vitest UI
@@ -452,20 +463,18 @@ Stage-specific settings are in `lib/config/stage-config.ts`. Key differences:
    - `services/profile/anomaly/ip-history-detector.ts` (imported in detector.ts, index.ts)
    - Related flags (`new_asn_for_device`, `ip_churn`) are defined but detection not wired up
 
-2. **Matching Worker Admin Handler** - `matching-worker/types.ts` and `matching-worker/admin-handler.ts` are imported but don't exist. Admin operations (cache flush, etc.) are referenced but not implemented.
-
 ### Code Quality
 
-3. **Privacy penalties disabled** - `PRIVACY_BROWSER_PENALTY` and `PRIVATE_BROWSING_PENALTY` are hardcoded to 0 in `constants.ts`. Tests expect 0.15 and 0.1 respectively (2 test failures).
+2. **Privacy penalties disabled** - `PRIVACY_BROWSER_PENALTY` and `PRIVATE_BROWSING_PENALTY` are hardcoded to 0 in `constants.ts`. Tests expect 0.15 and 0.1 respectively (2 test failures).
 
-4. **Complexity violations** - 3 functions exceed eslint cyclomatic/cognitive complexity limits:
+3. **Complexity violations** - 3 functions exceed eslint cyclomatic/cognitive complexity limits:
    - `handleSyncInvoke()` in vector-worker sync handler (14 cyclomatic, max 10)
    - `detectWorkerUaMismatch()` in baseline-rules.ts (11 cyclomatic, max 10)
    - `normalizeBrowserName()` in ua-family.ts (12 cyclomatic, max 10)
 
-5. **Unused exports** - `getClient()` in `valkey-client.ts` is exported but never used externally.
+4. **Unused exports** - `getClient()` in `valkey-client.ts` is exported but never used externally.
 
-6. **Code duplication** - 9 clones at 0.49% (async Lambda invocation pattern, config setup pattern, Lambda client creation).
+5. **Code duplication** - 9 clones at 0.49% (async Lambda invocation pattern, config setup pattern, Lambda client creation).
 
 ## Cost Estimate (30B requests/year)
 

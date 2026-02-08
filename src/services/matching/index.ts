@@ -12,11 +12,8 @@ export {
   publicKeyLookup,
   cookieLookup,
   sigintIdLookup,
-  hashMatch,
   type IndexLookupDeps,
 } from "./index-lookup";
-
-export { simHashMatch, type SimHashMatchDeps } from "./simhash-match";
 
 export {
   loadProfile,

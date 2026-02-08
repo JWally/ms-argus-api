@@ -59,6 +59,16 @@ function isHighQualityPayload(payload: unknown): boolean {
  * @param payload - Payload object to archive
  * @param deps - S3 client, bucket, sample rate, and logging dependencies
  */
+/** Build a Hive-partitioned S3 key from the current UTC time. */
+function buildArchiveKey(sessionId: string): string {
+  const now = new Date();
+  const y = now.getUTCFullYear();
+  const m = String(now.getUTCMonth() + 1).padStart(2, "0");
+  const d = String(now.getUTCDate()).padStart(2, "0");
+  const h = String(now.getUTCHours()).padStart(2, "0");
+  return `year=${y}/month=${m}/day=${d}/hour=${h}/${sessionId}.json.gz`;
+}
+
 export const archivePayload = async (
   sessionId: string,
   payload: unknown,
@@ -70,36 +80,21 @@ export const archivePayload = async (
     metrics: Metrics;
   },
 ): Promise<void> => {
-  if (!deps.s3 || !deps.bucket || deps.sampleRate <= 0) {
-    return;
-  }
-
-  if (Math.random() > deps.sampleRate) {
-    return;
-  }
+  if (!deps.s3 || !deps.bucket || deps.sampleRate <= 0) return;
+  if (Math.random() > deps.sampleRate) return;
 
   try {
-    const now = new Date();
-    const year = now.getUTCFullYear();
-    const month = String(now.getUTCMonth() + 1).padStart(2, "0");
-    const day = String(now.getUTCDate()).padStart(2, "0");
-    const hour = String(now.getUTCHours()).padStart(2, "0");
-
-    const key = `year=${year}/month=${month}/day=${day}/hour=${hour}/${sessionId}.json.gz`;
     const body = gzipSync(Buffer.from(JSON.stringify(payload)));
-
-    // Tag payloads based on quality for lifecycle management
     const highQuality = isHighQualityPayload(payload);
-    const qualityTag = highQuality ? "high" : "low";
 
     await deps.s3.send(
       new PutObjectCommand({
         Bucket: deps.bucket,
-        Key: key,
+        Key: buildArchiveKey(sessionId),
         Body: body,
         ContentType: "application/json",
         ContentEncoding: "gzip",
-        Tagging: `quality=${qualityTag}`,
+        Tagging: `quality=${highQuality ? "high" : "low"}`,
       }),
     );
 

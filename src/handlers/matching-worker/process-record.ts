@@ -11,9 +11,7 @@ import {
 } from "../../services/matching";
 import {
   detectAllAnomalies,
-  fetchNetworkBaselineContext,
   fetchStatisticalContextV2,
-  type NetworkBaselineDetectorContext,
   type StatisticalContextV2,
 } from "../../services/profile/anomaly";
 import { loadProfile } from "../../services/matching/profile-loader";
@@ -106,14 +104,12 @@ async function runMatching(
  *
  * @param fingerprint - Normalized fingerprint data
  * @param rawPayload - Raw SQS payload containing device info
- * @param networkBaselineContext - Pre-fetched network baseline context for ASN-based detection
  * @param statisticalContextV2 - Pre-fetched statistical v2 context for Shannon scoring
  * @returns Array of anomaly signals for the session
  */
 interface AnomalySignalContext {
   fingerprint: ParsedRecord["fingerprint"];
   rawPayload: SqsPayload;
-  networkBaseline: NetworkBaselineDetectorContext | null;
   statisticalV2: StatisticalContextV2 | null;
   ipHistoryProfile?: DeviceProfile | null;
 }
@@ -126,7 +122,6 @@ function buildAnomalySignals(
     ctx.rawPayload.device,
     undefined,
     {
-      networkBaseline: ctx.networkBaseline,
       statisticalV2: ctx.statisticalV2,
       ipHistoryProfile: ctx.ipHistoryProfile ?? null,
     },
@@ -296,20 +291,16 @@ async function fetchAndBuildAnomalies(
   anomalies: SessionAnomalySignal[];
   statisticalContextV2: StatisticalContextV2 | null;
 }> {
-  const [networkBaselineContext, statisticalContextV2] = await Promise.all([
-    fetchNetworkBaselineContext(fingerprint, rawPayload.sigint),
-    fetchStatisticalContextV2(
-      fingerprint,
-      rawPayload.sigint,
-      rawPayload.device,
-      rawPayload.hashes,
-    ),
-  ]);
+  const statisticalContextV2 = await fetchStatisticalContextV2(
+    fingerprint,
+    rawPayload.sigint,
+    rawPayload.device,
+    rawPayload.hashes,
+  );
   return {
     anomalies: buildAnomalySignals({
       fingerprint,
       rawPayload,
-      networkBaseline: networkBaselineContext,
       statisticalV2: statisticalContextV2,
       ipHistoryProfile,
     }),

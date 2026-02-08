@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { detectCrossFieldAnomalies } from "./cross-field";
+import { detectCrossFieldAnomalies } from "./worker-scope-consistency";
 import { AnomalyCodes } from "./types";
 import { Fingerprint } from "../../../types";
 

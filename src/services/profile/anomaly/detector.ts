@@ -10,13 +10,8 @@ import { Logger } from "@aws-lambda-powertools/logger";
 import { Metrics, MetricUnit } from "@aws-lambda-powertools/metrics";
 import { Fingerprint } from "../../../types";
 import { AnomalySignal, AnomalyResult } from "./types";
-import { detectQuickWinAnomalies } from "./quick-wins";
-import { detectCrossFieldAnomalies } from "./cross-field";
-import { detectNetworkAnomalies } from "./network";
-import {
-  detectNetworkBaselineAnomalies,
-  type NetworkBaselineDetectorContext,
-} from "./network-baseline-detector";
+import { detectFingerprintSignals } from "./fingerprint-signals";
+import { detectCrossFieldAnomalies } from "./worker-scope-consistency";
 import {
   detectStatisticalAnomaliesV2,
   type StatisticalContextV2,
@@ -59,9 +54,8 @@ type DetectorFn = (
  * Detectors are called in registration order.
  */
 const detectors: DetectorFn[] = [
-  detectQuickWinAnomalies,
+  detectFingerprintSignals,
   detectCrossFieldAnomalies,
-  detectNetworkAnomalies,
 ];
 
 /** Run a detector with error isolation, appending results to signals. */
@@ -87,7 +81,6 @@ export function detectAllAnomalies(
   raw?: unknown,
   sigint?: SigintData,
   contextOpts?: {
-    networkBaseline?: NetworkBaselineDetectorContext | null;
     statisticalV2?: StatisticalContextV2 | null;
     ipHistoryProfile?: DeviceProfile | null;
   },
@@ -98,9 +91,6 @@ export function detectAllAnomalies(
     runSafe(signals, detector.name, () => detector(fingerprint, raw, sigint));
   }
 
-  runSafe(signals, "NetworkBaseline", () =>
-    detectNetworkBaselineAnomalies(contextOpts?.networkBaseline ?? null),
-  );
   runSafe(signals, "StatisticalV2", () =>
     detectStatisticalAnomaliesV2(contextOpts?.statisticalV2 ?? null),
   );

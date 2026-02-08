@@ -1,11 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import {
-  publicKeyLookup,
-  cookieLookup,
-  sigintIdLookup,
-  hashMatch,
-} from "./index-lookup";
+import { publicKeyLookup, cookieLookup, sigintIdLookup } from "./index-lookup";
 
 vi.mock("@aws-sdk/client-dynamodb", () => ({
   DynamoDBClient: vi.fn(),
@@ -153,82 +148,6 @@ describe("fuzzy_match_info drift detection", () => {
       // fuzzy_match_info should have -1 distance for invalid stored hash
       expect(result!.fuzzy_match_info).toBeDefined();
       expect(result!.fuzzy_match_info!.hamming_distance).toBe(-1);
-    });
-  });
-
-  describe("hashMatch", () => {
-    it("should include fuzzy_match_info for stable_hash match", async () => {
-      mockDynamodb.send = vi.fn().mockResolvedValue({
-        Item: {
-          device_id: { S: "dev_stable" },
-          risk_score: { N: "0.3" },
-          flags: { L: [] },
-          fuzzy_hash: { S: "aaaaaaaaaaaaaaaa" },
-        },
-      });
-
-      const deps = { dynamodb: mockDynamodb, tier1IndexTable };
-      const fingerprint = {
-        stable_hash: "stable123",
-        fuzzy_hash: "aaaaaaaaaaaaaaaa",
-      };
-      const result = await hashMatch(deps, fingerprint);
-
-      expect(result).not.toBeNull();
-      expect(result!.evidence_codes).toContain("STABLE_HASH_MATCH");
-      expect(result!.fuzzy_match_info).toBeDefined();
-      expect(result!.fuzzy_match_info!.hamming_distance).toBe(0);
-      expect(result!.fuzzy_match_info!.similarity).toBe(1);
-    });
-
-    it("should include fuzzy_match_info for fuzzy_hash match", async () => {
-      mockDynamodb.send = vi
-        .fn()
-        .mockResolvedValueOnce({})
-        .mockResolvedValueOnce({
-          Item: {
-            device_id: { S: "dev_fuzzy" },
-            risk_score: { N: "0.35" },
-            flags: { L: [] },
-            fuzzy_hash: { S: "bbbbbbbbbbbbbbbb" },
-          },
-        });
-
-      const deps = { dynamodb: mockDynamodb, tier1IndexTable };
-      const fingerprint = {
-        stable_hash: "stable123",
-        fuzzy_hash: "bbbbbbbbbbbbbbbb",
-      };
-      const result = await hashMatch(deps, fingerprint);
-
-      expect(result).not.toBeNull();
-      expect(result!.evidence_codes).toContain("FUZZY_HASH_MATCH");
-      expect(result!.fuzzy_match_info).toBeDefined();
-      expect(result!.fuzzy_match_info!.hamming_distance).toBe(0);
-    });
-
-    it("should detect drift when fuzzy hashes differ", async () => {
-      mockDynamodb.send = vi.fn().mockResolvedValue({
-        Item: {
-          device_id: { S: "dev_drift" },
-          risk_score: { N: "0.3" },
-          flags: { L: [] },
-          fuzzy_hash: { S: "0000000000000000" },
-        },
-      });
-
-      const deps = { dynamodb: mockDynamodb, tier1IndexTable };
-      // ffff = 16 bits set
-      const fingerprint = {
-        stable_hash: "stable123",
-        fuzzy_hash: "ffff000000000000",
-      };
-      const result = await hashMatch(deps, fingerprint);
-
-      expect(result).not.toBeNull();
-      expect(result!.fuzzy_match_info).toBeDefined();
-      expect(result!.fuzzy_match_info!.hamming_distance).toBe(16);
-      expect(result!.fuzzy_match_info!.similarity).toBeCloseTo(1 - 16 / 64, 5);
     });
   });
 });

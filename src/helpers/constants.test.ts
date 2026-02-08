@@ -4,7 +4,6 @@ import {
   TIER2_TIMEOUT_MS,
   PROFILE_TTL_DAYS,
   SIMHASH_CONFIG,
-  getSimHashFlags,
   AWS_SECRETS_REQUIRED_KEYS,
   ERROR_STRINGS,
   FNV1A_OFFSET_BASIS,
@@ -79,43 +78,6 @@ describe("SIMHASH_CONFIG", () => {
 
   it("should have HEX_LENGTH = 64 (256 bits / 4 bits per hex char)", () => {
     expect(SIMHASH_CONFIG.HEX_LENGTH).toBe(64);
-  });
-});
-
-describe("getSimHashFlags", () => {
-  it("should return expected shape with all flag fields", () => {
-    const flags = getSimHashFlags();
-    expect(flags).toHaveProperty("ENABLED");
-    expect(flags).toHaveProperty("SHADOW_MODE");
-    expect(flags).toHaveProperty("ROLLOUT_PERCENT");
-    expect(flags).toHaveProperty("LATENCY_BYPASS_MS");
-    expect(flags).toHaveProperty("HAMMING_THRESHOLD");
-    expect(flags).toHaveProperty("MAX_CANDIDATES");
-  });
-
-  it("should return boolean for ENABLED", () => {
-    const flags = getSimHashFlags();
-    expect(typeof flags.ENABLED).toBe("boolean");
-  });
-
-  it("should return boolean for SHADOW_MODE", () => {
-    const flags = getSimHashFlags();
-    expect(typeof flags.SHADOW_MODE).toBe("boolean");
-  });
-
-  it("should return number for ROLLOUT_PERCENT", () => {
-    const flags = getSimHashFlags();
-    expect(typeof flags.ROLLOUT_PERCENT).toBe("number");
-  });
-
-  it("should default ROLLOUT_PERCENT to 100 when env not set", () => {
-    const flags = getSimHashFlags();
-    expect(flags.ROLLOUT_PERCENT).toBe(100);
-  });
-
-  it("should default LATENCY_BYPASS_MS to 150 when env not set", () => {
-    const flags = getSimHashFlags();
-    expect(flags.LATENCY_BYPASS_MS).toBe(150);
   });
 });
 

@@ -14,6 +14,7 @@
 // real workloads to find optimal cost/performance balance for each function.
 
 import { Duration } from "aws-cdk-lib";
+import * as ec2 from "aws-cdk-lib/aws-ec2";
 
 /**
  * Stage-specific configuration for infrastructure resources
@@ -101,6 +102,17 @@ export interface StageConfig {
     };
   };
 
+  // RDS PostgreSQL configuration for SimHash-based T1/T1.5 matching
+  rds: {
+    enabled: boolean;
+    instanceClass: ec2.InstanceSize;
+    allocatedStorageGb: number;
+    maxAllocatedStorageGb: number;
+    backupRetentionDays: number;
+    deletionProtection: boolean;
+    multiAz: boolean;
+  };
+
   // Valkey (ElastiCache Serverless) configuration for statistical anomaly detection
   valkey: {
     // Whether Valkey is enabled for this stage
@@ -116,13 +128,6 @@ export interface StageConfig {
     // Global sampling rate for write-side counters (0.01 = 1%, 1.0 = 100%)
     // Low values reduce Valkey write load; high values give faster convergence
     globalSampleRate: number;
-    // Network baseline anomaly detection settings
-    networkBaseline: {
-      // Whether network baseline detection is enabled
-      enabled: boolean;
-      // Score threshold for flagging anomalies (0.5 = 50% normalized surprise)
-      threshold: number;
-    };
     // Statistical v2: Shannon scoring with dual-layer fingerprints (JA4 + H2)
     statisticalV2: {
       // Whether statistical v2 detection is enabled
@@ -215,6 +220,17 @@ const devConfig: StageConfig = {
     },
   },
 
+  // RDS PostgreSQL - enabled in dev for SimHash matching
+  rds: {
+    enabled: true,
+    instanceClass: ec2.InstanceSize.MICRO, // ~$12/mo
+    allocatedStorageGb: 20,
+    maxAllocatedStorageGb: 40,
+    backupRetentionDays: 1,
+    deletionProtection: false,
+    multiAz: false,
+  },
+
   // Valkey - enabled in dev for statistical anomaly detection testing
   valkey: {
     enabled: true,
@@ -223,11 +239,6 @@ const devConfig: StageConfig = {
     scoreThreshold: 0.01, // 1% - combo appears less than 1% of expected = suspicious
     distinctThreshold: 50, // Need at least 50 distinct combos before detection activates
     globalSampleRate: 1.0, // 100% in dev - every request updates global counters
-    // Network baseline: enabled for dev testing
-    networkBaseline: {
-      enabled: true,
-      threshold: 0.5, // 50% normalized surprise triggers anomaly
-    },
     // Statistical v2: enabled for dev testing
     statisticalV2: {
       enabled: true,
@@ -317,6 +328,17 @@ const prodConfig: StageConfig = {
     },
   },
 
+  // RDS PostgreSQL - enabled in prod for SimHash matching
+  rds: {
+    enabled: true,
+    instanceClass: ec2.InstanceSize.SMALL, // ~$24/mo, 2GB RAM
+    allocatedStorageGb: 20,
+    maxAllocatedStorageGb: 100,
+    backupRetentionDays: 7,
+    deletionProtection: true,
+    multiAz: true,
+  },
+
   // Valkey - enabled in prod for statistical anomaly detection
   valkey: {
     enabled: true,
@@ -325,11 +347,6 @@ const prodConfig: StageConfig = {
     scoreThreshold: 0.01, // 1% - combo appears less than 1% of expected = suspicious
     distinctThreshold: 50, // Need at least 50 distinct combos before detection activates
     globalSampleRate: 0.01, // 1% in prod - sample to reduce write load
-    // Network baseline: disabled initially for shadow mode deployment
-    networkBaseline: {
-      enabled: false, // Enable after validating in dev
-      threshold: 0.5, // 50% normalized surprise triggers anomaly
-    },
     // Statistical v2: disabled in prod (shadow mode)
     statisticalV2: {
       enabled: false, // Enable after validating in dev

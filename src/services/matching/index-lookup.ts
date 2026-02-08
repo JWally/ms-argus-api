@@ -2,7 +2,7 @@ import { DynamoDBClient, GetItemCommand } from "@aws-sdk/client-dynamodb";
 import { unmarshall } from "@aws-sdk/util-dynamodb";
 import { computeFuzzyMatchInfo } from "../../helpers/hash";
 import { MatchTier } from "../../types/matching-tiers";
-import { EvidenceCode, Fingerprint, MatchResult } from "./types";
+import { EvidenceCode, MatchResult } from "./types";
 
 export interface IndexLookupDeps {
   dynamodb: DynamoDBClient;
@@ -114,51 +114,4 @@ export function sigintIdLookup(
   incomingFuzzyHash?: string,
 ): Promise<MatchResult | null> {
   return identityLookup(deps, sigintId, SIGINT_CONFIG, incomingFuzzyHash);
-}
-
-// --- Hash matching (tier 1) ---
-
-export async function hashMatch(
-  deps: IndexLookupDeps,
-  fingerprint: Fingerprint,
-): Promise<MatchResult | null> {
-  if (fingerprint.stable_hash) {
-    const result = await lookupIndex(deps, `stable#${fingerprint.stable_hash}`);
-    if (result) {
-      return {
-        device_id: result.device_id,
-        confidence: 0.95,
-        match_tier: MatchTier.HASH,
-        is_new_device: false,
-        risk_score: result.risk_score ?? 0.3,
-        flags: result.flags ?? [],
-        evidence_codes: ["STABLE_HASH_MATCH"] as EvidenceCode[],
-        fuzzy_match_info: computeFuzzyMatchInfo(
-          fingerprint.fuzzy_hash,
-          result.fuzzy_hash,
-        ),
-      };
-    }
-  }
-
-  if (fingerprint.fuzzy_hash) {
-    const result = await lookupIndex(deps, `fuzzy#${fingerprint.fuzzy_hash}`);
-    if (result) {
-      return {
-        device_id: result.device_id,
-        confidence: 0.85,
-        match_tier: MatchTier.HASH,
-        is_new_device: false,
-        risk_score: result.risk_score ?? 0.3,
-        flags: result.flags ?? [],
-        evidence_codes: ["FUZZY_HASH_MATCH"] as EvidenceCode[],
-        fuzzy_match_info: computeFuzzyMatchInfo(
-          fingerprint.fuzzy_hash,
-          result.fuzzy_hash,
-        ),
-      };
-    }
-  }
-
-  return null;
 }

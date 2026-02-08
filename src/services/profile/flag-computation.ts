@@ -41,10 +41,6 @@ export const RISK_WEIGHTS = {
   [DeviceFlags.WORKER_MISMATCH]: 0.2,
   /** Screen/CSS dimension mismatch */
   [DeviceFlags.SCREEN_CSS_MISMATCH]: 0.1,
-  /** IP-based timezone mismatch */
-  [DeviceFlags.IP_TIMEZONE_MISMATCH]: 0.1,
-  /** Server vs client timezone mismatch */
-  [DeviceFlags.SERVER_CLIENT_TZ_MISMATCH]: 0.12,
   /** Device appeared on a new ASN (soft signal, many legit reasons) */
   [DeviceFlags.NEW_ASN_FOR_DEVICE]: 0.05,
   /** Device cycling through excessive unique IPs (strong negative signal) */

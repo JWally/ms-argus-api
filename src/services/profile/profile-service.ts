@@ -4,18 +4,18 @@ import {
   PutItemCommand,
 } from "@aws-sdk/client-dynamodb";
 import { marshall, unmarshall } from "@aws-sdk/util-dynamodb";
+import { Logger } from "@aws-lambda-powertools/logger";
+import type { Pool } from "pg";
 import { DynamoCacheService } from "../cache";
+import { pgUpsertDeviceHashes } from "../postgres";
 import { Fingerprint, ProfileUpdatePayload, DeviceProfile } from "./types";
 import { hasSignificantDrift } from "./drift-detection";
 import { computeFlags, computeRiskScore } from "./flag-computation";
 import { updateIpHistory } from "./ip-history";
 import {
   buildIdentityIndexEntries,
-  buildHashIndexEntries,
   batchWriteTier1Indexes,
   writeAnchorBucket,
-  buildSimHashBandEntries,
-  batchWriteSimHashBands,
   IndexWriterDeps,
   ASSOCIATION_ALLOWED_EVIDENCE,
 } from "./index-writers";
@@ -23,7 +23,11 @@ import {
   buildSessionAnchorKey,
   buildIpUaAnchorKey,
 } from "../../helpers/bucket-keys";
-import { getSimHashFlags } from "../../helpers/constants";
+import { SIMHASH_CONFIG } from "../../helpers/constants";
+
+const pgLogger = new Logger({
+  serviceName: process.env.POWERTOOLS_SERVICE_NAME || "postgres-write",
+});
 
 /**
  * Configuration for the profile service
@@ -57,13 +61,15 @@ export interface ProfileServiceDeps {
   dynamodb: DynamoDBClient;
   cache: DynamoCacheService;
   config: ProfileServiceConfig;
+  /** PostgreSQL pool for device_hashes writes (T1/T1.5) */
+  pgPool?: Pool;
 }
 
 interface ProfileUpdateResult {
   skipped: boolean;
   reason?: "mutation_gate" | "no_drift";
   tier1Writes?: number;
-  simhashBandWrites?: number;
+  pgHashWrite?: boolean;
 }
 
 /** Build the profile data record for DynamoDB, including IP history and timestamps. */
@@ -126,6 +132,7 @@ function buildProfileData(opts: {
  */
 export class ProfileService {
   private indexWriterDeps: IndexWriterDeps;
+  private readonly pgPool: Pool | null;
 
   constructor(private deps: ProfileServiceDeps) {
     this.indexWriterDeps = {
@@ -133,22 +140,18 @@ export class ProfileService {
       tier1IndexTable: deps.config.tier1IndexTable,
       tier2BucketsTable: deps.config.tier2BucketsTable,
     };
+    this.pgPool = deps.pgPool ?? null;
   }
 
   /**
    * Atomically try to acquire the mutation gate for a device
-   * Uses DynamoDB conditional write to avoid TOCTOU race condition
-   * @param deviceId - The device ID to acquire the gate for
-   * @returns True if gate was acquired (we should update), false if already held
    */
   tryAcquireMutationGate(deviceId: string): Promise<boolean> {
-    return this.deps.cache.tryAcquireMutationGate(deviceId);
+    return this.deps.cache.tryAcquireMutationGate(deviceId); // eslint-disable-line no-restricted-syntax
   }
 
   /**
    * Load existing device profile from DynamoDB
-   * @param deviceId - The device ID to load
-   * @returns Device profile if found, null otherwise
    */
   async loadExistingProfile(deviceId: string): Promise<DeviceProfile | null> {
     const result = await this.deps.dynamodb.send(
@@ -162,8 +165,6 @@ export class ProfileService {
 
   /**
    * Update device profile in DynamoDB
-   * Computes flags, risk score, and manages last_seen timestamps
-   * @param params - Profile update parameters including device ID, fingerprint, and context
    */
   async updateProfile(params: UpdateProfileParams): Promise<void> {
     const {
@@ -203,54 +204,69 @@ export class ProfileService {
   }
 
   /**
-   * Update Tier 1 indexes with tier-gated identity association
+   * Update identity indexes (pubkey#, evercookie#, sigint#) in DynamoDB tier1IndexTable.
+   * Hash entries (stable#, fuzzy#) are now written to PostgreSQL device_hashes only.
    *
-   * Hash indexes (stable#, fuzzy#) are always written.
-   * Identity indexes (pubkey#, evercookie#, sigint#) are only written when
-   * evidence_codes contains at least one code in ASSOCIATION_ALLOWED_EVIDENCE.
-   *
-   * This prevents viral spreading of device_ids from low-confidence Tier 2 matches.
-   * @param deviceId - The device ID to index
-   * @param fingerprint - The fingerprint containing hash and identity values
-   * @param evidenceCodes - Evidence codes from the match (determines if identity indexes are written)
-   * @returns Number of index entries written
+   * @returns Number of DynamoDB identity index entries written
    */
-  async updateTier1IndexesWithEvidence(
+  async updateIdentityIndexes(
     deviceId: string,
     fingerprint: Fingerprint,
     evidenceCodes?: string[],
   ): Promise<number> {
-    const ttlSeconds = this.deps.config.profileTtlDays * 24 * 60 * 60;
-    const ttl = Math.floor(Date.now() / 1000) + ttlSeconds;
-
-    const hashEntries = buildHashIndexEntries(deviceId, fingerprint, ttl);
-
     // Only write identity indexes for high-confidence matches
-    // Backward compat: if no evidence codes, write all indexes
     const shouldWriteIdentity =
       !evidenceCodes ||
       evidenceCodes.length === 0 ||
       evidenceCodes.some((code) => ASSOCIATION_ALLOWED_EVIDENCE.includes(code));
 
-    const identityEntries = shouldWriteIdentity
-      ? buildIdentityIndexEntries(deviceId, fingerprint, ttl)
-      : [];
+    if (!shouldWriteIdentity) return 0;
 
-    const allEntries = [...hashEntries, ...identityEntries];
+    const ttlSeconds = this.deps.config.profileTtlDays * 24 * 60 * 60;
+    const ttl = Math.floor(Date.now() / 1000) + ttlSeconds;
+    const identityEntries = buildIdentityIndexEntries(
+      deviceId,
+      fingerprint,
+      ttl,
+    );
 
-    if (allEntries.length === 0) {
-      return 0;
+    if (identityEntries.length === 0) return 0;
+
+    await batchWriteTier1Indexes(this.indexWriterDeps, identityEntries);
+    return identityEntries.length;
+  }
+
+  /**
+   * Upsert device hashes (stable + fuzzy + bands) to PostgreSQL device_hashes table.
+   * Replaces the old dual-write to both DynamoDB and PG.
+   */
+  async updateDeviceHashes(
+    deviceId: string,
+    fingerprint: Fingerprint,
+  ): Promise<boolean> {
+    if (!this.pgPool) return false;
+    if (!fingerprint.stable_hash && !fingerprint.fuzzy_hash) return false;
+
+    const timestamp = Math.floor(Date.now() / 1000);
+    const expiresAt = timestamp + SIMHASH_CONFIG.BAND_TTL_DAYS * 86400;
+
+    try {
+      await pgUpsertDeviceHashes(this.pgPool, {
+        deviceId,
+        stableHash: fingerprint.stable_hash,
+        fuzzyHash: fingerprint.fuzzy_hash,
+        lastSeen: timestamp,
+        expiresAt,
+      });
+      return true;
+    } catch (err) {
+      pgLogger.warn("Postgres device_hashes write failed", { err });
+      return false;
     }
-
-    await batchWriteTier1Indexes(this.indexWriterDeps, allEntries);
-    return allEntries.length;
   }
 
   /**
    * Write an anchor bucket entry for ephemeral matching
-   * @param deviceId - The device ID to anchor
-   * @param bucketKey - The bucket key, or null if signals are missing
-   * @returns True if written, false if skipped (null bucket key)
    */
   private async writeAnchor(
     deviceId: string,
@@ -261,67 +277,22 @@ export class ProfileService {
     return true;
   }
 
-  /**
-   * Update session anchor bucket for short-lived matching
-   * @param deviceId - The device ID to anchor
-   * @param fingerprint - The fingerprint containing anchor signals
-   * @returns True if anchor was written, false if required signals missing
-   */
   async updateSessionAnchorBucket(
     deviceId: string,
     fingerprint: Fingerprint,
   ): Promise<boolean> {
-    return this.writeAnchor(deviceId, buildSessionAnchorKey(fingerprint));
+    return this.writeAnchor(deviceId, buildSessionAnchorKey(fingerprint)); // eslint-disable-line no-restricted-syntax
   }
 
-  /**
-   * Update IP+UserAgent anchor bucket for very short-lived matching
-   * @param deviceId - The device ID to anchor
-   * @param fingerprint - The fingerprint containing IP and user agent
-   * @returns True if anchor was written, false if required signals missing
-   */
   async updateIpUaAnchorBucket(
     deviceId: string,
     fingerprint: Fingerprint,
   ): Promise<boolean> {
-    return this.writeAnchor(deviceId, buildIpUaAnchorKey(fingerprint));
-  }
-
-  /**
-   * Update SimHash LSH band entries for Tier 1.5 matching
-   * Only writes if SimHash tier is enabled via feature flag
-   * @param deviceId - The device ID to index
-   * @param fingerprint - The fingerprint containing fuzzy_hash
-   * @returns Number of band entries written (0 if disabled or no hash)
-   */
-  async updateSimHashBands(
-    deviceId: string,
-    fingerprint: Fingerprint,
-  ): Promise<number> {
-    const flags = getSimHashFlags();
-    if (!flags.ENABLED) {
-      return 0;
-    }
-
-    const timestamp = Math.floor(Date.now() / 1000);
-    const bandEntries = buildSimHashBandEntries(
-      deviceId,
-      fingerprint,
-      timestamp,
-    );
-
-    if (bandEntries.length === 0) {
-      return 0;
-    }
-
-    await batchWriteSimHashBands(this.indexWriterDeps, bandEntries);
-    return bandEntries.length;
+    return this.writeAnchor(deviceId, buildIpUaAnchorKey(fingerprint)); // eslint-disable-line no-restricted-syntax
   }
 
   /**
    * Update anchor buckets (session anchor, IP+UA anchor)
-   * @param deviceId - The device ID to add to buckets
-   * @param fingerprint - The fingerprint containing bucket signals
    */
   private async updateAnchorBuckets(
     deviceId: string,
@@ -333,9 +304,6 @@ export class ProfileService {
 
   /**
    * Process a complete profile update (orchestration method)
-   * Handles mutation gating, drift detection, and all index updates
-   * @param payload - Profile update payload with device ID, fingerprint, and context
-   * @returns Result indicating what was done (skipped/written counts)
    */
   async processProfileUpdate(
     payload: ProfileUpdatePayload,
@@ -363,6 +331,8 @@ export class ProfileService {
     await this.updateAnchorBuckets(device_id, fingerprint);
 
     if (existingProfile && !hasDrift) {
+      // Still write to PG device_hashes so it stays fresh
+      await this.updateDeviceHashes(device_id, fingerprint);
       return { skipped: true, reason: "no_drift" };
     }
 
@@ -375,21 +345,19 @@ export class ProfileService {
       hasDrift,
       rawFingerprint: raw_fingerprint,
     });
-    const tier1Writes = await this.updateTier1IndexesWithEvidence(
+
+    const tier1Writes = await this.updateIdentityIndexes(
       device_id,
       fingerprint,
       evidence_codes,
     );
 
-    const simhashBandWrites = await this.updateSimHashBands(
-      device_id,
-      fingerprint,
-    );
+    const pgHashWrite = await this.updateDeviceHashes(device_id, fingerprint);
 
     return {
       skipped: false,
       tier1Writes,
-      simhashBandWrites,
+      pgHashWrite,
     };
   }
 }

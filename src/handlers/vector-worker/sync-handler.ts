@@ -100,6 +100,45 @@ function validateVector(
   return { valid: true };
 }
 
+/** Dispatch table for action handlers. */
+const ACTION_HANDLERS: Record<
+  string,
+  (
+    request: SyncInvokeRequest,
+    startTime: number,
+    deps: SyncHandlerDeps,
+  ) => Promise<SyncInvokeResponse>
+> = {
+  search: (r, t, d) => handleSyncSearch(r as SyncSearchRequest, t, d),
+  upsert: (r, t, d) => handleSyncUpsert(r as SyncUpsertRequest, t, d),
+  list_collections: (r, t, d) =>
+    handleListCollections(r as SyncListCollectionsRequest, t, d),
+  delete_collection: (r, t, d) =>
+    handleDeleteCollection(r as SyncDeleteCollectionRequest, t, d),
+};
+
+/** Convert a caught error into a SyncInvokeResponse. */
+function handleInvokeError(
+  error: unknown,
+  request: SyncInvokeRequest,
+  deps: SyncHandlerDeps,
+): SyncInvokeResponse {
+  deps.logger.error("Sync invoke failed", { error, request });
+  deps.metrics.addMetric("SyncInvokeError", MetricUnit.Count, 1);
+
+  if (error instanceof QdrantError) {
+    const collection =
+      "collection" in request ? (request.collection as string) : "unknown";
+    return handleQdrantError(error, collection);
+  }
+  return errorResponse(
+    error instanceof Error ? error.message : "Unknown error",
+    "UNKNOWN",
+  );
+}
+
+const AUTO_CREATE_ACTIONS = new Set(["search", "upsert"]);
+
 /**
  * Handle a synchronous Lambda invocation for vector operations.
  */
@@ -118,41 +157,24 @@ export async function handleSyncInvoke(
     }
 
     if (
-      (request.action === "search" || request.action === "upsert") &&
-      request.auto_create_collection
+      "auto_create_collection" in request &&
+      request.auto_create_collection &&
+      "collection" in request &&
+      AUTO_CREATE_ACTIONS.has(request.action)
     ) {
       await ensureCollectionExists(request.collection, deps);
     }
 
-    if (request.action === "search") {
-      return await handleSyncSearch(request, startTime, deps);
+    const handler = ACTION_HANDLERS[request.action];
+    if (!handler) {
+      return errorResponse(
+        `Unknown action: ${request.action}`,
+        "INVALID_REQUEST",
+      );
     }
-    if (request.action === "upsert") {
-      return await handleSyncUpsert(request, startTime, deps);
-    }
-    if (request.action === "list_collections") {
-      return await handleListCollections(request, startTime, deps);
-    }
-    if (request.action === "delete_collection") {
-      return await handleDeleteCollection(request, startTime, deps);
-    }
-    return errorResponse(
-      `Unknown action: ${(request as { action: string }).action}`,
-      "INVALID_REQUEST",
-    );
+    return await handler(request, startTime, deps);
   } catch (error) {
-    deps.logger.error("Sync invoke failed", { error, request });
-    deps.metrics.addMetric("SyncInvokeError", MetricUnit.Count, 1);
-
-    if (error instanceof QdrantError) {
-      const collection =
-        "collection" in request ? (request.collection as string) : "unknown";
-      return handleQdrantError(error, collection);
-    }
-    return errorResponse(
-      error instanceof Error ? error.message : "Unknown error",
-      "UNKNOWN",
-    );
+    return handleInvokeError(error, request, deps);
   }
 }
 
