@@ -4,6 +4,8 @@
  * @module handlers/vector-worker/types
  */
 
+import type { QdrantFilter } from "../../services/vector/qdrant-client";
+
 /**
  * Message requesting a vector similarity search in Qdrant.
  *
@@ -91,6 +93,8 @@ export interface SyncSearchRequest {
   score_threshold?: number;
   /** Whether to auto-create collection if missing */
   auto_create_collection?: boolean;
+  /** Optional filter conditions (e.g. mobile screen filter) */
+  filter?: QdrantFilter;
 }
 
 /**

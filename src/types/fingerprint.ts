@@ -39,6 +39,8 @@ export interface Fingerprint {
   features_simhash?: string; // From _features - Browser features SimHash
   client_rects_simhash?: string; // From _clientRects - DOM clientRects SimHash
   fonts_simhash?: string; // From _fonts - Font detection SimHash
+  screen_simhash?: string; // From _screen - Screen resolution SimHash
+  css_media_simhash?: string; // From _cssMedia - CSS media query SimHash
   // H2 fingerprint fields (from sigint h2Probe)
   h2_settings_order?: string[]; // e.g. ["1:65536", "2:0", "4:131072", "5:16384"]
   h2_window_update?: number; // e.g. 12517377
@@ -117,6 +119,12 @@ export interface Fingerprint {
   intl_hash?: string;
   // Console error behavior hash
   console_errors_hash?: string;
+  // Screen resolution hash (encodes exact width x height)
+  screen_hash?: string;
+  // CSS media query hash (encodes device-aspect-ratio, screen dims, color-gamut)
+  css_media_hash?: string;
+  // Device platform (e.g., "iPhone", "iPad", "MacIntel", "Win32", "Linux x86_64")
+  platform?: string;
   // WebGL extension count (capability signal)
   webgl_extensions_count?: number;
 }

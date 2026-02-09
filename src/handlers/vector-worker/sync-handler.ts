@@ -229,6 +229,7 @@ async function handleSyncSearch(
     limit: request.limit ?? 10,
     with_payload: true,
     score_threshold: request.score_threshold ?? 0.7,
+    filter: request.filter,
   };
 
   const results = await deps.qdrantClient.search(

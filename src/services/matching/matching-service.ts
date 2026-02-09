@@ -6,7 +6,8 @@ import { Logger } from "@aws-lambda-powertools/logger";
 import { Metrics } from "@aws-lambda-powertools/metrics";
 import type { Pool } from "pg";
 import { DynamoCacheService } from "../cache";
-import { pgUnifiedMatch } from "../postgres";
+// T1/T1.5 disabled — Qdrant handles all fuzzy matching
+// import { pgUnifiedMatch } from "../postgres";
 import { Fingerprint, FingerprintPayload, MatchResult } from "./types";
 import { MatchTier } from "../../types/matching-tiers";
 import {
@@ -152,20 +153,20 @@ export class MatchingService {
     const identityResult = await this.runIdentityLookups(fingerprint);
     if (identityResult) return this.wrapResult(identityResult, fingerprint);
 
-    // T1 + T1.5: unified PostgreSQL query (stable hash + SimHash LSH)
-    // Always capture pgQueryContext for archive, even when no match
+    // T1 + T1.5: DISABLED — testing T0.5 + T2 only (Qdrant handles all fuzzy matching)
+    // TODO: remove PG entirely if BrowserStack validation passes
     let pgQueryContext: MatchResult["pg_query_context"];
-    if (this.pgPool) {
-      const { match, pgQueryContext: ctx } = await pgUnifiedMatch(
-        this.pgPool,
-        fingerprint,
-      );
-      pgQueryContext = ctx;
-      if (match) {
-        match.pg_query_context = pgQueryContext;
-        return this.wrapResult(match, fingerprint);
-      }
-    }
+    // if (this.pgPool) {
+    //   const { match, pgQueryContext: ctx } = await pgUnifiedMatch(
+    //     this.pgPool,
+    //     fingerprint,
+    //   );
+    //   pgQueryContext = ctx;
+    //   if (match) {
+    //     match.pg_query_context = pgQueryContext;
+    //     return this.wrapResult(match, fingerprint);
+    //   }
+    // }
 
     // Tier 2: Vector similarity search (requires vector infrastructure)
     let tier2Result: MatchResult | null = null;

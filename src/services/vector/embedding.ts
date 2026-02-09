@@ -4,23 +4,25 @@
  * Converts normalized fingerprint data into a 256-dimensional vector
  * suitable for similarity search in Qdrant.
  *
- * Embedding structure (v5 - SimHash preference, H2 decomposition):
- * - Structural hashes (48 dims): htmlElement, maths, fonts, windowFeatures, css, svg
- *   Prefers SimHash variants when available, falls back to SHA-256
- * - Rendering (48 dims): canvas, webgl, audio, gpu - ZEROED for Brave/private
- * - Hardware (14 dims): concurrency, memory, webgl ext, screen, UA (8 dims)
+ * Embedding structure (v7 - data-driven iOS rebalance):
+ * - Structural hashes (80 dims): cssMedia(24), css(16), screen(12),
+ *   htmlElement(12), maths(4), windowFeatures(4), svg(4), intl(4).
+ *   Weights based on XGBoost feature importance analysis (59 payloads, F1=0.96).
+ * - Rendering (36 dims): canvas(8), webgl(8), audio(4), clientRects(8), gpu(8)
+ *   Reduced — only 3.3% importance for iOS differentiation.
+ * - Hardware (24 dims): concurrency, memory, webgl ext, screen (8 dims via
+ *   stringToVector), platform (4 dims), UA (8 dims)
  * - Network (46 dims): JA3/JA4, IP, ASN, H2 (14 dims), TCP tuning
  * - Behavioral (22 dims): timezone, privacy flags, headless, lie count, features
- * - Identity (76 dims): fuzzy hash (76 dims = 30% of 256-bit SimHash)
- * - Reserved (2 dims): future expansion
+ * - Identity (48 dims): fuzzy hash (48 dims)
  *
- * Key improvements in v5:
- * - SimHash preference: structural section uses fp.X_simhash ?? fp.X_hash
- * - H2 decomposition: 14 dims for HTTP/2 fingerprint (settings, headers, window_update)
- * - Dropped stable_hash from identity (cliff-edge in vector space)
- * - Expanded fuzzy_hash from 64 to 76 dims (30% of 256-bit SimHash)
- * - Shrunk UA from 27 to 8 dims (redundant with JA4, easily spoofed)
- * - Hardware shrunk from 32 to 14 dims; network expanded from 32 to 46 dims
+ * Key improvements in v7 (data-driven rebalance):
+ * - cssMedia boosted 8→24 dims (#1 iOS discriminator at 28.4% importance)
+ * - css boosted 8→16 dims (#4 discriminator at 11.3%)
+ * - screen/htmlElement boosted 8→12 each
+ * - maths/svg/intl/windowFeatures shrunk 8→4 (0.0-0.2% importance)
+ * - Rendering shrunk 48→36 (3.3% total importance for iOS)
+ * - Identity shrunk 52→48
  *
  * @module services/vector/embedding
  */
@@ -43,11 +45,13 @@ export interface EmbeddingResult {
  * Current embedding schema version.
  * Increment when the embedding structure changes significantly.
  *
+ * v7: Data-driven rebalance - cssMedia/css/screen boosted, rendering/identity shrunk
+ * v6: iOS differentiation - screen/cssMedia structural, platform encoding, fuzzy shrink
  * v5: SimHash preference, H2 decomposition, drop stable_hash, expand fuzzy
  * v4: Expanded fuzzy_hash from 8 to 64 dims for 256-bit SimHash support
  * v3: Improved IP/ASN encoding, Brave/private handling, JA3/JA4 as bipolar
  */
-export const EMBEDDING_VERSION = 5;
+export const EMBEDDING_VERSION = 7;
 
 /**
  * Expected number of dimensions for the current embedding version.
@@ -149,19 +153,6 @@ function stringToVector(str: string | undefined, dims: number): number[] {
 }
 
 /**
- * Parse screen dimensions string "WxH" to normalized values.
- */
-function parseScreenDims(dims: string | undefined): [number, number] {
-  if (!dims) return [0, 0];
-  const parts = dims.split("x");
-  if (parts.length !== 2) return [0, 0];
-  const width = parseInt(parts[0], 10);
-  const height = parseInt(parts[1], 10);
-  if (isNaN(width) || isNaN(height)) return [0, 0];
-  return [normalize(width, 320, 7680), normalize(height, 240, 4320)];
-}
-
-/**
  * Encode IPv4 to 8 normalized dimensions preserving network structure.
  * Two IPs in the same /24 subnet will have 7 of 8 dimensions identical,
  * making them very close in vector space (unlike hashing which destroys proximity).
@@ -243,54 +234,53 @@ function isBravePrivate(fp: Fingerprint): boolean {
 // SECTION BUILDERS
 // ============================================================================
 
-/** Build structural hashes section (48 dims) - prefers SimHash when available */
+/** Build structural hashes section (80 dims) - weighted by feature importance */
 function buildStructuralSection(fp: Fingerprint): number[] {
   return [
-    ...hashToBipolar(fp.html_element_simhash ?? fp.html_element_hash, 8),
-    ...hashToBipolar(fp.maths_simhash ?? fp.maths_hash, 8),
-    ...hashToBipolar(fp.window_features_simhash ?? fp.window_features_hash, 8),
-    ...hashToBipolar(fp.css_simhash ?? fp.css_hash, 8),
-    ...hashToBipolar(fp.svg_simhash ?? fp.svg_hash, 8),
-    ...hashToBipolar(fp.intl_simhash ?? fp.intl_hash, 8),
+    ...hashToBipolar(fp.css_media_simhash ?? fp.css_media_hash, 24), // #1 discriminator (28.4%)
+    ...hashToBipolar(fp.css_simhash ?? fp.css_hash, 16), // #4 discriminator (11.3%)
+    ...hashToBipolar(fp.screen_simhash ?? fp.screen_hash, 12), // #2 discriminator (14.5%)
+    ...hashToBipolar(fp.html_element_simhash ?? fp.html_element_hash, 12), // #6 discriminator (5.6%)
+    ...hashToBipolar(fp.maths_simhash ?? fp.maths_hash, 4), // 0.0% importance
+    ...hashToBipolar(fp.window_features_simhash ?? fp.window_features_hash, 4), // 0.2%
+    ...hashToBipolar(fp.svg_simhash ?? fp.svg_hash, 4), // 0.0%
+    ...hashToBipolar(fp.intl_simhash ?? fp.intl_hash, 4), // 0.0%
   ];
 }
 
-/** Build rendering section (48 dims) */
+/** Build rendering section (36 dims) - reduced, only 3.3% iOS importance */
 function buildRenderingSection(fp: Fingerprint): number[] {
   // For Brave/private mode, canvas/audio/webgl are randomized - zero them out
   // to prevent false negatives. Rely on structural and network signals instead.
   if (isBravePrivate(fp)) {
     return [
-      ...new Array(12).fill(0), // canvas - randomized
-      ...new Array(12).fill(0), // webgl - randomized
-      ...new Array(8).fill(0), // audio - randomized
+      ...new Array(8).fill(0), // canvas - randomized
+      ...new Array(8).fill(0), // webgl - randomized
+      ...new Array(4).fill(0), // audio - randomized
       ...hashToBipolar(fp.client_rects_hash, 8), // might be stable
       ...stringToVector(fp.gpu_renderer, 8), // stable
     ];
   }
 
-  // Prefer SimHash variants (locality-sensitive) over SHA-256 hashes (exact)
-  // SimHashes capture similarity between devices with similar rendering
   return [
-    ...hashToBipolar(fp.canvas_simhash ?? fp.canvas_hash, 12),
-    ...hashToBipolar(fp.webgl_simhash ?? fp.webgl_hash, 12),
-    ...hashToBipolar(fp.audio_simhash ?? fp.audio_hash, 8),
+    ...hashToBipolar(fp.canvas_simhash ?? fp.canvas_hash, 8),
+    ...hashToBipolar(fp.webgl_simhash ?? fp.webgl_hash, 8),
+    ...hashToBipolar(fp.audio_simhash ?? fp.audio_hash, 4),
     ...hashToBipolar(fp.client_rects_hash, 8),
     ...stringToVector(fp.gpu_renderer, 8),
   ];
 }
 
-/** Build hardware section (14 dims) */
+/** Build hardware section (24 dims) */
 function buildHardwareSection(fp: Fingerprint): number[] {
-  const [screenW, screenH] = parseScreenDims(fp.screen_dims);
   return [
     normalize(fp.hardware_concurrency, 1, 128), // 1 dim
     normalize(fp.device_memory, 0.5, 64), // 1 dim
     normalize(fp.webgl_extensions_count, 0, 100), // 1 dim
-    screenW, // 1 dim
-    screenH, // 1 dim
-    ...stringToVector(fp.user_agent, 8), // 8 dims (shrunk from 27)
-    0, // 1 dim padding
+    ...stringToVector(fp.screen_dims, 8), // 8 dims - maximally different per resolution
+    ...stringToVector(fp.platform, 4), // 4 dims - iPhone vs iPad vs desktop
+    ...stringToVector(fp.user_agent, 8), // 8 dims
+    normalize(fp.hardware_concurrency, 1, 16), // 1 dim - tighter mobile range
   ];
 }
 
@@ -374,10 +364,10 @@ function buildBehavioralSection(fp: Fingerprint): number[] {
   ]; // Total: 22 dims
 }
 
-/** Build identity section (76 dims) - fuzzy hash only, 30% of 256-bit SimHash */
+/** Build identity section (48 dims) - fuzzy hash only */
 function buildIdentitySection(fp: Fingerprint): number[] {
   return [
-    ...hashToBipolar(fp.fuzzy_hash, 76), // 76 dims - encodes 76 bits (30% of 256-bit SimHash)
+    ...hashToBipolar(fp.fuzzy_hash, 48), // 48 dims
   ];
 }
 
@@ -388,14 +378,13 @@ function buildIdentitySection(fp: Fingerprint): number[] {
 /**
  * Compute a 256-dimensional fingerprint embedding vector.
  *
- * Structure (v5):
- * [0-47]   Structural hashes (48 dims) - SimHash preferred, stable in privacy browsers
- * [48-95]  Rendering (48 dims) - zeroed for Brave/private
- * [96-109] Hardware (14 dims) - concurrency, memory, screen, UA
- * [110-155] Network (46 dims) - JA3/JA4, IP, ASN, H2 (14), TCP tuning
- * [156-177] Behavioral (22 dims)
- * [178-253] Identity (76 dims) - fuzzy hash (76 dims)
- * [254-255] Reserved (2 dims)
+ * Structure (v7):
+ * [0-79]   Structural hashes (80 dims) - cssMedia(24), css(16), screen(12), htmlElement(12), rest(16)
+ * [80-115] Rendering (36 dims) - zeroed for Brave/private
+ * [116-139] Hardware (24 dims) - concurrency, memory, screen (8d), platform (4d), UA
+ * [140-185] Network (46 dims) - JA3/JA4, IP, ASN, H2 (14), TCP tuning
+ * [186-207] Behavioral (22 dims)
+ * [208-255] Identity (48 dims) - fuzzy hash
  *
  * @param fingerprint - Normalized fingerprint data
  * @returns Embedding result with vector and metadata
@@ -410,12 +399,25 @@ export function computeEmbedding(fingerprint: Fingerprint): EmbeddingResult {
     ...buildIdentitySection(fingerprint),
   ];
 
-  // Pad remaining with zeros for future expansion
-  const remainingDims = EMBEDDING_DIMENSIONS - vector.length;
-  const padding = new Array(remainingDims).fill(0);
+  // Verify dimension count matches expected (no padding needed in v7)
+  if (vector.length !== EMBEDDING_DIMENSIONS) {
+    // Pad or truncate to maintain compatibility
+    const adjusted =
+      vector.length < EMBEDDING_DIMENSIONS
+        ? [
+            ...vector,
+            ...new Array(EMBEDDING_DIMENSIONS - vector.length).fill(0),
+          ]
+        : vector.slice(0, EMBEDDING_DIMENSIONS);
+    return {
+      vector: adjusted,
+      dimensions: EMBEDDING_DIMENSIONS,
+      version: EMBEDDING_VERSION,
+    };
+  }
 
   return {
-    vector: [...vector, ...padding],
+    vector,
     dimensions: EMBEDDING_DIMENSIONS,
     version: EMBEDDING_VERSION,
   };
@@ -457,7 +459,7 @@ export interface EmbeddingQualityResult {
  * that could pollute the vector index with false similarity matches.
  */
 const QUALITY_THRESHOLDS = {
-  /** Minimum structural hashes required (out of 6: maths, window, html, css, svg, intl) */
+  /** Minimum structural hashes required (out of 8: cssMedia, css, screen, html, maths, window, svg, intl) */
   minStructuralHashes: 2,
   /** Minimum rendering hashes required (out of 3: canvas, webgl, audio) */
   minRenderingHashes: 1,
@@ -489,6 +491,8 @@ export function assessEmbeddingQuality(
     fingerprint.css_hash,
     fingerprint.svg_hash,
     fingerprint.intl_hash,
+    fingerprint.screen_hash,
+    fingerprint.css_media_hash,
   ];
   const structuralCount = structuralHashes.filter(Boolean).length;
 
@@ -506,6 +510,7 @@ export function assessEmbeddingQuality(
     fingerprint.device_memory,
     fingerprint.screen_dims,
     fingerprint.user_agent,
+    fingerprint.platform,
   ];
   const hardwareCount = hardwareSignals.filter(
     (v) => v !== undefined && v !== null,
@@ -515,7 +520,7 @@ export function assessEmbeddingQuality(
   const hasIdentity = !!fingerprint.stable_hash && !!fingerprint.fuzzy_hash;
 
   // Calculate overall score
-  const maxSignals = 6 + 3 + 4 + 2; // structural + rendering + hardware + identity
+  const maxSignals = 8 + 3 + 5 + 2; // structural + rendering + hardware + identity
   const presentSignals =
     structuralCount +
     renderingCount +

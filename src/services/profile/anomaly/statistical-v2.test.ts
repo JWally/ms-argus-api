@@ -205,11 +205,18 @@ describe("statistical-v2", () => {
       ).toBeNull();
     });
 
-    it("computes P(at least one anomaly) for two signals", () => {
+    it("computes confidence-weighted mean for two equal-confidence signals", () => {
       const ja4 = createScore("ja4", 0.5, 0.8);
       const h2 = createScore("h2", 0.5, 0.8);
-      // combined = 1 - (1-0.5)*(1-0.5) = 1 - 0.25 = 0.75
-      expect(computeCombinedScore([ja4, h2], 0.3)).toBeCloseTo(0.75, 3);
+      // weighted mean = (0.5*0.8 + 0.5*0.8) / (0.8 + 0.8) = 0.8 / 1.6 = 0.5
+      expect(computeCombinedScore([ja4, h2], 0.3)).toBeCloseTo(0.5, 3);
+    });
+
+    it("weights higher-confidence signals more", () => {
+      const ja4 = createScore("ja4", 0.8, 1.0); // high confidence
+      const h2 = createScore("h2", 0.2, 0.4); // low confidence
+      // weighted mean = (0.8*1.0 + 0.2*0.4) / (1.0 + 0.4) = 0.88 / 1.4 ≈ 0.629
+      expect(computeCombinedScore([ja4, h2], 0.3)).toBeCloseTo(0.629, 2);
     });
 
     it("handles one strong and one weak signal", () => {
@@ -229,8 +236,8 @@ describe("statistical-v2", () => {
     it("includes signals at or above minimum score threshold", () => {
       const ja4 = createScore("ja4", 0.5, 0.8);
       const h2 = createScore("h2", 0.2, 0.8); // Above minScore (0.15)
-      // combined = 1 - (1-0.5)*(1-0.2) = 1 - 0.4 = 0.6
-      expect(computeCombinedScore([ja4, h2], 0.3)).toBeCloseTo(0.6, 3);
+      // weighted mean = (0.5*0.8 + 0.2*0.8) / (0.8 + 0.8) = 0.56 / 1.6 = 0.35
+      expect(computeCombinedScore([ja4, h2], 0.3)).toBeCloseTo(0.35, 3);
     });
 
     it("respects custom minScore parameter", () => {
@@ -238,8 +245,17 @@ describe("statistical-v2", () => {
       const h2 = createScore("h2", 0.3, 0.8);
       // With minScore=0.4, only ja4 qualifies → null
       expect(computeCombinedScore([ja4, h2], 0.3, 0.4)).toBeNull();
-      // With minScore=0.1, both qualify → 1 - (0.5)(0.7) = 0.65
-      expect(computeCombinedScore([ja4, h2], 0.3, 0.1)).toBeCloseTo(0.65, 3);
+      // With minScore=0.1, both qualify → (0.5*0.8 + 0.3*0.8) / (0.8+0.8) = 0.64/1.6 = 0.4
+      expect(computeCombinedScore([ja4, h2], 0.3, 0.1)).toBeCloseTo(0.4, 3);
+    });
+
+    it("stays in meaningful range with many moderate signals", () => {
+      // 10 signals all scoring 0.3 with confidence 0.8
+      const scores = Array.from({ length: 10 }, (_, i) =>
+        createScore(`sig${i}`, 0.3, 0.8),
+      );
+      // weighted mean = (10 * 0.3 * 0.8) / (10 * 0.8) = 0.3
+      expect(computeCombinedScore(scores, 0.3)).toBeCloseTo(0.3, 3);
     });
   });
 

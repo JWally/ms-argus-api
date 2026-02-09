@@ -232,16 +232,17 @@ export function computeBlendedScore(
 /**
  * Compute combined anomaly score from multiple signals.
  *
- * Uses probability of "at least one anomaly" formula:
- * combined = 1 - ∏(1 - score_i)
+ * Uses confidence-weighted mean: signals with better baselines
+ * contribute more to the combined score. This stays in a meaningful
+ * range regardless of how many signal types exist, unlike the previous
+ * product formula which approached 1.0 with enough moderate signals.
  *
- * This captures the intuition that two weak signals are suspicious:
- * - JA4=0.5, H2=0.5 → combined=0.75 (suspicious!)
- * - JA4=0.8, H2=0.0 → combined=0.80 (single strong signal)
+ * Examples (equal confidence):
+ * - JA4=0.5, H2=0.5 → combined=0.50
+ * - JA4=0.8, H2=0.2 → combined=0.50
+ * - JA4=0.8, H2=0.0 → H2 filtered by minScore → null (single signal)
  *
  * Only includes signals with sufficient confidence and minimum score.
- * The minimum score filter prevents many low-scoring (common) signals
- * from accumulating into false positives via the product formula.
  *
  * @param scores - Array of fingerprint scores
  * @param minConfidence - Minimum confidence to include a score
@@ -262,9 +263,12 @@ export function computeCombinedScore(
     return null; // Need at least 2 signals for combined scoring
   }
 
-  // P(at least one anomaly) = 1 - P(all normal)
-  const pAllNormal = validScores.reduce((acc, s) => acc * (1 - s.score), 1);
-  return 1 - pAllNormal;
+  const weightedSum = validScores.reduce(
+    (acc, s) => acc + s.score * s.confidence,
+    0,
+  );
+  const weightTotal = validScores.reduce((acc, s) => acc + s.confidence, 0);
+  return weightedSum / weightTotal;
 }
 
 // ============================================================================

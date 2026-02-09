@@ -30,8 +30,9 @@ import type {
   SyncUpsertResponse,
   SyncErrorResponse,
 } from "../../handlers/vector-worker/types";
+import type { QdrantFilter } from "../vector/qdrant-client";
 
-const MIN_SCORE_THRESHOLD = 0.7;
+const MIN_SCORE_THRESHOLD = 0.85;
 const HIGH_SCORE_THRESHOLD = 0.9;
 const VECTOR_INVOKE_TIMEOUT_MS = 5000;
 
@@ -43,6 +44,49 @@ export interface VectorMatchDeps {
   profilesTable: string;
   logger: Logger;
   metrics: Metrics;
+}
+
+const SCREEN_FILTER_TOLERANCE = 5;
+
+function parseScreenDims(
+  screenDims: string,
+): { width: number; height: number } | null {
+  const match = screenDims.match(/^(\d+)x(\d+)$/);
+  if (!match) return null;
+  return { width: Number(match[1]), height: Number(match[2]) };
+}
+
+export function buildMobileScreenFilter(
+  fingerprint: Fingerprint,
+): QdrantFilter | undefined {
+  if (!fingerprint.screen_dims || !fingerprint.platform) return undefined;
+
+  const isMobile =
+    fingerprint.platform === "iPhone" ||
+    fingerprint.platform.startsWith("iPad");
+  if (!isMobile) return undefined;
+
+  const dims = parseScreenDims(fingerprint.screen_dims);
+  if (!dims) return undefined;
+
+  return {
+    must: [
+      {
+        key: "screen_width",
+        range: {
+          gte: dims.width - SCREEN_FILTER_TOLERANCE,
+          lte: dims.width + SCREEN_FILTER_TOLERANCE,
+        },
+      },
+      {
+        key: "screen_height",
+        range: {
+          gte: dims.height - SCREEN_FILTER_TOLERANCE,
+          lte: dims.height + SCREEN_FILTER_TOLERANCE,
+        },
+      },
+    ],
+  };
 }
 
 const PRIMARY_EMBEDDING_FEATURES = [
@@ -213,6 +257,7 @@ async function vectorMatch(
     limit: 5,
     score_threshold: MIN_SCORE_THRESHOLD,
     auto_create_collection: true,
+    filter: buildMobileScreenFilter(fingerprint),
   };
 
   let searchResponse: SyncSearchResponse | SyncErrorResponse | null;
@@ -382,6 +427,21 @@ function passesQualityGate(
   return true;
 }
 
+function buildUpsertPayload(fingerprint: Fingerprint): Record<string, unknown> {
+  const screenDims = fingerprint.screen_dims
+    ? parseScreenDims(fingerprint.screen_dims)
+    : null;
+  return {
+    stable_hash: fingerprint.stable_hash,
+    fuzzy_hash: fingerprint.fuzzy_hash,
+    user_agent: fingerprint.user_agent,
+    updated_at: Date.now(),
+    ...(screenDims && { screen_width: screenDims.width }),
+    ...(screenDims && { screen_height: screenDims.height }),
+    ...(fingerprint.platform && { platform: fingerprint.platform }),
+  };
+}
+
 /** Quality-gated upsert — rejects sparse fingerprints to avoid index pollution. */
 export async function upsertDeviceVector(
   deps: UpsertDeps,
@@ -395,12 +455,7 @@ export async function upsertDeviceVector(
     device_id: deviceId,
     vector: computeEmbedding(fingerprint).vector,
     collection: deps.collection,
-    payload: {
-      stable_hash: fingerprint.stable_hash,
-      fuzzy_hash: fingerprint.fuzzy_hash,
-      user_agent: fingerprint.user_agent,
-      updated_at: Date.now(),
-    },
+    payload: buildUpsertPayload(fingerprint),
     auto_create_collection: true,
   };
 

@@ -60,7 +60,7 @@ describe("computeEmbedding", () => {
   it("includes version number", () => {
     const result = computeEmbedding(baseFingerprint);
     expect(result.version).toBe(EMBEDDING_VERSION);
-    expect(result.version).toBe(5);
+    expect(result.version).toBe(7);
   });
 
   it("produces deterministic output for same input", () => {
@@ -80,8 +80,8 @@ describe("computeEmbedding", () => {
 
   it("encodes hash values as bipolar (-1/+1)", () => {
     const result = computeEmbedding(baseFingerprint);
-    // Structural section (first 48 dims) should be bipolar for hash values
-    const structuralSection = result.vector.slice(0, 48);
+    // Structural section (first 80 dims) should be bipolar for hash values
+    const structuralSection = result.vector.slice(0, 80);
     for (const val of structuralSection) {
       expect(val === -1 || val === 0 || val === 1).toBe(true);
     }
@@ -89,22 +89,22 @@ describe("computeEmbedding", () => {
 
   it("normalizes numeric values to 0-1 range", () => {
     const result = computeEmbedding(baseFingerprint);
-    // v5: Hardware section starts at 96, first few values are normalized numerics
-    const hwConcurrency = result.vector[96];
-    const deviceMemory = result.vector[97];
+    // v7: Hardware section starts at 116, first few values are normalized numerics
+    const hwConcurrency = result.vector[116];
+    const deviceMemory = result.vector[117];
     expect(hwConcurrency).toBeGreaterThanOrEqual(0);
     expect(hwConcurrency).toBeLessThanOrEqual(1);
     expect(deviceMemory).toBeGreaterThanOrEqual(0);
     expect(deviceMemory).toBeLessThanOrEqual(1);
   });
 
-  it("pads remaining dimensions with zeros", () => {
+  it("uses all 256 dimensions with no reserved padding", () => {
     const result = computeEmbedding(baseFingerprint);
-    // v5 reserved section (254-255) should be zeros
-    // Structure: 48+48+14+46+22+76 = 254 used dims
-    const reserved = result.vector.slice(254);
-    expect(reserved.every((v) => v === 0)).toBe(true);
-    expect(reserved.length).toBe(2);
+    // v7: 80+36+24+46+22+48 = 256 used dims, no reserved
+    expect(result.vector.length).toBe(256);
+    // Identity section (last 48 dims) should have non-zero values from fuzzy_hash
+    const identitySection = result.vector.slice(208, 256);
+    expect(identitySection.some((v) => v !== 0)).toBe(true);
   });
 
   it("prefers SimHash over SHA-256 in structural section", () => {
@@ -121,9 +121,9 @@ describe("computeEmbedding", () => {
     const resultWith = computeEmbedding(withSimHash);
     const resultWithout = computeEmbedding(withoutSimHash);
 
-    // Structural section dims 8-15 are maths (second 8-dim block)
-    const mathsWithSimHash = resultWith.vector.slice(8, 16);
-    const mathsWithoutSimHash = resultWithout.vector.slice(8, 16);
+    // v7: Maths is at dims 64-67 (after cssMedia(24)+css(16)+screen(12)+htmlElement(12))
+    const mathsWithSimHash = resultWith.vector.slice(64, 68);
+    const mathsWithoutSimHash = resultWithout.vector.slice(64, 68);
 
     // SimHash should produce different encoding than SHA-256
     expect(mathsWithSimHash).not.toEqual(mathsWithoutSimHash);
@@ -142,8 +142,8 @@ describe("computeEmbedding", () => {
     };
     const result = computeEmbedding(shaOnly);
 
-    // Maths is second structural block (dims 8-15)
-    const mathsSection = result.vector.slice(8, 16);
+    // v7: Maths is at dims 64-67
+    const mathsSection = result.vector.slice(64, 68);
     // Should be non-zero (from SHA-256 hash)
     expect(mathsSection.some((v) => v !== 0)).toBe(true);
   });
@@ -167,10 +167,10 @@ describe("computeEmbedding", () => {
     const resultWith = computeEmbedding(withH2);
     const resultWithout = computeEmbedding(baseFingerprint);
 
-    // v5: Network starts at 110, H2 is after ja3(8)+ja4(8)+ip(8)+asn(3) = 27
-    // H2 starts at dim 110+27 = 137, spans 14 dims (137-150)
-    const h2With = resultWith.vector.slice(137, 151);
-    const h2Without = resultWithout.vector.slice(137, 151);
+    // v7: Network starts at 140, H2 is after ja3(8)+ja4(8)+ip(8)+asn(3) = 27
+    // H2 starts at dim 140+27 = 167, spans 14 dims (167-180)
+    const h2With = resultWith.vector.slice(167, 181);
+    const h2Without = resultWithout.vector.slice(167, 181);
 
     // H2 section should differ when H2 data is present
     expect(h2With).not.toEqual(h2Without);
@@ -184,8 +184,8 @@ describe("computeEmbedding", () => {
 
   it("produces zeros for H2 when not present", () => {
     const result = computeEmbedding(baseFingerprint);
-    // H2 starts at 137, spans 14 dims
-    const h2Section = result.vector.slice(137, 151);
+    // v7: H2 starts at 167, spans 14 dims
+    const h2Section = result.vector.slice(167, 181);
     expect(h2Section.every((v) => v === 0)).toBe(true);
   });
 
@@ -204,9 +204,9 @@ describe("computeEmbedding", () => {
     const result1 = computeEmbedding(fp1);
     const result2 = computeEmbedding(fp2);
 
-    // v5: Identity section starts at 178, spans 76 dims
-    const identity1 = result1.vector.slice(178, 254);
-    const identity2 = result2.vector.slice(178, 254);
+    // v7: Identity section starts at 208, spans 48 dims
+    const identity1 = result1.vector.slice(208, 256);
+    const identity2 = result2.vector.slice(208, 256);
 
     // With same fuzzy_hash, identity section should be identical
     // (stable_hash no longer encoded)
@@ -219,12 +219,12 @@ describe("areEmbeddingsCompatible", () => {
     const a: EmbeddingResult = {
       vector: new Array(256).fill(0),
       dimensions: 256,
-      version: 5,
+      version: 7,
     };
     const b: EmbeddingResult = {
       vector: new Array(256).fill(0),
       dimensions: 256,
-      version: 5,
+      version: 7,
     };
     expect(areEmbeddingsCompatible(a, b)).toBe(true);
   });
@@ -233,12 +233,12 @@ describe("areEmbeddingsCompatible", () => {
     const a: EmbeddingResult = {
       vector: new Array(256).fill(0),
       dimensions: 256,
-      version: 4,
+      version: 6,
     };
     const b: EmbeddingResult = {
       vector: new Array(256).fill(0),
       dimensions: 256,
-      version: 5,
+      version: 7,
     };
     expect(areEmbeddingsCompatible(a, b)).toBe(false);
   });
@@ -247,12 +247,12 @@ describe("areEmbeddingsCompatible", () => {
     const a: EmbeddingResult = {
       vector: new Array(128).fill(0),
       dimensions: 128,
-      version: 5,
+      version: 7,
     };
     const b: EmbeddingResult = {
       vector: new Array(256).fill(0),
       dimensions: 256,
-      version: 5,
+      version: 7,
     };
     expect(areEmbeddingsCompatible(a, b)).toBe(false);
   });
@@ -275,6 +275,8 @@ describe("assessEmbeddingQuality", () => {
       css_hash: "hash4",
       svg_hash: "hash5",
       intl_hash: "hash6",
+      screen_hash: "hash7",
+      css_media_hash: "hash8",
       canvas_hash: "canvas",
       webgl_hash: "webgl",
       audio_hash: "audio",
@@ -282,14 +284,15 @@ describe("assessEmbeddingQuality", () => {
       device_memory: 16,
       screen_dims: "1920x1080",
       user_agent: "Mozilla/5.0 Chrome/120",
+      platform: "Win32",
     };
 
     const result = assessEmbeddingQuality(fullFingerprint);
     expect(result.acceptable).toBe(true);
     expect(result.score).toBeGreaterThan(0.5);
-    expect(result.structuralCount).toBe(6);
+    expect(result.structuralCount).toBe(8);
     expect(result.renderingCount).toBe(3);
-    expect(result.hardwareCount).toBe(4);
+    expect(result.hardwareCount).toBe(5);
   });
 
   it("rejects skinny fingerprint missing structural hashes", () => {
@@ -384,8 +387,8 @@ describe("assessEmbeddingQuality", () => {
     };
 
     const result = assessEmbeddingQuality(partialFingerprint);
-    // 2 identity + 2 structural + 1 rendering + 2 hardware = 7 out of 15 max
-    expect(result.score).toBeCloseTo(7 / 15, 2);
+    // 2 identity + 2 structural + 1 rendering + 2 hardware = 7 out of 18 max
+    expect(result.score).toBeCloseTo(7 / 18, 2);
   });
 
   it("rejects when only stable_hash is present (missing fuzzy_hash)", () => {
@@ -512,6 +515,8 @@ describe("assessEmbeddingQuality", () => {
       css_hash: "h4",
       svg_hash: "h5",
       intl_hash: "h6",
+      screen_hash: "h7",
+      css_media_hash: "h8",
       canvas_hash: "canvas",
       webgl_hash: "webgl",
       audio_hash: "audio",
@@ -519,14 +524,15 @@ describe("assessEmbeddingQuality", () => {
       device_memory: 16,
       screen_dims: "1920x1080",
       user_agent: "Mozilla/5.0 Chrome/120",
+      platform: "Win32",
     };
 
     const result = assessEmbeddingQuality(fp);
     expect(result.acceptable).toBe(true);
     expect(result.score).toBe(1.0);
-    expect(result.structuralCount).toBe(6);
+    expect(result.structuralCount).toBe(8);
     expect(result.renderingCount).toBe(3);
-    expect(result.hardwareCount).toBe(4);
+    expect(result.hardwareCount).toBe(5);
     expect(result.reason).toBeUndefined();
   });
 });

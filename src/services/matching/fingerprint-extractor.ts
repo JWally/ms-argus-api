@@ -67,6 +67,8 @@ function extractWorkerScope(device: ArgusPayload["device"], fp: Fingerprint) {
     fp.gpu_renderer = workerScope.webglRenderer;
   if (typeof workerScope.timezoneLocation === "string")
     fp.timezone = workerScope.timezoneLocation;
+  if (typeof workerScope.platform === "string")
+    fp.platform = workerScope.platform;
 }
 
 /**
@@ -113,6 +115,8 @@ const HASH_FIELD_MAP: [keyof ArgusPayload["hashes"], keyof Fingerprint][] = [
   ["features", "features_hash"],
   ["consoleErrors", "console_errors_hash"],
   ["clientRects", "client_rects_hash"],
+  ["screen", "screen_hash"],
+  ["cssMedia", "css_media_hash"],
 ];
 
 /**
@@ -132,6 +136,8 @@ const SIMHASH_FIELD_MAP: [string, keyof Fingerprint][] = [
   ["_canvas2d", "canvas_simhash"],
   ["_canvasWebgl", "webgl_simhash"],
   ["_offlineAudioContext", "audio_simhash"],
+  ["_screen", "screen_simhash"],
+  ["_cssMedia", "css_media_simhash"],
 ];
 
 /**

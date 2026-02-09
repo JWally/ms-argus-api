@@ -100,6 +100,22 @@ describe("extractFingerprint", () => {
       expect(fp.css_hash).toBe("css-h");
       expect(fp.svg_hash).toBe("svg-h");
     });
+
+    it("should extract screen hash", () => {
+      const payload = basePayload({
+        hashes: { stable: "s", fuzzy: "f", screen: "screen-hash-123" },
+      });
+      const fp = extractFingerprint(payload);
+      expect(fp.screen_hash).toBe("screen-hash-123");
+    });
+
+    it("should extract cssMedia hash", () => {
+      const payload = basePayload({
+        hashes: { stable: "s", fuzzy: "f", cssMedia: "cssmedia-hash-456" },
+      });
+      const fp = extractFingerprint(payload);
+      expect(fp.css_media_hash).toBe("cssmedia-hash-456");
+    });
   });
 
   describe("webgl_extensions_count", () => {
@@ -234,6 +250,8 @@ describe("extractFingerprint", () => {
           _canvas2d: "canvas-sim",
           _canvasWebgl: "webgl-sim",
           _offlineAudioContext: "audio-sim",
+          _screen: "screen-sim",
+          _cssMedia: "cssmedia-sim",
         },
       });
       const fp = extractFingerprint(payload);
@@ -249,6 +267,8 @@ describe("extractFingerprint", () => {
       expect(fp.canvas_simhash).toBe("canvas-sim");
       expect(fp.webgl_simhash).toBe("webgl-sim");
       expect(fp.audio_simhash).toBe("audio-sim");
+      expect(fp.screen_simhash).toBe("screen-sim");
+      expect(fp.css_media_simhash).toBe("cssmedia-sim");
     });
 
     it("should not set SimHash fields when underscore-prefixed hashes are absent", () => {
@@ -331,6 +351,7 @@ describe("extractFingerprint", () => {
             deviceMemory: 16,
             webglRenderer: "ANGLE (NVIDIA)",
             timezoneLocation: "America/New_York",
+            platform: "Win32",
           },
         },
       });
@@ -340,6 +361,7 @@ describe("extractFingerprint", () => {
       expect(fp.device_memory).toBe(16);
       expect(fp.gpu_renderer).toBe("ANGLE (NVIDIA)");
       expect(fp.timezone).toBe("America/New_York");
+      expect(fp.platform).toBe("Win32");
     });
 
     it("should extract screen dimensions", () => {

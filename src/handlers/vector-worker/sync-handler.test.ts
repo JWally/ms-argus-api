@@ -98,6 +98,35 @@ describe("handleSyncInvoke", () => {
       expect((result as any).results[0].device_id).toBe("dev_from_payload");
     });
 
+    it("should pass filter through to qdrant search", async () => {
+      const vector = Array(256).fill(0.5);
+      const filter = {
+        must: [
+          { key: "screen_width", range: { gte: 388, lte: 398 } },
+          { key: "screen_height", range: { gte: 847, lte: 857 } },
+        ],
+      };
+      mockQdrantClient.search.mockResolvedValue([]);
+
+      await handleSyncInvoke(
+        {
+          action: "search",
+          vector,
+          collection: "test",
+          filter,
+        } as SyncInvokeRequest,
+        deps,
+      );
+
+      expect(mockQdrantClient.search).toHaveBeenCalledWith("test", {
+        vector,
+        limit: 10,
+        with_payload: true,
+        score_threshold: 0.7,
+        filter,
+      });
+    });
+
     it("should fall back to point ID string when no payload device_id", async () => {
       const vector = Array(256).fill(0.5);
       mockQdrantClient.search.mockResolvedValue([

@@ -21,7 +21,11 @@ vi.mock("./profile-loader", () => ({
 import { mockClient } from "aws-sdk-client-mock";
 import { LambdaClient, InvokeCommand } from "@aws-sdk/client-lambda";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import { vectorMatchWithTimeout, upsertDeviceVector } from "./vector-match";
+import {
+  vectorMatchWithTimeout,
+  upsertDeviceVector,
+  buildMobileScreenFilter,
+} from "./vector-match";
 import type { VectorMatchDeps } from "./vector-match";
 import { loadProfile } from "./profile-loader";
 import { assessEmbeddingQuality } from "../vector/embedding";
@@ -292,5 +296,93 @@ describe("upsertDeviceVector", () => {
     const deps = createDeps();
     const result = await upsertDeviceVector(deps, "dev_001", fingerprint);
     expect(result).toBe(false);
+  });
+
+  it("should include screen and platform metadata in upsert payload", async () => {
+    const upsertResponse = {
+      success: true,
+      device_id: "dev_001",
+      duration_ms: 30,
+    };
+
+    lambdaMock.on(InvokeCommand).resolves({
+      Payload: asPayload(upsertResponse),
+    });
+
+    const deps = createDeps();
+    const fp = {
+      ...fingerprint,
+      screen_dims: "393x852",
+      platform: "iPhone",
+    };
+    await upsertDeviceVector(deps, "dev_001", fp);
+
+    const invokeCall = lambdaMock.commandCalls(InvokeCommand)[0];
+    const payload = JSON.parse(
+      Buffer.from(invokeCall.args[0].input.Payload as Uint8Array).toString(),
+    );
+    expect(payload.payload.screen_width).toBe(393);
+    expect(payload.payload.screen_height).toBe(852);
+    expect(payload.payload.platform).toBe("iPhone");
+  });
+});
+
+describe("buildMobileScreenFilter", () => {
+  it("should return range filter for iPhone", () => {
+    const filter = buildMobileScreenFilter({
+      screen_dims: "393x852",
+      platform: "iPhone",
+    } as any);
+
+    expect(filter).toEqual({
+      must: [
+        { key: "screen_width", range: { gte: 388, lte: 398 } },
+        { key: "screen_height", range: { gte: 847, lte: 857 } },
+      ],
+    });
+  });
+
+  it("should return range filter for iPad", () => {
+    const filter = buildMobileScreenFilter({
+      screen_dims: "1024x1366",
+      platform: "iPad",
+    } as any);
+
+    expect(filter).toBeDefined();
+    expect(filter!.must).toHaveLength(2);
+  });
+
+  it("should return undefined for desktop platform", () => {
+    const filter = buildMobileScreenFilter({
+      screen_dims: "1920x1080",
+      platform: "MacIntel",
+    } as any);
+
+    expect(filter).toBeUndefined();
+  });
+
+  it("should return undefined when platform is missing", () => {
+    const filter = buildMobileScreenFilter({
+      screen_dims: "393x852",
+    } as any);
+
+    expect(filter).toBeUndefined();
+  });
+
+  it("should return undefined when screen_dims is missing", () => {
+    const filter = buildMobileScreenFilter({
+      platform: "iPhone",
+    } as any);
+
+    expect(filter).toBeUndefined();
+  });
+
+  it("should return undefined for invalid screen_dims format", () => {
+    const filter = buildMobileScreenFilter({
+      screen_dims: "invalid",
+      platform: "iPhone",
+    } as any);
+
+    expect(filter).toBeUndefined();
   });
 });
