@@ -31,14 +31,6 @@ export interface MatchingWorkerEnvConfig extends BaseEnvConfig {
   PAYLOAD_ARCHIVE_BUCKET?: string;
   /** Optional: Sampling rate for payload archiving (0.0 to 1.0) */
   PAYLOAD_ARCHIVE_SAMPLE_RATE?: string;
-  /** Optional: PostgreSQL host for shadow-mode T1/T1.5 matching */
-  POSTGRES_HOST?: string;
-  /** Optional: PostgreSQL port (default 5432) */
-  POSTGRES_PORT?: string;
-  /** Optional: PostgreSQL database name */
-  POSTGRES_DB?: string;
-  /** Optional: Secrets Manager ARN for PostgreSQL credentials */
-  POSTGRES_SECRET_ARN?: string;
 }
 
 /**
@@ -47,14 +39,6 @@ export interface MatchingWorkerEnvConfig extends BaseEnvConfig {
 export interface ProfileUpdaterEnvConfig extends BaseEnvConfig {
   /** Optional: SQS queue URL for vector operations. If set, enables vector upserts. */
   VECTOR_QUEUE_URL?: string;
-  /** Optional: PostgreSQL host for dual-write T1/T1.5 indexes */
-  POSTGRES_HOST?: string;
-  /** Optional: PostgreSQL port (default 5432) */
-  POSTGRES_PORT?: string;
-  /** Optional: PostgreSQL database name */
-  POSTGRES_DB?: string;
-  /** Optional: Secrets Manager ARN for PostgreSQL credentials */
-  POSTGRES_SECRET_ARN?: string;
 }
 
 /**
@@ -131,10 +115,6 @@ export function getMatchingWorkerEnv(): MatchingWorkerEnvConfig {
       "VECTOR_COLLECTION",
       "PAYLOAD_ARCHIVE_BUCKET",
       "PAYLOAD_ARCHIVE_SAMPLE_RATE",
-      "POSTGRES_HOST",
-      "POSTGRES_PORT",
-      "POSTGRES_DB",
-      "POSTGRES_SECRET_ARN",
     ],
   );
 }
@@ -153,13 +133,7 @@ export function getProfileUpdaterEnv(): ProfileUpdaterEnvConfig {
       "TIER2_BUCKETS_TABLE",
     ],
     "argus-profile",
-    [
-      "VECTOR_QUEUE_URL",
-      "POSTGRES_HOST",
-      "POSTGRES_PORT",
-      "POSTGRES_DB",
-      "POSTGRES_SECRET_ARN",
-    ],
+    ["VECTOR_QUEUE_URL"],
   );
 }
 

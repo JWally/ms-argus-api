@@ -14,7 +14,6 @@
 // real workloads to find optimal cost/performance balance for each function.
 
 import { Duration } from "aws-cdk-lib";
-import * as ec2 from "aws-cdk-lib/aws-ec2";
 
 /**
  * Stage-specific configuration for infrastructure resources
@@ -100,17 +99,6 @@ export interface StageConfig {
       targetUtilizationPercent: number; // Target utilization (e.g., 70%)
       maxCapacityMultiplier: number; // Max capacity as multiplier of base (e.g., 2 = 200%)
     };
-  };
-
-  // RDS PostgreSQL configuration for SimHash-based T1/T1.5 matching
-  rds: {
-    enabled: boolean;
-    instanceClass: ec2.InstanceSize;
-    allocatedStorageGb: number;
-    maxAllocatedStorageGb: number;
-    backupRetentionDays: number;
-    deletionProtection: boolean;
-    multiAz: boolean;
   };
 
   // Valkey (ElastiCache Serverless) configuration for statistical anomaly detection
@@ -220,17 +208,6 @@ const devConfig: StageConfig = {
     },
   },
 
-  // RDS PostgreSQL - enabled in dev for SimHash matching
-  rds: {
-    enabled: true,
-    instanceClass: ec2.InstanceSize.MICRO, // ~$12/mo
-    allocatedStorageGb: 20,
-    maxAllocatedStorageGb: 40,
-    backupRetentionDays: 1,
-    deletionProtection: false,
-    multiAz: false,
-  },
-
   // Valkey - enabled in dev for statistical anomaly detection testing
   valkey: {
     enabled: true,
@@ -326,17 +303,6 @@ const prodConfig: StageConfig = {
       targetUtilizationPercent: 70,
       maxCapacityMultiplier: 2,
     },
-  },
-
-  // RDS PostgreSQL - enabled in prod for SimHash matching
-  rds: {
-    enabled: true,
-    instanceClass: ec2.InstanceSize.SMALL, // ~$24/mo, 2GB RAM
-    allocatedStorageGb: 20,
-    maxAllocatedStorageGb: 100,
-    backupRetentionDays: 7,
-    deletionProtection: true,
-    multiAz: true,
   },
 
   // Valkey - enabled in prod for statistical anomaly detection

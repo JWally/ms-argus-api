@@ -496,7 +496,7 @@ describe("MatchingService", () => {
       expect(result.confidence).toBeCloseTo(0.99, 10);
     });
 
-    it("should fall through to new device when identity fails and no PG pool", async () => {
+    it("should fall through to new device when identity fails and no vector search", async () => {
       dynamoMock.on(GetItemCommand).resolves({ Item: undefined });
       dynamoMock.on(QueryCommand).resolves({ Items: [] });
 
@@ -506,7 +506,7 @@ describe("MatchingService", () => {
       };
 
       const { result } = await service.runTieredMatching(fingerprint);
-      // No PG pool configured → skips T1/T1.5 → falls through to new device
+      // No vector search configured → falls through to new device
       expect(result.is_new_device).toBe(true);
       expect(result.match_tier).toBe(-1);
     });

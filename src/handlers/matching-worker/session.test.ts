@@ -173,10 +173,9 @@ describe("buildSessionResponseData", () => {
     expect((result.analysis as any).suspicious).toHaveLength(1);
   });
 
-  it("should include simhash and vector details when present", () => {
+  it("should include vector and fuzzy match details when present", () => {
     const matchWithDetails = {
       ...baseMatchResult,
-      simhash_details: { hamming_distance: 3 },
       fuzzy_match_info: { distance: 5 },
       vector_match_details: { similarity_score: 0.92 },
       ip_history_context: { known_ip: true },
@@ -188,7 +187,6 @@ describe("buildSessionResponseData", () => {
       anomalies: [],
     });
 
-    expect((result.analysis as any).simhash_details).toBeDefined();
     expect((result.analysis as any).fuzzy_match_info).toBeDefined();
     expect((result.analysis as any).vector_match_details).toBeDefined();
     expect((result.analysis as any).ip_history_context).toBeDefined();

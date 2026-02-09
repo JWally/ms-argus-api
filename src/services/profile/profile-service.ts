@@ -4,10 +4,9 @@ import {
   PutItemCommand,
 } from "@aws-sdk/client-dynamodb";
 import { marshall, unmarshall } from "@aws-sdk/util-dynamodb";
-import { Logger } from "@aws-lambda-powertools/logger";
-import type { Pool } from "pg";
+
 import { DynamoCacheService } from "../cache";
-import { pgUpsertDeviceHashes } from "../postgres";
+
 import { Fingerprint, ProfileUpdatePayload, DeviceProfile } from "./types";
 import { hasSignificantDrift } from "./drift-detection";
 import { computeFlags, computeRiskScore } from "./flag-computation";
@@ -23,11 +22,6 @@ import {
   buildSessionAnchorKey,
   buildIpUaAnchorKey,
 } from "../../helpers/bucket-keys";
-import { SIMHASH_CONFIG } from "../../helpers/constants";
-
-const pgLogger = new Logger({
-  serviceName: process.env.POWERTOOLS_SERVICE_NAME || "postgres-write",
-});
 
 /**
  * Configuration for the profile service
@@ -61,15 +55,12 @@ export interface ProfileServiceDeps {
   dynamodb: DynamoDBClient;
   cache: DynamoCacheService;
   config: ProfileServiceConfig;
-  /** PostgreSQL pool for device_hashes writes (T1/T1.5) */
-  pgPool?: Pool;
 }
 
 interface ProfileUpdateResult {
   skipped: boolean;
   reason?: "mutation_gate" | "no_drift";
   tier1Writes?: number;
-  pgHashWrite?: boolean;
 }
 
 /** Build the profile data record for DynamoDB, including IP history and timestamps. */
@@ -132,7 +123,6 @@ function buildProfileData(opts: {
  */
 export class ProfileService {
   private indexWriterDeps: IndexWriterDeps;
-  private readonly pgPool: Pool | null;
 
   constructor(private deps: ProfileServiceDeps) {
     this.indexWriterDeps = {
@@ -140,7 +130,6 @@ export class ProfileService {
       tier1IndexTable: deps.config.tier1IndexTable,
       tier2BucketsTable: deps.config.tier2BucketsTable,
     };
-    this.pgPool = deps.pgPool ?? null;
   }
 
   /**
@@ -205,7 +194,6 @@ export class ProfileService {
 
   /**
    * Update identity indexes (pubkey#, evercookie#, sigint#) in DynamoDB tier1IndexTable.
-   * Hash entries (stable#, fuzzy#) are now written to PostgreSQL device_hashes only.
    *
    * @returns Number of DynamoDB identity index entries written
    */
@@ -234,35 +222,6 @@ export class ProfileService {
 
     await batchWriteTier1Indexes(this.indexWriterDeps, identityEntries);
     return identityEntries.length;
-  }
-
-  /**
-   * Upsert device hashes (stable + fuzzy + bands) to PostgreSQL device_hashes table.
-   * Replaces the old dual-write to both DynamoDB and PG.
-   */
-  async updateDeviceHashes(
-    deviceId: string,
-    fingerprint: Fingerprint,
-  ): Promise<boolean> {
-    if (!this.pgPool) return false;
-    if (!fingerprint.stable_hash && !fingerprint.fuzzy_hash) return false;
-
-    const timestamp = Math.floor(Date.now() / 1000);
-    const expiresAt = timestamp + SIMHASH_CONFIG.BAND_TTL_DAYS * 86400;
-
-    try {
-      await pgUpsertDeviceHashes(this.pgPool, {
-        deviceId,
-        stableHash: fingerprint.stable_hash,
-        fuzzyHash: fingerprint.fuzzy_hash,
-        lastSeen: timestamp,
-        expiresAt,
-      });
-      return true;
-    } catch (err) {
-      pgLogger.warn("Postgres device_hashes write failed", { err });
-      return false;
-    }
   }
 
   /**
@@ -331,8 +290,6 @@ export class ProfileService {
     await this.updateAnchorBuckets(device_id, fingerprint);
 
     if (existingProfile && !hasDrift) {
-      // Still write to PG device_hashes so it stays fresh
-      await this.updateDeviceHashes(device_id, fingerprint);
       return { skipped: true, reason: "no_drift" };
     }
 
@@ -352,12 +309,9 @@ export class ProfileService {
       evidence_codes,
     );
 
-    const pgHashWrite = await this.updateDeviceHashes(device_id, fingerprint);
-
     return {
       skipped: false,
       tier1Writes,
-      pgHashWrite,
     };
   }
 }

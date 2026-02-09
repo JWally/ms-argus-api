@@ -5,7 +5,7 @@
  */
 
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import type { Pool } from "pg";
+
 import {
   ProfileService,
   ProfileServiceConfig,
@@ -63,13 +63,11 @@ export function createProfileService(deps: {
   dynamodb: DynamoDBClient;
   cacheService: DynamoCacheService;
   envConfig: ProfileUpdaterEnvConfig;
-  pgPool?: Pool | null;
 }): ProfileService {
   const serviceDeps: ProfileServiceDeps = {
     dynamodb: deps.dynamodb,
     cache: deps.cacheService,
     config: getConfig(deps.envConfig),
-    pgPool: deps.pgPool ?? undefined,
   };
   return new ProfileService(serviceDeps);
 }

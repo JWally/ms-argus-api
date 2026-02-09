@@ -45,12 +45,6 @@ interface WorkersConstructProps {
   vectorWorkerArn?: string;
   /** Optional: Qdrant collection name for fingerprint vectors. Defaults to 'fingerprints'. */
   vectorCollection?: string;
-  /** Optional: PostgreSQL endpoint for SimHash matching. */
-  postgresEndpoint?: string;
-  /** Optional: PostgreSQL credentials secret ARN. */
-  postgresSecretArn?: string;
-  /** Optional: PostgreSQL database name. */
-  postgresDatabaseName?: string;
   /** Optional: Valkey endpoint for statistical anomaly detection. */
   valkeyEndpoint?: string;
   /** Optional: Security group for Valkey access. */
@@ -190,13 +184,6 @@ export class WorkersConstruct extends Construct {
           PAYLOAD_ARCHIVE_BUCKET: payloadArchiveBucket.bucketName,
           PAYLOAD_ARCHIVE_SAMPLE_RATE: stage === "prod" ? "0" : "1.0",
         }),
-        // PostgreSQL configuration for T1/T1.5 matching (device_hashes table)
-        ...(props.postgresEndpoint && {
-          POSTGRES_HOST: props.postgresEndpoint,
-          POSTGRES_PORT: "5432",
-          POSTGRES_DB: props.postgresDatabaseName as string,
-          POSTGRES_SECRET_ARN: props.postgresSecretArn as string,
-        }),
         // Valkey configuration for statistical anomaly detection
         ...(valkeyEndpoint && {
           VALKEY_ENDPOINT: valkeyEndpoint,
@@ -268,28 +255,10 @@ export class WorkersConstruct extends Construct {
       );
     }
 
-    // Grant Secrets Manager read for PostgreSQL credentials
-    if (props.postgresSecretArn) {
-      const pgSecret = secretsmanager.Secret.fromSecretCompleteArn(
-        this,
-        "PgSecretMatching",
-        props.postgresSecretArn,
-      );
-      pgSecret.grantRead(this.matchingWorker);
-    }
-
     // =====================================
     // PROFILE UPDATER LAMBDA
     // =====================================
-    // VPC configuration for profile updater (required for PostgreSQL access)
-    const profileUpdaterVpcConfig =
-      vpc && lambdaSecurityGroup && props.postgresEndpoint
-        ? {
-            vpc,
-            vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
-            securityGroups: [lambdaSecurityGroup],
-          }
-        : {};
+    const profileUpdaterVpcConfig = {};
 
     this.profileUpdater = new lambda.NodejsFunction(this, "ProfileUpdater", {
       ...commonConfig,
@@ -309,13 +278,6 @@ export class WorkersConstruct extends Construct {
         TIER2_BUCKETS_TABLE: tier2BucketsTable.tableName,
         // Optional: Vector queue for Qdrant embeddings (feature flag)
         ...(vectorQueue && { VECTOR_QUEUE_URL: vectorQueue.queueUrl }),
-        // PostgreSQL configuration for device_hashes writes (T1/T1.5)
-        ...(props.postgresEndpoint && {
-          POSTGRES_HOST: props.postgresEndpoint,
-          POSTGRES_PORT: "5432",
-          POSTGRES_DB: props.postgresDatabaseName as string,
-          POSTGRES_SECRET_ARN: props.postgresSecretArn as string,
-        }),
       },
     });
 
@@ -340,16 +302,6 @@ export class WorkersConstruct extends Construct {
     // Optional: Grant send permission to vector queue for Qdrant embeddings
     if (vectorQueue) {
       vectorQueue.grantSendMessages(this.profileUpdater);
-    }
-
-    // Grant Secrets Manager read for PostgreSQL credentials
-    if (props.postgresSecretArn) {
-      const pgSecret = secretsmanager.Secret.fromSecretCompleteArn(
-        this,
-        "PgSecretProfile",
-        props.postgresSecretArn,
-      );
-      pgSecret.grantRead(this.profileUpdater);
     }
 
     // =====================================

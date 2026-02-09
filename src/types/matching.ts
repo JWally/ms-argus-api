@@ -67,8 +67,6 @@ export interface SessionCacheValue {
   evidence_codes: EvidenceCode[];
   /** Anomalies detected during matching */
   anomalies?: SessionAnomalySignal[];
-  /** SimHash details for tier 1.5 matches */
-  simhash_details?: SimHashDetails;
   /** Fuzzy hash comparison info */
   fuzzy_match_info?: FuzzyMatchInfo;
   /** Vector match details for Tier 2 Qdrant matches */
@@ -133,23 +131,6 @@ export interface FingerprintPayload {
 }
 
 /**
- * SimHash match details for debugging and analytics.
- * Exposed when a match is made via Tier 1.5 SimHash LSH.
- */
-export interface SimHashDetails {
-  /** The incoming fingerprint's fuzzy_hash */
-  incoming_hash: string;
-  /** The matched device's fuzzy_hash */
-  matched_hash: string;
-  /** Number of bits different (0-64) */
-  hamming_distance: number;
-  /** Similarity score (1 - distance/64), range 0-1 */
-  similarity: number;
-  /** Number of LSH bands that matched (2-4) */
-  bands_matched: number;
-}
-
-/**
  * Fuzzy hash comparison info for all match tiers.
  * Shows how much the incoming fingerprint has drifted from the stored profile.
  * Computed at Tier 0.5, 1, and 1.5 where we have the stored fuzzy_hash available.
@@ -184,23 +165,6 @@ export interface VectorMatchDetails {
   primary_match_features: string[];
 }
 
-/** Summary of a candidate row from the PG unified match query. */
-export interface PgQueryCandidate {
-  device_id: string;
-  band_matches: number;
-  exact_match: boolean;
-  hamming_distance?: number;
-  similarity?: number;
-}
-
-/** Context from the PG unified match query, included in archive payloads. */
-export interface PgQueryContext {
-  /** All candidate rows returned by the query */
-  candidates: PgQueryCandidate[];
-  /** Total rows returned by the SQL query */
-  total_rows: number;
-}
-
 /** Result of device matching. */
 export interface MatchResult {
   /** Matched or newly created device ID */
@@ -217,8 +181,6 @@ export interface MatchResult {
   flags: string[];
   /** Evidence codes showing how match was made */
   evidence_codes: EvidenceCode[];
-  /** SimHash details for tier 1.5 matches */
-  simhash_details?: SimHashDetails;
   /** Fuzzy hash comparison info */
   fuzzy_match_info?: FuzzyMatchInfo;
   /** Vector match details for Tier 2 Qdrant matches */
@@ -231,8 +193,6 @@ export interface MatchResult {
     unique_asns_24h: number;
     confidence_adjustment: number;
   };
-  /** PG unified match query context (candidates considered) */
-  pg_query_context?: PgQueryContext;
 }
 
 /**

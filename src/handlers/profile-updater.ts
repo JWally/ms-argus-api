@@ -19,11 +19,11 @@ import { SQSHandler } from "aws-lambda";
 import { Logger } from "@aws-lambda-powertools/logger";
 import { Metrics } from "@aws-lambda-powertools/metrics";
 import { SQSClient } from "@aws-sdk/client-sqs";
-import type { Pool } from "pg";
+
 import { processSqsBatch } from "../helpers/sqs-batch";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoCacheService } from "../services/cache";
-import { getPool } from "../services/postgres";
+
 import { getProfileUpdaterEnv } from "../config/env";
 import {
   SESSION_TTL_SECONDS,
@@ -52,14 +52,6 @@ const cacheService = new DynamoCacheService(dynamodb, {
 const sqsClient = envConfig.VECTOR_QUEUE_URL ? new SQSClient({}) : null;
 const vectorQueueUrl = envConfig.VECTOR_QUEUE_URL;
 
-// PostgreSQL pool for dual-write T1/T1.5 indexes (singleton, lazy init)
-let pgPool: Pool | null | undefined;
-async function getPgPool(): Promise<Pool | null> {
-  if (pgPool !== undefined) return pgPool;
-  pgPool = await getPool();
-  return pgPool;
-}
-
 /**
  * AWS Lambda handler for the profile updater.
  *
@@ -84,12 +76,10 @@ async function getPgPool(): Promise<Pool | null> {
  * @see {@link createProfileService} for service configuration
  */
 export const handler: SQSHandler = async (event) => {
-  const pool = await getPgPool();
   const service = createProfileService({
     dynamodb,
     cacheService,
     envConfig,
-    pgPool: pool,
   });
   return processSqsBatch(
     event.Records,

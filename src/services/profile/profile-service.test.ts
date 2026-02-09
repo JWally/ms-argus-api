@@ -387,29 +387,6 @@ describe("ProfileService", () => {
     });
   });
 
-  describe("updateDeviceHashes", () => {
-    it("should return false when no pgPool is configured", async () => {
-      // service was created without pgPool — default behavior
-      const result = await service.updateDeviceHashes("dev_123", {
-        stable_hash: "abc",
-        fuzzy_hash: "def",
-      });
-      expect(result).toBe(false);
-    });
-
-    it("should return false when fingerprint has no hashes", async () => {
-      const result = await service.updateDeviceHashes("dev_123", {});
-      expect(result).toBe(false);
-    });
-
-    it("should return false when both stable_hash and fuzzy_hash are missing", async () => {
-      const result = await service.updateDeviceHashes("dev_123", {
-        canvas_hash: "canvas",
-      });
-      expect(result).toBe(false);
-    });
-  });
-
   describe("updateSessionAnchorBucket / writeAnchor", () => {
     it("should return false when anchor key is null (missing fingerprint fields)", async () => {
       // buildSessionAnchorKey returns null if ip_address or user_agent or screen_dims is missing

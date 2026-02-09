@@ -2,9 +2,7 @@ import type { SQSEvent } from "aws-lambda";
 
 /** Admin request for direct Lambda invocation (Valkey cache management). */
 export interface AdminRequest {
-  action: "flush_cache" | "cache_stats" | "run_pg_migration";
-  /** Optional SQL to execute (for run_pg_migration) */
-  sql?: string;
+  action: "flush_cache" | "cache_stats";
 }
 
 /** Admin response returned from direct Lambda invocation. */

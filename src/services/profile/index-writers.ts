@@ -16,7 +16,6 @@ import { batchWriteWithRetry } from "../../helpers/batch-write";
  * Includes:
  * - Tier 0.5: Identity matches (PUBLIC_KEY_MATCH, EVERCOOKIE_MATCH, SIGINT_ID_MATCH)
  * - Tier 1: Hash matches (STABLE_HASH_MATCH, FUZZY_HASH_MATCH)
- * - Tier 1.5: SimHash LSH matches (SIMHASH_MATCH)
  * - Time-bounded anchors: SESSION_ANCHOR_BUCKET (10min), IP_UA_ANCHOR_BUCKET (3min)
  * - NEW_DEVICE: First time seeing this device, must create indexes for future lookups
  */
@@ -26,7 +25,7 @@ export const ASSOCIATION_ALLOWED_EVIDENCE: readonly string[] = [
   "SIGINT_ID_MATCH",
   "STABLE_HASH_MATCH",
   "FUZZY_HASH_MATCH",
-  "SIMHASH_MATCH",
+
   "SESSION_ANCHOR_BUCKET",
   "IP_UA_ANCHOR_BUCKET",
   "NEW_DEVICE",
@@ -63,7 +62,7 @@ const IDENTITY_FIELDS: {
 
 /**
  * Build identity index entries (evercookie, sigint, public key) for DynamoDB.
- * Hash indexes (stable#, fuzzy#) are now in PostgreSQL device_hashes only.
+ * Hash indexes are not written to DynamoDB (only identity fields).
  */
 export function buildIdentityIndexEntries(
   deviceId: string,

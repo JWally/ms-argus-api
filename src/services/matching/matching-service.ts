@@ -4,10 +4,9 @@ import { SQSClient, SendMessageCommand } from "@aws-sdk/client-sqs";
 import { LambdaClient } from "@aws-sdk/client-lambda";
 import { Logger } from "@aws-lambda-powertools/logger";
 import { Metrics } from "@aws-lambda-powertools/metrics";
-import type { Pool } from "pg";
+
 import { DynamoCacheService } from "../cache";
-// T1/T1.5 disabled — Qdrant handles all fuzzy matching
-// import { pgUnifiedMatch } from "../postgres";
+
 import { Fingerprint, FingerprintPayload, MatchResult } from "./types";
 import { MatchTier } from "../../types/matching-tiers";
 import {
@@ -58,8 +57,6 @@ export interface MatchingServiceDeps {
   lambda?: LambdaClient;
   logger?: Logger;
   metrics?: Metrics;
-  /** PostgreSQL pool for T1/T1.5 matching (required for hash + SimHash) */
-  pgPool?: Pool;
 }
 
 export class MatchingService {
@@ -68,10 +65,8 @@ export class MatchingService {
   private vectorDeps: VectorMatchDeps | null;
   private anchorDeps: SessionAnchorDeps;
   private readonly useVectorSearch: boolean;
-  private readonly pgPool: Pool | null;
 
   constructor(private deps: MatchingServiceDeps) {
-    this.pgPool = deps.pgPool ?? null;
     this.cacheDeps = { cache: deps.cache };
     this.indexLookupDeps = {
       dynamodb: deps.dynamodb,
@@ -146,27 +141,12 @@ export class MatchingService {
     };
   }
 
-  /** Waterfall: identity → PG unified (hash + simhash) → vector → anchors → new device */
+  /** Waterfall: identity → vector → anchors → new device */
   async runTieredMatching(
     fingerprint: Fingerprint,
   ): Promise<{ result: MatchResult; tier2TimedOut: boolean }> {
     const identityResult = await this.runIdentityLookups(fingerprint);
     if (identityResult) return this.wrapResult(identityResult, fingerprint);
-
-    // T1 + T1.5: DISABLED — testing T0.5 + T2 only (Qdrant handles all fuzzy matching)
-    // TODO: remove PG entirely if BrowserStack validation passes
-    let pgQueryContext: MatchResult["pg_query_context"];
-    // if (this.pgPool) {
-    //   const { match, pgQueryContext: ctx } = await pgUnifiedMatch(
-    //     this.pgPool,
-    //     fingerprint,
-    //   );
-    //   pgQueryContext = ctx;
-    //   if (match) {
-    //     match.pg_query_context = pgQueryContext;
-    //     return this.wrapResult(match, fingerprint);
-    //   }
-    // }
 
     // Tier 2: Vector similarity search (requires vector infrastructure)
     let tier2Result: MatchResult | null = null;
@@ -180,7 +160,6 @@ export class MatchingService {
       tier2Result = vectorResult.result;
       timedOut = vectorResult.timedOut;
       if (tier2Result) {
-        tier2Result.pg_query_context = pgQueryContext;
         return this.wrapResult(tier2Result, fingerprint, timedOut);
       }
     }
@@ -190,18 +169,15 @@ export class MatchingService {
       fingerprint,
     );
     if (sessionResult) {
-      sessionResult.pg_query_context = pgQueryContext;
       return this.wrapResult(sessionResult, fingerprint, timedOut);
     }
 
     const ipUaResult = await ipUaAnchorLookup(this.anchorDeps, fingerprint);
     if (ipUaResult) {
-      ipUaResult.pg_query_context = pgQueryContext;
       return this.wrapResult(ipUaResult, fingerprint, timedOut);
     }
 
     const newDevice = this.createNewDevice();
-    newDevice.pg_query_context = pgQueryContext;
     return { result: newDevice, tier2TimedOut: timedOut };
   }
 

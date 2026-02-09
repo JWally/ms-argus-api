@@ -15,7 +15,7 @@ import { SQSClient } from "@aws-sdk/client-sqs";
 import { LambdaClient } from "@aws-sdk/client-lambda";
 import { Logger } from "@aws-lambda-powertools/logger";
 import { Metrics } from "@aws-lambda-powertools/metrics";
-import type { Pool } from "pg";
+
 import { DynamoCacheService } from "../../services/cache";
 import { SESSION_TTL_SECONDS, TIER2_TIMEOUT_MS } from "../../helpers/constants";
 import type { MatchingWorkerEnvConfig } from "../../config/env";
@@ -58,7 +58,6 @@ export function createMatchingService(deps: {
   envConfig: MatchingWorkerEnvConfig;
   logger?: Logger;
   metrics?: Metrics;
-  pgPool?: Pool | null;
 }): MatchingService {
   const serviceDeps: MatchingServiceDeps = {
     dynamodb: deps.dynamodb,
@@ -69,8 +68,6 @@ export function createMatchingService(deps: {
     lambda: deps.lambda,
     logger: deps.logger,
     metrics: deps.metrics,
-    // PostgreSQL shadow-mode (optional)
-    pgPool: deps.pgPool ?? undefined,
   };
   return new MatchingService(serviceDeps);
 }
