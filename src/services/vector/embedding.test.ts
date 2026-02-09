@@ -60,7 +60,7 @@ describe("computeEmbedding", () => {
   it("includes version number", () => {
     const result = computeEmbedding(baseFingerprint);
     expect(result.version).toBe(EMBEDDING_VERSION);
-    expect(result.version).toBe(7);
+    expect(result.version).toBe(8);
   });
 
   it("produces deterministic output for same input", () => {
@@ -89,7 +89,7 @@ describe("computeEmbedding", () => {
 
   it("normalizes numeric values to 0-1 range", () => {
     const result = computeEmbedding(baseFingerprint);
-    // v7: Hardware section starts at 116, first few values are normalized numerics
+    // v8: Hardware section starts at 116, first few values are normalized numerics
     const hwConcurrency = result.vector[116];
     const deviceMemory = result.vector[117];
     expect(hwConcurrency).toBeGreaterThanOrEqual(0);
@@ -100,7 +100,7 @@ describe("computeEmbedding", () => {
 
   it("uses all 256 dimensions with no reserved padding", () => {
     const result = computeEmbedding(baseFingerprint);
-    // v7: 80+36+24+46+22+48 = 256 used dims, no reserved
+    // v8: 80+36+24+35+33+48 = 256 used dims, no reserved
     expect(result.vector.length).toBe(256);
     // Identity section (last 48 dims) should have non-zero values from fuzzy_hash
     const identitySection = result.vector.slice(208, 256);
@@ -121,7 +121,7 @@ describe("computeEmbedding", () => {
     const resultWith = computeEmbedding(withSimHash);
     const resultWithout = computeEmbedding(withoutSimHash);
 
-    // v7: Maths is at dims 64-67 (after cssMedia(24)+css(16)+screen(12)+htmlElement(12))
+    // v8: Maths is at dims 64-67 (after cssMedia(24)+css(16)+screen(12)+htmlElement(12))
     const mathsWithSimHash = resultWith.vector.slice(64, 68);
     const mathsWithoutSimHash = resultWithout.vector.slice(64, 68);
 
@@ -142,7 +142,7 @@ describe("computeEmbedding", () => {
     };
     const result = computeEmbedding(shaOnly);
 
-    // v7: Maths is at dims 64-67
+    // v8: Maths is at dims 64-67
     const mathsSection = result.vector.slice(64, 68);
     // Should be non-zero (from SHA-256 hash)
     expect(mathsSection.some((v) => v !== 0)).toBe(true);
@@ -167,10 +167,10 @@ describe("computeEmbedding", () => {
     const resultWith = computeEmbedding(withH2);
     const resultWithout = computeEmbedding(baseFingerprint);
 
-    // v7: Network starts at 140, H2 is after ja3(8)+ja4(8)+ip(8)+asn(3) = 27
-    // H2 starts at dim 140+27 = 167, spans 14 dims (167-180)
-    const h2With = resultWith.vector.slice(167, 181);
-    const h2Without = resultWithout.vector.slice(167, 181);
+    // v8: Network starts at 140, H2 is after ja3(8)+ja4(8) = 16
+    // H2 starts at dim 140+16 = 156, spans 14 dims (156-169)
+    const h2With = resultWith.vector.slice(156, 170);
+    const h2Without = resultWithout.vector.slice(156, 170);
 
     // H2 section should differ when H2 data is present
     expect(h2With).not.toEqual(h2Without);
@@ -184,8 +184,8 @@ describe("computeEmbedding", () => {
 
   it("produces zeros for H2 when not present", () => {
     const result = computeEmbedding(baseFingerprint);
-    // v7: H2 starts at 167, spans 14 dims
-    const h2Section = result.vector.slice(167, 181);
+    // v8: H2 starts at 156, spans 14 dims
+    const h2Section = result.vector.slice(156, 170);
     expect(h2Section.every((v) => v === 0)).toBe(true);
   });
 
@@ -204,7 +204,7 @@ describe("computeEmbedding", () => {
     const result1 = computeEmbedding(fp1);
     const result2 = computeEmbedding(fp2);
 
-    // v7: Identity section starts at 208, spans 48 dims
+    // v8: Identity section starts at 208, spans 48 dims
     const identity1 = result1.vector.slice(208, 256);
     const identity2 = result2.vector.slice(208, 256);
 
@@ -219,12 +219,12 @@ describe("areEmbeddingsCompatible", () => {
     const a: EmbeddingResult = {
       vector: new Array(256).fill(0),
       dimensions: 256,
-      version: 7,
+      version: 8,
     };
     const b: EmbeddingResult = {
       vector: new Array(256).fill(0),
       dimensions: 256,
-      version: 7,
+      version: 8,
     };
     expect(areEmbeddingsCompatible(a, b)).toBe(true);
   });
@@ -238,7 +238,7 @@ describe("areEmbeddingsCompatible", () => {
     const b: EmbeddingResult = {
       vector: new Array(256).fill(0),
       dimensions: 256,
-      version: 7,
+      version: 8,
     };
     expect(areEmbeddingsCompatible(a, b)).toBe(false);
   });
@@ -247,12 +247,12 @@ describe("areEmbeddingsCompatible", () => {
     const a: EmbeddingResult = {
       vector: new Array(128).fill(0),
       dimensions: 128,
-      version: 7,
+      version: 8,
     };
     const b: EmbeddingResult = {
       vector: new Array(256).fill(0),
       dimensions: 256,
-      version: 7,
+      version: 8,
     };
     expect(areEmbeddingsCompatible(a, b)).toBe(false);
   });

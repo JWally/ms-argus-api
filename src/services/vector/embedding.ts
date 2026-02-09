@@ -4,25 +4,24 @@
  * Converts normalized fingerprint data into a 256-dimensional vector
  * suitable for similarity search in Qdrant.
  *
- * Embedding structure (v7 - data-driven iOS rebalance):
- * - Structural hashes (80 dims): cssMedia(24), css(16), screen(12),
+ * Embedding structure (v8 - drop IP/ASN, expand behavioral):
+ * - Structural hashes (80 dims) [0-79]: cssMedia(24), css(16), screen(12),
  *   htmlElement(12), maths(4), windowFeatures(4), svg(4), intl(4).
- *   Weights based on XGBoost feature importance analysis (59 payloads, F1=0.96).
- * - Rendering (36 dims): canvas(8), webgl(8), audio(4), clientRects(8), gpu(8)
- *   Reduced — only 3.3% importance for iOS differentiation.
- * - Hardware (24 dims): concurrency, memory, webgl ext, screen (8 dims via
+ * - Rendering (36 dims) [80-115]: canvas(8), webgl(8), audio(4), clientRects(8), gpu(8)
+ * - Hardware (24 dims) [116-139]: concurrency, memory, webgl ext, screen (8 dims via
  *   stringToVector), platform (4 dims), UA (8 dims)
- * - Network (46 dims): JA3/JA4, IP, ASN, H2 (14 dims), TCP tuning
- * - Behavioral (22 dims): timezone, privacy flags, headless, lie count, features
- * - Identity (48 dims): fuzzy hash (48 dims)
+ * - Network (35 dims) [140-174]: JA3(8), JA4(8), H2(14), TCP RTT(1), MSS(1), PMTU(1), proxy(1), vpn(1)
+ * - Behavioral (33 dims) [175-207]: timezone(11), tz_offset(1), privacy flags(4), lie_count(1), features(16)
+ * - Identity (48 dims) [208-255]: fuzzy hash (48 dims)
  *
- * Key improvements in v7 (data-driven rebalance):
- * - cssMedia boosted 8→24 dims (#1 iOS discriminator at 28.4% importance)
- * - css boosted 8→16 dims (#4 discriminator at 11.3%)
- * - screen/htmlElement boosted 8→12 each
- * - maths/svg/intl/windowFeatures shrunk 8→4 (0.0-0.2% importance)
- * - Rendering shrunk 48→36 (3.3% total importance for iOS)
- * - Identity shrunk 52→48
+ * Key improvements in v8 (IP/ASN removal, behavioral expansion):
+ * - Dropped IP (8 dims) and ASN (3 dims) from network section — BrowserStack devices
+ *   rotate IPs constantly, dragging network similarity to 0.52-0.74. IP/ASN remain in
+ *   Fingerprint type for anchors, IP history, and anomaly detection.
+ * - Network shrunk 46→35 dims
+ * - Behavioral expanded 22→33 dims (best discriminator: 1.000 same-device, 0.701 gap)
+ * - timezone expanded 8→11 dims (geographic resolution)
+ * - features_hash expanded 8→16 dims (highly discriminative browser capability hash)
  *
  * @module services/vector/embedding
  */
@@ -45,13 +44,14 @@ export interface EmbeddingResult {
  * Current embedding schema version.
  * Increment when the embedding structure changes significantly.
  *
+ * v8: Drop IP/ASN from network (-11 dims), expand behavioral (+11 dims)
  * v7: Data-driven rebalance - cssMedia/css/screen boosted, rendering/identity shrunk
  * v6: iOS differentiation - screen/cssMedia structural, platform encoding, fuzzy shrink
  * v5: SimHash preference, H2 decomposition, drop stable_hash, expand fuzzy
  * v4: Expanded fuzzy_hash from 8 to 64 dims for 256-bit SimHash support
  * v3: Improved IP/ASN encoding, Brave/private handling, JA3/JA4 as bipolar
  */
-export const EMBEDDING_VERSION = 7;
+export const EMBEDDING_VERSION = 8;
 
 /**
  * Expected number of dimensions for the current embedding version.
@@ -150,76 +150,6 @@ function stringToVector(str: string | undefined, dims: number): number[] {
     result[d] = ((hash >>> 0) % 1000) / 1000;
   }
   return result;
-}
-
-/**
- * Encode IPv4 to 8 normalized dimensions preserving network structure.
- * Two IPs in the same /24 subnet will have 7 of 8 dimensions identical,
- * making them very close in vector space (unlike hashing which destroys proximity).
- */
-function encodeIPv4(ip: string | undefined): number[] {
-  if (!ip) return new Array(8).fill(0);
-
-  const parts = ip.split(".").map((p) => parseInt(p, 10));
-  if (parts.length !== 4 || parts.some((p) => isNaN(p) || p < 0 || p > 255)) {
-    return new Array(8).fill(0);
-  }
-
-  // Direct octet encoding (preserves subnet similarity)
-  const octets = parts.map((p) => p / 255);
-
-  // Network class encoding (coarse grouping)
-  const isPrivate =
-    parts[0] === 10 ||
-    (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) ||
-    (parts[0] === 192 && parts[1] === 168);
-
-  // Hierarchical network encodings
-  const classA = parts[0] / 255; // /8 network
-  const classB = (parts[0] * 256 + parts[1]) / 65535; // /16 network
-  const subnet24 = (parts[0] * 65536 + parts[1] * 256 + parts[2]) / 16777215; // /24 subnet
-
-  return [
-    ...octets, // 4 dims: individual octets
-    classA, // 1 dim: /8 network
-    classB, // 1 dim: /16 network
-    subnet24, // 1 dim: /24 subnet
-    isPrivate ? 1 : 0, // 1 dim: private network flag
-  ];
-}
-
-/**
- * Encode ASN to 3 normalized dimensions.
- * Uses log-normalization to compress the wide ASN range (1 - 400000+).
- */
-// eslint-disable-next-line complexity
-function encodeAsn(asn: number | undefined): number[] {
-  if (asn === undefined || asn === null || isNaN(asn)) {
-    return [0, 0, 0];
-  }
-
-  const maxAsn = 400000;
-
-  // Log-normalized magnitude (compresses range nicely)
-  const logNorm = Math.log1p(asn) / Math.log1p(maxAsn);
-
-  // Rough RIR grouping (geographic signal)
-  // ARIN (North America): 1-2000, 6000-8000
-  // RIPE (Europe): 3000-5000, 8000-10000
-  // APNIC (Asia-Pacific): 45000+
-  let rirScore = 0.5;
-  if (asn < 2000 || (asn >= 6000 && asn < 8000)) {
-    rirScore = 0.2; // ARIN
-  } else if ((asn >= 3000 && asn < 5000) || (asn >= 8000 && asn < 10000)) {
-    rirScore = 0.4; // RIPE
-  } else if (asn >= 45000) {
-    rirScore = 0.8; // APNIC
-  }
-
-  // Lower bits for discrimination within similar ranges
-  const lowerBits = (asn % 1000) / 1000;
-
-  return [logNorm, rirScore, lowerBits];
 }
 
 /**
@@ -334,13 +264,11 @@ function encodeH2(fp: Fingerprint): number[] {
   return [...settings, windowUpdate, ...pseudoHeader, ...headerOrder];
 }
 
-/** Build network section (46 dims) - expanded with H2 fingerprint */
+/** Build network section (35 dims) - IP/ASN removed in v8 (hurt same-device matching) */
 function buildNetworkSection(fp: Fingerprint): number[] {
   return [
     ...hashToBipolar(fp.ja3, 8), // 8 dims - TLS fingerprint
     ...hashToBipolar(fp.ja4, 8), // 8 dims - TLS fingerprint
-    ...encodeIPv4(fp.ip_address ?? fp.stun_public_ip), // 8 dims - preserves proximity
-    ...encodeAsn(fp.asn), // 3 dims - network identity
     ...encodeH2(fp), // 14 dims - H2 fingerprint
     normalize(fp.tcp_rtt_us, 0, 500000), // 1 dim
     normalize(fp.snd_mss, 500, 1500), // 1 dim - TCP tuning
@@ -350,18 +278,18 @@ function buildNetworkSection(fp: Fingerprint): number[] {
   ];
 }
 
-/** Build behavioral section (22 dims) */
+/** Build behavioral section (33 dims) - expanded in v8 (+11 from IP/ASN removal) */
 function buildBehavioralSection(fp: Fingerprint): number[] {
   return [
-    ...stringToVector(fp.timezone, 8), // 8 dims
+    ...stringToVector(fp.timezone, 11), // 11 dims - geographic resolution (was 8)
     normalize(fp.timezone_offset, -720, 840), // 1 dim: UTC offset in minutes
     boolToNum(fp.is_private_browsing), // 1 dim
     boolToNum(fp.privacy_browser === "brave"), // 1 dim
     boolToNum(fp.privacy_browser === "firefox_rfp"), // 1 dim
     boolToNum(fp.is_headless), // 1 dim
     normalize(fp.lie_count, 0, 20), // 1 dim
-    ...hashToBipolar(fp.features_hash, 8), // 8 dims
-  ]; // Total: 22 dims
+    ...hashToBipolar(fp.features_hash, 16), // 16 dims - highly discriminative (was 8)
+  ]; // Total: 33 dims
 }
 
 /** Build identity section (48 dims) - fuzzy hash only */
@@ -378,12 +306,12 @@ function buildIdentitySection(fp: Fingerprint): number[] {
 /**
  * Compute a 256-dimensional fingerprint embedding vector.
  *
- * Structure (v7):
+ * Structure (v8):
  * [0-79]   Structural hashes (80 dims) - cssMedia(24), css(16), screen(12), htmlElement(12), rest(16)
  * [80-115] Rendering (36 dims) - zeroed for Brave/private
  * [116-139] Hardware (24 dims) - concurrency, memory, screen (8d), platform (4d), UA
- * [140-185] Network (46 dims) - JA3/JA4, IP, ASN, H2 (14), TCP tuning
- * [186-207] Behavioral (22 dims)
+ * [140-174] Network (35 dims) - JA3/JA4, H2 (14), TCP tuning
+ * [175-207] Behavioral (33 dims) - timezone(11), flags, features(16)
  * [208-255] Identity (48 dims) - fuzzy hash
  *
  * @param fingerprint - Normalized fingerprint data
@@ -399,7 +327,7 @@ export function computeEmbedding(fingerprint: Fingerprint): EmbeddingResult {
     ...buildIdentitySection(fingerprint),
   ];
 
-  // Verify dimension count matches expected (no padding needed in v7)
+  // Verify dimension count matches expected (no padding needed in v8)
   if (vector.length !== EMBEDDING_DIMENSIONS) {
     // Pad or truncate to maintain compatibility
     const adjusted =
