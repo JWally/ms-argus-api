@@ -92,7 +92,7 @@ describe("extractSessionId", () => {
   });
 
   it("should throw 400 for invalid session_id format", () => {
-    const event = createEvent("GET", "a".repeat(129)); // too long
+    const event = createEvent("GET", "a".repeat(1025)); // too long
     expect(() => extractSessionId(event, mockMetrics as any)).toThrow(
       HttpError,
     );

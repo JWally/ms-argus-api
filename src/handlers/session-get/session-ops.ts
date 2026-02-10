@@ -59,7 +59,7 @@ export function extractSessionId(
     metrics.addMetric("MissingSessionId", MetricUnit.Count, 1);
     throw new HttpError(400, "Missing session_id parameter");
   }
-  if (sessionId.length > 128 || !/^[\w-]+$/.test(sessionId)) {
+  if (sessionId.length > 1024 || !/^[\w-]+$/.test(sessionId)) {
     metrics.addMetric("InvalidSessionId", MetricUnit.Count, 1);
     throw new HttpError(400, "Invalid session_id format");
   }

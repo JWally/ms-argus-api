@@ -252,7 +252,7 @@ describe("session-get handler", () => {
     });
 
     it("should return 400 for invalid session_id format (too long)", async () => {
-      const longSessionId = "a".repeat(129);
+      const longSessionId = "a".repeat(1025);
       const event = createApiEvent(longSessionId);
       const result = asResult(await handler(event, mockContext));
 
