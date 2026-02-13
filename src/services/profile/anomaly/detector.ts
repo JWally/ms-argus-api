@@ -12,6 +12,7 @@ import { Fingerprint } from "../../../types";
 import { AnomalySignal, AnomalyResult } from "./types";
 import { detectFingerprintSignals } from "./fingerprint-signals";
 import { detectCrossFieldAnomalies } from "./worker-scope-consistency";
+import { detectJa4Coherence } from "./ja4-coherence";
 import {
   detectStatisticalAnomaliesV2,
   type StatisticalContextV2,
@@ -26,25 +27,17 @@ const metrics = new Metrics({
   namespace: process.env.POWERTOOLS_METRICS_NAMESPACE || "Argus",
 });
 
-/** Sigint data structure for network anomaly detection. */
-interface SigintData {
-  /** Geographic data from IP lookup */
-  geo?: {
-    /** Timezone from IP geolocation */
-    timezone?: string;
-  };
-}
-
 /**
  * Detector function signature.
  *
  * Takes fingerprint, optional raw payload, and optional sigint data.
  * Must return array of anomaly signals (can be empty).
+ * Sigint is untyped — detectors use runtime duck-typing for the fields they need.
  */
 type DetectorFn = (
   fingerprint: Fingerprint,
   raw?: unknown,
-  sigint?: SigintData,
+  sigint?: unknown,
 ) => AnomalySignal[];
 
 /**
@@ -56,6 +49,7 @@ type DetectorFn = (
 const detectors: DetectorFn[] = [
   detectFingerprintSignals,
   detectCrossFieldAnomalies,
+  detectJa4Coherence,
 ];
 
 /** Run a detector with error isolation, appending results to signals. */
@@ -79,7 +73,7 @@ function runSafe(
 export function detectAllAnomalies(
   fingerprint: Fingerprint,
   raw?: unknown,
-  sigint?: SigintData,
+  sigint?: unknown,
   contextOpts?: {
     statisticalV2?: StatisticalContextV2 | null;
     ipHistoryProfile?: DeviceProfile | null;
@@ -139,7 +133,7 @@ export function registerDetector(
   detector: (
     fingerprint: Fingerprint,
     raw?: unknown,
-    sigint?: SigintData,
+    sigint?: unknown,
   ) => AnomalySignal[],
 ): void {
   detectors.push(detector);

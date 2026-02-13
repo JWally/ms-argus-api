@@ -120,7 +120,7 @@ function buildAnomalySignals(
   const result = detectAllAnomalies(
     ctx.fingerprint,
     ctx.rawPayload.device,
-    undefined,
+    ctx.rawPayload.sigint,
     {
       statisticalV2: ctx.statisticalV2,
       ipHistoryProfile: ctx.ipHistoryProfile ?? null,

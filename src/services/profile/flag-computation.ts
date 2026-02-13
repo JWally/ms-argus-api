@@ -45,6 +45,36 @@ export const RISK_WEIGHTS = {
   [DeviceFlags.NEW_ASN_FOR_DEVICE]: 0.05,
   /** Device cycling through excessive unique IPs (strong negative signal) */
   [DeviceFlags.IP_CHURN]: 0.2,
+  /** Timezone offset vs computed offset mismatch */
+  [DeviceFlags.TZ_OFFSET_COMPUTED_MISMATCH]: 0.15,
+  /** CSS media API mismatch (getComputedStyle vs matchMedia) */
+  [DeviceFlags.CSS_MEDIA_API_MISMATCH]: 0.15,
+  /** JS/layout engine from errors doesn't match UA */
+  [DeviceFlags.ENGINE_MISMATCH]: 0.2,
+  /** WebRTC IP doesn't match connection IP */
+  [DeviceFlags.WEBRTC_IP_MISMATCH]: 0.15,
+  /** screen.colorDepth !== screen.pixelDepth */
+  [DeviceFlags.SCREEN_DEPTH_MISMATCH]: 0.1,
+  /** screen.availWidth/Height > screen.width/height */
+  [DeviceFlags.SCREEN_AVAIL_OVERFLOW]: 0.1,
+  /** CSS device-screen string vs screen dims */
+  [DeviceFlags.DEVICE_SCREEN_STRING_MISMATCH]: 0.1,
+  /** CSS aspect-ratio vs screen dims */
+  [DeviceFlags.ASPECT_RATIO_MISMATCH]: 0.1,
+  /** Worker scope locale/language/tz inconsistency */
+  [DeviceFlags.WORKER_LOCALE_MISMATCH]: 0.15,
+  /** Incognito detector browser vs UA browser */
+  [DeviceFlags.INCOGNITO_BROWSER_MISMATCH]: 0.1,
+  /** TLS library impossible on claimed OS */
+  [DeviceFlags.TLS_PLATFORM_MISMATCH]: 0.3,
+  /** TLS library doesn't match claimed browser (excl. iOS) */
+  [DeviceFlags.TLS_BROWSER_MISMATCH]: 0.25,
+  /** H2 pseudo-header order vs TLS cipher hash */
+  [DeviceFlags.H2_TLS_MISMATCH]: 0.2,
+  /** No ALPN but claims modern browser */
+  [DeviceFlags.NO_ALPN_BROWSER]: 0.25,
+  /** QUIC from iOS (informational) */
+  [DeviceFlags.QUIC_IOS_VPN]: 0.0,
 } as const;
 
 /**
