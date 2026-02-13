@@ -23,7 +23,7 @@ import type {
 } from "./types";
 
 /** Vector dimensions for fingerprint embeddings */
-const VECTOR_DIMENSIONS = 256;
+const VECTOR_DIMENSIONS = 512;
 
 /**
  * Convert a device ID to a valid Qdrant point ID (UUID format).

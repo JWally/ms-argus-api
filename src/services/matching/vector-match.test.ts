@@ -2,8 +2,8 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 vi.mock("../vector/embedding", () => ({
   computeEmbedding: vi.fn().mockReturnValue({
-    vector: Array(256).fill(0.5),
-    dimensions: 256,
+    vector: Array(512).fill(0.5),
+    dimensions: 512,
   }),
   assessEmbeddingQuality: vi.fn().mockReturnValue({
     acceptable: true,
@@ -12,6 +12,7 @@ vi.mock("../vector/embedding", () => ({
     renderingCount: 3,
     hardwareCount: 2,
   }),
+  EMBEDDING_DIMENSIONS: 512,
 }));
 
 vi.mock("./profile-loader", () => ({

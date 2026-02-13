@@ -266,6 +266,12 @@ function applyTcpFields(
   }
 }
 
+/** Extract snd_mss and pmtu from rtt_fingerprint (modern format only). */
+function applyMssFields(source: Record<string, unknown>, fp: Fingerprint) {
+  if (typeof source.snd_mss === "number") fp.snd_mss = source.snd_mss;
+  if (typeof source.pmtu === "number") fp.pmtu = source.pmtu;
+}
+
 /**
  * Extract TCP probe data (proxy score, VPN score, RTT)
  * @param sigint - The sigint section from the payload
@@ -279,6 +285,7 @@ function extractTcpProbe(
   const tcp = sigint.tcpProbe as Record<string, unknown>;
   const rttFp = tcp.rtt_fingerprint as Record<string, unknown> | undefined;
   applyTcpFields(rttFp || tcp, fp, !rttFp);
+  if (rttFp) applyMssFields(rttFp, fp);
 }
 
 /**

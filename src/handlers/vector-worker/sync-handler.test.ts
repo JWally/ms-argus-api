@@ -58,11 +58,11 @@ describe("handleSyncInvoke", () => {
         deps,
       );
       expect(result.success).toBe(false);
-      expect((result as any).error).toContain("256 numbers");
+      expect((result as any).error).toContain("512 numbers");
     });
 
     it("should return search results", async () => {
-      const vector = Array(256).fill(0.5);
+      const vector = Array(512).fill(0.5);
       mockQdrantClient.search.mockResolvedValue([
         { id: "uuid-1", score: 0.95, payload: { device_id: "dev_001" } },
         { id: "uuid-2", score: 0.85, payload: { device_id: "dev_002" } },
@@ -85,7 +85,7 @@ describe("handleSyncInvoke", () => {
     });
 
     it("should use payload device_id if available", async () => {
-      const vector = Array(256).fill(0.5);
+      const vector = Array(512).fill(0.5);
       mockQdrantClient.search.mockResolvedValue([
         { id: 12345, score: 0.9, payload: { device_id: "dev_from_payload" } },
       ]);
@@ -99,7 +99,7 @@ describe("handleSyncInvoke", () => {
     });
 
     it("should pass filter through to qdrant search", async () => {
-      const vector = Array(256).fill(0.5);
+      const vector = Array(512).fill(0.5);
       const filter = {
         must: [
           { key: "screen_width", range: { gte: 388, lte: 398 } },
@@ -128,7 +128,7 @@ describe("handleSyncInvoke", () => {
     });
 
     it("should fall back to point ID string when no payload device_id", async () => {
-      const vector = Array(256).fill(0.5);
+      const vector = Array(512).fill(0.5);
       mockQdrantClient.search.mockResolvedValue([
         { id: "uuid-123", score: 0.9, payload: {} },
       ]);
@@ -161,7 +161,7 @@ describe("handleSyncInvoke", () => {
         {
           action: "upsert",
           device_id: "",
-          vector: Array(256).fill(0.5),
+          vector: Array(512).fill(0.5),
           collection: "test",
         } as SyncInvokeRequest,
         deps,
@@ -177,7 +177,7 @@ describe("handleSyncInvoke", () => {
         {
           action: "upsert",
           device_id: "dev_001",
-          vector: Array(256).fill(0.5),
+          vector: Array(512).fill(0.5),
           collection: "test",
           payload: { user_agent: "Chrome" },
         } as SyncInvokeRequest,
@@ -249,7 +249,7 @@ describe("handleSyncInvoke", () => {
       await handleSyncInvoke(
         {
           action: "search",
-          vector: Array(256).fill(0.5),
+          vector: Array(512).fill(0.5),
           collection: "new-col",
           auto_create_collection: true,
         } as SyncInvokeRequest,
@@ -269,7 +269,7 @@ describe("handleSyncInvoke", () => {
       const result = await handleSyncInvoke(
         {
           action: "search",
-          vector: Array(256).fill(0.5),
+          vector: Array(512).fill(0.5),
           collection: "new-col",
           auto_create_collection: true,
         } as SyncInvokeRequest,
@@ -288,7 +288,7 @@ describe("handleSyncInvoke", () => {
       const result = await handleSyncInvoke(
         {
           action: "search",
-          vector: Array(256).fill(0.5),
+          vector: Array(512).fill(0.5),
           collection: "new-col",
           auto_create_collection: true,
         } as SyncInvokeRequest,
@@ -309,7 +309,7 @@ describe("handleSyncInvoke", () => {
       const result = await handleSyncInvoke(
         {
           action: "search",
-          vector: Array(256).fill(0.5),
+          vector: Array(512).fill(0.5),
           collection: "missing",
         } as SyncInvokeRequest,
         deps,
@@ -327,7 +327,7 @@ describe("handleSyncInvoke", () => {
       const result = await handleSyncInvoke(
         {
           action: "search",
-          vector: Array(256).fill(0.5),
+          vector: Array(512).fill(0.5),
           collection: "test",
         } as SyncInvokeRequest,
         deps,
@@ -343,7 +343,7 @@ describe("handleSyncInvoke", () => {
       const result = await handleSyncInvoke(
         {
           action: "search",
-          vector: Array(256).fill(0.5),
+          vector: Array(512).fill(0.5),
           collection: "test",
         } as SyncInvokeRequest,
         deps,
