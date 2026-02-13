@@ -59,7 +59,7 @@ export interface VectorMatchDeps {
  * Used as a hard filter — different variants must NEVER match each other.
  */
 // eslint-disable-next-line complexity
-export function detectBrowserVariant(ua: string | undefined): string {
+function detectBrowserVariant(ua: string | undefined): string {
   if (!ua) return "unknown";
   if (/FxiOS/i.test(ua)) return "fxios";
   if (/CriOS/i.test(ua)) return "crios";
@@ -120,7 +120,7 @@ export function buildMobileScreenFilter(
  * Build a Qdrant filter condition for browser variant.
  * Prevents cross-browser matches (e.g., FxiOS never matches Safari).
  */
-export function buildBrowserVariantFilter(
+function buildBrowserVariantFilter(
   fingerprint: Fingerprint,
 ): QdrantCondition | undefined {
   const variant = detectBrowserVariant(fingerprint.user_agent);
@@ -132,9 +132,7 @@ export function buildBrowserVariantFilter(
  * Combine all hard filters (screen dimensions + browser variant) into
  * a single QdrantFilter for the search request.
  */
-export function buildSearchFilter(
-  fingerprint: Fingerprint,
-): QdrantFilter | undefined {
+function buildSearchFilter(fingerprint: Fingerprint): QdrantFilter | undefined {
   const conditions: QdrantCondition[] = [];
 
   // Screen dimensions filter (mobile only)
