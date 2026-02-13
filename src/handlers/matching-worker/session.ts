@@ -13,6 +13,7 @@ import { SESSION_PAYLOAD_TTL_SECONDS } from "../../helpers/constants";
 import type { SessionAnomalySignal } from "../../types";
 import type { SqsPayload } from "./parse-record";
 import type { StatisticalContextV2 } from "../../services/profile/anomaly";
+import { resolveBrowserIdentity } from "../../helpers/browser-identity";
 
 function buildIdentifiers(
   sessionId: string,
@@ -92,12 +93,14 @@ function buildNormalities(ctx: StatisticalContextV2): Record<string, unknown> {
   return normalities;
 }
 
-function buildAnalysis(
-  matchResult: MatchResult,
-  anomalies: SessionAnomalySignal[],
-  device: Record<string, unknown>,
-  statisticalContextV2?: StatisticalContextV2 | null,
-): Record<string, unknown> {
+function buildAnalysis(opts: {
+  matchResult: MatchResult;
+  anomalies: SessionAnomalySignal[];
+  device: Record<string, unknown>;
+  sigint?: Record<string, unknown>;
+  statisticalContextV2?: StatisticalContextV2 | null;
+}): Record<string, unknown> {
+  const { matchResult, anomalies, device, sigint, statisticalContextV2 } = opts;
   const analysis: Record<string, unknown> = {
     status: "complete",
     confidence: matchResult.confidence,
@@ -106,6 +109,7 @@ function buildAnalysis(
     risk_score: matchResult.risk_score,
     flags: matchResult.flags,
     evidence_codes: matchResult.evidence_codes,
+    browser: resolveBrowserIdentity(device, sigint),
   };
   const browserAnomalies = buildBrowserAnomalies(device);
   if (Object.keys(browserAnomalies).length > 0)
@@ -140,12 +144,13 @@ export function buildSessionResponseData(params: {
   } = params;
   return {
     identifiers: buildIdentifiers(sessionId, rawPayload, matchResult),
-    analysis: buildAnalysis(
+    analysis: buildAnalysis({
       matchResult,
       anomalies,
-      rawPayload.device || {},
+      device: rawPayload.device || {},
+      sigint: rawPayload.sigint as Record<string, unknown> | undefined,
       statisticalContextV2,
-    ),
+    }),
     hashes: rawPayload.hashes,
     device: rawPayload.device,
     sigint: rawPayload.sigint,

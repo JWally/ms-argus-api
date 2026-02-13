@@ -65,10 +65,19 @@ const BROWSER_EXACT: Record<string, string> = {
   "mobile safari": "safari",
   ie: "ie",
   "internet explorer": "ie",
+  // Webview apps
+  instagram: "instagram",
+  gemini: "gemini",
+  signal: "signal",
+  slack: "slack",
+  duckduckgo: "duckduckgo",
+  google: "google_app",
+  snapchat: "snapchat",
+  pinterest: "pinterest",
 };
 
 /** Normalize browser name for consistent baseline keys. */
-function normalizeBrowserName(browser: string | undefined): string {
+export function normalizeBrowserName(browser: string | undefined): string {
   if (!browser) return "unknown";
   const lower = browser.toLowerCase();
   if (BROWSER_EXACT[lower]) return BROWSER_EXACT[lower];
