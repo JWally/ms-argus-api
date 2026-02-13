@@ -1,27 +1,26 @@
 /**
  * @fileoverview Fingerprint embedding service.
  *
- * Converts normalized fingerprint data into a 256-dimensional vector
+ * Converts normalized fingerprint data into a 512-dimensional vector
  * suitable for similarity search in Qdrant.
  *
- * Embedding structure (v8 - drop IP/ASN, expand behavioral):
- * - Structural hashes (80 dims) [0-79]: cssMedia(24), css(16), screen(12),
- *   htmlElement(12), maths(4), windowFeatures(4), svg(4), intl(4).
- * - Rendering (36 dims) [80-115]: canvas(8), webgl(8), audio(4), clientRects(8), gpu(8)
- * - Hardware (24 dims) [116-139]: concurrency, memory, webgl ext, screen (8 dims via
- *   stringToVector), platform (4 dims), UA (8 dims)
- * - Network (35 dims) [140-174]: JA3(8), JA4(8), H2(14), TCP RTT(1), MSS(1), PMTU(1), proxy(1), vpn(1)
- * - Behavioral (33 dims) [175-207]: timezone(11), tz_offset(1), privacy flags(4), lie_count(1), features(16)
- * - Identity (48 dims) [208-255]: fuzzy hash (48 dims)
+ * Embedding structure (v12 — 512d, v9_512 layout with network ablation):
+ * [0-190]   Structural (191d): cssMedia(68), css(34), screen(33),
+ *           htmlElement(24), maths(8), window(8), svg(8), intl(8)
+ * [191-266] Rendering  ( 76d): canvas(20), webgl(16), audio(8),
+ *           clientRects(16), gpu(16)
+ * [267-310] Hardware   ( 44d): hw_conc(1), dev_mem(1), webgl_ext(1),
+ *           screen_dims(16), platform(8), user_agent(16), hw_conc2(1)
+ * [311-315] Network    (  5d): all zeroed (ablation: +0.8pp R@1)
+ * [316-379] Behavioral ( 64d): timezone(24), tz_offset(1), privacy(4),
+ *           lie_count(1), features_hash(34)
+ * [380-511] Identity   (132d): fuzzy_hash(132)
  *
- * Key improvements in v8 (IP/ASN removal, behavioral expansion):
- * - Dropped IP (8 dims) and ASN (3 dims) from network section — BrowserStack devices
- *   rotate IPs constantly, dragging network similarity to 0.52-0.74. IP/ASN remain in
- *   Fingerprint type for anchors, IP history, and anomaly detection.
- * - Network shrunk 46→35 dims
- * - Behavioral expanded 22→33 dims (best discriminator: 1.000 same-device, 0.701 gap)
- * - timezone expanded 8→11 dims (geographic resolution)
- * - features_hash expanded 8→16 dims (highly discriminative browser capability hash)
+ * v12: v9_512 layout chosen over v11 after testing 1,612 payloads / 159 devices.
+ *   Restores Hardware & Identity sections that v11 dropped (trained on only 110/3).
+ *   Network dims zeroed per ablation results. MAP 0.9434, R@1 ~95.2%.
+ * v11: 512d, 3 sections (Structural 322, Rendering 164, Behavioral 26)
+ * v10: 256d, 3 sections (Structural 128, Rendering 104, Behavioral 24)
  *
  * @module services/vector/embedding
  */
@@ -43,20 +42,19 @@ export interface EmbeddingResult {
 /**
  * Current embedding schema version.
  * Increment when the embedding structure changes significantly.
- *
- * v8: Drop IP/ASN from network (-11 dims), expand behavioral (+11 dims)
- * v7: Data-driven rebalance - cssMedia/css/screen boosted, rendering/identity shrunk
- * v6: iOS differentiation - screen/cssMedia structural, platform encoding, fuzzy shrink
- * v5: SimHash preference, H2 decomposition, drop stable_hash, expand fuzzy
- * v4: Expanded fuzzy_hash from 8 to 64 dims for 256-bit SimHash support
- * v3: Improved IP/ASN encoding, Brave/private handling, JA3/JA4 as bipolar
  */
-export const EMBEDDING_VERSION = 8;
+export const EMBEDDING_VERSION = 12;
+
+/**
+ * Weighted embedding version for per-OS NSGA-II profiles.
+ * Uses v12 base embedding with element-wise weight multiplication.
+ */
+export const WEIGHTED_EMBEDDING_VERSION = 13;
 
 /**
  * Expected number of dimensions for the current embedding version.
  */
-export const EMBEDDING_DIMENSIONS = 256;
+export const EMBEDDING_DIMENSIONS = 512;
 
 // ============================================================================
 // ENCODING UTILITIES
@@ -116,24 +114,6 @@ function hashToBipolar(hash: string | undefined, dims: number): number[] {
 }
 
 /**
- * Convert a string to a hex representation via FNV-1a hashing.
- * Produces a deterministic hex string suitable for hashToBipolar.
- */
-function stringToHex(str: string): string {
-  // Use multiple FNV-1a rounds to produce enough hex chars
-  const hexChars: string[] = [];
-  for (let seed = 0; hexChars.length < 16; seed++) {
-    let hash = 2166136261 ^ (seed * 0x9e3779b9);
-    for (let i = 0; i < str.length; i++) {
-      hash ^= str.charCodeAt(i);
-      hash = Math.imul(hash, 16777619);
-    }
-    hexChars.push((hash >>> 0).toString(16).padStart(8, "0"));
-  }
-  return hexChars.join("");
-}
-
-/**
  * Hash a string to multiple dimensions using different seeds.
  * Creates a "feature hash" representation.
  */
@@ -154,149 +134,108 @@ function stringToVector(str: string | undefined, dims: number): number[] {
 
 /**
  * Check if this is Brave browser in private mode.
- * In this mode, canvas/audio/webgl fingerprints are randomized and useless.
+ * In this mode, canvas/audio/webgl fingerprints are all randomized.
  */
 function isBravePrivate(fp: Fingerprint): boolean {
   return fp.privacy_browser === "brave" && fp.is_private_browsing === true;
+}
+
+/**
+ * Check if this is Firefox with Resist Fingerprinting (RFP) in private mode.
+ * RFP randomizes canvas and webgl per-session, but audio stays stable.
+ */
+function isFirefoxRFPPrivate(fp: Fingerprint): boolean {
+  return (
+    fp.privacy_browser === "firefox_rfp" && fp.is_private_browsing === true
+  );
 }
 
 // ============================================================================
 // SECTION BUILDERS
 // ============================================================================
 
-/** Build structural hashes section (80 dims) - weighted by feature importance */
+/** Build structural hashes section (191 dims) */
 function buildStructuralSection(fp: Fingerprint): number[] {
   return [
-    ...hashToBipolar(fp.css_media_simhash ?? fp.css_media_hash, 24), // #1 discriminator (28.4%)
-    ...hashToBipolar(fp.css_simhash ?? fp.css_hash, 16), // #4 discriminator (11.3%)
-    ...hashToBipolar(fp.screen_simhash ?? fp.screen_hash, 12), // #2 discriminator (14.5%)
-    ...hashToBipolar(fp.html_element_simhash ?? fp.html_element_hash, 12), // #6 discriminator (5.6%)
-    ...hashToBipolar(fp.maths_simhash ?? fp.maths_hash, 4), // 0.0% importance
-    ...hashToBipolar(fp.window_features_simhash ?? fp.window_features_hash, 4), // 0.2%
-    ...hashToBipolar(fp.svg_simhash ?? fp.svg_hash, 4), // 0.0%
-    ...hashToBipolar(fp.intl_simhash ?? fp.intl_hash, 4), // 0.0%
-  ];
+    ...hashToBipolar(fp.css_media_simhash ?? fp.css_media_hash, 68),
+    ...hashToBipolar(fp.css_simhash ?? fp.css_hash, 34),
+    ...hashToBipolar(fp.screen_simhash ?? fp.screen_hash, 33),
+    ...hashToBipolar(fp.html_element_simhash ?? fp.html_element_hash, 24),
+    ...hashToBipolar(fp.maths_simhash ?? fp.maths_hash, 8),
+    ...hashToBipolar(fp.window_features_simhash ?? fp.window_features_hash, 8),
+    ...hashToBipolar(fp.svg_simhash ?? fp.svg_hash, 8),
+    ...hashToBipolar(fp.intl_simhash ?? fp.intl_hash, 8),
+  ]; // 68+34+33+24+8+8+8+8 = 191
 }
 
-/** Build rendering section (36 dims) - reduced, only 3.3% iOS importance */
+/** Build rendering section (76 dims) — canvas/webgl/audio zeroed for privacy browsers */
 function buildRenderingSection(fp: Fingerprint): number[] {
-  // For Brave/private mode, canvas/audio/webgl are randomized - zero them out
-  // to prevent false negatives. Rely on structural and network signals instead.
+  // Brave private: canvas/audio/webgl are all randomized — zero them
   if (isBravePrivate(fp)) {
     return [
-      ...new Array(8).fill(0), // canvas - randomized
-      ...new Array(8).fill(0), // webgl - randomized
-      ...new Array(4).fill(0), // audio - randomized
-      ...hashToBipolar(fp.client_rects_hash, 8), // might be stable
-      ...stringToVector(fp.gpu_renderer, 8), // stable
+      ...new Array(20).fill(0), // canvas - randomized
+      ...new Array(16).fill(0), // webgl - randomized
+      ...new Array(8).fill(0), // audio - randomized
+      ...hashToBipolar(fp.client_rects_simhash ?? fp.client_rects_hash, 16),
+      ...stringToVector(fp.gpu_renderer, 16),
+    ];
+  }
+
+  // Firefox RFP private: canvas/webgl randomized per-session, audio stays stable
+  if (isFirefoxRFPPrivate(fp)) {
+    return [
+      ...new Array(20).fill(0), // canvas - randomized by RFP
+      ...new Array(16).fill(0), // webgl - randomized by RFP
+      ...hashToBipolar(fp.audio_simhash ?? fp.audio_hash, 8),
+      ...hashToBipolar(fp.client_rects_simhash ?? fp.client_rects_hash, 16),
+      ...stringToVector(fp.gpu_renderer, 16),
     ];
   }
 
   return [
-    ...hashToBipolar(fp.canvas_simhash ?? fp.canvas_hash, 8),
-    ...hashToBipolar(fp.webgl_simhash ?? fp.webgl_hash, 8),
-    ...hashToBipolar(fp.audio_simhash ?? fp.audio_hash, 4),
-    ...hashToBipolar(fp.client_rects_hash, 8),
-    ...stringToVector(fp.gpu_renderer, 8),
-  ];
+    ...hashToBipolar(fp.canvas_simhash ?? fp.canvas_hash, 20),
+    ...hashToBipolar(fp.webgl_simhash ?? fp.webgl_hash, 16),
+    ...hashToBipolar(fp.audio_simhash ?? fp.audio_hash, 8),
+    ...hashToBipolar(fp.client_rects_simhash ?? fp.client_rects_hash, 16),
+    ...stringToVector(fp.gpu_renderer, 16),
+  ]; // 20+16+8+16+16 = 76
 }
 
-/** Build hardware section (24 dims) */
+/** Build hardware section (44 dims) */
 function buildHardwareSection(fp: Fingerprint): number[] {
   return [
-    normalize(fp.hardware_concurrency, 1, 128), // 1 dim
-    normalize(fp.device_memory, 0.5, 64), // 1 dim
-    normalize(fp.webgl_extensions_count, 0, 100), // 1 dim
-    ...stringToVector(fp.screen_dims, 8), // 8 dims - maximally different per resolution
-    ...stringToVector(fp.platform, 4), // 4 dims - iPhone vs iPad vs desktop
-    ...stringToVector(fp.user_agent, 8), // 8 dims
-    normalize(fp.hardware_concurrency, 1, 16), // 1 dim - tighter mobile range
-  ];
+    normalize(fp.hardware_concurrency, 1, 128),
+    normalize(fp.device_memory, 0.5, 64),
+    normalize(fp.webgl_extensions_count, 0, 100),
+    ...stringToVector(fp.screen_dims, 16),
+    ...stringToVector(fp.platform, 8),
+    ...stringToVector(fp.user_agent, 16),
+    normalize(fp.hardware_concurrency, 1, 16),
+  ]; // 1+1+1+16+8+16+1 = 44
 }
 
-/**
- * Encode H2 fingerprint to 14 dimensions.
- * - 6 dims: HTTP/2 settings (HEADER_TABLE_SIZE through MAX_HEADER_LIST_SIZE)
- * - 1 dim: window_update (most discriminating single H2 value)
- * - 3 dims: pseudo_header_order as bipolar hash
- * - 4 dims: header_order as bipolar hash
- */
-function encodeH2(fp: Fingerprint): number[] {
-  // Parse settings from settings_order array: ["1:65536", "2:0", "4:131072", ...]
-  const settings = new Array(6).fill(0);
-  if (fp.h2_settings_order) {
-    for (const entry of fp.h2_settings_order) {
-      const [idStr, valStr] = entry.split(":");
-      const id = parseInt(idStr, 10);
-      const val = parseInt(valStr, 10);
-      if (id >= 1 && id <= 6 && !isNaN(val)) {
-        // Normalize each setting to 0-1 based on typical ranges
-        const maxValues: Record<number, number> = {
-          1: 65536, // HEADER_TABLE_SIZE
-          2: 1, // ENABLE_PUSH (boolean 0/1)
-          3: 1000, // MAX_CONCURRENT_STREAMS
-          4: 16777215, // INITIAL_WINDOW_SIZE
-          5: 16777215, // MAX_FRAME_SIZE
-          6: 16777215, // MAX_HEADER_LIST_SIZE
-        };
-        settings[id - 1] = normalize(val, 0, maxValues[id]);
-      }
-    }
-  }
-
-  // window_update normalized
-  const windowUpdate = normalize(fp.h2_window_update, 0, 16777215);
-
-  // pseudo_header_order as bipolar hash (3 dims)
-  const pseudoHeader = hashToBipolar(
-    fp.h2_pseudo_header_order
-      ? stringToHex(fp.h2_pseudo_header_order)
-      : undefined,
-    3,
-  );
-
-  // header_order as bipolar hash (4 dims)
-  const headerOrder = hashToBipolar(
-    fp.h2_header_order ? stringToHex(fp.h2_header_order.join(",")) : undefined,
-    4,
-  );
-
-  return [...settings, windowUpdate, ...pseudoHeader, ...headerOrder];
+/** Build network section (5 dims) — all zeroed per ablation (+0.8pp R@1) */
+function buildNetworkSection(_fp: Fingerprint): number[] {
+  return new Array(5).fill(0);
 }
 
-/** Build network section (35 dims) - IP/ASN removed in v8 (hurt same-device matching) */
-function buildNetworkSection(fp: Fingerprint): number[] {
-  return [
-    ...hashToBipolar(fp.ja3, 8), // 8 dims - TLS fingerprint
-    ...hashToBipolar(fp.ja4, 8), // 8 dims - TLS fingerprint
-    ...encodeH2(fp), // 14 dims - H2 fingerprint
-    normalize(fp.tcp_rtt_us, 0, 500000), // 1 dim
-    normalize(fp.snd_mss, 500, 1500), // 1 dim - TCP tuning
-    normalize(fp.pmtu, 500, 9001), // 1 dim - Path MTU
-    fp.proxy_score ?? 0, // 1 dim
-    fp.vpn_score ?? 0, // 1 dim
-  ];
-}
-
-/** Build behavioral section (33 dims) - expanded in v8 (+11 from IP/ASN removal) */
+/** Build behavioral section (64 dims) */
 function buildBehavioralSection(fp: Fingerprint): number[] {
   return [
-    ...stringToVector(fp.timezone, 11), // 11 dims - geographic resolution (was 8)
-    normalize(fp.timezone_offset, -720, 840), // 1 dim: UTC offset in minutes
+    ...stringToVector(fp.timezone, 24),
+    normalize(fp.timezone_offset, -720, 840), // 1 dim
     boolToNum(fp.is_private_browsing), // 1 dim
     boolToNum(fp.privacy_browser === "brave"), // 1 dim
     boolToNum(fp.privacy_browser === "firefox_rfp"), // 1 dim
     boolToNum(fp.is_headless), // 1 dim
     normalize(fp.lie_count, 0, 20), // 1 dim
-    ...hashToBipolar(fp.features_hash, 16), // 16 dims - highly discriminative (was 8)
-  ]; // Total: 33 dims
+    ...hashToBipolar(fp.features_simhash ?? fp.features_hash, 34),
+  ]; // 24+1+1+1+1+1+1+34 = 64
 }
 
-/** Build identity section (48 dims) - fuzzy hash only */
+/** Build identity section (132 dims) */
 function buildIdentitySection(fp: Fingerprint): number[] {
-  return [
-    ...hashToBipolar(fp.fuzzy_hash, 48), // 48 dims
-  ];
+  return hashToBipolar(fp.fuzzy_hash, 132);
 }
 
 // ============================================================================
@@ -304,30 +243,33 @@ function buildIdentitySection(fp: Fingerprint): number[] {
 // ============================================================================
 
 /**
- * Compute a 256-dimensional fingerprint embedding vector.
+ * Compute a 512-dimensional fingerprint embedding vector.
  *
- * Structure (v8):
- * [0-79]   Structural hashes (80 dims) - cssMedia(24), css(16), screen(12), htmlElement(12), rest(16)
- * [80-115] Rendering (36 dims) - zeroed for Brave/private
- * [116-139] Hardware (24 dims) - concurrency, memory, screen (8d), platform (4d), UA
- * [140-174] Network (35 dims) - JA3/JA4, H2 (14), TCP tuning
- * [175-207] Behavioral (33 dims) - timezone(11), flags, features(16)
- * [208-255] Identity (48 dims) - fuzzy hash
+ * Structure (v12 — v9_512 layout):
+ * [0-190]   Structural (191d) - cssMedia(68), css(34), screen(33),
+ *           htmlElement(24), maths(8), window(8), svg(8), intl(8)
+ * [191-266] Rendering  ( 76d) - canvas(20), webgl(16), audio(8),
+ *           clientRects(16), gpu(16) — canvas/webgl zeroed for privacy browsers
+ * [267-310] Hardware   ( 44d) - hw_conc, dev_mem, webgl_ext, screen_dims,
+ *           platform, user_agent, hw_conc2
+ * [311-315] Network    (  5d) - all zeroed (ablation)
+ * [316-379] Behavioral ( 64d) - timezone(24), flags(7), features_hash(34)
+ * [380-511] Identity   (132d) - fuzzy_hash(132)
  *
  * @param fingerprint - Normalized fingerprint data
  * @returns Embedding result with vector and metadata
  */
 export function computeEmbedding(fingerprint: Fingerprint): EmbeddingResult {
   const vector = [
-    ...buildStructuralSection(fingerprint),
-    ...buildRenderingSection(fingerprint),
-    ...buildHardwareSection(fingerprint),
-    ...buildNetworkSection(fingerprint),
-    ...buildBehavioralSection(fingerprint),
-    ...buildIdentitySection(fingerprint),
+    ...buildStructuralSection(fingerprint), // 191
+    ...buildRenderingSection(fingerprint), //  76
+    ...buildHardwareSection(fingerprint), //  44
+    ...buildNetworkSection(fingerprint), //   5
+    ...buildBehavioralSection(fingerprint), //  64
+    ...buildIdentitySection(fingerprint), // 132
   ];
 
-  // Verify dimension count matches expected (no padding needed in v8)
+  // Verify dimension count matches expected
   if (vector.length !== EMBEDDING_DIMENSIONS) {
     // Pad or truncate to maintain compatibility
     const adjusted =
@@ -348,6 +290,34 @@ export function computeEmbedding(fingerprint: Fingerprint): EmbeddingResult {
     vector,
     dimensions: EMBEDDING_DIMENSIONS,
     version: EMBEDDING_VERSION,
+  };
+}
+
+/**
+ * Compute a weighted 512-dimensional fingerprint embedding.
+ *
+ * Applies per-dimension NSGA-II weights to the base v12 embedding via
+ * element-wise multiplication. Used by the per-OS multi-collection system (v13).
+ *
+ * When weights are all 1.0, the result is identical to computeEmbedding().
+ *
+ * @param fingerprint - Normalized fingerprint data
+ * @param weights - 512-dimensional weight array from getWeightProfile()
+ * @returns Embedding result with weighted vector and v13 version
+ */
+export function computeWeightedEmbedding(
+  fingerprint: Fingerprint,
+  weights: number[],
+): EmbeddingResult {
+  const base = computeEmbedding(fingerprint);
+  const weighted = new Array(EMBEDDING_DIMENSIONS);
+  for (let i = 0; i < EMBEDDING_DIMENSIONS; i++) {
+    weighted[i] = base.vector[i] * weights[i];
+  }
+  return {
+    vector: weighted,
+    dimensions: EMBEDDING_DIMENSIONS,
+    version: WEIGHTED_EMBEDDING_VERSION,
   };
 }
 

@@ -5,8 +5,10 @@
 import { describe, it, expect } from "vitest";
 import {
   computeEmbedding,
+  computeWeightedEmbedding,
   EMBEDDING_DIMENSIONS,
   EMBEDDING_VERSION,
+  WEIGHTED_EMBEDDING_VERSION,
   areEmbeddingsCompatible,
   assessEmbeddingQuality,
   type EmbeddingResult,
@@ -54,13 +56,13 @@ describe("computeEmbedding", () => {
     const result = computeEmbedding(baseFingerprint);
     expect(result.vector.length).toBe(EMBEDDING_DIMENSIONS);
     expect(result.dimensions).toBe(EMBEDDING_DIMENSIONS);
-    expect(result.dimensions).toBe(256);
+    expect(result.dimensions).toBe(512);
   });
 
   it("includes version number", () => {
     const result = computeEmbedding(baseFingerprint);
     expect(result.version).toBe(EMBEDDING_VERSION);
-    expect(result.version).toBe(8);
+    expect(result.version).toBe(12);
   });
 
   it("produces deterministic output for same input", () => {
@@ -80,30 +82,41 @@ describe("computeEmbedding", () => {
 
   it("encodes hash values as bipolar (-1/+1)", () => {
     const result = computeEmbedding(baseFingerprint);
-    // Structural section (first 80 dims) should be bipolar for hash values
-    const structuralSection = result.vector.slice(0, 80);
+    // v12: Structural section (first 191 dims) should be bipolar for hash values
+    const structuralSection = result.vector.slice(0, 191);
     for (const val of structuralSection) {
       expect(val === -1 || val === 0 || val === 1).toBe(true);
     }
   });
 
-  it("normalizes numeric values to 0-1 range", () => {
+  it("normalizes behavioral numeric values to 0-1 range", () => {
     const result = computeEmbedding(baseFingerprint);
-    // v8: Hardware section starts at 116, first few values are normalized numerics
-    const hwConcurrency = result.vector[116];
-    const deviceMemory = result.vector[117];
-    expect(hwConcurrency).toBeGreaterThanOrEqual(0);
-    expect(hwConcurrency).toBeLessThanOrEqual(1);
-    expect(deviceMemory).toBeGreaterThanOrEqual(0);
-    expect(deviceMemory).toBeLessThanOrEqual(1);
+    // v12: Behavioral section starts at 316
+    // timezone (24 dims via stringToVector) = 316-339, each in 0-1
+    // tz_offset (1 dim normalized) = 340
+    const tzOffset = result.vector[340];
+    expect(tzOffset).toBeGreaterThanOrEqual(0);
+    expect(tzOffset).toBeLessThanOrEqual(1);
   });
 
-  it("uses all 256 dimensions with no reserved padding", () => {
+  it("uses all 512 dimensions with six sections", () => {
     const result = computeEmbedding(baseFingerprint);
-    // v8: 80+36+24+35+33+48 = 256 used dims, no reserved
-    expect(result.vector.length).toBe(256);
-    // Identity section (last 48 dims) should have non-zero values from fuzzy_hash
-    const identitySection = result.vector.slice(208, 256);
+    // v12: 191+76+44+5+64+132 = 512 used dims
+    expect(result.vector.length).toBe(512);
+    // Rendering section [191-266] should have non-zero values from canvas/webgl hashes
+    const renderingSection = result.vector.slice(191, 267);
+    expect(renderingSection.some((v) => v !== 0)).toBe(true);
+    // Hardware section [267-310] should have non-zero values
+    const hardwareSection = result.vector.slice(267, 311);
+    expect(hardwareSection.some((v) => v !== 0)).toBe(true);
+    // Network section [311-315] should be all zeros (ablation)
+    const networkSection = result.vector.slice(311, 316);
+    expect(networkSection.every((v) => v === 0)).toBe(true);
+    // Behavioral section [316-379] should have non-zero values from timezone/features
+    const behavioralSection = result.vector.slice(316, 380);
+    expect(behavioralSection.some((v) => v !== 0)).toBe(true);
+    // Identity section [380-511] should have non-zero values from fuzzy_hash
+    const identitySection = result.vector.slice(380, 512);
     expect(identitySection.some((v) => v !== 0)).toBe(true);
   });
 
@@ -121,9 +134,9 @@ describe("computeEmbedding", () => {
     const resultWith = computeEmbedding(withSimHash);
     const resultWithout = computeEmbedding(withoutSimHash);
 
-    // v8: Maths is at dims 64-67 (after cssMedia(24)+css(16)+screen(12)+htmlElement(12))
-    const mathsWithSimHash = resultWith.vector.slice(64, 68);
-    const mathsWithoutSimHash = resultWithout.vector.slice(64, 68);
+    // v12: Maths is at dims 159-166 (after cssMedia(68)+css(34)+screen(33)+htmlElement(24) = 159)
+    const mathsWithSimHash = resultWith.vector.slice(159, 167);
+    const mathsWithoutSimHash = resultWithout.vector.slice(159, 167);
 
     // SimHash should produce different encoding than SHA-256
     expect(mathsWithSimHash).not.toEqual(mathsWithoutSimHash);
@@ -142,125 +155,113 @@ describe("computeEmbedding", () => {
     };
     const result = computeEmbedding(shaOnly);
 
-    // v8: Maths is at dims 64-67
-    const mathsSection = result.vector.slice(64, 68);
+    // v12: Maths is at dims 159-166
+    const mathsSection = result.vector.slice(159, 167);
     // Should be non-zero (from SHA-256 hash)
     expect(mathsSection.some((v) => v !== 0)).toBe(true);
   });
 
-  it("encodes H2 fingerprint data", () => {
-    const withH2: Fingerprint = {
-      ...baseFingerprint,
-      h2_settings_order: [
-        "1:65536",
-        "2:0",
-        "3:100",
-        "4:131072",
-        "5:16384",
-        "6:8192",
-      ],
-      h2_window_update: 12517377,
-      h2_pseudo_header_order: "m,p,a,s",
-      h2_header_order: ["user-agent", "accept", "accept-encoding"],
-    };
-
-    const resultWith = computeEmbedding(withH2);
-    const resultWithout = computeEmbedding(baseFingerprint);
-
-    // v8: Network starts at 140, H2 is after ja3(8)+ja4(8) = 16
-    // H2 starts at dim 140+16 = 156, spans 14 dims (156-169)
-    const h2With = resultWith.vector.slice(156, 170);
-    const h2Without = resultWithout.vector.slice(156, 170);
-
-    // H2 section should differ when H2 data is present
-    expect(h2With).not.toEqual(h2Without);
-
-    // H2 settings should be normalized values (0-1 range for settings)
-    for (const val of h2With.slice(0, 6)) {
-      expect(val).toBeGreaterThanOrEqual(0);
-      expect(val).toBeLessThanOrEqual(1);
-    }
-  });
-
-  it("produces zeros for H2 when not present", () => {
-    const result = computeEmbedding(baseFingerprint);
-    // v8: H2 starts at 156, spans 14 dims
-    const h2Section = result.vector.slice(156, 170);
-    expect(h2Section.every((v) => v === 0)).toBe(true);
-  });
-
-  it("does not include stable_hash in identity section", () => {
+  it("includes hardware and identity but zeroes network", () => {
     const fp1: Fingerprint = {
       ...baseFingerprint,
-      stable_hash: "aaaa1111",
+      hardware_concurrency: 8,
+      device_memory: 16,
       fuzzy_hash: "fedcba987654",
     };
     const fp2: Fingerprint = {
       ...baseFingerprint,
-      stable_hash: "bbbb2222", // different stable_hash
-      fuzzy_hash: "fedcba987654", // same fuzzy
+      hardware_concurrency: 32, // different hardware
+      device_memory: 64, // different hardware
+      fuzzy_hash: "111111222222", // different identity
     };
 
     const result1 = computeEmbedding(fp1);
     const result2 = computeEmbedding(fp2);
 
-    // v8: Identity section starts at 208, spans 48 dims
-    const identity1 = result1.vector.slice(208, 256);
-    const identity2 = result2.vector.slice(208, 256);
+    // v12 includes hardware and identity — vectors should differ
+    expect(result1.vector).not.toEqual(result2.vector);
 
-    // With same fuzzy_hash, identity section should be identical
-    // (stable_hash no longer encoded)
-    expect(identity1).toEqual(identity2);
+    // Hardware section [267-310] should differ
+    const hw1 = result1.vector.slice(267, 311);
+    const hw2 = result2.vector.slice(267, 311);
+    expect(hw1).not.toEqual(hw2);
+
+    // Identity section [380-511] should differ
+    const id1 = result1.vector.slice(380, 512);
+    const id2 = result2.vector.slice(380, 512);
+    expect(id1).not.toEqual(id2);
+
+    // Network section [311-315] should be zeroed for both
+    expect(result1.vector.slice(311, 316).every((v) => v === 0)).toBe(true);
+    expect(result2.vector.slice(311, 316).every((v) => v === 0)).toBe(true);
+  });
+
+  it("zeroes rendering for Brave private mode", () => {
+    const bravePrivate: Fingerprint = {
+      ...baseFingerprint,
+      privacy_browser: "brave",
+      is_private_browsing: true,
+    };
+    const result = computeEmbedding(bravePrivate);
+
+    // v12: Rendering starts at 191
+    // canvas(20) + webgl(16) + audio(8) = 44 dims should be zeroed
+    const randomizedSection = result.vector.slice(191, 235);
+    expect(randomizedSection.every((v) => v === 0)).toBe(true);
+
+    // clientRects(16) + gpu(16) should NOT be zeroed
+    const stableSection = result.vector.slice(235, 267);
+    expect(stableSection.some((v) => v !== 0)).toBe(true);
   });
 });
 
 describe("areEmbeddingsCompatible", () => {
   it("returns true for same version and dimensions", () => {
     const a: EmbeddingResult = {
-      vector: new Array(256).fill(0),
-      dimensions: 256,
-      version: 8,
+      vector: new Array(512).fill(0),
+      dimensions: 512,
+      version: 12,
     };
     const b: EmbeddingResult = {
-      vector: new Array(256).fill(0),
-      dimensions: 256,
-      version: 8,
+      vector: new Array(512).fill(0),
+      dimensions: 512,
+      version: 12,
     };
     expect(areEmbeddingsCompatible(a, b)).toBe(true);
   });
 
   it("returns false for different versions", () => {
     const a: EmbeddingResult = {
-      vector: new Array(256).fill(0),
-      dimensions: 256,
-      version: 6,
+      vector: new Array(512).fill(0),
+      dimensions: 512,
+      version: 11,
     };
     const b: EmbeddingResult = {
-      vector: new Array(256).fill(0),
-      dimensions: 256,
-      version: 8,
+      vector: new Array(512).fill(0),
+      dimensions: 512,
+      version: 12,
     };
     expect(areEmbeddingsCompatible(a, b)).toBe(false);
   });
 
   it("returns false for different dimensions", () => {
     const a: EmbeddingResult = {
-      vector: new Array(128).fill(0),
-      dimensions: 128,
-      version: 8,
-    };
-    const b: EmbeddingResult = {
       vector: new Array(256).fill(0),
       dimensions: 256,
-      version: 8,
+      version: 12,
+    };
+    const b: EmbeddingResult = {
+      vector: new Array(512).fill(0),
+      dimensions: 512,
+      version: 12,
     };
     expect(areEmbeddingsCompatible(a, b)).toBe(false);
   });
 });
 
 describe("EMBEDDING_DIMENSIONS", () => {
-  it("is 256", () => {
-    expect(EMBEDDING_DIMENSIONS).toBe(256);
+  it("is 512", () => {
+    expect(EMBEDDING_DIMENSIONS).toBe(512);
   });
 });
 
@@ -534,5 +535,83 @@ describe("assessEmbeddingQuality", () => {
     expect(result.renderingCount).toBe(3);
     expect(result.hardwareCount).toBe(5);
     expect(result.reason).toBeUndefined();
+  });
+});
+
+describe("computeWeightedEmbedding", () => {
+  const baseFingerprint: Fingerprint = {
+    stable_hash: "abc123def456",
+    fuzzy_hash: "fedcba987654",
+    html_element_hash: "1a2b3c4d",
+    maths_hash: "5e6f7890",
+    window_features_hash: "abcd1234",
+    css_hash: "ef012345",
+    svg_hash: "67890abc",
+    intl_hash: "def12345",
+    canvas_hash: "112233445566",
+    webgl_hash: "aabbccddeeff",
+    audio_hash: "11223344",
+    client_rects_hash: "55667788",
+    gpu_renderer: "NVIDIA GeForce GTX 1080",
+    hardware_concurrency: 8,
+    device_memory: 16,
+    webgl_extensions_count: 35,
+    screen_dims: "1920x1080",
+    user_agent: "Mozilla/5.0 Chrome/120",
+    timezone: "America/New_York",
+    is_private_browsing: false,
+    is_headless: false,
+    lie_count: 0,
+    features_hash: "aabbccdd",
+  };
+
+  it("produces 512 dimensions", () => {
+    const weights = new Array(512).fill(2.0);
+    const result = computeWeightedEmbedding(baseFingerprint, weights);
+    expect(result.vector).toHaveLength(EMBEDDING_DIMENSIONS);
+    expect(result.dimensions).toBe(EMBEDDING_DIMENSIONS);
+  });
+
+  it("returns version 13", () => {
+    const weights = new Array(512).fill(1.0);
+    const result = computeWeightedEmbedding(baseFingerprint, weights);
+    expect(result.version).toBe(WEIGHTED_EMBEDDING_VERSION);
+    expect(result.version).toBe(13);
+  });
+
+  it("with all-ones weights equals computeEmbedding", () => {
+    const allOnes = new Array(512).fill(1.0);
+    const base = computeEmbedding(baseFingerprint);
+    const weighted = computeWeightedEmbedding(baseFingerprint, allOnes);
+    expect(weighted.vector).toEqual(base.vector);
+  });
+
+  it("applies element-wise multiplication", () => {
+    const base = computeEmbedding(baseFingerprint);
+    const weights = new Array(512).fill(1.0);
+    weights[0] = 3.0;
+    weights[100] = 0.5;
+    weights[198] = 0;
+
+    const result = computeWeightedEmbedding(baseFingerprint, weights);
+    expect(result.vector[0]).toBeCloseTo(base.vector[0] * 3.0);
+    expect(result.vector[100]).toBeCloseTo(base.vector[100] * 0.5);
+    expect(result.vector[198]).toBe(0);
+    // Unweighted dims should be unchanged
+    expect(result.vector[50]).toBeCloseTo(base.vector[50]);
+  });
+
+  it("zeroing a weight zeroes that dimension", () => {
+    const weights = new Array(512).fill(1.0);
+    weights[227] = 0; // audio section
+    const result = computeWeightedEmbedding(baseFingerprint, weights);
+    expect(result.vector[227]).toBeCloseTo(0);
+  });
+
+  it("is deterministic", () => {
+    const weights = new Array(512).fill(1.5);
+    const a = computeWeightedEmbedding(baseFingerprint, weights);
+    const b = computeWeightedEmbedding(baseFingerprint, weights);
+    expect(a.vector).toEqual(b.vector);
   });
 });

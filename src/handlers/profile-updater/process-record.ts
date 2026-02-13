@@ -14,8 +14,11 @@ import { ProfileService, ProfileUpdatePayload } from "../../services/profile";
 import { normalizeFingerprint } from "../../helpers/normalize-fingerprint";
 import {
   computeEmbedding,
+  computeWeightedEmbedding,
   EMBEDDING_VERSION,
+  WEIGHTED_EMBEDDING_VERSION,
 } from "../../services/vector/embedding";
+import { routeFingerprint } from "../../services/vector/collection-router";
 import type { VectorUpsertMessage } from "../vector-worker/types";
 
 /** Result of processing a profile update request. */
@@ -108,6 +111,26 @@ function recordWriteMetrics(
 /** Qdrant collection name for fingerprint vectors (256-dim, v2 embedding) */
 const VECTOR_COLLECTION = "fingerprints_v2";
 
+/** Compute embedding and resolve collection, using OS routing when prefix is set. */
+function resolveVectorConfig(
+  fingerprint: ProfileUpdatePayload["fingerprint"],
+  collectionPrefix?: string,
+) {
+  if (collectionPrefix) {
+    const routing = routeFingerprint(fingerprint, collectionPrefix);
+    return {
+      embedding: computeWeightedEmbedding(fingerprint, routing.weights),
+      collection: routing.collection,
+      embeddingVersion: WEIGHTED_EMBEDDING_VERSION,
+    };
+  }
+  return {
+    embedding: computeEmbedding(fingerprint),
+    collection: VECTOR_COLLECTION,
+    embeddingVersion: EMBEDDING_VERSION,
+  };
+}
+
 /**
  * Queue a vector upsert message for the vector worker.
  *
@@ -124,36 +147,28 @@ async function queueVectorUpsert(
     vectorQueueUrl: string;
     logger: Logger;
     metrics: Metrics;
+    vectorCollectionPrefix?: string;
   },
 ): Promise<void> {
   const { device_id, fingerprint } = payload;
 
   try {
-    // Compute embedding from fingerprint
-    const embedding = computeEmbedding(fingerprint);
-
-    // Build vector upsert message
-    // Note: Qdrant requires numeric IDs, so we hash the device_id to a number
-    // Using a simple hash - in production might want something more robust
+    const { embedding, collection, embeddingVersion } = resolveVectorConfig(
+      fingerprint,
+      deps.vectorCollectionPrefix,
+    );
     const numericId = hashDeviceId(device_id);
 
-    const message: VectorUpsertMessage = {
+    const qdrantMessage: VectorUpsertMessage = {
       type: "upsert",
-      device_id,
+      device_id: numericId.toString(),
       vector: embedding.vector,
-      collection: VECTOR_COLLECTION,
+      collection,
       payload: {
         device_id,
-        embedding_version: EMBEDDING_VERSION,
+        embedding_version: embeddingVersion,
         updated_at: new Date().toISOString(),
       },
-    };
-
-    // For Qdrant, we need to use a numeric ID
-    // Override device_id in the message with the numeric hash
-    const qdrantMessage = {
-      ...message,
-      device_id: numericId.toString(),
     };
 
     await deps.sqsClient.send(
@@ -201,6 +216,8 @@ interface ProcessRecordDeps {
   sqsClient: SQSClient | null;
   /** Optional: Vector queue URL. Required if sqsClient is provided. */
   vectorQueueUrl?: string;
+  /** Optional: Collection prefix for per-OS multi-collection vector routing (v13). */
+  vectorCollectionPrefix?: string;
 }
 
 /**
@@ -265,6 +282,7 @@ export async function processRecord(
       vectorQueueUrl: deps.vectorQueueUrl,
       logger: deps.logger,
       metrics: deps.metrics,
+      vectorCollectionPrefix: deps.vectorCollectionPrefix,
     });
   }
 }

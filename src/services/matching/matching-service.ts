@@ -47,6 +47,7 @@ export interface MatchingServiceConfig {
   tier2TimeoutMs: number;
   vectorWorkerArn?: string;
   vectorCollection?: string;
+  vectorCollectionPrefix?: string;
 }
 
 export interface MatchingServiceDeps {
@@ -78,7 +79,8 @@ export class MatchingService {
       profilesTable: deps.config.profilesTable,
     };
 
-    const { vectorWorkerArn, vectorCollection } = deps.config;
+    const { vectorWorkerArn, vectorCollection, vectorCollectionPrefix } =
+      deps.config;
     const { lambda, logger, metrics } = deps;
     if (vectorWorkerArn && vectorCollection && lambda && logger && metrics) {
       this.useVectorSearch = true;
@@ -90,6 +92,7 @@ export class MatchingService {
         profilesTable: deps.config.profilesTable,
         logger,
         metrics,
+        collectionPrefix: vectorCollectionPrefix,
       };
     } else {
       this.useVectorSearch = false;

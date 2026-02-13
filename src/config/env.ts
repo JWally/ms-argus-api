@@ -31,6 +31,8 @@ export interface MatchingWorkerEnvConfig extends BaseEnvConfig {
   PAYLOAD_ARCHIVE_BUCKET?: string;
   /** Optional: Sampling rate for payload archiving (0.0 to 1.0) */
   PAYLOAD_ARCHIVE_SAMPLE_RATE?: string;
+  /** Optional: Collection prefix for per-OS multi-collection vector routing (v13). */
+  VECTOR_COLLECTION_PREFIX?: string;
 }
 
 /**
@@ -39,6 +41,8 @@ export interface MatchingWorkerEnvConfig extends BaseEnvConfig {
 export interface ProfileUpdaterEnvConfig extends BaseEnvConfig {
   /** Optional: SQS queue URL for vector operations. If set, enables vector upserts. */
   VECTOR_QUEUE_URL?: string;
+  /** Optional: Collection prefix for per-OS multi-collection vector routing (v13). */
+  VECTOR_COLLECTION_PREFIX?: string;
 }
 
 /**
@@ -115,6 +119,7 @@ export function getMatchingWorkerEnv(): MatchingWorkerEnvConfig {
       "VECTOR_COLLECTION",
       "PAYLOAD_ARCHIVE_BUCKET",
       "PAYLOAD_ARCHIVE_SAMPLE_RATE",
+      "VECTOR_COLLECTION_PREFIX",
     ],
   );
 }
@@ -133,7 +138,7 @@ export function getProfileUpdaterEnv(): ProfileUpdaterEnvConfig {
       "TIER2_BUCKETS_TABLE",
     ],
     "argus-profile",
-    ["VECTOR_QUEUE_URL"],
+    ["VECTOR_QUEUE_URL", "VECTOR_COLLECTION_PREFIX"],
   );
 }
 

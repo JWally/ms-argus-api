@@ -89,6 +89,7 @@ export const handler: SQSHandler = async (event) => {
         metrics,
         sqsClient,
         vectorQueueUrl,
+        vectorCollectionPrefix: envConfig.VECTOR_COLLECTION_PREFIX,
       }),
     {
       metrics,

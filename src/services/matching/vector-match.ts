@@ -6,7 +6,13 @@ import {
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { Logger } from "@aws-lambda-powertools/logger";
 import { Metrics, MetricUnit } from "@aws-lambda-powertools/metrics";
-import { computeEmbedding, assessEmbeddingQuality } from "../vector/embedding";
+import {
+  computeEmbedding,
+  computeWeightedEmbedding,
+  assessEmbeddingQuality,
+  EMBEDDING_DIMENSIONS,
+} from "../vector/embedding";
+import { routeFingerprint } from "../vector/collection-router";
 import { loadProfile } from "./profile-loader";
 import {
   computeIpConfidenceModifier,
@@ -30,9 +36,9 @@ import type {
   SyncUpsertResponse,
   SyncErrorResponse,
 } from "../../handlers/vector-worker/types";
-import type { QdrantFilter } from "../vector/qdrant-client";
+import type { QdrantFilter, QdrantCondition } from "../vector/qdrant-client";
 
-const MIN_SCORE_THRESHOLD = 0.85;
+const MIN_SCORE_THRESHOLD = 0.96;
 const HIGH_SCORE_THRESHOLD = 0.9;
 const VECTOR_INVOKE_TIMEOUT_MS = 5000;
 
@@ -44,6 +50,27 @@ export interface VectorMatchDeps {
   profilesTable: string;
   logger: Logger;
   metrics: Metrics;
+  /** Optional: collection prefix for per-OS multi-collection routing (v13). */
+  collectionPrefix?: string;
+}
+
+/**
+ * Detect browser variant from user agent string.
+ * Used as a hard filter — different variants must NEVER match each other.
+ */
+// eslint-disable-next-line complexity
+export function detectBrowserVariant(ua: string | undefined): string {
+  if (!ua) return "unknown";
+  if (/FxiOS/i.test(ua)) return "fxios";
+  if (/CriOS/i.test(ua)) return "crios";
+  if (/EdgiOS/i.test(ua)) return "edgios";
+  if (/Instagram/i.test(ua)) return "instagram";
+  if (/Gemini/i.test(ua)) return "gemini";
+  if (/Firefox/i.test(ua)) return "firefox";
+  if (/Edg\//i.test(ua)) return "edge";
+  if (/Chrome/i.test(ua)) return "chrome";
+  if (/Safari/i.test(ua)) return "safari";
+  return "unknown";
 }
 
 const SCREEN_FILTER_TOLERANCE = 5;
@@ -87,6 +114,38 @@ export function buildMobileScreenFilter(
       },
     ],
   };
+}
+
+/**
+ * Build a Qdrant filter condition for browser variant.
+ * Prevents cross-browser matches (e.g., FxiOS never matches Safari).
+ */
+export function buildBrowserVariantFilter(
+  fingerprint: Fingerprint,
+): QdrantCondition | undefined {
+  const variant = detectBrowserVariant(fingerprint.user_agent);
+  if (variant === "unknown") return undefined;
+  return { key: "browser_variant", match: { value: variant } };
+}
+
+/**
+ * Combine all hard filters (screen dimensions + browser variant) into
+ * a single QdrantFilter for the search request.
+ */
+export function buildSearchFilter(
+  fingerprint: Fingerprint,
+): QdrantFilter | undefined {
+  const conditions: QdrantCondition[] = [];
+
+  // Screen dimensions filter (mobile only)
+  const screenFilter = buildMobileScreenFilter(fingerprint);
+  if (screenFilter?.must) conditions.push(...screenFilter.must);
+
+  // Browser variant filter
+  const browserFilter = buildBrowserVariantFilter(fingerprint);
+  if (browserFilter) conditions.push(browserFilter);
+
+  return conditions.length > 0 ? { must: conditions } : undefined;
 }
 
 const PRIMARY_EMBEDDING_FEATURES = [
@@ -245,19 +304,25 @@ async function vectorMatch(
 ): Promise<MatchResult | null> {
   const startTime = Date.now();
 
-  // Step 1: Compute embedding
-  const embeddingResult = computeEmbedding(fingerprint);
+  // Step 1: Compute embedding (weighted if per-OS routing is enabled)
+  const routing = deps.collectionPrefix
+    ? routeFingerprint(fingerprint, deps.collectionPrefix)
+    : null;
+
+  const embeddingResult = routing
+    ? computeWeightedEmbedding(fingerprint, routing.weights)
+    : computeEmbedding(fingerprint);
   deps.metrics.addMetric("EmbeddingComputed", MetricUnit.Count, 1);
 
   // Step 2: Invoke vector-worker for search
   const searchRequest: SyncSearchRequest = {
     action: "search",
     vector: embeddingResult.vector,
-    collection: deps.collection,
+    collection: routing?.collection ?? deps.collection,
     limit: 5,
-    score_threshold: MIN_SCORE_THRESHOLD,
+    score_threshold: routing?.threshold ?? MIN_SCORE_THRESHOLD,
     auto_create_collection: true,
-    filter: buildMobileScreenFilter(fingerprint),
+    filter: buildSearchFilter(fingerprint),
   };
 
   let searchResponse: SyncSearchResponse | SyncErrorResponse | null;
@@ -313,7 +378,7 @@ function buildVectorDetails(
         ? searchResponse.results[1].score
         : null,
     top_scores: searchResponse.results.slice(0, 5).map((r) => r.score),
-    embedding_dimension: 256,
+    embedding_dimension: EMBEDDING_DIMENSIONS,
     primary_match_features: PRIMARY_EMBEDDING_FEATURES,
   };
 }
@@ -393,7 +458,12 @@ function computeVectorConfidence(score: number): number {
 
 type UpsertDeps = Pick<
   VectorMatchDeps,
-  "lambda" | "vectorWorkerArn" | "collection" | "logger" | "metrics"
+  | "lambda"
+  | "vectorWorkerArn"
+  | "collection"
+  | "logger"
+  | "metrics"
+  | "collectionPrefix"
 >;
 
 /** Returns false if fingerprint quality is too low for indexing. */
@@ -431,6 +501,7 @@ function buildUpsertPayload(fingerprint: Fingerprint): Record<string, unknown> {
   const screenDims = fingerprint.screen_dims
     ? parseScreenDims(fingerprint.screen_dims)
     : null;
+  const browserVariant = detectBrowserVariant(fingerprint.user_agent);
   return {
     stable_hash: fingerprint.stable_hash,
     fuzzy_hash: fingerprint.fuzzy_hash,
@@ -439,6 +510,7 @@ function buildUpsertPayload(fingerprint: Fingerprint): Record<string, unknown> {
     ...(screenDims && { screen_width: screenDims.width }),
     ...(screenDims && { screen_height: screenDims.height }),
     ...(fingerprint.platform && { platform: fingerprint.platform }),
+    ...(browserVariant !== "unknown" && { browser_variant: browserVariant }),
   };
 }
 
@@ -450,11 +522,19 @@ export async function upsertDeviceVector(
 ): Promise<boolean> {
   if (!passesQualityGate(deps, deviceId, fingerprint)) return false;
 
+  const routing = deps.collectionPrefix
+    ? routeFingerprint(fingerprint, deps.collectionPrefix)
+    : null;
+
+  const vector = routing
+    ? computeWeightedEmbedding(fingerprint, routing.weights).vector
+    : computeEmbedding(fingerprint).vector;
+
   const upsertRequest: SyncUpsertRequest = {
     action: "upsert",
     device_id: deviceId,
-    vector: computeEmbedding(fingerprint).vector,
-    collection: deps.collection,
+    vector,
+    collection: routing?.collection ?? deps.collection,
     payload: buildUpsertPayload(fingerprint),
     auto_create_collection: true,
   };

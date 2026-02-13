@@ -37,6 +37,7 @@ function getConfig(envConfig: MatchingWorkerEnvConfig): MatchingServiceConfig {
     // Vector search configuration (optional)
     vectorWorkerArn: envConfig.VECTOR_WORKER_ARN,
     vectorCollection: envConfig.VECTOR_COLLECTION,
+    vectorCollectionPrefix: envConfig.VECTOR_COLLECTION_PREFIX,
   };
 }
 
