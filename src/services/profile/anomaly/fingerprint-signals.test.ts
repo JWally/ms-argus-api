@@ -426,4 +426,388 @@ describe("detectFingerprintSignals", () => {
       expect(signals).toHaveLength(0);
     });
   });
+
+  describe("timezone offset vs computed mismatch", () => {
+    it("should detect when offset !== offsetComputed", () => {
+      const signals = detectFingerprintSignals({} as Fingerprint, {
+        timezone: { offset: -300, offsetComputed: -240 },
+      });
+      expect(
+        signals.some(
+          (s) => s.code === AnomalyCodes.TZ_OFFSET_COMPUTED_MISMATCH,
+        ),
+      ).toBe(true);
+    });
+
+    it("should not flag when offset equals offsetComputed", () => {
+      const signals = detectFingerprintSignals({} as Fingerprint, {
+        timezone: { offset: -300, offsetComputed: -300 },
+      });
+      expect(
+        signals.some(
+          (s) => s.code === AnomalyCodes.TZ_OFFSET_COMPUTED_MISMATCH,
+        ),
+      ).toBe(false);
+    });
+
+    it("should not flag when timezone is missing", () => {
+      const signals = detectFingerprintSignals({} as Fingerprint, {});
+      expect(
+        signals.some(
+          (s) => s.code === AnomalyCodes.TZ_OFFSET_COMPUTED_MISMATCH,
+        ),
+      ).toBe(false);
+    });
+
+    it("should not flag when offsetComputed is missing", () => {
+      const signals = detectFingerprintSignals({} as Fingerprint, {
+        timezone: { offset: -300 },
+      });
+      expect(
+        signals.some(
+          (s) => s.code === AnomalyCodes.TZ_OFFSET_COMPUTED_MISMATCH,
+        ),
+      ).toBe(false);
+    });
+  });
+
+  describe("CSS media API mismatch (mediaCSS vs matchMediaCSS)", () => {
+    it("should detect when mediaCSS and matchMediaCSS differ", () => {
+      const signals = detectFingerprintSignals({} as Fingerprint, {
+        cssMedia: {
+          mediaCSS: { "color-gamut": "srgb", "prefers-color-scheme": "dark" },
+          matchMediaCSS: {
+            "color-gamut": "p3",
+            "prefers-color-scheme": "dark",
+          },
+        },
+      });
+      expect(
+        signals.some((s) => s.code === AnomalyCodes.CSS_MEDIA_API_MISMATCH),
+      ).toBe(true);
+    });
+
+    it("should not flag when mediaCSS and matchMediaCSS match", () => {
+      const signals = detectFingerprintSignals({} as Fingerprint, {
+        cssMedia: {
+          mediaCSS: { "color-gamut": "srgb" },
+          matchMediaCSS: { "color-gamut": "srgb" },
+        },
+      });
+      expect(
+        signals.some((s) => s.code === AnomalyCodes.CSS_MEDIA_API_MISMATCH),
+      ).toBe(false);
+    });
+
+    it("should not flag when matchMediaCSS is missing", () => {
+      const signals = detectFingerprintSignals({} as Fingerprint, {
+        cssMedia: { mediaCSS: { "color-gamut": "srgb" } },
+      });
+      expect(
+        signals.some((s) => s.code === AnomalyCodes.CSS_MEDIA_API_MISMATCH),
+      ).toBe(false);
+    });
+  });
+
+  describe("engine mismatch (consoleErrors)", () => {
+    it("should detect when engineMismatch is true", () => {
+      const signals = detectFingerprintSignals({} as Fingerprint, {
+        consoleErrors: {
+          engineMismatch: true,
+          jsEngine: "v8",
+          layoutEngine: "blink",
+          claimedEngine: { browser: "Firefox" },
+        },
+      });
+      expect(signals.some((s) => s.code === AnomalyCodes.ENGINE_MISMATCH)).toBe(
+        true,
+      );
+    });
+
+    it("should not flag when engineMismatch is false", () => {
+      const signals = detectFingerprintSignals({} as Fingerprint, {
+        consoleErrors: { engineMismatch: false },
+      });
+      expect(signals.some((s) => s.code === AnomalyCodes.ENGINE_MISMATCH)).toBe(
+        false,
+      );
+    });
+
+    it("should not flag when consoleErrors is missing", () => {
+      const signals = detectFingerprintSignals({} as Fingerprint, {});
+      expect(signals.some((s) => s.code === AnomalyCodes.ENGINE_MISMATCH)).toBe(
+        false,
+      );
+    });
+  });
+
+  describe("WebRTC IP mismatch", () => {
+    it("should detect when WebRTC IP differs from connection IP", () => {
+      const signals = detectFingerprintSignals(
+        {} as Fingerprint,
+        { webrtc: { iceCandidates: { publicIP: "1.2.3.4" } } },
+        { tlsFingerprint: { ip: "5.6.7.8" } },
+      );
+      expect(
+        signals.some((s) => s.code === AnomalyCodes.WEBRTC_IP_MISMATCH),
+      ).toBe(true);
+    });
+
+    it("should not flag when WebRTC IP matches connection IP", () => {
+      const signals = detectFingerprintSignals(
+        {} as Fingerprint,
+        { webrtc: { iceCandidates: { publicIP: "1.2.3.4" } } },
+        { tlsFingerprint: { ip: "1.2.3.4" } },
+      );
+      expect(
+        signals.some((s) => s.code === AnomalyCodes.WEBRTC_IP_MISMATCH),
+      ).toBe(false);
+    });
+
+    it("should not flag when sigint is missing", () => {
+      const signals = detectFingerprintSignals({} as Fingerprint, {
+        webrtc: { iceCandidates: { publicIP: "1.2.3.4" } },
+      });
+      expect(
+        signals.some((s) => s.code === AnomalyCodes.WEBRTC_IP_MISMATCH),
+      ).toBe(false);
+    });
+
+    it("should use tcpProbe IP when tlsFingerprint is absent", () => {
+      const signals = detectFingerprintSignals(
+        {} as Fingerprint,
+        { webrtc: { iceCandidates: { publicIP: "1.2.3.4" } } },
+        { tcpProbe: { client_ip: "5.6.7.8" } },
+      );
+      expect(
+        signals.some((s) => s.code === AnomalyCodes.WEBRTC_IP_MISMATCH),
+      ).toBe(true);
+    });
+
+    it("should not flag when webrtc publicIP is missing", () => {
+      const signals = detectFingerprintSignals(
+        {} as Fingerprint,
+        { webrtc: { iceCandidates: {} } },
+        { tlsFingerprint: { ip: "5.6.7.8" } },
+      );
+      expect(
+        signals.some((s) => s.code === AnomalyCodes.WEBRTC_IP_MISMATCH),
+      ).toBe(false);
+    });
+  });
+
+  describe("screen depth mismatch", () => {
+    it("should detect when colorDepth !== pixelDepth", () => {
+      const signals = detectFingerprintSignals({} as Fingerprint, {
+        screen: { colorDepth: 24, pixelDepth: 32 },
+      });
+      expect(
+        signals.some((s) => s.code === AnomalyCodes.SCREEN_DEPTH_MISMATCH),
+      ).toBe(true);
+    });
+
+    it("should not flag when colorDepth === pixelDepth", () => {
+      const signals = detectFingerprintSignals({} as Fingerprint, {
+        screen: { colorDepth: 24, pixelDepth: 24 },
+      });
+      expect(
+        signals.some((s) => s.code === AnomalyCodes.SCREEN_DEPTH_MISMATCH),
+      ).toBe(false);
+    });
+  });
+
+  describe("screen avail overflow", () => {
+    it("should detect when availWidth > width", () => {
+      const signals = detectFingerprintSignals({} as Fingerprint, {
+        screen: {
+          width: 1920,
+          height: 1080,
+          availWidth: 2000,
+          availHeight: 1080,
+        },
+      });
+      expect(
+        signals.some((s) => s.code === AnomalyCodes.SCREEN_AVAIL_OVERFLOW),
+      ).toBe(true);
+    });
+
+    it("should detect when availHeight > height", () => {
+      const signals = detectFingerprintSignals({} as Fingerprint, {
+        screen: {
+          width: 1920,
+          height: 1080,
+          availWidth: 1920,
+          availHeight: 1200,
+        },
+      });
+      expect(
+        signals.some((s) => s.code === AnomalyCodes.SCREEN_AVAIL_OVERFLOW),
+      ).toBe(true);
+    });
+
+    it("should not flag when avail <= screen dims", () => {
+      const signals = detectFingerprintSignals({} as Fingerprint, {
+        screen: {
+          width: 1920,
+          height: 1080,
+          availWidth: 1920,
+          availHeight: 1040,
+        },
+      });
+      expect(
+        signals.some((s) => s.code === AnomalyCodes.SCREEN_AVAIL_OVERFLOW),
+      ).toBe(false);
+    });
+  });
+
+  describe("device-screen string mismatch", () => {
+    it("should detect when device-screen string doesn't match screen dims", () => {
+      const signals = detectFingerprintSignals({} as Fingerprint, {
+        screen: { width: 1920, height: 1080 },
+        cssMedia: { mediaCSS: { "device-screen": "1440 x 900" } },
+      });
+      expect(
+        signals.some(
+          (s) => s.code === AnomalyCodes.DEVICE_SCREEN_STRING_MISMATCH,
+        ),
+      ).toBe(true);
+    });
+
+    it("should not flag when device-screen matches screen dims", () => {
+      const signals = detectFingerprintSignals({} as Fingerprint, {
+        screen: { width: 1920, height: 1080 },
+        cssMedia: { mediaCSS: { "device-screen": "1920 x 1080" } },
+      });
+      expect(
+        signals.some(
+          (s) => s.code === AnomalyCodes.DEVICE_SCREEN_STRING_MISMATCH,
+        ),
+      ).toBe(false);
+    });
+  });
+
+  describe("aspect ratio mismatch", () => {
+    it("should detect when CSS aspect ratio doesn't match screen dims", () => {
+      const signals = detectFingerprintSignals({} as Fingerprint, {
+        screen: { width: 1920, height: 1080 },
+        cssMedia: { mediaCSS: { "device-aspect-ratio": "4/3" } },
+      });
+      expect(
+        signals.some((s) => s.code === AnomalyCodes.ASPECT_RATIO_MISMATCH),
+      ).toBe(true);
+    });
+
+    it("should not flag when CSS aspect ratio matches screen dims", () => {
+      const signals = detectFingerprintSignals({} as Fingerprint, {
+        screen: { width: 1920, height: 1080 },
+        cssMedia: { mediaCSS: { "device-aspect-ratio": "16/9" } },
+      });
+      expect(
+        signals.some((s) => s.code === AnomalyCodes.ASPECT_RATIO_MISMATCH),
+      ).toBe(false);
+    });
+
+    it("should not flag when aspect ratio string is missing", () => {
+      const signals = detectFingerprintSignals({} as Fingerprint, {
+        screen: { width: 1920, height: 1080 },
+        cssMedia: { mediaCSS: {} },
+      });
+      expect(
+        signals.some((s) => s.code === AnomalyCodes.ASPECT_RATIO_MISMATCH),
+      ).toBe(false);
+    });
+
+    it("should not flag for invalid ratio string", () => {
+      const signals = detectFingerprintSignals({} as Fingerprint, {
+        screen: { width: 1920, height: 1080 },
+        cssMedia: { mediaCSS: { "device-aspect-ratio": "invalid" } },
+      });
+      expect(
+        signals.some((s) => s.code === AnomalyCodes.ASPECT_RATIO_MISMATCH),
+      ).toBe(false);
+    });
+  });
+
+  describe("worker locale mismatch", () => {
+    it("should detect when worker scopes have inconsistent locales", () => {
+      const signals = detectFingerprintSignals({} as Fingerprint, {
+        workerScope: {
+          scopes: {
+            dedicated: {
+              language: "en-US",
+              timezoneLocation: "America/New_York",
+            },
+            shared: { language: "fr-FR", timezoneLocation: "Europe/Paris" },
+          },
+        },
+      });
+      expect(
+        signals.some((s) => s.code === AnomalyCodes.WORKER_LOCALE_MISMATCH),
+      ).toBe(true);
+    });
+
+    it("should not flag when worker scopes have consistent locales", () => {
+      const signals = detectFingerprintSignals({} as Fingerprint, {
+        workerScope: {
+          scopes: {
+            dedicated: { language: "en-US" },
+            shared: { language: "en-US" },
+          },
+        },
+      });
+      expect(
+        signals.some((s) => s.code === AnomalyCodes.WORKER_LOCALE_MISMATCH),
+      ).toBe(false);
+    });
+
+    it("should not flag with only one scope", () => {
+      const signals = detectFingerprintSignals({} as Fingerprint, {
+        workerScope: { scopes: { dedicated: { language: "en-US" } } },
+      });
+      expect(
+        signals.some((s) => s.code === AnomalyCodes.WORKER_LOCALE_MISMATCH),
+      ).toBe(false);
+    });
+  });
+
+  describe("incognito browser mismatch", () => {
+    it("should detect when incognito browser family differs from UA", () => {
+      const signals = detectFingerprintSignals({} as Fingerprint, {
+        incognito: { browser: "Chrome" },
+        navigator: { userAgentParsed: "Firefox" },
+      });
+      expect(
+        signals.some((s) => s.code === AnomalyCodes.INCOGNITO_BROWSER_MISMATCH),
+      ).toBe(true);
+    });
+
+    it("should not flag when browser families match (alias)", () => {
+      const signals = detectFingerprintSignals({} as Fingerprint, {
+        incognito: { browser: "CriOS" },
+        navigator: { userAgentParsed: "Chrome" },
+      });
+      expect(
+        signals.some((s) => s.code === AnomalyCodes.INCOGNITO_BROWSER_MISMATCH),
+      ).toBe(false);
+    });
+
+    it("should not flag when incognito is missing", () => {
+      const signals = detectFingerprintSignals({} as Fingerprint, {
+        navigator: { userAgentParsed: "Chrome" },
+      });
+      expect(
+        signals.some((s) => s.code === AnomalyCodes.INCOGNITO_BROWSER_MISMATCH),
+      ).toBe(false);
+    });
+
+    it("should handle edge browser family normalization", () => {
+      const signals = detectFingerprintSignals({} as Fingerprint, {
+        incognito: { browser: "Edg" },
+        navigator: { userAgentParsed: "Edge" },
+      });
+      expect(
+        signals.some((s) => s.code === AnomalyCodes.INCOGNITO_BROWSER_MISMATCH),
+      ).toBe(false);
+    });
+  });
 });
