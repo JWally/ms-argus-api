@@ -150,6 +150,43 @@ function isFirefoxRFPPrivate(fp: Fingerprint): boolean {
   );
 }
 
+/**
+ * Detect browser variant from UA string.
+ * Mirrors vector-match.ts detectBrowserVariant for embedding use.
+ */
+function detectBrowserVariant(ua: string | undefined): string {
+  if (!ua) return "unknown";
+  if (/FxiOS/i.test(ua)) return "fxios";
+  if (/CriOS/i.test(ua)) return "crios";
+  if (/EdgiOS/i.test(ua)) return "edgios";
+  if (/Firefox/i.test(ua)) return "firefox";
+  if (/Edg\//i.test(ua)) return "edge";
+  if (/Chrome/i.test(ua)) return "chrome";
+  if (/Safari/i.test(ua)) return "safari";
+  return "unknown";
+}
+
+/**
+ * Check if this is an iOS device (any browser).
+ * iOS randomizes canvas in all modes and audio varies every visit.
+ */
+function isIOS(fp: Fingerprint): boolean {
+  return /iPhone|iPad|iPod/i.test(fp.platform ?? "");
+}
+
+/**
+ * Check if this is Safari in private mode on macOS.
+ * Safari private randomizes canvas per session; audio has subtle FP noise
+ * that shifts the exact hash but simhash absorbs it.
+ */
+function isSafariPrivate(fp: Fingerprint): boolean {
+  return (
+    detectBrowserVariant(fp.user_agent) === "safari" &&
+    fp.is_private_browsing === true &&
+    !isIOS(fp) // iOS handled separately (always randomized)
+  );
+}
+
 // ============================================================================
 // SECTION BUILDERS
 // ============================================================================
@@ -168,34 +205,45 @@ function buildStructuralSection(fp: Fingerprint): number[] {
   ]; // 68+34+33+24+8+8+8+8 = 191
 }
 
-/** Build rendering section (76 dims) — canvas/webgl/audio zeroed for privacy browsers */
-function buildRenderingSection(fp: Fingerprint): number[] {
-  // Brave private: canvas/audio/webgl are all randomized — zero them
-  if (isBravePrivate(fp)) {
-    return [
-      ...new Array(20).fill(0), // canvas - randomized
-      ...new Array(16).fill(0), // webgl - randomized
-      ...new Array(8).fill(0), // audio - randomized
-      ...hashToBipolar(fp.client_rects_simhash ?? fp.client_rects_hash, 16),
-      ...stringToVector(fp.gpu_renderer, 16),
-    ];
-  }
+/**
+ * Determine which rendering signals are volatile for this fingerprint.
+ * Returns flags for which signals should be zeroed in the embedding.
+ *
+ * Rationale per browser/platform:
+ * - Brave private:        canvas + webgl + audio all randomized
+ * - Firefox RFP private:  canvas + webgl randomized, audio stable
+ * - iOS (all modes):      canvas always randomized, audio varies every visit, webgl stable
+ * - macOS Safari private: canvas randomized per session, webgl differs between modes
+ */
+function detectVolatileRendering(fp: Fingerprint): {
+  zeroCanvas: boolean;
+  zeroWebgl: boolean;
+  zeroAudio: boolean;
+} {
+  if (isBravePrivate(fp))
+    return { zeroCanvas: true, zeroWebgl: true, zeroAudio: true };
+  if (isFirefoxRFPPrivate(fp))
+    return { zeroCanvas: true, zeroWebgl: true, zeroAudio: false };
+  if (isIOS(fp)) return { zeroCanvas: true, zeroWebgl: false, zeroAudio: true };
+  if (isSafariPrivate(fp))
+    return { zeroCanvas: true, zeroWebgl: true, zeroAudio: false };
+  return { zeroCanvas: false, zeroWebgl: false, zeroAudio: false };
+}
 
-  // Firefox RFP private: canvas/webgl randomized per-session, audio stays stable
-  if (isFirefoxRFPPrivate(fp)) {
-    return [
-      ...new Array(20).fill(0), // canvas - randomized by RFP
-      ...new Array(16).fill(0), // webgl - randomized by RFP
-      ...hashToBipolar(fp.audio_simhash ?? fp.audio_hash, 8),
-      ...hashToBipolar(fp.client_rects_simhash ?? fp.client_rects_hash, 16),
-      ...stringToVector(fp.gpu_renderer, 16),
-    ];
-  }
+/** Build rendering section (76 dims) — volatile signals zeroed per browser/platform */
+function buildRenderingSection(fp: Fingerprint): number[] {
+  const { zeroCanvas, zeroWebgl, zeroAudio } = detectVolatileRendering(fp);
 
   return [
-    ...hashToBipolar(fp.canvas_simhash ?? fp.canvas_hash, 20),
-    ...hashToBipolar(fp.webgl_simhash ?? fp.webgl_hash, 16),
-    ...hashToBipolar(fp.audio_simhash ?? fp.audio_hash, 8),
+    ...(zeroCanvas
+      ? new Array(20).fill(0)
+      : hashToBipolar(fp.canvas_simhash ?? fp.canvas_hash, 20)),
+    ...(zeroWebgl
+      ? new Array(16).fill(0)
+      : hashToBipolar(fp.webgl_simhash ?? fp.webgl_hash, 16)),
+    ...(zeroAudio
+      ? new Array(8).fill(0)
+      : hashToBipolar(fp.audio_simhash ?? fp.audio_hash, 8)),
     ...hashToBipolar(fp.client_rects_simhash ?? fp.client_rects_hash, 16),
     ...stringToVector(fp.gpu_renderer, 16),
   ]; // 20+16+8+16+16 = 76

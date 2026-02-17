@@ -213,6 +213,100 @@ describe("computeEmbedding", () => {
     const stableSection = result.vector.slice(235, 267);
     expect(stableSection.some((v) => v !== 0)).toBe(true);
   });
+
+  it("zeroes canvas and audio for iOS devices (all modes)", () => {
+    const iosFingerprint: Fingerprint = {
+      ...baseFingerprint,
+      platform: "iPhone",
+      user_agent:
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1",
+    };
+    const result = computeEmbedding(iosFingerprint);
+
+    // canvas(20) zeroed [191-210]
+    const canvasSection = result.vector.slice(191, 211);
+    expect(canvasSection.every((v) => v === 0)).toBe(true);
+
+    // webgl(16) should be KEPT [211-226] — most stable iOS signal
+    const webglSection = result.vector.slice(211, 227);
+    expect(webglSection.some((v) => v !== 0)).toBe(true);
+
+    // audio(8) zeroed [227-234]
+    const audioSection = result.vector.slice(227, 235);
+    expect(audioSection.every((v) => v === 0)).toBe(true);
+
+    // clientRects(16) + gpu(16) should NOT be zeroed
+    const stableSection = result.vector.slice(235, 267);
+    expect(stableSection.some((v) => v !== 0)).toBe(true);
+  });
+
+  it("zeroes canvas and audio for iPad devices", () => {
+    const ipadFingerprint: Fingerprint = {
+      ...baseFingerprint,
+      platform: "iPad",
+      user_agent:
+        "Mozilla/5.0 (iPad; CPU OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1",
+    };
+    const result = computeEmbedding(ipadFingerprint);
+
+    // canvas(20) zeroed
+    const canvasSection = result.vector.slice(191, 211);
+    expect(canvasSection.every((v) => v === 0)).toBe(true);
+
+    // audio(8) zeroed
+    const audioSection = result.vector.slice(227, 235);
+    expect(audioSection.every((v) => v === 0)).toBe(true);
+
+    // webgl(16) kept
+    const webglSection = result.vector.slice(211, 227);
+    expect(webglSection.some((v) => v !== 0)).toBe(true);
+  });
+
+  it("zeroes canvas and webgl for macOS Safari private", () => {
+    const safariPrivate: Fingerprint = {
+      ...baseFingerprint,
+      platform: "MacIntel",
+      user_agent:
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15",
+      is_private_browsing: true,
+    };
+    const result = computeEmbedding(safariPrivate);
+
+    // canvas(20) zeroed [191-210]
+    const canvasSection = result.vector.slice(191, 211);
+    expect(canvasSection.every((v) => v === 0)).toBe(true);
+
+    // webgl(16) zeroed [211-226] — differs between private/normal on macOS
+    const webglSection = result.vector.slice(211, 227);
+    expect(webglSection.every((v) => v === 0)).toBe(true);
+
+    // audio(8) should be KEPT [227-234] — simhash absorbs subtle FP noise
+    const audioSection = result.vector.slice(227, 235);
+    expect(audioSection.some((v) => v !== 0)).toBe(true);
+
+    // clientRects(16) + gpu(16) should NOT be zeroed
+    const stableSection = result.vector.slice(235, 267);
+    expect(stableSection.some((v) => v !== 0)).toBe(true);
+  });
+
+  it("does not zero rendering for macOS Safari non-private", () => {
+    const safariNormal: Fingerprint = {
+      ...baseFingerprint,
+      platform: "MacIntel",
+      user_agent:
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15",
+      is_private_browsing: false,
+    };
+    const result = computeEmbedding(safariNormal);
+
+    // All rendering should have non-zero values
+    const renderingSection = result.vector.slice(191, 267);
+    expect(renderingSection.some((v) => v !== 0)).toBe(true);
+
+    // canvas should NOT be zeroed
+    const canvasSection = result.vector.slice(191, 211);
+    expect(canvasSection.some((v) => v !== 0)).toBe(true);
+  });
 });
 
 describe("areEmbeddingsCompatible", () => {

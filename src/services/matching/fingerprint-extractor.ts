@@ -1,6 +1,13 @@
 import type { ArgusPayload } from "../../helpers/payload-schema";
 import type { Fingerprint } from "../../types";
 
+/** Map client-sent resistance.privacy values to API-internal canonical forms. */
+const PRIVACY_BROWSER_MAP: Record<string, string> = {
+  Brave: "brave",
+  Firefox: "firefox_rfp",
+  "Tor Browser": "tor",
+};
+
 /**
  * Extract flat fingerprint fields from V3 payload.
  * Pure transformation: no AWS calls, no side effects.
@@ -343,7 +350,7 @@ function extractPrivacySignals(
   if (resistance) {
     const privacyVal = resistance.privacy;
     if (typeof privacyVal === "string" && privacyVal !== "unknown") {
-      fp.privacy_browser = privacyVal;
+      fp.privacy_browser = PRIVACY_BROWSER_MAP[privacyVal] ?? privacyVal;
     }
   }
 }

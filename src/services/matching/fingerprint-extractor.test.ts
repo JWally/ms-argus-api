@@ -223,6 +223,21 @@ describe("extractFingerprint", () => {
       expect(fp.privacy_browser).toBe("brave");
     });
 
+    it("should normalize client-sent privacy values to canonical forms", () => {
+      const cases: [string, string][] = [
+        ["Brave", "brave"],
+        ["Firefox", "firefox_rfp"],
+        ["Tor Browser", "tor"],
+      ];
+      for (const [clientValue, expected] of cases) {
+        const payload = basePayload({
+          device: { resistance: { privacy: clientValue } },
+        });
+        const fp = extractFingerprint(payload);
+        expect(fp.privacy_browser).toBe(expected);
+      }
+    });
+
     it("should ignore 'unknown' privacy value", () => {
       const payload = basePayload({
         device: { resistance: { privacy: "unknown" } },
