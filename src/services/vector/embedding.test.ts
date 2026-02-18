@@ -289,6 +289,76 @@ describe("computeEmbedding", () => {
     expect(stableSection.some((v) => v !== 0)).toBe(true);
   });
 
+  it("zeroes canvas and webgl for standard Firefox private mode", () => {
+    const firefoxPrivate: Fingerprint = {
+      ...baseFingerprint,
+      user_agent:
+        "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:147.0) Gecko/20100101 Firefox/147.0",
+      is_private_browsing: true,
+      privacy_browser: undefined, // standard private, NOT RFP
+    };
+    const result = computeEmbedding(firefoxPrivate);
+
+    // canvas(20) zeroed [191-210]
+    const canvasSection = result.vector.slice(191, 211);
+    expect(canvasSection.every((v) => v === 0)).toBe(true);
+
+    // webgl(16) zeroed [211-226]
+    const webglSection = result.vector.slice(211, 227);
+    expect(webglSection.every((v) => v === 0)).toBe(true);
+
+    // audio(8) should be KEPT [227-234] — stable across Firefox private sessions
+    const audioSection = result.vector.slice(227, 235);
+    expect(audioSection.some((v) => v !== 0)).toBe(true);
+
+    // clientRects(16) + gpu(16) should NOT be zeroed
+    const stableSection = result.vector.slice(235, 267);
+    expect(stableSection.some((v) => v !== 0)).toBe(true);
+  });
+
+  it("zeroes canvas and webgl for Firefox non-private (cross-mode stability)", () => {
+    const firefoxNormal: Fingerprint = {
+      ...baseFingerprint,
+      user_agent:
+        "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:147.0) Gecko/20100101 Firefox/147.0",
+      is_private_browsing: false,
+      privacy_browser: undefined,
+    };
+    const result = computeEmbedding(firefoxNormal);
+
+    // canvas(20) zeroed for all Firefox — private mode randomizes per-session
+    const canvasSection = result.vector.slice(191, 211);
+    expect(canvasSection.every((v) => v === 0)).toBe(true);
+
+    // webgl(16) zeroed for all Firefox — pixel readback changes per-session
+    const webglSection = result.vector.slice(211, 227);
+    expect(webglSection.every((v) => v === 0)).toBe(true);
+
+    // audio(8) kept — stable across Firefox sessions
+    const audioSection = result.vector.slice(227, 235);
+    expect(audioSection.some((v) => v !== 0)).toBe(true);
+  });
+
+  it("uses stable identity for Firefox instead of fuzzy_hash", () => {
+    const firefox1: Fingerprint = {
+      ...baseFingerprint,
+      user_agent:
+        "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:147.0) Gecko/20100101 Firefox/147.0",
+      fuzzy_hash: "aaaa1111bbbb2222cccc3333", // would change per session
+    };
+    const firefox2: Fingerprint = {
+      ...firefox1,
+      fuzzy_hash: "dddd4444eeee5555ffff6666", // different fuzzy_hash
+    };
+    const result1 = computeEmbedding(firefox1);
+    const result2 = computeEmbedding(firefox2);
+
+    // Identity section [380-511] should be IDENTICAL despite different fuzzy_hash
+    const id1 = result1.vector.slice(380, 512);
+    const id2 = result2.vector.slice(380, 512);
+    expect(id1).toEqual(id2);
+  });
+
   it("does not zero rendering for macOS Safari non-private", () => {
     const safariNormal: Fingerprint = {
       ...baseFingerprint,

@@ -151,6 +151,33 @@ function isFirefoxRFPPrivate(fp: Fingerprint): boolean {
 }
 
 /**
+ * Check if this is standard Firefox in private browsing mode (without RFP).
+ * Firefox private mode randomizes canvas pixel output and WebGL pixel readback
+ * every session, but audio remains stable — same volatility pattern as RFP.
+ * Detected via incognito flag + UA (resistance.privacy is NOT set for standard
+ * private mode, only for RFP).
+ */
+function isFirefoxPrivate(fp: Fingerprint): boolean {
+  return (
+    fp.is_private_browsing === true &&
+    !fp.privacy_browser &&
+    detectBrowserVariant(fp.user_agent) === "firefox"
+  );
+}
+
+/**
+ * Check if this is any Firefox browser (private or not).
+ * Firefox private mode randomizes canvas/webgl per-session. Since the same
+ * device may switch between normal and private mode, we zero canvas/webgl
+ * for ALL Firefox embeddings so stored (normal) vectors match queried
+ * (private) vectors. Without this, a normal-mode vector has non-zero
+ * canvas/webgl dims that can never match a private-mode query.
+ */
+function isFirefoxAnyMode(fp: Fingerprint): boolean {
+  return detectBrowserVariant(fp.user_agent) === "firefox";
+}
+
+/**
  * Detect browser variant from UA string.
  * Mirrors vector-match.ts detectBrowserVariant for embedding use.
  */
@@ -222,7 +249,7 @@ function detectVolatileRendering(fp: Fingerprint): {
 } {
   if (isBravePrivate(fp))
     return { zeroCanvas: true, zeroWebgl: true, zeroAudio: true };
-  if (isFirefoxRFPPrivate(fp))
+  if (isFirefoxRFPPrivate(fp) || isFirefoxPrivate(fp) || isFirefoxAnyMode(fp))
     return { zeroCanvas: true, zeroWebgl: true, zeroAudio: false };
   if (isIOS(fp)) return { zeroCanvas: true, zeroWebgl: false, zeroAudio: true };
   if (isSafariPrivate(fp))
@@ -281,8 +308,30 @@ function buildBehavioralSection(fp: Fingerprint): number[] {
   ]; // 24+1+1+1+1+1+1+34 = 64
 }
 
-/** Build identity section (132 dims) */
+/**
+ * Build identity section (132 dims).
+ *
+ * For Firefox: fuzzy_hash incorporates canvas/webgl hashes that randomize
+ * every private-browsing session, making it volatile across modes. Instead,
+ * use a stable identity built from structural + audio simhashes that don't
+ * change between normal and private sessions.
+ */
 function buildIdentitySection(fp: Fingerprint): number[] {
+  if (isFirefoxAnyMode(fp)) {
+    return [
+      ...hashToBipolar(fp.maths_simhash ?? fp.maths_hash, 16),
+      ...hashToBipolar(fp.css_simhash ?? fp.css_hash, 20),
+      ...hashToBipolar(fp.css_media_simhash ?? fp.css_media_hash, 20),
+      ...hashToBipolar(fp.screen_simhash ?? fp.screen_hash, 16),
+      ...hashToBipolar(fp.audio_simhash ?? fp.audio_hash, 12),
+      ...hashToBipolar(fp.intl_simhash ?? fp.intl_hash, 12),
+      ...hashToBipolar(fp.features_simhash ?? fp.features_hash, 16),
+      ...hashToBipolar(
+        fp.window_features_simhash ?? fp.window_features_hash,
+        20,
+      ),
+    ]; // 16+20+20+16+12+12+16+20 = 132
+  }
   return hashToBipolar(fp.fuzzy_hash, 132);
 }
 
