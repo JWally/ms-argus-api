@@ -45,6 +45,8 @@ export interface StageConfig {
       reservedConcurrency: number;
     };
     provisionedConcurrency: number;
+    /** Enable X-Ray tracing for worker Lambdas (expensive in dev with no traffic) */
+    tracingEnabled: boolean;
   };
 
   // SQS configuration
@@ -160,6 +162,7 @@ const devConfig: StageConfig = {
       reservedConcurrency: 10, // Low concurrency in dev
     },
     provisionedConcurrency: 0, // No warm instances in dev
+    tracingEnabled: false, // X-Ray costs ~$5/month with no benefit in dev
   },
 
   sqs: {
@@ -257,6 +260,7 @@ const prodConfig: StageConfig = {
       reservedConcurrency: 100, // Higher concurrency in prod
     },
     provisionedConcurrency: 2, // Keep 2 warm in prod
+    tracingEnabled: true,
   },
 
   sqs: {

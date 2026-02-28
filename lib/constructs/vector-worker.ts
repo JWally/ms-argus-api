@@ -153,7 +153,7 @@ export class VectorWorkerConstruct extends Construct {
 
     // Use CJS format for Qdrant client compatibility
     const commonConfig = createVectorLambdaConfig({
-      tracing: true,
+      tracing: config.lambda.tracingEnabled,
       keepNames: true,
     });
 

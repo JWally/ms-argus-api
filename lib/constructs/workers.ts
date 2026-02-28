@@ -116,15 +116,18 @@ export class WorkersConstruct extends Construct {
       `${stage}/${projectName}`,
     );
 
+    const config = getStageConfig(stage);
+    const tracing = config.lambda.tracingEnabled;
+
     const commonConfig = createBaseLambdaConfig({
-      tracing: true,
+      tracing,
       keepNames: true,
     });
 
     // Matching worker uses Valkey config when Valkey is enabled
     // This marks ioredis as a nodeModule to avoid ESM bundling issues
     const matchingWorkerConfig = valkeyEndpoint
-      ? createValkeyLambdaConfig({ tracing: true, keepNames: true })
+      ? createValkeyLambdaConfig({ tracing, keepNames: true })
       : commonConfig;
 
     // IAM Logging Policy
@@ -141,7 +144,6 @@ export class WorkersConstruct extends Construct {
     // =====================================
     // MATCHING WORKER LAMBDA
     // =====================================
-    const config = getStageConfig(stage);
 
     // VPC configuration for matching worker (required for Valkey access)
     const matchingWorkerVpcConfig =
