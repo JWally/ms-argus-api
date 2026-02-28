@@ -190,7 +190,9 @@ export class HttpApiConstruct extends Construct {
     this.apiEndpoint = this.api.apiEndpoint;
 
     // Alarms
-    this.createAlarms(stackName, alarmsTopic);
+    if (config.alarms.enabled) {
+      this.createAlarms(stackName, alarmsTopic);
+    }
   }
 
   private createAlarms(stackName: string, alarmsTopic: sns.ITopic): void {

@@ -86,31 +86,33 @@ export class QueuesConstruct extends Construct {
       },
     });
 
-    this.createQueueAlarms(
-      this.matchingQueue,
-      "Matching",
-      alarmsTopic,
-      config.alarms.queue,
-    );
-    this.createQueueAlarms(
-      this.profileQueue,
-      "Profile",
-      alarmsTopic,
-      config.alarms.queue,
-    );
-    this.createQueueAlarms(
-      this.vectorResultsQueue,
-      "VectorResults",
-      alarmsTopic,
-      config.alarms.queue,
-    );
-    this.createDlqAlarms(this.matchingDlq, "MatchingDLQ", alarmsTopic);
-    this.createDlqAlarms(this.profileDlq, "ProfileDLQ", alarmsTopic);
-    this.createDlqAlarms(
-      this.vectorResultsDlq,
-      "VectorResultsDLQ",
-      alarmsTopic,
-    );
+    if (config.alarms.enabled) {
+      this.createQueueAlarms(
+        this.matchingQueue,
+        "Matching",
+        alarmsTopic,
+        config.alarms.queue,
+      );
+      this.createQueueAlarms(
+        this.profileQueue,
+        "Profile",
+        alarmsTopic,
+        config.alarms.queue,
+      );
+      this.createQueueAlarms(
+        this.vectorResultsQueue,
+        "VectorResults",
+        alarmsTopic,
+        config.alarms.queue,
+      );
+      this.createDlqAlarms(this.matchingDlq, "MatchingDLQ", alarmsTopic);
+      this.createDlqAlarms(this.profileDlq, "ProfileDLQ", alarmsTopic);
+      this.createDlqAlarms(
+        this.vectorResultsDlq,
+        "VectorResultsDLQ",
+        alarmsTopic,
+      );
+    }
   }
 
   private createQueueAlarms(

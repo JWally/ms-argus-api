@@ -121,7 +121,9 @@ export class ValkeyConstruct extends Construct {
 
     const cacheName = serverlessCache.serverlessCacheName;
     if (!cacheName) throw new Error("Serverless cache missing name");
-    this.createAlarms(stackName, cacheName, alarmsTopic);
+    if (stageConfig.alarms.enabled) {
+      this.createAlarms(stackName, cacheName, alarmsTopic);
+    }
 
     // =========================================================================
     // OUTPUTS

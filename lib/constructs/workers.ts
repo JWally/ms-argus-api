@@ -349,31 +349,40 @@ export class WorkersConstruct extends Construct {
       vectorResultsQueue.grantConsumeMessages(this.vectorResultsWriter);
     }
 
-    // Data loss in analytics pipeline when Firehose writes fail
-    this.createObservationEmitErrorAlarm(stackName, alarmsTopic);
+    // Alarms (only for prod — dev alarms cost ~$13/month and sit in INSUFFICIENT_DATA)
+    let matchingWorkerAlarms:
+      | { errorAlarm: cloudwatch.Alarm; durationAlarm: cloudwatch.Alarm }
+      | undefined;
+    let profileUpdaterAlarms:
+      | { errorAlarm: cloudwatch.Alarm; durationAlarm: cloudwatch.Alarm }
+      | undefined;
 
-    // Alarms
-    const matchingWorkerAlarms = this.createWorkerAlarms(
-      this.matchingWorker,
-      "MatchingWorker",
-      alarmsTopic,
-      config.lambda.matching.reservedConcurrency,
-      config.alarms.lambda,
-    );
-    const profileUpdaterAlarms = this.createWorkerAlarms(
-      this.profileUpdater,
-      "ProfileUpdater",
-      alarmsTopic,
-      config.lambda.profile.reservedConcurrency,
-      config.alarms.lambda,
-    );
+    if (config.alarms.enabled) {
+      // Data loss in analytics pipeline when Firehose writes fail
+      this.createObservationEmitErrorAlarm(stackName, alarmsTopic);
 
-    // Uses CloudWatch anomaly detection to alert on sudden spikes in new device creation
-    this.createNewDeviceAnomalyAlarm(
-      stackName,
-      alarmsTopic,
-      config.alarms.newDeviceAnomalyStdDev,
-    );
+      matchingWorkerAlarms = this.createWorkerAlarms(
+        this.matchingWorker,
+        "MatchingWorker",
+        alarmsTopic,
+        config.lambda.matching.reservedConcurrency,
+        config.alarms.lambda,
+      );
+      profileUpdaterAlarms = this.createWorkerAlarms(
+        this.profileUpdater,
+        "ProfileUpdater",
+        alarmsTopic,
+        config.lambda.profile.reservedConcurrency,
+        config.alarms.lambda,
+      );
+
+      // Uses CloudWatch anomaly detection to alert on sudden spikes in new device creation
+      this.createNewDeviceAnomalyAlarm(
+        stackName,
+        alarmsTopic,
+        config.alarms.newDeviceAnomalyStdDev,
+      );
+    }
 
     // =====================================
 
@@ -400,28 +409,26 @@ export class WorkersConstruct extends Construct {
     new codedeploy.LambdaDeploymentGroup(this, "MatchingWorkerDeployment", {
       alias: this.matchingWorkerAlias,
       deploymentConfig,
-      alarms: [
-        matchingWorkerAlarms.errorAlarm,
-        matchingWorkerAlarms.durationAlarm,
-      ],
+      alarms: matchingWorkerAlarms
+        ? [matchingWorkerAlarms.errorAlarm, matchingWorkerAlarms.durationAlarm]
+        : [],
       autoRollback: {
         failedDeployment: true,
         stoppedDeployment: true,
-        deploymentInAlarm: true,
+        deploymentInAlarm: matchingWorkerAlarms !== undefined,
       },
     });
 
     new codedeploy.LambdaDeploymentGroup(this, "ProfileUpdaterDeployment", {
       alias: this.profileUpdaterAlias,
       deploymentConfig,
-      alarms: [
-        profileUpdaterAlarms.errorAlarm,
-        profileUpdaterAlarms.durationAlarm,
-      ],
+      alarms: profileUpdaterAlarms
+        ? [profileUpdaterAlarms.errorAlarm, profileUpdaterAlarms.durationAlarm]
+        : [],
       autoRollback: {
         failedDeployment: true,
         stoppedDeployment: true,
-        deploymentInAlarm: true,
+        deploymentInAlarm: profileUpdaterAlarms !== undefined,
       },
     });
   }

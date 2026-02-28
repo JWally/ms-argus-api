@@ -312,7 +312,9 @@ export class VectorWorkerConstruct extends Construct {
     // ALARMS
     // =========================================================================
 
-    this.createAlarms(stackName, alarmsTopic, config);
+    if (config.alarms.enabled) {
+      this.createAlarms(stackName, alarmsTopic, config);
+    }
   }
 
   private createAlarms(

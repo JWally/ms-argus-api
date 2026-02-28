@@ -62,6 +62,7 @@ export interface StageConfig {
 
   // CloudWatch alarm thresholds
   alarms: {
+    enabled: boolean;
     lambda: {
       errorThreshold: number;
       throttleThreshold: number;
@@ -172,6 +173,7 @@ const devConfig: StageConfig = {
   },
 
   alarms: {
+    enabled: false,
     lambda: {
       errorThreshold: 5,
       throttleThreshold: 1,
@@ -268,6 +270,7 @@ const prodConfig: StageConfig = {
   },
 
   alarms: {
+    enabled: true,
     lambda: {
       errorThreshold: 10,
       throttleThreshold: 5,

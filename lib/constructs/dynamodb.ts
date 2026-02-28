@@ -202,20 +202,30 @@ export class DynamoDbConstruct extends Construct {
     }
 
     // Alarms
-    this.createTableAlarms(this.profilesTable, "Profiles", alarmsTopic);
-    this.createTableAlarms(this.tier1IndexTable, "Tier1Index", alarmsTopic);
-    this.createTableAlarms(this.tier2BucketsTable, "Tier2Buckets", alarmsTopic);
-    this.createTableAlarms(this.sessionCacheTable, "SessionCache", alarmsTopic);
-    this.createTableAlarms(
-      this.sessionPayloadTable,
-      "SessionPayload",
-      alarmsTopic,
-    );
-    this.createTableAlarms(
-      this.vectorResultsTable,
-      "VectorResults",
-      alarmsTopic,
-    );
+    if (config.alarms.enabled) {
+      this.createTableAlarms(this.profilesTable, "Profiles", alarmsTopic);
+      this.createTableAlarms(this.tier1IndexTable, "Tier1Index", alarmsTopic);
+      this.createTableAlarms(
+        this.tier2BucketsTable,
+        "Tier2Buckets",
+        alarmsTopic,
+      );
+      this.createTableAlarms(
+        this.sessionCacheTable,
+        "SessionCache",
+        alarmsTopic,
+      );
+      this.createTableAlarms(
+        this.sessionPayloadTable,
+        "SessionPayload",
+        alarmsTopic,
+      );
+      this.createTableAlarms(
+        this.vectorResultsTable,
+        "VectorResults",
+        alarmsTopic,
+      );
+    }
   }
 
   /**
