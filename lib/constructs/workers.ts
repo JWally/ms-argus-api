@@ -57,6 +57,11 @@ interface WorkersConstructProps {
   stageConfig?: StageConfig;
   /** Optional: S3 bucket for payload archiving */
   payloadArchiveBucket?: s3.IBucket;
+  /**
+   * Optional: AES-256 key (64 hex chars) for decrypting encrypted probe responses
+   * from ms-argus-sigint. Must match the SIGINT_AES_KEY used by the probe services.
+   */
+  sigintAesKey?: string;
 }
 
 /**
@@ -107,6 +112,7 @@ export class WorkersConstruct extends Construct {
       lambdaSecurityGroup,
       stageConfig,
       payloadArchiveBucket,
+      sigintAesKey,
     } = props;
 
     // Secrets Manager reference
@@ -209,6 +215,7 @@ export class WorkersConstruct extends Construct {
             stageConfig?.valkey.statisticalV2?.threshold ?? 0.6,
           ),
         }),
+        ...(sigintAesKey && { SIGINT_AES_KEY: sigintAesKey }),
       },
     });
 

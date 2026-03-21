@@ -24,6 +24,8 @@ new ArgusApiStack(app, "ms-argus-api-dev-jw", {
   synthesizer,
   // Connect to ms-argus-vector stack (SSM params at /argus-vector/{stage}/...)
   vectorEnvironment: "dev-jw",
+  // Shared with ms-argus-sigint: must match SIGINT_AES_KEY used by probe services
+  sigintAesKey: process.env.SIGINT_AES_KEY,
 });
 
 // /////////////////////////////////

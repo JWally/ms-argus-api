@@ -33,6 +33,11 @@ interface ArgusApiStackProps extends cdk.StackProps {
    * Typically matches the stage (e.g., 'dev', 'prod').
    */
   vectorEnvironment?: string;
+  /**
+   * Optional: AES-256 key (64 hex chars) for decrypting encrypted probe responses
+   * from ms-argus-sigint. Must match the SIGINT_AES_KEY used by the probe services.
+   */
+  sigintAesKey?: string;
 }
 
 /**
@@ -69,6 +74,7 @@ export class ArgusApiStack extends cdk.Stack {
       stage,
       region,
       vectorEnvironment,
+      sigintAesKey,
     } = props;
 
     // =========================================================================
@@ -215,6 +221,7 @@ export class ArgusApiStack extends cdk.Stack {
       vpc: argusVpc?.vpc,
       lambdaSecurityGroup: argusVpc?.lambdaSecurityGroup,
       stageConfig,
+      sigintAesKey,
     });
 
     // =========================================================================

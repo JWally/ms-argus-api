@@ -12,6 +12,10 @@ import { FingerprintPayload } from "../../services/matching";
 import { extractFingerprint } from "../../services/matching/fingerprint-extractor";
 import { isWarmupMessage } from "../../helpers/is-warmup";
 import type { ArgusPayload } from "../../helpers/payload-schema";
+import {
+  isEncryptedResponse,
+  decryptProbeResponse,
+} from "../../helpers/decrypt-probe";
 
 /**
  * Extended payload structure received from the ingestion handler via SQS.
@@ -44,6 +48,34 @@ export interface ParsedRecord {
   fingerprint: ReturnType<typeof extractFingerprint>;
   /** Normalized payload structure for the matching service */
   payload: FingerprintPayload;
+}
+
+/** Decrypt sigint probe blobs in-place when SIGINT_AES_KEY is set. */
+function decryptSigintProbes(payload: SqsPayload, logger: Logger): void {
+  const key = process.env.SIGINT_AES_KEY;
+  if (!payload.sigint || !key) return;
+  try {
+    if (isEncryptedResponse(payload.sigint.tcpProbe)) {
+      payload.sigint.tcpProbe = decryptProbeResponse(
+        payload.sigint.tcpProbe,
+        key,
+      );
+    }
+    if (isEncryptedResponse(payload.sigint.h2Probe)) {
+      payload.sigint.h2Probe = decryptProbeResponse(
+        payload.sigint.h2Probe,
+        key,
+      );
+    }
+  } catch (err) {
+    logger.warn(
+      "Failed to decrypt sigint probe data — continuing with encrypted blob",
+      {
+        error: err,
+        session_id: payload.identifiers?.session_id,
+      },
+    );
+  }
 }
 
 /**
@@ -100,6 +132,8 @@ export function parseSqsRecord(
   if (!rawPayload.sigint && rawPayload.network) {
     rawPayload.sigint = rawPayload.network;
   }
+
+  decryptSigintProbes(rawPayload, logger);
 
   const sessionId = rawPayload.identifiers?.session_id;
   if (!sessionId) {
