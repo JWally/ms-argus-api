@@ -103,34 +103,6 @@ export interface StageConfig {
       maxCapacityMultiplier: number; // Max capacity as multiplier of base (e.g., 2 = 200%)
     };
   };
-
-  // Valkey (ElastiCache Serverless) configuration for statistical anomaly detection
-  valkey: {
-    // Whether Valkey is enabled for this stage
-    enabled: boolean;
-    // Maximum data storage in GiB (ElastiCache Serverless billing unit)
-    maxDataStorageGiB: number;
-    // TTL for statistical keys in seconds (default 48h = 172800)
-    ttlSeconds: number;
-    // Score threshold below which combo is considered suspicious (0.01 = 1%)
-    scoreThreshold: number;
-    // Minimum distinct combos required before statistical detection activates
-    distinctThreshold: number;
-    // Global sampling rate for write-side counters (0.01 = 1%, 1.0 = 100%)
-    // Low values reduce Valkey write load; high values give faster convergence
-    globalSampleRate: number;
-    // Statistical v2: Shannon scoring with dual-layer fingerprints (JA4 + H2)
-    statisticalV2: {
-      // Whether statistical v2 detection is enabled
-      enabled: boolean;
-      // Score threshold for flagging anomalies (0.6 = 60% surprise)
-      threshold: number;
-      // Sample thresholds for tiered TTLs [low, high]
-      tierThresholds: [number, number];
-      // TTLs in seconds for [cold, warm, hot] tiers
-      tierTTLs: [number, number, number];
-    };
-  };
 }
 
 /**
@@ -210,23 +182,6 @@ const devConfig: StageConfig = {
     autoScaling: {
       targetUtilizationPercent: 70,
       maxCapacityMultiplier: 2,
-    },
-  },
-
-  // Valkey - enabled in dev for statistical anomaly detection testing
-  valkey: {
-    enabled: true,
-    maxDataStorageGiB: 1, // Minimal storage for dev (~$6/mo)
-    ttlSeconds: 172800, // 48 hours
-    scoreThreshold: 0.01, // 1% - combo appears less than 1% of expected = suspicious
-    distinctThreshold: 50, // Need at least 50 distinct combos before detection activates
-    globalSampleRate: 1.0, // 100% in dev - every request updates global counters
-    // Statistical v2: enabled for dev testing
-    statisticalV2: {
-      enabled: true,
-      threshold: 0.6, // 60% surprise triggers anomaly
-      tierThresholds: [1000, 20000], // [warm threshold, hot threshold]
-      tierTTLs: [3 * 3600, 24 * 3600, 90 * 24 * 3600], // [3h, 24h, 90d]
     },
   },
 };
@@ -309,23 +264,6 @@ const prodConfig: StageConfig = {
     autoScaling: {
       targetUtilizationPercent: 70,
       maxCapacityMultiplier: 2,
-    },
-  },
-
-  // Valkey - enabled in prod for statistical anomaly detection
-  valkey: {
-    enabled: true,
-    maxDataStorageGiB: 5, // Higher capacity for prod (~$12/mo)
-    ttlSeconds: 172800, // 48 hours
-    scoreThreshold: 0.01, // 1% - combo appears less than 1% of expected = suspicious
-    distinctThreshold: 50, // Need at least 50 distinct combos before detection activates
-    globalSampleRate: 0.01, // 1% in prod - sample to reduce write load
-    // Statistical v2: disabled in prod (shadow mode)
-    statisticalV2: {
-      enabled: false, // Enable after validating in dev
-      threshold: 0.6, // 60% surprise triggers anomaly
-      tierThresholds: [1000, 20000], // [warm threshold, hot threshold]
-      tierTTLs: [3 * 3600, 24 * 3600, 90 * 24 * 3600], // [3h, 24h, 90d]
     },
   },
 };

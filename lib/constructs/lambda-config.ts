@@ -142,37 +142,3 @@ export function createVectorLambdaConfig(
     ...(tracing && { tracing: lambda.Tracing.ACTIVE }),
   };
 }
-
-/**
- * Creates Lambda configuration for functions that use ioredis (Valkey client).
- * Marks Node.js builtins as external to avoid ESM bundling issues with ioredis.
- *
- * @param options - Optional configuration overrides
- * @returns Partial NodejsFunction props to spread
- */
-export function createValkeyLambdaConfig(
-  options: BaseLambdaConfigOptions = {},
-): Partial<lambdaNode.NodejsFunctionProps> {
-  const { tracing = true, keepNames = true } = options;
-
-  const bundling: lambdaNode.BundlingOptions = {
-    minify: true,
-    sourceMap: true,
-    target: "node20",
-    format: lambdaNode.OutputFormat.ESM,
-    mainFields: ["module", "main"],
-    banner:
-      "import { createRequire } from 'module'; const require = createRequire(import.meta.url);",
-    // ioredis uses dynamic require for Node.js builtins - mark them external
-    // so they're resolved at runtime rather than bundled
-    nodeModules: ["ioredis"],
-    ...(keepNames && { keepNames: true }),
-  };
-
-  return {
-    runtime: lambda.Runtime.NODEJS_20_X,
-    architecture: lambda.Architecture.ARM_64,
-    bundling,
-    ...(tracing && { tracing: lambda.Tracing.ACTIVE }),
-  };
-}

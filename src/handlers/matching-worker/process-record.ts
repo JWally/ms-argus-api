@@ -9,11 +9,7 @@ import {
   generateIdempotencyKey,
   MatchResult,
 } from "../../services/matching";
-import {
-  detectAllAnomalies,
-  fetchStatisticalContextV2,
-  type StatisticalContextV2,
-} from "../../services/profile/anomaly";
+import { detectAllAnomalies } from "../../services/profile/anomaly";
 import { loadProfile } from "../../services/matching/profile-loader";
 import type { DeviceProfile } from "../../types/profile";
 import type { SessionAnomalySignal } from "../../types";
@@ -110,7 +106,6 @@ async function runMatching(
 interface AnomalySignalContext {
   fingerprint: ParsedRecord["fingerprint"];
   rawPayload: SqsPayload;
-  statisticalV2: StatisticalContextV2 | null;
   ipHistoryProfile?: DeviceProfile | null;
 }
 
@@ -122,7 +117,6 @@ function buildAnomalySignals(
     ctx.rawPayload.device,
     ctx.rawPayload.sigint,
     {
-      statisticalV2: ctx.statisticalV2,
       ipHistoryProfile: ctx.ipHistoryProfile ?? null,
     },
   );
@@ -162,7 +156,6 @@ async function persistResults(
     anomalies: SessionAnomalySignal[];
     rawPayload: SqsPayload;
     payload: ParsedRecord["payload"];
-    statisticalContextV2: StatisticalContextV2 | null;
   },
   deps: ProcessRecordDeps,
 ): Promise<void> {
@@ -181,7 +174,6 @@ async function persistResults(
     rawPayload: ctx.rawPayload,
     matchResult,
     anomalies,
-    statisticalContextV2: ctx.statisticalContextV2,
   };
   await writeSessionPayload(sessionParams, {
     dynamodb: deps.dynamodb,
@@ -282,30 +274,13 @@ async function loadProfileForAnomalies(
   }
 }
 
-/** Fetch anomaly contexts and build signals. */
-async function fetchAndBuildAnomalies(
+/** Build anomaly signals from fingerprint and raw payload. */
+function buildAnomalies(
   fingerprint: ParsedRecord["fingerprint"],
   rawPayload: SqsPayload,
   ipHistoryProfile?: DeviceProfile | null,
-): Promise<{
-  anomalies: SessionAnomalySignal[];
-  statisticalContextV2: StatisticalContextV2 | null;
-}> {
-  const statisticalContextV2 = await fetchStatisticalContextV2(
-    fingerprint,
-    rawPayload.sigint,
-    rawPayload.device,
-    rawPayload.hashes,
-  );
-  return {
-    anomalies: buildAnomalySignals({
-      fingerprint,
-      rawPayload,
-      statisticalV2: statisticalContextV2,
-      ipHistoryProfile,
-    }),
-    statisticalContextV2,
-  };
+): SessionAnomalySignal[] {
+  return buildAnomalySignals({ fingerprint, rawPayload, ipHistoryProfile });
 }
 
 /** Process a single SQS record through the matching pipeline. */
@@ -335,11 +310,7 @@ export async function processRecord(
     ? null
     : await loadProfileForAnomalies(deps, matchResult.device_id);
 
-  const { anomalies, statisticalContextV2 } = await fetchAndBuildAnomalies(
-    fingerprint,
-    rawPayload,
-    existingProfile,
-  );
+  const anomalies = buildAnomalies(fingerprint, rawPayload, existingProfile);
   await persistResults(
     service,
     {
@@ -349,7 +320,6 @@ export async function processRecord(
       anomalies,
       rawPayload,
       payload,
-      statisticalContextV2,
     },
     deps,
   );

@@ -16,9 +16,7 @@ import { WorkersConstruct } from "../constructs/workers";
 import { CloudFrontWafConstruct } from "../constructs/cloudfront";
 import { AnalyticsConstruct } from "../constructs/analytics";
 import { VectorWorkerConstruct } from "../constructs/vector-worker";
-import { ValkeyConstruct } from "../constructs/valkey";
-import { ArgusVpc } from "../constructs/vpc";
-import { getStageConfig, StageConfig } from "../config";
+import { getStageConfig } from "../config";
 
 interface ArgusApiStackProps extends cdk.StackProps {
   environment: string;
@@ -153,30 +151,14 @@ export class ArgusApiStack extends cdk.Stack {
       });
     }
 
-    // =========================================================================
-    // STAGE CONFIG
-    // =========================================================================
-
-    const stageConfig = getStageConfig(stage);
-
-    // =========================================================================
-    // VPC-DEPENDENT INFRASTRUCTURE (Valkey)
-    // =========================================================================
-
-    const { argusVpc, valkey } = this.createVpcInfrastructure({
-      environment,
-      stackName,
-      stage,
-      stageConfig,
-      alarmsTopic,
-    });
-
     const deliveryStreamName = analytics.deliveryStream
       .deliveryStreamName as string;
 
     // =========================================================================
     // COMPUTE LAYER
     // =========================================================================
+
+    const stageConfig = getStageConfig(stage);
 
     // HTTP API + Lambda for ingestion (replaces ALB + ECS)
 
@@ -191,7 +173,6 @@ export class ArgusApiStack extends cdk.Stack {
       config: stageConfig,
     });
 
-    // Worker Lambdas (VPC optional - needed for Valkey access)
     const workers = new WorkersConstruct(this, "Workers", {
       stackName,
       stage,
@@ -215,12 +196,6 @@ export class ArgusApiStack extends cdk.Stack {
       vectorCollection: "fingerprints",
 
       payloadArchiveBucket: analytics.payloadArchiveBucket,
-      // Valkey configuration for statistical anomaly detection
-      valkeyEndpoint: valkey?.endpoint,
-      valkeySecurityGroup: valkey?.securityGroup,
-      vpc: argusVpc?.vpc,
-      lambdaSecurityGroup: argusVpc?.lambdaSecurityGroup,
-      stageConfig,
       sigintAesKey,
     });
 
@@ -363,14 +338,6 @@ export class ArgusApiStack extends cdk.Stack {
       description: "S3 bucket for payload archives",
     });
 
-    // Valkey outputs (conditional)
-    if (valkey) {
-      new cdk.CfnOutput(this, "ValkeyEndpoint", {
-        value: valkey.endpoint,
-        description: "ElastiCache Serverless (Valkey) endpoint",
-      });
-    }
-
     // Vector worker outputs (conditional)
     if (vectorWorker) {
       new cdk.CfnOutput(this, "VectorWorkerArn", {
@@ -404,43 +371,5 @@ export class ArgusApiStack extends cdk.Stack {
         });
       }
     }
-  }
-
-  /**
-   * Creates VPC-dependent infrastructure: Valkey.
-   * Both share the same VPC imported from ms-argus-infra.
-   */
-  private createVpcInfrastructure(params: {
-    environment: string;
-    stackName: string;
-    stage: string;
-    stageConfig: StageConfig;
-    alarmsTopic: sns.ITopic;
-  }): {
-    argusVpc: ArgusVpc | undefined;
-    valkey: ValkeyConstruct | undefined;
-  } {
-    const { environment, stackName, stage, stageConfig, alarmsTopic } = params;
-
-    let argusVpc: ArgusVpc | undefined;
-    let valkey: ValkeyConstruct | undefined;
-    const needsVpc = stageConfig.valkey.enabled;
-    if (needsVpc) {
-      argusVpc = new ArgusVpc(this, "ArgusVpc", { environment });
-    }
-
-    if (stageConfig.valkey.enabled) {
-      if (!argusVpc) throw new Error("VPC required for Valkey");
-      valkey = new ValkeyConstruct(this, "Valkey", {
-        stackName,
-        stage,
-        stageConfig,
-        alarmsTopic,
-        vpc: argusVpc.vpc,
-        lambdaSecurityGroup: argusVpc.lambdaSecurityGroup,
-      });
-    }
-
-    return { argusVpc, valkey };
   }
 }

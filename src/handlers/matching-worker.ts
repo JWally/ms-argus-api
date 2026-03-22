@@ -8,9 +8,6 @@
  * - Tier 1.5: SimHash fuzzy match (locality-sensitive hashing)
  * - Tier 2: Vector similarity match (if configured) OR compound bucket matching
  *
- * Also supports direct Lambda invocation for admin operations (Valkey cache
- * management), following the same dual-invocation pattern as vector-worker.
- *
  * Results are written to the session cache for retrieval by session-get,
  * and observations are emitted to Firehose for analytics.
  *
@@ -19,7 +16,7 @@
 
 import { SQSEvent, SQSBatchResponse, Context } from "aws-lambda";
 import { Logger } from "@aws-lambda-powertools/logger";
-import { Metrics, MetricUnit } from "@aws-lambda-powertools/metrics";
+import { Metrics } from "@aws-lambda-powertools/metrics";
 
 import { processSqsBatch } from "../helpers/sqs-batch";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
@@ -36,9 +33,6 @@ import {
 } from "../helpers/constants";
 import { createMatchingService } from "./matching-worker/config";
 import { processRecord } from "./matching-worker/process-record";
-import { isAdminRequest } from "./matching-worker/types";
-import { handleAdminRequest } from "./matching-worker/admin-handler";
-import type { AdminRequest, AdminResponse } from "./matching-worker/types";
 
 const envConfig = getMatchingWorkerEnv();
 
@@ -68,34 +62,19 @@ const cacheService = new DynamoCacheService(dynamodb, {
 /**
  * AWS Lambda handler for the matching worker.
  *
- * Supports two invocation modes:
+ * Triggered by SQS messages from the ingestion queue. Each message contains
+ * a fingerprint payload to be matched against the device database.
  *
- * 1. **SQS Event** (async): Triggered by SQS messages from the ingestion queue.
- *    Each message contains a fingerprint payload to be matched against the
- *    device database.
- *
- * 2. **Direct Invocation** (sync): Called directly for admin operations
- *    (Valkey cache management). Request format: `{ action: "flush_cache" | ... }`
- *
- * @param event - SQS event or admin request
+ * @param event - SQS event
  * @param _context - Lambda context
- * @returns SQS batch response or admin response
+ * @returns SQS batch response
  *
  * @see {@link processRecord} for individual record processing
- * @see {@link handleAdminRequest} for admin operations
  */
 export async function handler(
-  event: SQSEvent | AdminRequest,
+  event: SQSEvent,
   _context: Context,
-): Promise<SQSBatchResponse | AdminResponse> {
-  // Check if this is an admin request (direct Lambda invoke)
-  if (isAdminRequest(event)) {
-    logger.info("Processing admin request", { action: event.action });
-    metrics.addMetric("AdminRequest", MetricUnit.Count, 1);
-    return handleAdminRequest(event, { logger, metrics });
-  }
-
-  // Otherwise, process as SQS event
+): Promise<SQSBatchResponse> {
   const service = createMatchingService({
     dynamodb,
     sqs,

@@ -191,40 +191,6 @@ describe("buildSessionResponseData", () => {
     expect((result.analysis as any).vector_match_details).toBeDefined();
     expect((result.analysis as any).ip_history_context).toBeDefined();
   });
-
-  it("should include normalities from statistical context v2", () => {
-    const ctx = {
-      uaFamily: "Chrome",
-      userAgentParsed: "Chrome 120",
-      scores: {
-        ja4: {
-          groupingKey: "Chrome:desktop",
-          score: 0.8,
-          confidence: 0.9,
-          adequateSample: true,
-          uaCount: 500,
-          uaTotal: 1000,
-        },
-      },
-      fingerprints: { ja4: "t13d1516h2" },
-      combinedScore: 0.75,
-      baselineSkipped: false,
-      matchedRules: ["RULE_1"],
-    };
-    const result = buildSessionResponseData({
-      sessionId: "session-123",
-      rawPayload: basePayload as any,
-      matchResult: baseMatchResult,
-      anomalies: [],
-      statisticalContextV2: ctx as any,
-    });
-
-    const normalities = (result.analysis as any).normalities;
-    expect(normalities.user_agent_family).toBe("Chrome 120");
-    expect(normalities.ja4).toBeDefined();
-    expect(normalities.combined_score).toBe(0.75);
-    expect(normalities.matched_rules).toEqual(["RULE_1"]);
-  });
 });
 
 describe("writeSessionPayload", () => {

@@ -7,7 +7,3 @@
 
 export * from "./types";
 export { detectAllAnomalies } from "./detector";
-export {
-  fetchStatisticalContextV2,
-  type StatisticalContextV2,
-} from "./statistical-v2";

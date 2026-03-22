@@ -12,7 +12,6 @@ import type { MatchResult } from "../../services/matching";
 import { SESSION_PAYLOAD_TTL_SECONDS } from "../../helpers/constants";
 import type { SessionAnomalySignal } from "../../types";
 import type { SqsPayload } from "./parse-record";
-import type { StatisticalContextV2 } from "../../services/profile/anomaly";
 import { resolveBrowserIdentity } from "../../helpers/browser-identity";
 
 function buildIdentifiers(
@@ -67,40 +66,13 @@ function buildBrowserAnomalies(
   return result;
 }
 
-function buildNormalities(ctx: StatisticalContextV2): Record<string, unknown> {
-  const normalities: Record<string, unknown> = {
-    user_agent_family: ctx.userAgentParsed || ctx.uaFamily,
-  };
-  for (const [type, score] of Object.entries(ctx.scores)) {
-    if (score) {
-      normalities[type] = {
-        value: ctx.fingerprints[type],
-        grouped_by: score.groupingKey,
-        score: score.score,
-        confidence: score.confidence,
-        adequate_sample: score.adequateSample,
-        ua_count: score.uaCount,
-        ua_total: score.uaTotal,
-      };
-    }
-  }
-  if (ctx.combinedScore !== null)
-    normalities.combined_score = ctx.combinedScore;
-  if (ctx.baselineSkipped !== undefined)
-    normalities.baseline_skipped = ctx.baselineSkipped;
-  if (ctx.matchedRules && ctx.matchedRules.length > 0)
-    normalities.matched_rules = ctx.matchedRules;
-  return normalities;
-}
-
 function buildAnalysis(opts: {
   matchResult: MatchResult;
   anomalies: SessionAnomalySignal[];
   device: Record<string, unknown>;
   sigint?: Record<string, unknown>;
-  statisticalContextV2?: StatisticalContextV2 | null;
 }): Record<string, unknown> {
-  const { matchResult, anomalies, device, sigint, statisticalContextV2 } = opts;
+  const { matchResult, anomalies, device, sigint } = opts;
   const analysis: Record<string, unknown> = {
     status: "complete",
     confidence: matchResult.confidence,
@@ -123,8 +95,6 @@ function buildAnalysis(opts: {
   if (matchResult.ip_history_context)
     analysis.ip_history_context = matchResult.ip_history_context;
 
-  if (statisticalContextV2)
-    analysis.normalities = buildNormalities(statisticalContextV2);
   return analysis;
 }
 
@@ -133,15 +103,8 @@ export function buildSessionResponseData(params: {
   rawPayload: SqsPayload;
   matchResult: MatchResult;
   anomalies: SessionAnomalySignal[];
-  statisticalContextV2?: StatisticalContextV2 | null;
 }): Record<string, unknown> {
-  const {
-    sessionId,
-    rawPayload,
-    matchResult,
-    anomalies,
-    statisticalContextV2,
-  } = params;
+  const { sessionId, rawPayload, matchResult, anomalies } = params;
   return {
     identifiers: buildIdentifiers(sessionId, rawPayload, matchResult),
     analysis: buildAnalysis({
@@ -149,7 +112,6 @@ export function buildSessionResponseData(params: {
       anomalies,
       device: rawPayload.device || {},
       sigint: rawPayload.sigint as Record<string, unknown> | undefined,
-      statisticalContextV2,
     }),
     hashes: rawPayload.hashes,
     device: rawPayload.device,
@@ -164,7 +126,6 @@ export async function writeSessionPayload(
     rawPayload: SqsPayload;
     matchResult: MatchResult;
     anomalies: SessionAnomalySignal[];
-    statisticalContextV2?: StatisticalContextV2 | null;
   },
   deps: {
     dynamodb: DynamoDBClient;

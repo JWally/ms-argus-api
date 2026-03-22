@@ -13,10 +13,6 @@ import { AnomalySignal, AnomalyResult } from "./types";
 import { detectFingerprintSignals } from "./fingerprint-signals";
 import { detectCrossFieldAnomalies } from "./worker-scope-consistency";
 import { detectJa4Coherence } from "./ja4-coherence";
-import {
-  detectStatisticalAnomaliesV2,
-  type StatisticalContextV2,
-} from "./statistical-v2";
 import { detectIpHistoryAnomalies } from "./ip-history-detector";
 import type { DeviceProfile } from "../../../types/profile";
 
@@ -75,7 +71,6 @@ export function detectAllAnomalies(
   raw?: unknown,
   sigint?: unknown,
   contextOpts?: {
-    statisticalV2?: StatisticalContextV2 | null;
     ipHistoryProfile?: DeviceProfile | null;
   },
 ): AnomalyResult {
@@ -85,9 +80,6 @@ export function detectAllAnomalies(
     runSafe(signals, detector.name, () => detector(fingerprint, raw, sigint));
   }
 
-  runSafe(signals, "StatisticalV2", () =>
-    detectStatisticalAnomaliesV2(contextOpts?.statisticalV2 ?? null),
-  );
   runSafe(signals, "IpHistory", () =>
     detectIpHistoryAnomalies(
       fingerprint,

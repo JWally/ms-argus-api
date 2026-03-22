@@ -13,15 +13,10 @@ import * as sns from "aws-cdk-lib/aws-sns";
 import * as sqs from "aws-cdk-lib/aws-sqs";
 import * as s3 from "aws-cdk-lib/aws-s3";
 import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
-import * as ec2 from "aws-cdk-lib/aws-ec2";
 import { Duration } from "aws-cdk-lib";
 import * as actions from "aws-cdk-lib/aws-cloudwatch-actions";
-import { getStageConfig, StageConfig } from "../config";
-import {
-  createBaseLambdaConfig,
-  createWorkerEnv,
-  createValkeyLambdaConfig,
-} from "./lambda-config";
+import { getStageConfig } from "../config";
+import { createBaseLambdaConfig, createWorkerEnv } from "./lambda-config";
 
 interface WorkersConstructProps {
   stackName: string;
@@ -45,16 +40,6 @@ interface WorkersConstructProps {
   vectorWorkerArn?: string;
   /** Optional: Qdrant collection name for fingerprint vectors. Defaults to 'fingerprints'. */
   vectorCollection?: string;
-  /** Optional: Valkey endpoint for statistical anomaly detection. */
-  valkeyEndpoint?: string;
-  /** Optional: Security group for Valkey access. */
-  valkeySecurityGroup?: ec2.ISecurityGroup;
-  /** Optional: VPC for Lambda (required if using Valkey). */
-  vpc?: ec2.IVpc;
-  /** Optional: Security group for Lambda (required if using Valkey). */
-  lambdaSecurityGroup?: ec2.ISecurityGroup;
-  /** Optional: Stage config (required if using Valkey for threshold settings). */
-  stageConfig?: StageConfig;
   /** Optional: S3 bucket for payload archiving */
   payloadArchiveBucket?: s3.IBucket;
   /**
@@ -106,11 +91,6 @@ export class WorkersConstruct extends Construct {
       vectorResultsQueue,
       vectorWorkerArn,
       vectorCollection = "fingerprints",
-      valkeyEndpoint,
-      valkeySecurityGroup,
-      vpc,
-      lambdaSecurityGroup,
-      stageConfig,
       payloadArchiveBucket,
       sigintAesKey,
     } = props;
@@ -130,12 +110,6 @@ export class WorkersConstruct extends Construct {
       keepNames: true,
     });
 
-    // Matching worker uses Valkey config when Valkey is enabled
-    // This marks ioredis as a nodeModule to avoid ESM bundling issues
-    const matchingWorkerConfig = valkeyEndpoint
-      ? createValkeyLambdaConfig({ tracing, keepNames: true })
-      : commonConfig;
-
     // IAM Logging Policy
     const loggingPolicy = new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
@@ -151,19 +125,8 @@ export class WorkersConstruct extends Construct {
     // MATCHING WORKER LAMBDA
     // =====================================
 
-    // VPC configuration for matching worker (required for Valkey access)
-    const matchingWorkerVpcConfig =
-      vpc && lambdaSecurityGroup && valkeySecurityGroup
-        ? {
-            vpc,
-            vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
-            securityGroups: [lambdaSecurityGroup],
-          }
-        : {};
-
     this.matchingWorker = new lambda.NodejsFunction(this, "MatchingWorker", {
-      ...matchingWorkerConfig,
-      ...matchingWorkerVpcConfig,
+      ...commonConfig,
       entry: path.join(__dirname, "../../src/handlers/matching-worker.ts"),
       functionName: `${stackName}-matching-worker`,
       memorySize: config.lambda.matching.memorySize,
@@ -191,29 +154,6 @@ export class WorkersConstruct extends Construct {
         ...(payloadArchiveBucket && {
           PAYLOAD_ARCHIVE_BUCKET: payloadArchiveBucket.bucketName,
           PAYLOAD_ARCHIVE_SAMPLE_RATE: stage === "prod" ? "0" : "1.0",
-        }),
-        // Valkey configuration for statistical anomaly detection
-        ...(valkeyEndpoint && {
-          VALKEY_ENDPOINT: valkeyEndpoint,
-          STATISTICAL_DETECTION_ENABLED: "true",
-          VALKEY_TTL_SECONDS: String(stageConfig?.valkey.ttlSeconds ?? 172800),
-          STATISTICAL_SCORE_THRESHOLD: String(
-            stageConfig?.valkey.scoreThreshold ?? 0.01,
-          ),
-          STATISTICAL_DISTINCT_THRESHOLD: String(
-            stageConfig?.valkey.distinctThreshold ?? 50,
-          ),
-          // Global sampling rate for baseline counters (1.0 = every request, 0.01 = 1%)
-          GLOBAL_SAMPLE_RATE: String(
-            stageConfig?.valkey.globalSampleRate ?? 0.01,
-          ),
-          // Statistical v2 anomaly detection (Shannon scoring)
-          STATISTICAL_V2_ENABLED: String(
-            stageConfig?.valkey.statisticalV2?.enabled ?? false,
-          ),
-          STATISTICAL_V2_THRESHOLD: String(
-            stageConfig?.valkey.statisticalV2?.threshold ?? 0.6,
-          ),
         }),
         ...(sigintAesKey && { SIGINT_AES_KEY: sigintAesKey }),
       },
@@ -267,11 +207,8 @@ export class WorkersConstruct extends Construct {
     // =====================================
     // PROFILE UPDATER LAMBDA
     // =====================================
-    const profileUpdaterVpcConfig = {};
-
     this.profileUpdater = new lambda.NodejsFunction(this, "ProfileUpdater", {
       ...commonConfig,
-      ...profileUpdaterVpcConfig,
       entry: path.join(__dirname, "../../src/handlers/profile-updater.ts"),
       functionName: `${stackName}-profile-updater`,
       memorySize: config.lambda.profile.memorySize,
