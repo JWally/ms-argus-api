@@ -9,6 +9,8 @@ import { Metrics, MetricUnit } from "@aws-lambda-powertools/metrics";
 import middy from "@middy/core";
 import { HttpError } from "../../helpers/http-error";
 import { decompressPayload } from "./gzip";
+import { getEcdhKeys } from "../../helpers/get-ecdh-keys";
+import { decryptArgusPayload } from "../../helpers/ecdh-decrypt";
 
 /**
  * Middy middleware that handles binary gzip-encoded payloads.
@@ -36,6 +38,32 @@ import { decompressPayload } from "./gzip";
  *   .use(binaryGzipBodyParser({ maxBodyBytes: 1024 * 100, maxDecompressedBytes: 1024 * 500 }, metrics));
  * ```
  */
+async function handleEcdhPayload(
+  event: APIGatewayProxyEventV2,
+  clientPubKey: string,
+  metrics: Metrics,
+): Promise<void> {
+  const keys = await getEcdhKeys();
+  if (!keys) {
+    metrics.addMetric("EcdhNotConfigured", MetricUnit.Count, 1);
+    throw new HttpError(503, "Encrypted ingestion not configured");
+  }
+  const parsed = await decryptArgusPayload(
+    event.body ?? "",
+    event.isBase64Encoded,
+    clientPubKey,
+    keys,
+  );
+  if (!parsed) {
+    metrics.addMetric("EcdhDecryptFailed", MetricUnit.Count, 1);
+    throw new HttpError(400, "Payload decryption failed");
+  }
+  // Replace body with JSON string so jsonBodyParser can parse it normally
+  event.body = JSON.stringify(parsed);
+  event.isBase64Encoded = false;
+  metrics.addMetric("EcdhPayloadReceived", MetricUnit.Count, 1);
+}
+
 export const binaryGzipBodyParser = (
   config: { maxBodyBytes: number; maxDecompressedBytes: number },
   metrics: Metrics,
@@ -51,6 +79,14 @@ export const binaryGzipBodyParser = (
       metrics.addMetric("JsonPayloadReceived", MetricUnit.Count, 1);
       return;
     }
+
+    // ECDH-encrypted argus-web payload: X-Argus-Origin header carries client pubkey
+    const clientPubKey = event.headers["x-argus-origin"];
+    if (clientPubKey) {
+      await handleEcdhPayload(event, clientPubKey, metrics);
+      return;
+    }
+
     await decompressPayload(event, config, metrics);
   },
 });

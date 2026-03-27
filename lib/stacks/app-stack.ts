@@ -6,6 +6,7 @@ import * as route53 from "aws-cdk-lib/aws-route53";
 import * as acm from "aws-cdk-lib/aws-certificatemanager";
 import * as events from "aws-cdk-lib/aws-events";
 import * as targets from "aws-cdk-lib/aws-events-targets";
+import * as ssm from "aws-cdk-lib/aws-ssm";
 import { Construct } from "constructs";
 
 import { SecretConstruct } from "../constructs/secrets";
@@ -32,10 +33,19 @@ interface ArgusApiStackProps extends cdk.StackProps {
    */
   vectorEnvironment?: string;
   /**
-   * Optional: AES-256 key (64 hex chars) for decrypting encrypted probe responses
-   * from ms-argus-sigint. Must match the SIGINT_AES_KEY used by the probe services.
+   * Optional: Secrets Manager ARN for the AES-256 key used to decrypt encrypted
+   * probe responses from ms-argus-sigint. Managed in ms-argus-platform.
+   * The key is injected via CloudFormation dynamic reference — never in the template.
+   * Prefer sigintPlatformEnvironment for automatic SSM lookup.
    */
-  sigintAesKey?: string;
+  sigintAesKeySecretArn?: string;
+  /**
+   * ms-argus-platform environment name (e.g. "dev-jw") to auto-lookup the
+   * sigint AES key ARN from SSM at synth time (cached in cdk.context.json).
+   * Takes precedence over sigintAesKeySecretArn.
+   * SSM path: /argus-platform/{sigintPlatformEnvironment}/sigint-aes-key-arn
+   */
+  sigintPlatformEnvironment?: string;
 }
 
 /**
@@ -62,6 +72,39 @@ interface ArgusApiStackProps extends cdk.StackProps {
  * - Removes NAT Gateway (~$32/month) and VPC endpoint costs
  * - Faster Lambda cold starts (no ENI attachment)
  */
+function resolveSigintParams(
+  scope: cdk.Stack,
+  sigintPlatformEnvironment: string | undefined,
+  sigintAesKeySecretArn: string | undefined,
+): {
+  sigintSecretArn: string | undefined;
+  probeTokensTableName: string | undefined;
+  probeTokensTableArn: string | undefined;
+} {
+  if (!sigintPlatformEnvironment) {
+    return {
+      sigintSecretArn: sigintAesKeySecretArn,
+      probeTokensTableName: undefined,
+      probeTokensTableArn: undefined,
+    };
+  }
+  const base = `/argus-platform/${sigintPlatformEnvironment}`;
+  return {
+    sigintSecretArn: ssm.StringParameter.valueFromLookup(
+      scope,
+      `${base}/sigint-aes-key-arn`,
+    ),
+    probeTokensTableName: ssm.StringParameter.valueFromLookup(
+      scope,
+      `${base}/probe-tokens-table-name`,
+    ),
+    probeTokensTableArn: ssm.StringParameter.valueFromLookup(
+      scope,
+      `${base}/probe-tokens-table-arn`,
+    ),
+  };
+}
+
 export class ArgusApiStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props: ArgusApiStackProps) {
     super(scope, id, props);
@@ -72,8 +115,19 @@ export class ArgusApiStack extends cdk.Stack {
       stage,
       region,
       vectorEnvironment,
-      sigintAesKey,
+      sigintAesKeySecretArn,
+      sigintPlatformEnvironment,
     } = props;
+
+    const {
+      sigintSecretArn: resolvedSigintSecretArn,
+      probeTokensTableName,
+      probeTokensTableArn,
+    } = resolveSigintParams(
+      this,
+      sigintPlatformEnvironment,
+      sigintAesKeySecretArn,
+    );
 
     // =========================================================================
     // DNS & CERTIFICATES
@@ -171,6 +225,7 @@ export class ArgusApiStack extends cdk.Stack {
       vectorResultsTable: dynamodb.vectorResultsTable, // Vector search results
       alarmsTopic,
       config: stageConfig,
+      ecdhKeyParamName: `/${stackName}/ecdh-keypair`,
     });
 
     const workers = new WorkersConstruct(this, "Workers", {
@@ -196,7 +251,9 @@ export class ArgusApiStack extends cdk.Stack {
       vectorCollection: "fingerprints",
 
       payloadArchiveBucket: analytics.payloadArchiveBucket,
-      sigintAesKey,
+      sigintAesKeySecretArn: resolvedSigintSecretArn,
+      probeTokensTableName,
+      probeTokensTableArn,
     });
 
     // =========================================================================

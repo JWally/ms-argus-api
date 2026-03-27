@@ -289,7 +289,7 @@ export async function processRecord(
   service: MatchingService,
   deps: ProcessRecordDeps,
 ): Promise<void> {
-  const parsed = parseSqsRecord(record, deps);
+  const parsed = await parseSqsRecord(record, deps);
   if (!parsed) return;
 
   const startTime = Date.now();

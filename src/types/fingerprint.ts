@@ -82,10 +82,6 @@ export interface Fingerprint {
   ja3?: string;
   // TCP RTT in microseconds (network proximity signal)
   tcp_rtt_us?: number;
-  // Probability of proxy usage (0-1)
-  proxy_score?: number;
-  // Probability of VPN usage (0-1)
-  vpn_score?: number;
   // STUN/WebRTC discovered IPs
   stun_public_ip?: string;
   stun_local_ip?: string;

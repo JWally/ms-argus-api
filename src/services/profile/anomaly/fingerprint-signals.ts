@@ -1,41 +1,5 @@
 import { Fingerprint } from "../../../types";
-import {
-  AnomalySignal,
-  AnomalyType,
-  AnomalyCodes,
-  createSignal,
-} from "./types";
-
-/**
- * Configuration for a score threshold check
- */
-interface ScoreCheck {
-  /** Score value to check (undefined treated as 0) */
-  score: number | undefined;
-  /** Type of anomaly to create */
-  type: AnomalyType;
-  /** Anomaly code to use */
-  code: (typeof AnomalyCodes)[keyof typeof AnomalyCodes];
-  /** Field name for reporting */
-  field: string;
-  /** Optional multiplier for severity (default 1) */
-  severityMultiplier?: number;
-}
-
-/**
- * Check if a score exceeds threshold and create anomaly signal
- * @param check - Score check configuration
- * @returns Anomaly signal if score > 0.7, null otherwise
- */
-function checkScoreThreshold(check: ScoreCheck): AnomalySignal | null {
-  const { score, type, code, field, severityMultiplier = 1 } = check;
-  if (score === undefined || score <= 0.7) return null;
-  return createSignal(type, code, score * severityMultiplier, {
-    expected: `${field} <= 0.7`,
-    actual: `${field}: ${score.toFixed(2)}`,
-    fields: [field],
-  });
-}
+import { AnomalySignal, AnomalyCodes, createSignal } from "./types";
 
 function isObj(v: unknown): v is Record<string, unknown> {
   return v !== null && typeof v === "object";
@@ -593,25 +557,6 @@ function collectScoreSignals(fingerprint: Fingerprint): AnomalySignal[] {
         fields: ["is_headless"],
       }),
     );
-  }
-  const checks: ScoreCheck[] = [
-    {
-      score: fingerprint.proxy_score,
-      type: "NETWORK",
-      code: AnomalyCodes.HIGH_PROXY_SCORE,
-      field: "proxy_score",
-    },
-    {
-      score: fingerprint.vpn_score,
-      type: "NETWORK",
-      code: AnomalyCodes.HIGH_VPN_SCORE,
-      field: "vpn_score",
-      severityMultiplier: 0.8,
-    },
-  ];
-  for (const c of checks) {
-    const s = checkScoreThreshold(c);
-    if (s) signals.push(s);
   }
   return signals;
 }

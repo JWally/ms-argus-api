@@ -55,7 +55,7 @@ describe("decryptProbeResponse", () => {
   it("decrypts and parses a tcp probe response", () => {
     const original = {
       tcp_info: { rtt: 12000 },
-      rtt_fingerprint: { proxy_score: 0.1, vpn_score: 0.0 },
+      rtt_fingerprint: { tcp_rtt_us: 12000, snd_mss: 1460 },
       client_ip: "1.2.3.4",
       domain: "test.io",
     };

@@ -79,10 +79,6 @@ export interface DeviceProfile {
   ja3?: string;
   /** TCP round-trip time in microseconds */
   tcp_rtt_us?: number;
-  /** Proxy likelihood score (0.0 to 1.0) */
-  proxy_score?: number;
-  /** VPN likelihood score (0.0 to 1.0) */
-  vpn_score?: number;
   /** First seen timestamp (epoch ms) */
   first_seen_at: number;
   /** Last seen timestamp (epoch ms) */

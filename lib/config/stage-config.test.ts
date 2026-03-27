@@ -74,7 +74,7 @@ describe("stage-config", () => {
       });
 
       it("should have API Lambda memory configurations", () => {
-        expect(dev.lambda.ingestion.memorySize).toBe(256);
+        expect(dev.lambda.ingestion.memorySize).toBe(512);
         expect(dev.lambda.sessionGet.memorySize).toBe(256);
       });
 

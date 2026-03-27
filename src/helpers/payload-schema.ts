@@ -39,8 +39,6 @@ export interface SigintTlsFingerprint {
 export interface SigintTcpProbe {
   // Flat structure (legacy/simplified)
   rttMs?: number;
-  proxyScore?: number;
-  vpnScore?: number;
   // Nested structure (actual web client payload)
   tcp_info?: Record<string, number> | null;
   rtt_fingerprint?: {
@@ -50,11 +48,6 @@ export interface SigintTcpProbe {
     total_connection_us?: number;
     snd_mss?: number;
     pmtu?: number;
-    tls_to_tcp_ratio?: number;
-    total_to_tcp_ratio?: number;
-    proxy_score?: number;
-    vpn_score?: number;
-    proxy_signals?: string[];
   } | null;
   http2_fingerprint?: Record<string, unknown> | null;
   client_hints?: Record<string, string> | null;
@@ -120,6 +113,12 @@ export interface ArgusPayload {
   hashes: PayloadHashes;
   device: PayloadDevice;
   sigint?: PayloadSigint;
+  /** HMAC-signed token from TCP probe — redeemed by matching-worker for full probe data */
+  sigintTcpToken?: string;
+  /** HMAC-signed token from H2 probe — redeemed by matching-worker for full probe data */
+  sigintH2Token?: string;
+  /** Full TLS fingerprint JSON string from VM sigint fetch */
+  sigintTls?: string;
 }
 
 /**
@@ -183,8 +182,6 @@ export const payloadJsonSchema = {
           additionalProperties: true,
           properties: {
             rttMs: { type: "number" },
-            proxyScore: { type: "number" },
-            vpnScore: { type: "number" },
           },
         },
         stun: {

@@ -13,7 +13,7 @@ import * as sns from "aws-cdk-lib/aws-sns";
 import * as sqs from "aws-cdk-lib/aws-sqs";
 import * as s3 from "aws-cdk-lib/aws-s3";
 import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
-import { Duration } from "aws-cdk-lib";
+import { Duration, SecretValue } from "aws-cdk-lib";
 import * as actions from "aws-cdk-lib/aws-cloudwatch-actions";
 import { getStageConfig } from "../config";
 import { createBaseLambdaConfig, createWorkerEnv } from "./lambda-config";
@@ -43,10 +43,20 @@ interface WorkersConstructProps {
   /** Optional: S3 bucket for payload archiving */
   payloadArchiveBucket?: s3.IBucket;
   /**
-   * Optional: AES-256 key (64 hex chars) for decrypting encrypted probe responses
-   * from ms-argus-sigint. Must match the SIGINT_AES_KEY used by the probe services.
+   * Optional: Secrets Manager ARN for the AES-256 key used to decrypt encrypted
+   * probe responses from ms-argus-sigint. The key is injected into the Lambda
+   * environment via a CloudFormation dynamic reference — never stored in plaintext
+   * in the template. Managed in ms-argus-platform.
    */
-  sigintAesKey?: string;
+  sigintAesKeySecretArn?: string;
+  /**
+   * Optional: DynamoDB table name for PROBE_TOKENS_TABLE (owned by ms-argus-platform).
+   * When set alongside probeTokensTableArn, the matching-worker redeems sigint tokens
+   * to hydrate payload.sigint before fingerprint extraction.
+   */
+  probeTokensTableName?: string;
+  /** Optional: ARN of PROBE_TOKENS_TABLE — used to grant dynamodb:GetItem. */
+  probeTokensTableArn?: string;
 }
 
 /**
@@ -92,7 +102,9 @@ export class WorkersConstruct extends Construct {
       vectorWorkerArn,
       vectorCollection = "fingerprints",
       payloadArchiveBucket,
-      sigintAesKey,
+      sigintAesKeySecretArn,
+      probeTokensTableName,
+      probeTokensTableArn,
     } = props;
 
     // Secrets Manager reference
@@ -155,9 +167,38 @@ export class WorkersConstruct extends Construct {
           PAYLOAD_ARCHIVE_BUCKET: payloadArchiveBucket.bucketName,
           PAYLOAD_ARCHIVE_SAMPLE_RATE: stage === "prod" ? "0" : "1.0",
         }),
-        ...(sigintAesKey && { SIGINT_AES_KEY: sigintAesKey }),
+        // CF dynamic reference — key value resolved by CloudFormation at deploy time,
+        // never stored in plaintext in the template or cdk.out synthesized artifacts.
+        ...(sigintAesKeySecretArn && {
+          SIGINT_AES_KEY: SecretValue.secretsManager(
+            sigintAesKeySecretArn,
+          ).unsafeUnwrap(),
+        }),
+        ...(probeTokensTableName && {
+          PROBE_TOKENS_TABLE_NAME: probeTokensTableName,
+        }),
       },
     });
+
+    // Grant matching worker access to the SIGINT AES key secret
+    if (sigintAesKeySecretArn) {
+      this.matchingWorker.addToRolePolicy(
+        new iam.PolicyStatement({
+          actions: ["secretsmanager:GetSecretValue"],
+          resources: [sigintAesKeySecretArn],
+        }),
+      );
+    }
+
+    // Grant matching worker read access to PROBE_TOKENS_TABLE for sigint token redemption
+    if (probeTokensTableArn) {
+      this.matchingWorker.addToRolePolicy(
+        new iam.PolicyStatement({
+          actions: ["dynamodb:GetItem"],
+          resources: [probeTokensTableArn],
+        }),
+      );
+    }
 
     // SQS event source for matching worker
     this.matchingWorker.addEventSource(

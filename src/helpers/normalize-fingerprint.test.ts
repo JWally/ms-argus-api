@@ -38,7 +38,6 @@ describe("normalizeFingerprint", () => {
         stable_hash: "string_value",
         hardware_concurrency: 8,
         is_headless: false,
-        proxy_score: 0.5,
       };
 
       const result = normalizeFingerprint(flat);
@@ -46,7 +45,6 @@ describe("normalizeFingerprint", () => {
       expect(result.stable_hash).toBe("string_value");
       expect(result.hardware_concurrency).toBe(8);
       expect(result.is_headless).toBe(false);
-      expect(result.proxy_score).toBe(0.5);
     });
   });
 
@@ -76,16 +74,12 @@ describe("normalizeFingerprint", () => {
         ja3: "ja3_hash",
         ja4: "ja4_hash",
         tcp_rtt_us: 12345,
-        proxy_score: 0.5,
-        vpn_score: 0.3,
       };
       const result = normalizeFingerprint(input);
       expect(result.ip_address).toBe("10.0.0.1");
       expect(result.ja3).toBe("ja3_hash");
       expect(result.ja4).toBe("ja4_hash");
       expect(result.tcp_rtt_us).toBe(12345);
-      expect(result.proxy_score).toBe(0.5);
-      expect(result.vpn_score).toBe(0.3);
     });
   });
 
@@ -129,15 +123,11 @@ describe("normalizeFingerprint", () => {
         {
           tcpProbe: {
             rttMs: 15.5,
-            proxyScore: 0.2,
-            vpnScore: 0.1,
           },
         },
       );
 
       expect(result.tcp_rtt_us).toBe(15500); // ms to μs
-      expect(result.proxy_score).toBe(0.2);
-      expect(result.vpn_score).toBe(0.1);
     });
 
     it("should extract evercookie_id from faviconCache.deviceId", () => {
@@ -182,8 +172,6 @@ describe("normalizeFingerprint", () => {
         },
         tcpProbe: {
           rttMs: 25,
-          proxyScore: 0.05,
-          vpnScore: 0.0,
         },
         faviconCache: {
           deviceId: "favicon-persistent-id",
@@ -197,8 +185,6 @@ describe("normalizeFingerprint", () => {
       expect(result.ja3).toBe("full_ja3_hash");
       expect(result.ja4).toBe("full_ja4_hash");
       expect(result.tcp_rtt_us).toBe(25000);
-      expect(result.proxy_score).toBe(0.05);
-      expect(result.vpn_score).toBe(0.0);
       expect(result.evercookie_id).toBe("favicon-persistent-id");
     });
 
@@ -245,22 +231,6 @@ describe("normalizeFingerprint", () => {
 
       // Negative RTT is invalid
       expect(result.tcp_rtt_us).toBeUndefined();
-    });
-
-    it("should handle proxyScore/vpnScore outside 0-1 range", () => {
-      const result = normalizeFingerprint(
-        {},
-        {
-          tcpProbe: {
-            proxyScore: 1.5, // Invalid: > 1
-            vpnScore: -0.5, // Invalid: < 0
-          },
-        },
-      );
-
-      // Scores should be rejected
-      expect(result.proxy_score).toBeUndefined();
-      expect(result.vpn_score).toBeUndefined();
     });
 
     it("should handle malformed IP addresses", () => {

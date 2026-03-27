@@ -48,109 +48,24 @@ describe("detectFingerprintSignals", () => {
     });
   });
 
-  describe("proxy_score detection", () => {
-    it("should detect when proxy_score > 0.7", () => {
-      const fingerprint = { proxy_score: 0.85 } as Fingerprint;
-      const signals = detectFingerprintSignals(fingerprint);
-
-      expect(
-        signals.some((s) => s.code === AnomalyCodes.HIGH_PROXY_SCORE),
-      ).toBe(true);
-      const proxySignal = signals.find(
-        (s) => s.code === AnomalyCodes.HIGH_PROXY_SCORE,
-      );
-      expect(proxySignal?.severity).toBe(0.85);
-      expect(proxySignal?.evidence.actual).toBe("proxy_score: 0.85");
-    });
-
-    it("should not flag when proxy_score is exactly 0.7", () => {
-      const fingerprint = { proxy_score: 0.7 } as Fingerprint;
-      const signals = detectFingerprintSignals(fingerprint);
-
-      expect(
-        signals.some((s) => s.code === AnomalyCodes.HIGH_PROXY_SCORE),
-      ).toBe(false);
-    });
-
-    it("should not flag when proxy_score <= 0.7", () => {
-      const fingerprint = { proxy_score: 0.5 } as Fingerprint;
-      const signals = detectFingerprintSignals(fingerprint);
-
-      expect(
-        signals.some((s) => s.code === AnomalyCodes.HIGH_PROXY_SCORE),
-      ).toBe(false);
-    });
-
-    it("should handle undefined proxy_score", () => {
-      const fingerprint = {} as Fingerprint;
-      const signals = detectFingerprintSignals(fingerprint);
-
-      expect(
-        signals.some((s) => s.code === AnomalyCodes.HIGH_PROXY_SCORE),
-      ).toBe(false);
-    });
-  });
-
-  describe("vpn_score detection", () => {
-    it("should detect when vpn_score > 0.7", () => {
-      const fingerprint = { vpn_score: 0.9 } as Fingerprint;
-      const signals = detectFingerprintSignals(fingerprint);
-
-      expect(signals.some((s) => s.code === AnomalyCodes.HIGH_VPN_SCORE)).toBe(
-        true,
-      );
-      const vpnSignal = signals.find(
-        (s) => s.code === AnomalyCodes.HIGH_VPN_SCORE,
-      );
-      // Severity is vpn_score * 0.8
-      expect(vpnSignal?.severity).toBeCloseTo(0.72, 2);
-    });
-
-    it("should not flag when vpn_score is exactly 0.7", () => {
-      const fingerprint = { vpn_score: 0.7 } as Fingerprint;
-      const signals = detectFingerprintSignals(fingerprint);
-
-      expect(signals.some((s) => s.code === AnomalyCodes.HIGH_VPN_SCORE)).toBe(
-        false,
-      );
-    });
-
-    it("should not flag when vpn_score <= 0.7", () => {
-      const fingerprint = { vpn_score: 0.3 } as Fingerprint;
-      const signals = detectFingerprintSignals(fingerprint);
-
-      expect(signals.some((s) => s.code === AnomalyCodes.HIGH_VPN_SCORE)).toBe(
-        false,
-      );
-    });
-  });
-
   describe("combined detections", () => {
     it("should detect multiple anomalies in same fingerprint", () => {
       const fingerprint = {
         lie_count: 2,
         is_headless: true,
-        proxy_score: 0.9,
-        vpn_score: 0.8,
       } as Fingerprint;
       const signals = detectFingerprintSignals(fingerprint);
 
-      expect(signals).toHaveLength(3);
-      expect(signals.map((s) => s.code).sort()).toEqual(
-        [
-          AnomalyCodes.HEADLESS_DETECTED,
-          AnomalyCodes.HIGH_PROXY_SCORE,
-          AnomalyCodes.HIGH_VPN_SCORE,
-        ].sort(),
-      );
+      expect(signals).toHaveLength(1);
+      expect(signals.map((s) => s.code)).toEqual([
+        AnomalyCodes.HEADLESS_DETECTED,
+      ]);
     });
 
     it("should return empty array for clean fingerprint", () => {
       const fingerprint = {
         lie_count: 0,
         is_headless: false,
-        proxy_score: 0.1,
-        vpn_score: 0.05,
       } as Fingerprint;
       const signals = detectFingerprintSignals(fingerprint);
 

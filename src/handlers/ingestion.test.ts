@@ -125,7 +125,7 @@ describe("ingestion handler", () => {
       const event = createApiEvent(JSON.stringify(payload));
       const result = asResult(await handler(event, mockContext));
 
-      expect(result.statusCode).toBe(204);
+      expect(result.statusCode).toBe(200);
     });
 
     // Note: Validation is handled by middy validator middleware which is mocked in tests
@@ -170,7 +170,7 @@ describe("ingestion handler", () => {
 
       const result = asResult(await handler(event, mockContext));
 
-      expect(result.statusCode).toBe(204);
+      expect(result.statusCode).toBe(200);
 
       const sqsCalls = sqsMock.commandCalls(SendMessageCommand);
       expect(sqsCalls.length).toBe(1);
@@ -205,7 +205,7 @@ describe("ingestion handler", () => {
 
       const result = asResult(await handler(event, mockContext));
 
-      expect(result.statusCode).toBe(204);
+      expect(result.statusCode).toBe(200);
 
       const sqsCalls = sqsMock.commandCalls(SendMessageCommand);
       const sentBody = JSON.parse(sqsCalls[0].args[0].input.MessageBody!);
@@ -272,7 +272,7 @@ describe("ingestion handler", () => {
 
       const result = asResult(await handler(event, mockContext));
 
-      expect(result.statusCode).toBe(204);
+      expect(result.statusCode).toBe(200);
 
       const sqsCalls = sqsMock.commandCalls(SendMessageCommand);
       const sentBody = JSON.parse(sqsCalls[0].args[0].input.MessageBody!);
@@ -309,7 +309,7 @@ describe("ingestion handler", () => {
 
       const result = asResult(await handler(event, mockContext));
 
-      expect(result.statusCode).toBe(204);
+      expect(result.statusCode).toBe(200);
     });
 
     it("should reject binary gzip payload that exceeds size limit after decompression", async () => {
@@ -408,7 +408,7 @@ describe("ingestion handler", () => {
 
       const result = asResult(await handler(event, mockContext));
 
-      expect(result.statusCode).toBe(204);
+      expect(result.statusCode).toBe(200);
     });
 
     it("should require Content-Encoding: gzip for binary payloads", async () => {
@@ -526,7 +526,7 @@ describe("ingestion handler", () => {
 
       const result = asResult(await handler(event, mockContext));
 
-      expect(result.statusCode).toBe(204);
+      expect(result.statusCode).toBe(200);
 
       const sqsCalls = sqsMock.commandCalls(SendMessageCommand);
       expect(sqsCalls.length).toBe(1);
@@ -566,7 +566,7 @@ describe("ingestion handler", () => {
       const event = createApiEvent(JSON.stringify(v3Payload));
       const result = asResult(await handler(event, mockContext));
 
-      expect(result.statusCode).toBe(204);
+      expect(result.statusCode).toBe(200);
 
       const sqsCalls = sqsMock.commandCalls(SendMessageCommand);
       expect(sqsCalls.length).toBe(1);
@@ -598,7 +598,7 @@ describe("ingestion handler", () => {
       const event = createApiEvent(JSON.stringify(v3Payload));
       const result = asResult(await handler(event, mockContext));
 
-      expect(result.statusCode).toBe(204);
+      expect(result.statusCode).toBe(200);
 
       const sqsCalls = sqsMock.commandCalls(SendMessageCommand);
       expect(sqsCalls.length).toBe(1);
@@ -618,7 +618,7 @@ describe("ingestion handler", () => {
       const event = createApiEvent(JSON.stringify(v3Payload));
       const result = asResult(await handler(event, mockContext));
 
-      expect(result.statusCode).toBe(204);
+      expect(result.statusCode).toBe(200);
     });
 
     // Note: This test is skipped because we mock the validator in tests

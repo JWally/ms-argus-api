@@ -555,9 +555,8 @@ describe("matching-worker handler", () => {
           tlsFingerprint: { ip: "192.168.1.1" },
           tcpProbe: {
             rtt_fingerprint: {
-              proxy_score: 0.85,
-              vpn_score: 0.7,
               tcp_rtt_us: 15000,
+              snd_mss: 1380,
             },
           },
         },
@@ -573,13 +572,11 @@ describe("matching-worker handler", () => {
       expect((result as SQSBatchResponse).batchItemFailures).toHaveLength(0);
     });
 
-    it("should extract flat TCP probe format (proxyScore/vpnScore/rttMs)", async () => {
+    it("should extract flat TCP probe format (rttMs)", async () => {
       const payload = createFingerprintPayload({
         sigint: {
           tlsFingerprint: { ip: "192.168.1.1" },
           tcpProbe: {
-            proxyScore: 0.9,
-            vpnScore: 0.6,
             rttMs: 25,
           },
         },

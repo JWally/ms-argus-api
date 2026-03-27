@@ -140,6 +140,28 @@ export interface FlagContext {
   raw?: unknown;
 }
 
+/** JA4 mismatch flags that indicate proxy/interception behavior. */
+const JA4_PROXY_FLAGS = [
+  DeviceFlags.TLS_BROWSER_MISMATCH,
+  DeviceFlags.TLS_PLATFORM_MISMATCH,
+  DeviceFlags.H2_TLS_MISMATCH,
+  DeviceFlags.NO_ALPN_BROWSER,
+];
+
+/**
+ * Promote JA4 mismatch signals to LIKELY_PROXY / LIKELY_VPN.
+ * TLS stack or H2 order inconsistent with claimed browser/OS is a strong
+ * proxy/interception indicator. QUIC from iOS implies a VPN tunnel.
+ */
+function promoteNetworkFlags(flags: string[]): void {
+  if (JA4_PROXY_FLAGS.some((f) => flags.includes(f))) {
+    flags.push(DeviceFlags.LIKELY_PROXY);
+  }
+  if (flags.includes(DeviceFlags.QUIC_IOS_VPN)) {
+    flags.push(DeviceFlags.LIKELY_VPN);
+  }
+}
+
 /**
  * Compute all flags for a device based on fingerprint and history
  * Combines bot detection, anomaly detection, drift detection, and rate limiting
@@ -182,6 +204,8 @@ export function computeFlags(
       flags.push(DeviceFlags.RAPID_REQUESTS);
     }
   }
+
+  promoteNetworkFlags(flags);
 
   // Preserve existing positive flags (VERIFIED, RETURNING_USER)
   if (existingProfile?.flags) {

@@ -258,14 +258,8 @@ function applyTcpFields(
   fp: Fingerprint,
   legacy: boolean,
 ) {
-  const proxyKey = legacy ? "proxyScore" : "proxy_score";
-  const vpnKey = legacy ? "vpnScore" : "vpn_score";
   const rttKey = legacy ? "rttMs" : "tcp_rtt_us";
 
-  if (typeof source[proxyKey] === "number")
-    fp.proxy_score = source[proxyKey] as number;
-  if (typeof source[vpnKey] === "number")
-    fp.vpn_score = source[vpnKey] as number;
   if (typeof source[rttKey] === "number") {
     fp.tcp_rtt_us = legacy
       ? (source[rttKey] as number) * 1000

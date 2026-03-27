@@ -11,6 +11,7 @@ import { Metrics, MetricUnit } from "@aws-lambda-powertools/metrics";
 import { SQSClient, SendMessageCommand } from "@aws-sdk/client-sqs";
 import { HttpError } from "../../helpers/http-error";
 import { getSessionId, type ArgusPayload } from "../../helpers/payload-schema";
+import { getCurrentRawPublicKey } from "../../helpers/get-ecdh-keys";
 
 /** API Gateway event extended with pre-parsed body from middleware. */
 export interface ExtendedEvent extends APIGatewayProxyEventV2 {
@@ -40,11 +41,41 @@ export interface BaseHandlerDeps {
  * @returns Early response or null to continue processing
  * @throws HttpError for invalid method or path
  */
-function routeRequest(event: ExtendedEvent): APIGatewayProxyResultV2 | null {
+async function routeRequest(
+  event: ExtendedEvent,
+): Promise<APIGatewayProxyResultV2 | null> {
+  const method = event.requestContext.http.method;
+
   if (event.rawPath === "/health") {
     return { statusCode: 200, body: JSON.stringify({ status: "healthy" }) };
   }
-  const method = event.requestContext.http.method;
+  if (event.rawPath === "/v1/handshake" && method === "GET") {
+    const clientPubKey = event.headers["x-argus-origin"];
+    if (!clientPubKey) {
+      return {
+        statusCode: 400,
+        body: JSON.stringify({ error: "Missing header" }),
+        headers: { "Content-Type": "application/json" },
+      };
+    }
+    const publicKey = await getCurrentRawPublicKey();
+    if (!publicKey) {
+      return {
+        statusCode: 503,
+        body: JSON.stringify({ error: "Not configured" }),
+        headers: { "Content-Type": "application/json" },
+      };
+    }
+    // Nonce + server pubkey concatenated — looks like one opaque token.
+    // Client extracts the last 88 chars to get the server pubkey.
+    const nonce = crypto.randomUUID().replace(/-/g, "");
+    const token = nonce + publicKey;
+    return {
+      statusCode: 200,
+      body: JSON.stringify({ token }),
+      headers: { "Content-Type": "application/json" },
+    };
+  }
   if (method === "OPTIONS") {
     return { statusCode: 204 };
   }
@@ -71,7 +102,7 @@ export function createBaseHandler(deps: BaseHandlerDeps) {
   return async (event: ExtendedEvent): Promise<APIGatewayProxyResultV2> => {
     const start = Date.now();
 
-    const earlyResponse = routeRequest(event);
+    const earlyResponse = await routeRequest(event);
     if (earlyResponse) return earlyResponse;
 
     const payload = event.parsedBody as ArgusPayload;
@@ -110,6 +141,10 @@ export function createBaseHandler(deps: BaseHandlerDeps) {
       Date.now() - start,
     );
 
-    return { statusCode: 204 };
+    return {
+      statusCode: 200,
+      body: JSON.stringify({ session_id: sessionId }),
+      headers: { "Content-Type": "application/json" },
+    };
   };
 }

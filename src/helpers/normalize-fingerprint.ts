@@ -54,17 +54,6 @@ function sanitizeString(val: unknown): string | undefined {
 }
 
 /**
- * Validate a score is in the 0-1 range.
- * @param val - Value to validate
- * @returns Number if in valid range, undefined otherwise
- */
-function toValidScore(val: unknown): number | undefined {
-  const num = toValidNumber(val);
-  if (num === undefined || num < 0 || num > 1) return undefined;
-  return num;
-}
-
-/**
  * Normalize and sanitize a flat fingerprint, applying sigint overrides.
  *
  * The fingerprint is already flat when it arrives here (extracted by matching-worker).
@@ -133,10 +122,6 @@ function applyTcpOverrides(
 ) {
   const rttMs = toValidPositiveNumber(tcp.rttMs);
   if (rttMs !== undefined) fp.tcp_rtt_us = Math.round(rttMs * 1000);
-  const proxyScore = toValidScore(tcp.proxyScore);
-  if (proxyScore !== undefined) fp.proxy_score = proxyScore;
-  const vpnScore = toValidScore(tcp.vpnScore);
-  if (vpnScore !== undefined) fp.vpn_score = vpnScore;
 }
 
 /**

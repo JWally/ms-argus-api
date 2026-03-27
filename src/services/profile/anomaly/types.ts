@@ -18,8 +18,6 @@ export const AnomalyCodes = {
   SCREEN_CSS_MISMATCH: "SCREEN_CSS_MISMATCH",
   // Fingerprint signal anomalies
   HEADLESS_DETECTED: "HEADLESS_DETECTED",
-  HIGH_PROXY_SCORE: "HIGH_PROXY_SCORE",
-  HIGH_VPN_SCORE: "HIGH_VPN_SCORE",
   // Statistical anomalies
   RARE_FINGERPRINT_COMBO: "RARE_FINGERPRINT_COMBO",
   // Statistical v2 anomalies (Shannon scoring)
@@ -30,7 +28,6 @@ export const AnomalyCodes = {
   RARE_LIES_FOR_UA: "RARE_LIES_FOR_UA",
   RARE_CSS_FOR_UA: "RARE_CSS_FOR_UA",
   RARE_TCP_MSS_FOR_UA: "RARE_TCP_MSS_FOR_UA",
-  RARE_TLS_RATIO_FOR_UA: "RARE_TLS_RATIO_FOR_UA",
   // IP/ASN history anomalies
   NEW_ASN_FOR_DEVICE: "NEW_ASN_FOR_DEVICE",
   IP_CHURN: "IP_CHURN",

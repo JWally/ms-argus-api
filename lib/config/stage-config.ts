@@ -123,7 +123,7 @@ const devConfig: StageConfig = {
       reservedConcurrency: 25,
     },
     ingestion: {
-      memorySize: 256, // Minimal processing - just validation and SQS publish
+      memorySize: 512, // Bumped from 256 — testing CPU headroom for ECDH decrypt
     },
     sessionGet: {
       memorySize: 256, // Simple DynamoDB read

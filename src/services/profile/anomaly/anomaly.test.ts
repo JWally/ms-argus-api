@@ -50,7 +50,7 @@ describe("Anomaly Detection Foundation", () => {
     it("should clamp severity to maximum of 1.0", () => {
       const signal = createSignal(
         "NETWORK",
-        AnomalyCodes.HIGH_PROXY_SCORE,
+        AnomalyCodes.WEBRTC_IP_MISMATCH,
         1.5,
         {
           expected: "expected",
@@ -95,8 +95,8 @@ describe("Anomaly Detection Foundation", () => {
       expect(AnomalyCodes.NAVIGATOR_LIES).toBe("NAVIGATOR_LIES");
       expect(AnomalyCodes.WORKER_MISMATCH).toBe("WORKER_MISMATCH");
       expect(AnomalyCodes.HEADLESS_DETECTED).toBe("HEADLESS_DETECTED");
-      expect(AnomalyCodes.HIGH_PROXY_SCORE).toBe("HIGH_PROXY_SCORE");
-      expect(AnomalyCodes.HIGH_VPN_SCORE).toBe("HIGH_VPN_SCORE");
+      expect(AnomalyCodes.TLS_BROWSER_MISMATCH).toBe("TLS_BROWSER_MISMATCH");
+      expect(AnomalyCodes.TLS_PLATFORM_MISMATCH).toBe("TLS_PLATFORM_MISMATCH");
     });
   });
 
@@ -137,7 +137,7 @@ describe("Anomaly Detection Foundation", () => {
           expected: "0",
           actual: "3",
         }),
-        createSignal("NETWORK", AnomalyCodes.HIGH_PROXY_SCORE, 0.4, {
+        createSignal("NETWORK", AnomalyCodes.WEBRTC_IP_MISMATCH, 0.4, {
           expected: "0.5",
           actual: "0.8",
         }),
@@ -153,9 +153,9 @@ describe("Anomaly Detection Foundation", () => {
 
     it("should cap aggregate score at 1.0", () => {
       const highSeverityDetector = (): AnomalySignal[] => [
-        createSignal("NETWORK", AnomalyCodes.HIGH_PROXY_SCORE, 0.95, {
-          expected: "proxy_score <= 0.7",
-          actual: "proxy_score: 0.95",
+        createSignal("IDENTITY", AnomalyCodes.TLS_BROWSER_MISMATCH, 0.95, {
+          expected: "TLS stack matches browser",
+          actual: "boringssl on Firefox",
         }),
         createSignal("CROSS_FIELD", AnomalyCodes.WORKER_MISMATCH, 0.8, {
           expected: "Chrome",

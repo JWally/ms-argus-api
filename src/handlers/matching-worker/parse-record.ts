@@ -8,6 +8,7 @@
 import { SQSRecord } from "aws-lambda";
 import { Logger } from "@aws-lambda-powertools/logger";
 import { Metrics, MetricUnit } from "@aws-lambda-powertools/metrics";
+import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { FingerprintPayload } from "../../services/matching";
 import { extractFingerprint } from "../../services/matching/fingerprint-extractor";
 import { isWarmupMessage } from "../../helpers/is-warmup";
@@ -16,6 +17,7 @@ import {
   isEncryptedResponse,
   decryptProbeResponse,
 } from "../../helpers/decrypt-probe";
+import { redeemSigintTokens } from "../../helpers/redeem-sigint-tokens";
 
 /**
  * Extended payload structure received from the ingestion handler via SQS.
@@ -48,6 +50,41 @@ export interface ParsedRecord {
   fingerprint: ReturnType<typeof extractFingerprint>;
   /** Normalized payload structure for the matching service */
   payload: FingerprintPayload;
+}
+
+/**
+ * Redeem sigint tokens (TCP/H2/TLS) in-place when SIGINT_AES_KEY and
+ * PROBE_TOKENS_TABLE_NAME are set. Runs before fingerprint extraction so that
+ * JA3/JA4/RTT signals are available to the matching pipeline.
+ */
+async function enrichSigintFromTokens(
+  payload: SqsPayload,
+  dynamodb: DynamoDBClient,
+  logger: Logger,
+): Promise<void> {
+  const key = process.env.SIGINT_AES_KEY;
+  const tableName = process.env.PROBE_TOKENS_TABLE_NAME;
+  if (!key || !tableName) return;
+  if (!payload.sigintTcpToken && !payload.sigintH2Token && !payload.sigintTls)
+    return;
+
+  try {
+    const enriched = await redeemSigintTokens(
+      payload,
+      key,
+      tableName,
+      dynamodb,
+    );
+    payload.sigint = enriched.sigint;
+  } catch (err) {
+    logger.warn(
+      "Failed to redeem sigint tokens — continuing without enrichment",
+      {
+        error: err,
+        session_id: payload.identifiers?.session_id,
+      },
+    );
+  }
 }
 
 /** Decrypt sigint probe blobs in-place when SIGINT_AES_KEY is set. */
@@ -103,10 +140,10 @@ function decryptSigintProbes(payload: SqsPayload, logger: Logger): void {
  * }
  * ```
  */
-export function parseSqsRecord(
+export async function parseSqsRecord(
   record: SQSRecord,
-  deps: { logger: Logger; metrics: Metrics },
-): ParsedRecord | null {
+  deps: { logger: Logger; metrics: Metrics; dynamodb: DynamoDBClient },
+): Promise<ParsedRecord | null> {
   const { logger, metrics } = deps;
 
   if (isWarmupMessage(record.body)) {
@@ -134,6 +171,7 @@ export function parseSqsRecord(
   }
 
   decryptSigintProbes(rawPayload, logger);
+  await enrichSigintFromTokens(rawPayload, deps.dynamodb, logger);
 
   const sessionId = rawPayload.identifiers?.session_id;
   if (!sessionId) {

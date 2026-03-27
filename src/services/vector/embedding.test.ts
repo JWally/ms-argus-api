@@ -38,8 +38,6 @@ describe("computeEmbedding", () => {
     ja3: "abc123",
     ja4: "def456",
     tcp_rtt_us: 25000,
-    proxy_score: 0.1,
-    vpn_score: 0.05,
     ip_address: "192.168.1.1",
     stun_public_ip: "8.8.8.8",
     stun_local_ip: "192.168.1.100",
