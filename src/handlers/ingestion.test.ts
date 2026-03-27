@@ -3,6 +3,15 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { gzipSync } from "zlib";
 
+vi.mock("../../helpers/get-ecdh-keys", () => ({
+  getEcdhKeys: vi.fn().mockResolvedValue(null),
+  getCurrentRawPublicKey: vi.fn().mockResolvedValue(null),
+}));
+
+vi.mock("../../helpers/ecdh-decrypt", () => ({
+  decryptArgusPayload: vi.fn(),
+}));
+
 // Mock middy validator to avoid ES module compatibility issues in tests
 // This mock passes through but doesn't do actual JSON schema validation
 vi.mock("@middy/validator", () => ({

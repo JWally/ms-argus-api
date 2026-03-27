@@ -1,11 +1,21 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { createCipheriv, randomBytes } from "crypto";
+import { createCipheriv, createHmac, randomBytes } from "crypto";
 import { SQSRecord } from "aws-lambda";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { parseSqsRecord } from "./parse-record";
 import type { EncryptedResponse } from "../../helpers/decrypt-probe";
 
 const TEST_KEY_HEX = "a".repeat(64);
+
+function createValidToken(): string {
+  const key = Buffer.from(TEST_KEY_HEX, "hex").subarray(0, 32);
+  const nonce = randomBytes(8).toString("hex");
+  const expiry = Date.now() + 90_000;
+  const hmac = createHmac("sha256", key)
+    .update(`${nonce}.${expiry}`)
+    .digest("hex");
+  return `${nonce}.${expiry}.${hmac}`;
+}
 
 function encrypt(data: unknown): EncryptedResponse {
   const key = Buffer.from(TEST_KEY_HEX, "hex");
@@ -187,5 +197,32 @@ describe("parseSqsRecord — decryptSigintProbes", () => {
       expect.any(String),
       1,
     );
+  });
+
+  it("normalizes V2 'network' field to 'sigint'", async () => {
+    const network = { tcpProbe: { tcp_info: null, rtt_fingerprint: null } };
+    const payload = { ...basePayload, network };
+    const result = await parseSqsRecord(makeRecord(payload), deps);
+    expect(result).not.toBeNull();
+    expect(result!.rawPayload.sigint).toEqual(network);
+  });
+
+  it("calls enrichSigintFromTokens when env vars set and tokens present", async () => {
+    process.env.SIGINT_AES_KEY = TEST_KEY_HEX;
+    process.env.PROBE_TOKENS_TABLE_NAME = "test-table";
+    const payload = {
+      ...basePayload,
+      // Valid HMAC token — passes verification, DynamoDB.send() throws (not mocked)
+      sigintTcpToken: createValidToken(),
+    };
+    // redeemSigintTokens will throw (DynamoDB not mocked) — enrichSigintFromTokens
+    // catches and logs a warning, then continues. Result should still be non-null.
+    const result = await parseSqsRecord(makeRecord(payload), deps);
+    expect(result).not.toBeNull();
+    expect(mockLogger.warn).toHaveBeenCalledWith(
+      expect.stringContaining("redeem"),
+      expect.any(Object),
+    );
+    delete process.env.PROBE_TOKENS_TABLE_NAME;
   });
 });
