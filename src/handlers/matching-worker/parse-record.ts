@@ -17,7 +17,10 @@ import {
   isEncryptedResponse,
   decryptProbeResponse,
 } from "../../helpers/decrypt-probe";
-import { redeemSigintTokens } from "../../helpers/redeem-sigint-tokens";
+import {
+  redeemSigintTokens,
+  extractInlineToken,
+} from "../../helpers/redeem-sigint-tokens";
 
 /**
  * Extended payload structure received from the ingestion handler via SQS.
@@ -65,7 +68,15 @@ async function enrichSigintFromTokens(
   const key = process.env.SIGINT_AES_KEY;
   const tableName = process.env.PROBE_TOKENS_TABLE_NAME;
   if (!key || !tableName) return;
-  if (!payload.sigintTcpToken && !payload.sigintH2Token && !payload.sigintTls)
+  const hasInlineTcpToken = !!extractInlineToken(payload.sigint?.tcpProbe);
+  const hasInlineH2Token = !!extractInlineToken(payload.sigint?.h2Probe);
+  if (
+    !payload.sigintTcpToken &&
+    !payload.sigintH2Token &&
+    !payload.sigintTls &&
+    !hasInlineTcpToken &&
+    !hasInlineH2Token
+  )
     return;
 
   try {

@@ -207,6 +207,24 @@ describe("parseSqsRecord — decryptSigintProbes", () => {
     expect(result!.rawPayload.sigint).toEqual(network);
   });
 
+  it("redeems inline ProbeTokenResponse in sigint.tcpProbe", async () => {
+    process.env.SIGINT_AES_KEY = TEST_KEY_HEX;
+    process.env.PROBE_TOKENS_TABLE_NAME = "test-table";
+    // Library puts { token: "..." } directly inside sigint.tcpProbe
+    const payload = {
+      ...basePayload,
+      sigint: { tcpProbe: { token: createValidToken() } },
+    };
+    // DynamoDB not mocked — enrichSigintFromTokens catches and warns
+    const result = await parseSqsRecord(makeRecord(payload), deps);
+    expect(result).not.toBeNull();
+    expect(mockLogger.warn).toHaveBeenCalledWith(
+      expect.stringContaining("redeem"),
+      expect.any(Object),
+    );
+    delete process.env.PROBE_TOKENS_TABLE_NAME;
+  });
+
   it("calls enrichSigintFromTokens when env vars set and tokens present", async () => {
     process.env.SIGINT_AES_KEY = TEST_KEY_HEX;
     process.env.PROBE_TOKENS_TABLE_NAME = "test-table";

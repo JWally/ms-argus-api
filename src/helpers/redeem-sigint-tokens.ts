@@ -75,6 +75,27 @@ interface RedeemCtx {
 }
 
 /**
+ * Extract a token string from an inline ProbeTokenResponse `{ token: "..." }`.
+ *
+ * The ms-argus-web library stores `ProbeTokenResponse` objects directly inside
+ * `payload.sigint.tcpProbe` / `payload.sigint.h2Probe` when the sigint probe
+ * returns a token rather than raw data. This helper detects that shape so the
+ * token can be redeemed even when no top-level `sigintTcpToken` field is set.
+ */
+export function extractInlineToken(probe: unknown): string | undefined {
+  if (
+    probe !== null &&
+    typeof probe === "object" &&
+    "token" in probe &&
+    typeof (probe as Record<string, unknown>).token === "string" &&
+    !("v" in probe) // exclude encrypted blobs { v: 1, data: "..." }
+  ) {
+    return (probe as Record<string, unknown>).token as string;
+  }
+  return undefined;
+}
+
+/**
  * Redeem sigint tokens and hydrate payload.sigint with full probe data.
  *
  * Handles three token types:
@@ -82,18 +103,50 @@ interface RedeemCtx {
  * - sigintTcpToken → HMAC verify → DynamoDB GetItem → payload.sigint.tcpProbe
  * - sigintH2Token  → HMAC verify → DynamoDB GetItem → payload.sigint.h2Probe
  *
+ * Also handles inline ProbeTokenResponse objects in payload.sigint.tcpProbe /
+ * payload.sigint.h2Probe (set by ms-argus-web when probes return tokens).
+ *
  * Non-fatal: if any step fails, the original payload is returned unchanged for that field.
  * Runs TCP and H2 lookups in parallel.
  */
 async function redeemToken(
   token: string | undefined,
-  existing: unknown,
   ctx: RedeemCtx,
 ): Promise<unknown | null> {
-  if (!token || existing || !verifyToken(token, ctx.sigintAesKeyHex)) {
+  if (!token || !verifyToken(token, ctx.sigintAesKeyHex)) {
     return null;
   }
   return fetchProbeData(token, ctx.tableName, ctx.dynamo);
+}
+
+/**
+ * Resolve the effective token for a probe field.
+ * Prefers the explicit top-level token; falls back to an inline ProbeTokenResponse.
+ * If an inline token is used, clears the probe field so it isn't treated as real data.
+ */
+function resolveProbeToken(
+  topLevelToken: string | undefined,
+  probe: unknown,
+  sigint: ArgusPayload["sigint"],
+  field: "tcpProbe" | "h2Probe",
+): string | undefined {
+  if (topLevelToken) return topLevelToken;
+  const inlineToken = extractInlineToken(probe);
+  if (inlineToken && sigint) sigint[field] = undefined;
+  return inlineToken;
+}
+
+/** Apply TLS JSON string to sigint in place. */
+function applyTlsJson(
+  sigintTls: string | undefined,
+  sigint: ArgusPayload["sigint"],
+): void {
+  if (!sigintTls || !sigint || sigint.tlsFingerprint) return;
+  try {
+    sigint.tlsFingerprint = JSON.parse(sigintTls);
+  } catch {
+    // ignore malformed TLS JSON
+  }
 }
 
 export async function redeemSigintTokens(
@@ -102,29 +155,33 @@ export async function redeemSigintTokens(
   probeTokensTableName: string,
   dynamo: DynamoDBClient,
 ): Promise<ArgusPayload> {
-  const { sigintTcpToken, sigintH2Token, sigintTls } = payload;
   const sigint: ArgusPayload["sigint"] = payload.sigint
     ? { ...payload.sigint }
     : {};
 
-  // TLS: direct JSON string — no token verification needed
-  if (sigintTls && !sigint.tlsFingerprint) {
-    try {
-      sigint.tlsFingerprint = JSON.parse(sigintTls);
-    } catch {
-      // ignore malformed TLS JSON
-    }
-  }
+  const tcpToken = resolveProbeToken(
+    payload.sigintTcpToken,
+    payload.sigint?.tcpProbe,
+    sigint,
+    "tcpProbe",
+  );
+  const h2Token = resolveProbeToken(
+    payload.sigintH2Token,
+    payload.sigint?.h2Probe,
+    sigint,
+    "h2Probe",
+  );
 
-  // TCP + H2: HMAC-verify → DynamoDB lookup (parallel)
+  applyTlsJson(payload.sigintTls, sigint);
+
   const ctx: RedeemCtx = {
     sigintAesKeyHex,
     tableName: probeTokensTableName,
     dynamo,
   };
   const [tcpData, h2Data] = await Promise.all([
-    redeemToken(sigintTcpToken, sigint.tcpProbe, ctx),
-    redeemToken(sigintH2Token, sigint.h2Probe, ctx),
+    redeemToken(tcpToken, ctx),
+    redeemToken(h2Token, ctx),
   ]);
 
   if (tcpData) sigint.tcpProbe = tcpData as typeof sigint.tcpProbe;
