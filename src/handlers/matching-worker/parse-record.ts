@@ -117,12 +117,12 @@ async function enrichSigintFromTokens(
     return;
 
   try {
-    const enriched = await redeemSigintTokens(
-      payload,
-      key,
-      tableName,
-      dynamodb,
-    );
+    const enriched = await redeemSigintTokens(payload, {
+      sigintAesKeyHex: key,
+      probeTokensTableName: tableName,
+      dynamo: dynamodb,
+      logger,
+    });
     payload.sigint = enriched.sigint;
   } catch (err) {
     logger.warn(

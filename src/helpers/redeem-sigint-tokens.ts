@@ -9,29 +9,45 @@
 import { createHmac, timingSafeEqual } from "crypto";
 import { DynamoDBClient, GetItemCommand } from "@aws-sdk/client-dynamodb";
 import { unmarshall } from "@aws-sdk/util-dynamodb";
+import type { Logger } from "@aws-lambda-powertools/logger";
 import type { ArgusPayload } from "./payload-schema";
 
 /**
- * Verify a sigint probe token.
+ * Check only the expiry portion of a token (fast path, no key needed).
  *
  * Token format: `{nonce_hex}.{expiry_ms}.{hmac_hex}`
- * HMAC-SHA256 over `{nonce}.{expiry_ms}` using first 32 bytes of SIGINT_AES_KEY.
- *
- * @returns true if the token is unexpired and the HMAC is valid
  */
-function verifyToken(token: string, sigintAesKeyHex: string): boolean {
+function checkTokenExpiry(token: string): boolean {
+  const parts = token.split(".");
+  if (parts.length !== 3) return false;
+  const expiry = parseInt(parts[1], 10);
+  return Number.isFinite(expiry) && Date.now() <= expiry;
+}
+
+/**
+ * Verify the HMAC of a sigint probe token, given the client IP from DynamoDB.
+ *
+ * Go probes sign over `{nonce}.{expiry_ms}.{clientIP}` (not just nonce.expiry).
+ * The clientIP is stored alongside the fingerprint in PROBE_TOKENS_TABLE and
+ * must be fetched before this check can be performed.
+ *
+ * Token format: `{nonce_hex}.{expiry_ms}.{hmac_hex}`
+ * HMAC-SHA256 over `{nonce}.{expiry_ms}.{clientIP}` using first 32 bytes of SIGINT_AES_KEY.
+ *
+ * @returns true if the HMAC is valid
+ */
+function verifyTokenHmac(
+  token: string,
+  sigintAesKeyHex: string,
+  clientIp: string,
+): boolean {
   const parts = token.split(".");
   if (parts.length !== 3) return false;
   const [nonce, expiryStr, hmac] = parts;
 
-  // Expiry check
-  const expiry = parseInt(expiryStr, 10);
-  if (!Number.isFinite(expiry) || Date.now() > expiry) return false;
-
-  // HMAC check (timing-safe)
   const key = Buffer.from(sigintAesKeyHex, "hex").subarray(0, 32);
   const expected = createHmac("sha256", key)
-    .update(`${nonce}.${expiryStr}`)
+    .update(`${nonce}.${expiryStr}.${clientIp}`)
     .digest("hex");
   try {
     return timingSafeEqual(
@@ -44,15 +60,18 @@ function verifyToken(token: string, sigintAesKeyHex: string): boolean {
 }
 
 /**
- * Fetch and parse the probe data stored in PROBE_TOKENS_TABLE for a given token.
+ * Fetch the probe item stored in PROBE_TOKENS_TABLE for a given token.
  *
  * DynamoDB item schema: { token (PK), fingerprint (JSON string), client_ip, ttl }
+ *
+ * Returns both the parsed fingerprint and the client_ip, which is needed to
+ * verify the HMAC (Go probes sign over nonce.expiry.clientIP).
  */
-async function fetchProbeData(
+async function fetchProbeItem(
   token: string,
   tableName: string,
   dynamo: DynamoDBClient,
-): Promise<unknown | null> {
+): Promise<{ fingerprint: unknown; clientIp: string } | null> {
   const result = await dynamo.send(
     new GetItemCommand({
       TableName: tableName,
@@ -62,7 +81,10 @@ async function fetchProbeData(
   if (!result.Item) return null;
   const item = unmarshall(result.Item);
   try {
-    return JSON.parse(item.fingerprint as string);
+    return {
+      fingerprint: JSON.parse(item.fingerprint as string),
+      clientIp: (item.client_ip as string) ?? "",
+    };
   } catch {
     return null;
   }
@@ -72,6 +94,7 @@ interface RedeemCtx {
   sigintAesKeyHex: string;
   tableName: string;
   dynamo: DynamoDBClient;
+  logger?: Logger;
 }
 
 /**
@@ -100,23 +123,52 @@ export function extractInlineToken(probe: unknown): string | undefined {
  *
  * Handles three token types:
  * - sigintTls      → JSON.parse → payload.sigint.aws_cf (no DynamoDB, direct data)
- * - sigintTcpToken → HMAC verify → DynamoDB GetItem → payload.sigint.tcp_probe
- * - sigintH2Token  → HMAC verify → DynamoDB GetItem → payload.sigint.h2
+ * - sigintTcpToken → expiry check → DynamoDB GetItem → HMAC verify → payload.sigint.tcp_probe
+ * - sigintH2Token  → expiry check → DynamoDB GetItem → HMAC verify → payload.sigint.h2
  *
  * Also handles inline ProbeTokenResponse objects in payload.sigint.tcp_probe /
  * payload.sigint.h2 (set by ms-argus-web when probes return tokens).
  *
  * Non-fatal: if any step fails, the original payload is returned unchanged for that field.
  * Runs TCP and H2 lookups in parallel.
+ *
+ * Note on verification order: Go probes sign HMAC over `nonce.expiry.clientIP`, and
+ * clientIP is stored in DynamoDB alongside the fingerprint. We fetch the DB item first
+ * (after expiry check) to get clientIP, then verify the HMAC.
  */
 async function redeemToken(
   token: string | undefined,
   ctx: RedeemCtx,
 ): Promise<unknown | null> {
-  if (!token || !verifyToken(token, ctx.sigintAesKeyHex)) {
+  if (!token) return null;
+
+  // Fast expiry check before touching DynamoDB
+  if (!checkTokenExpiry(token)) {
+    ctx.logger?.warn("Sigint token expired or malformed", {
+      nonce: token.split(".")[0],
+    });
     return null;
   }
-  return fetchProbeData(token, ctx.tableName, ctx.dynamo);
+
+  // Fetch item (includes client_ip needed for HMAC verification)
+  const item = await fetchProbeItem(token, ctx.tableName, ctx.dynamo);
+  if (!item) {
+    ctx.logger?.warn("Sigint token not found in DynamoDB", {
+      nonce: token.split(".")[0],
+    });
+    return null;
+  }
+
+  // Verify HMAC — Go signs over nonce.expiry.clientIP
+  if (!verifyTokenHmac(token, ctx.sigintAesKeyHex, item.clientIp)) {
+    ctx.logger?.warn("Sigint token HMAC verification failed", {
+      nonce: token.split(".")[0],
+      clientIp: item.clientIp,
+    });
+    return null;
+  }
+
+  return item.fingerprint;
 }
 
 /**
@@ -151,10 +203,9 @@ function applyTlsJson(
 
 export async function redeemSigintTokens(
   payload: ArgusPayload,
-  sigintAesKeyHex: string,
-  probeTokensTableName: string,
-  dynamo: DynamoDBClient,
+  ctx: Omit<RedeemCtx, "tableName"> & { probeTokensTableName: string },
 ): Promise<ArgusPayload> {
+  const { sigintAesKeyHex, probeTokensTableName, dynamo, logger } = ctx;
   const sigint: ArgusPayload["sigint"] = payload.sigint
     ? { ...payload.sigint }
     : {};
@@ -174,14 +225,15 @@ export async function redeemSigintTokens(
 
   applyTlsJson(payload.sigintTls, sigint);
 
-  const ctx: RedeemCtx = {
+  const redeemCtx: RedeemCtx = {
     sigintAesKeyHex,
     tableName: probeTokensTableName,
     dynamo,
+    logger,
   };
   const [tcpData, h2Data] = await Promise.all([
-    redeemToken(tcpToken, ctx),
-    redeemToken(h2Token, ctx),
+    redeemToken(tcpToken, redeemCtx),
+    redeemToken(h2Token, redeemCtx),
   ]);
 
   if (tcpData) sigint.tcp_probe = tcpData as typeof sigint.tcp_probe;

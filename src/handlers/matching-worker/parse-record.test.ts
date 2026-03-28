@@ -7,12 +7,13 @@ import type { EncryptedResponse } from "../../helpers/decrypt-probe";
 
 const TEST_KEY_HEX = "a".repeat(64);
 
-function createValidToken(): string {
+// Go probes sign over nonce.expiry.clientIP — match that format here
+function createValidToken(clientIp = "127.0.0.1"): string {
   const key = Buffer.from(TEST_KEY_HEX, "hex").subarray(0, 32);
   const nonce = randomBytes(8).toString("hex");
   const expiry = Date.now() + 90_000;
   const hmac = createHmac("sha256", key)
-    .update(`${nonce}.${expiry}`)
+    .update(`${nonce}.${expiry}.${clientIp}`)
     .digest("hex");
   return `${nonce}.${expiry}.${hmac}`;
 }
