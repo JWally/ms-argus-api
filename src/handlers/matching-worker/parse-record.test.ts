@@ -169,6 +169,31 @@ describe("parseSqsRecord — decryptSigintProbes", () => {
     );
   });
 
+  it("normalizes legacy client field names to current names", async () => {
+    const payload = {
+      ...basePayload,
+      sigint: {
+        tlsFingerprint: { ip: "1.2.3.4", ja4: "t13d" },
+        tcpProbe: { tcp_info: null, rtt_fingerprint: { tcp_rtt_us: 5000 } },
+        h2Probe: { fingerprint: "abc", protocol: "h2" },
+        stun: { localIp: "10.0.0.1" },
+      },
+    };
+    const result = await parseSqsRecord(makeRecord(payload), deps);
+    expect(result).not.toBeNull();
+    const sigint = result!.rawPayload.sigint as Record<string, unknown>;
+    expect(sigint.aws_cf).toEqual({ ip: "1.2.3.4", ja4: "t13d" });
+    expect(sigint.tcp_probe).toEqual({
+      tcp_info: null,
+      rtt_fingerprint: { tcp_rtt_us: 5000 },
+    });
+    expect(sigint.h2).toEqual({ fingerprint: "abc", protocol: "h2" });
+    expect(sigint.stun).toBeUndefined();
+    expect(sigint.tlsFingerprint).toBeUndefined();
+    expect(sigint.tcpProbe).toBeUndefined();
+    expect(sigint.h2Probe).toBeUndefined();
+  });
+
   it("skips decryption when sigint is absent", async () => {
     process.env.SIGINT_AES_KEY = TEST_KEY_HEX;
     const result = await parseSqsRecord(makeRecord(basePayload), deps);

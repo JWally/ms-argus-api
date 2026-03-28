@@ -55,6 +55,29 @@ export interface ParsedRecord {
   payload: FingerprintPayload;
 }
 
+/**
+ * Rename legacy client-sent sigint field names to current names.
+ * ms-argus-web still sends tlsFingerprint/tcpProbe/h2Probe/stun — normalise
+ * them before token redemption so all downstream code uses the new names.
+ */
+function normalizeSigintFieldNames(payload: SqsPayload): void {
+  if (!payload.sigint) return;
+  const s = payload.sigint as Record<string, unknown>;
+  if (!s.aws_cf && s.tlsFingerprint !== undefined) {
+    s.aws_cf = s.tlsFingerprint;
+    delete s.tlsFingerprint;
+  }
+  if (!s.tcp_probe && s.tcpProbe !== undefined) {
+    s.tcp_probe = s.tcpProbe;
+    delete s.tcpProbe;
+  }
+  if (!s.h2 && s.h2Probe !== undefined) {
+    s.h2 = s.h2Probe;
+    delete s.h2Probe;
+  }
+  delete s.stun;
+}
+
 /** Apply sigintTls JSON string to sigint.aws_cf in-place. No key or DynamoDB needed. */
 function applyTlsJson(payload: SqsPayload): void {
   if (!payload.sigintTls) return;
@@ -192,6 +215,7 @@ export async function parseSqsRecord(
     rawPayload.sigint = rawPayload.network;
   }
 
+  normalizeSigintFieldNames(rawPayload);
   decryptSigintProbes(rawPayload, logger);
   await enrichSigintFromTokens(rawPayload, deps.dynamodb, logger);
 
