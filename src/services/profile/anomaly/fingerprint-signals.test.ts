@@ -461,7 +461,7 @@ describe("detectFingerprintSignals", () => {
       const signals = detectFingerprintSignals(
         {} as Fingerprint,
         { webrtc: { iceCandidates: { publicIP: "1.2.3.4" } } },
-        { tlsFingerprint: { ip: "5.6.7.8" } },
+        { aws_cf: { ip: "5.6.7.8" } },
       );
       expect(
         signals.some((s) => s.code === AnomalyCodes.WEBRTC_IP_MISMATCH),
@@ -472,7 +472,7 @@ describe("detectFingerprintSignals", () => {
       const signals = detectFingerprintSignals(
         {} as Fingerprint,
         { webrtc: { iceCandidates: { publicIP: "1.2.3.4" } } },
-        { tlsFingerprint: { ip: "1.2.3.4" } },
+        { aws_cf: { ip: "1.2.3.4" } },
       );
       expect(
         signals.some((s) => s.code === AnomalyCodes.WEBRTC_IP_MISMATCH),
@@ -488,11 +488,11 @@ describe("detectFingerprintSignals", () => {
       ).toBe(false);
     });
 
-    it("should use tcpProbe IP when tlsFingerprint is absent", () => {
+    it("should use tcp_probe IP when aws_cf is absent", () => {
       const signals = detectFingerprintSignals(
         {} as Fingerprint,
         { webrtc: { iceCandidates: { publicIP: "1.2.3.4" } } },
-        { tcpProbe: { client_ip: "5.6.7.8" } },
+        { tcp_probe: { client_ip: "5.6.7.8" } },
       );
       expect(
         signals.some((s) => s.code === AnomalyCodes.WEBRTC_IP_MISMATCH),
@@ -503,7 +503,7 @@ describe("detectFingerprintSignals", () => {
       const signals = detectFingerprintSignals(
         {} as Fingerprint,
         { webrtc: { iceCandidates: {} } },
-        { tlsFingerprint: { ip: "5.6.7.8" } },
+        { aws_cf: { ip: "5.6.7.8" } },
       );
       expect(
         signals.some((s) => s.code === AnomalyCodes.WEBRTC_IP_MISMATCH),

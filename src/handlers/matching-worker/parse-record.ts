@@ -55,13 +55,13 @@ export interface ParsedRecord {
   payload: FingerprintPayload;
 }
 
-/** Apply sigintTls JSON string to sigint.tlsFingerprint in-place. No key or DynamoDB needed. */
+/** Apply sigintTls JSON string to sigint.aws_cf in-place. No key or DynamoDB needed. */
 function applyTlsJson(payload: SqsPayload): void {
   if (!payload.sigintTls) return;
   if (!payload.sigint) payload.sigint = {};
-  if (payload.sigint.tlsFingerprint) return;
+  if (payload.sigint.aws_cf) return;
   try {
-    payload.sigint.tlsFingerprint = JSON.parse(payload.sigintTls);
+    payload.sigint.aws_cf = JSON.parse(payload.sigintTls);
   } catch {
     // ignore malformed TLS JSON
   }
@@ -82,8 +82,8 @@ async function enrichSigintFromTokens(
   const key = process.env.SIGINT_AES_KEY;
   const tableName = process.env.PROBE_TOKENS_TABLE_NAME;
   if (!key || !tableName) return;
-  const hasInlineTcpToken = !!extractInlineToken(payload.sigint?.tcpProbe);
-  const hasInlineH2Token = !!extractInlineToken(payload.sigint?.h2Probe);
+  const hasInlineTcpToken = !!extractInlineToken(payload.sigint?.tcp_probe);
+  const hasInlineH2Token = !!extractInlineToken(payload.sigint?.h2);
   if (
     !payload.sigintTcpToken &&
     !payload.sigintH2Token &&
@@ -117,17 +117,14 @@ function decryptSigintProbes(payload: SqsPayload, logger: Logger): void {
   const key = process.env.SIGINT_AES_KEY;
   if (!payload.sigint || !key) return;
   try {
-    if (isEncryptedResponse(payload.sigint.tcpProbe)) {
-      payload.sigint.tcpProbe = decryptProbeResponse(
-        payload.sigint.tcpProbe,
+    if (isEncryptedResponse(payload.sigint.tcp_probe)) {
+      payload.sigint.tcp_probe = decryptProbeResponse(
+        payload.sigint.tcp_probe,
         key,
       );
     }
-    if (isEncryptedResponse(payload.sigint.h2Probe)) {
-      payload.sigint.h2Probe = decryptProbeResponse(
-        payload.sigint.h2Probe,
-        key,
-      );
+    if (isEncryptedResponse(payload.sigint.h2)) {
+      payload.sigint.h2 = decryptProbeResponse(payload.sigint.h2, key);
     }
   } catch (err) {
     logger.warn(

@@ -5,7 +5,7 @@
  * - identifiers: session_id, evercookie_id, public_key
  * - hashes: stable, fuzzy, and named component hashes
  * - device: detailed device fingerprint data (nested objects)
- * - sigint: network intelligence (tlsFingerprint, tcpProbe, stun, faviconCache)
+ * - sigint: network intelligence (aws_cf, tcp_probe, h2, faviconCache)
  */
 
 export interface PayloadIdentifiers {
@@ -114,11 +114,10 @@ export interface SigintH2Probe {
 }
 
 export interface PayloadSigint {
-  tlsFingerprint?: SigintTlsFingerprint;
-  tcpProbe?: SigintTcpProbe;
-  stun?: SigintStun;
+  aws_cf?: SigintTlsFingerprint;
+  tcp_probe?: SigintTcpProbe;
+  h2?: SigintH2Probe | null;
   faviconCache?: SigintFaviconCache;
-  h2Probe?: SigintH2Probe | null;
   timing?: SigintTiming;
   errors?: unknown[];
 }
@@ -182,7 +181,7 @@ export const payloadJsonSchema = {
       type: "object",
       additionalProperties: true,
       properties: {
-        tlsFingerprint: {
+        aws_cf: {
           type: ["object", "null"],
           additionalProperties: true,
           properties: {
@@ -192,16 +191,12 @@ export const payloadJsonSchema = {
             ja4: { type: ["string", "null"] },
           },
         },
-        tcpProbe: {
+        tcp_probe: {
           type: ["object", "null"],
           additionalProperties: true,
           properties: {
             rttMs: { type: "number" },
           },
-        },
-        stun: {
-          type: ["object", "null"],
-          additionalProperties: true,
         },
         faviconCache: {
           type: ["object", "null"],
@@ -210,7 +205,7 @@ export const payloadJsonSchema = {
             id: { type: ["string", "null"] },
           },
         },
-        h2Probe: {
+        h2: {
           type: ["object", "null"],
           additionalProperties: true,
         },

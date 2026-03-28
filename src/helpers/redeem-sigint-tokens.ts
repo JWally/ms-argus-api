@@ -78,7 +78,7 @@ interface RedeemCtx {
  * Extract a token string from an inline ProbeTokenResponse `{ token: "..." }`.
  *
  * The ms-argus-web library stores `ProbeTokenResponse` objects directly inside
- * `payload.sigint.tcpProbe` / `payload.sigint.h2Probe` when the sigint probe
+ * `payload.sigint.tcp_probe` / `payload.sigint.h2` when the sigint probe
  * returns a token rather than raw data. This helper detects that shape so the
  * token can be redeemed even when no top-level `sigintTcpToken` field is set.
  */
@@ -99,12 +99,12 @@ export function extractInlineToken(probe: unknown): string | undefined {
  * Redeem sigint tokens and hydrate payload.sigint with full probe data.
  *
  * Handles three token types:
- * - sigintTls      → JSON.parse → payload.sigint.tlsFingerprint (no DynamoDB, direct data)
- * - sigintTcpToken → HMAC verify → DynamoDB GetItem → payload.sigint.tcpProbe
- * - sigintH2Token  → HMAC verify → DynamoDB GetItem → payload.sigint.h2Probe
+ * - sigintTls      → JSON.parse → payload.sigint.aws_cf (no DynamoDB, direct data)
+ * - sigintTcpToken → HMAC verify → DynamoDB GetItem → payload.sigint.tcp_probe
+ * - sigintH2Token  → HMAC verify → DynamoDB GetItem → payload.sigint.h2
  *
- * Also handles inline ProbeTokenResponse objects in payload.sigint.tcpProbe /
- * payload.sigint.h2Probe (set by ms-argus-web when probes return tokens).
+ * Also handles inline ProbeTokenResponse objects in payload.sigint.tcp_probe /
+ * payload.sigint.h2 (set by ms-argus-web when probes return tokens).
  *
  * Non-fatal: if any step fails, the original payload is returned unchanged for that field.
  * Runs TCP and H2 lookups in parallel.
@@ -128,7 +128,7 @@ function resolveProbeToken(
   topLevelToken: string | undefined,
   probe: unknown,
   sigint: ArgusPayload["sigint"],
-  field: "tcpProbe" | "h2Probe",
+  field: "tcp_probe" | "h2",
 ): string | undefined {
   if (topLevelToken) return topLevelToken;
   const inlineToken = extractInlineToken(probe);
@@ -141,9 +141,9 @@ function applyTlsJson(
   sigintTls: string | undefined,
   sigint: ArgusPayload["sigint"],
 ): void {
-  if (!sigintTls || !sigint || sigint.tlsFingerprint) return;
+  if (!sigintTls || !sigint || sigint.aws_cf) return;
   try {
-    sigint.tlsFingerprint = JSON.parse(sigintTls);
+    sigint.aws_cf = JSON.parse(sigintTls);
   } catch {
     // ignore malformed TLS JSON
   }
@@ -161,15 +161,15 @@ export async function redeemSigintTokens(
 
   const tcpToken = resolveProbeToken(
     payload.sigintTcpToken,
-    payload.sigint?.tcpProbe,
+    payload.sigint?.tcp_probe,
     sigint,
-    "tcpProbe",
+    "tcp_probe",
   );
   const h2Token = resolveProbeToken(
     payload.sigintH2Token,
-    payload.sigint?.h2Probe,
+    payload.sigint?.h2,
     sigint,
-    "h2Probe",
+    "h2",
   );
 
   applyTlsJson(payload.sigintTls, sigint);
@@ -184,8 +184,8 @@ export async function redeemSigintTokens(
     redeemToken(h2Token, ctx),
   ]);
 
-  if (tcpData) sigint.tcpProbe = tcpData as typeof sigint.tcpProbe;
-  if (h2Data) sigint.h2Probe = h2Data as typeof sigint.h2Probe;
+  if (tcpData) sigint.tcp_probe = tcpData as typeof sigint.tcp_probe;
+  if (h2Data) sigint.h2 = h2Data as typeof sigint.h2;
 
   return {
     ...payload,

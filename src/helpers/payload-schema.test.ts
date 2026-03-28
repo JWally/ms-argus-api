@@ -37,7 +37,7 @@ describe("payload-schema", () => {
         },
         hashes: { stable: "abc", fuzzy: "def", canvas: "ghi" },
         device: { navigator: { userAgent: "Chrome" } },
-        sigint: { tlsFingerprint: { ip: "1.2.3.4" } },
+        sigint: { aws_cf: { ip: "1.2.3.4" } },
       };
       expect(isArgusPayload(payload)).toBe(true);
     });
@@ -375,7 +375,7 @@ describe("payload-schema", () => {
     it("accepts response with optional sigint", () => {
       const withSigint = {
         ...validResponse,
-        sigint: { tlsFingerprint: { ip: "1.2.3.4" } },
+        sigint: { aws_cf: { ip: "1.2.3.4" } },
       };
       expect(() => validateSessionResponse(withSigint)).not.toThrow();
     });

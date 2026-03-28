@@ -84,20 +84,20 @@ describe("normalizeFingerprint", () => {
   });
 
   describe("extracts sigint data", () => {
-    it("should extract sigint_id from sigint.tlsFingerprint.id", () => {
+    it("should extract sigint_id from sigint.aws_cf.id", () => {
       const result = normalizeFingerprint(
         {},
-        { tlsFingerprint: { id: "abc-123-def" } },
+        { aws_cf: { id: "abc-123-def" } },
       );
 
       expect(result.sigint_id).toBe("abc-123-def");
     });
 
-    it("should extract ja3 and ja4 from sigint.tlsFingerprint", () => {
+    it("should extract ja3 and ja4 from sigint.aws_cf", () => {
       const result = normalizeFingerprint(
         {},
         {
-          tlsFingerprint: {
+          aws_cf: {
             ja3: "ja3_hash_from_sigint",
             ja4: "ja4_hash_from_sigint",
           },
@@ -108,10 +108,10 @@ describe("normalizeFingerprint", () => {
       expect(result.ja4).toBe("ja4_hash_from_sigint");
     });
 
-    it("should extract ip_address from sigint.tlsFingerprint.ip", () => {
+    it("should extract ip_address from sigint.aws_cf.ip", () => {
       const result = normalizeFingerprint(
         {},
-        { tlsFingerprint: { ip: "192.168.1.100" } },
+        { aws_cf: { ip: "192.168.1.100" } },
       );
 
       expect(result.ip_address).toBe("192.168.1.100");
@@ -121,7 +121,7 @@ describe("normalizeFingerprint", () => {
       const result = normalizeFingerprint(
         {},
         {
-          tcpProbe: {
+          tcp_probe: {
             rttMs: 15.5,
           },
         },
@@ -146,7 +146,7 @@ describe("normalizeFingerprint", () => {
         ip_address: "old_ip",
       };
       const sigint = {
-        tlsFingerprint: {
+        aws_cf: {
           ja4: "new_ja4_from_sigint",
           ip: "new_ip_from_edge",
         },
@@ -161,7 +161,7 @@ describe("normalizeFingerprint", () => {
 
     it("should handle complete sigint payload", () => {
       const sigint = {
-        tlsFingerprint: {
+        aws_cf: {
           id: "sigint-uuid-456",
           new: false,
           ip: "203.0.113.50",
@@ -170,7 +170,7 @@ describe("normalizeFingerprint", () => {
           ja3: "full_ja3_hash",
           ja4: "full_ja4_hash",
         },
-        tcpProbe: {
+        tcp_probe: {
           rttMs: 25,
         },
         faviconCache: {
@@ -198,18 +198,18 @@ describe("normalizeFingerprint", () => {
       expect(result.stable_hash).toBe("test");
     });
 
-    it("should handle sigint with null tlsFingerprint", () => {
-      const result = normalizeFingerprint({}, { tlsFingerprint: null });
+    it("should handle sigint with null aws_cf", () => {
+      const result = normalizeFingerprint({}, { aws_cf: null });
       expect(result.sigint_id).toBeUndefined();
     });
   });
 
   describe("sigint adversarial", () => {
-    it("should handle sigint.tcpProbe.rttMs as string", () => {
+    it("should handle sigint.tcp_probe.rttMs as string", () => {
       const result = normalizeFingerprint(
         {},
         {
-          tcpProbe: {
+          tcp_probe: {
             rttMs: "25.5" as unknown as number,
           },
         },
@@ -223,7 +223,7 @@ describe("normalizeFingerprint", () => {
       const result = normalizeFingerprint(
         {},
         {
-          tcpProbe: {
+          tcp_probe: {
             rttMs: -10,
           },
         },
@@ -237,7 +237,7 @@ describe("normalizeFingerprint", () => {
       const result = normalizeFingerprint(
         {},
         {
-          tlsFingerprint: {
+          aws_cf: {
             ip: "not-an-ip-address",
           },
         },

@@ -147,7 +147,7 @@ describe("matching-worker handler", () => {
         },
       },
       sigint: {
-        tlsFingerprint: {
+        aws_cf: {
           ip: "192.168.1.1",
           ja4: "t13d1516h2_8daaf6152771",
         },
@@ -478,7 +478,7 @@ describe("matching-worker handler", () => {
     it("should extract publicIp from sigint.stun", async () => {
       const payload = createFingerprintPayload({
         sigint: {
-          tlsFingerprint: { ip: "192.168.1.1", ja4: "ja4hash" },
+          aws_cf: { ip: "192.168.1.1", ja4: "ja4hash" },
           stun: { publicIp: "203.0.113.5" },
         },
       });
@@ -496,7 +496,7 @@ describe("matching-worker handler", () => {
     it("should extract reflexiveIp (web format) as stun_public_ip", async () => {
       const payload = createFingerprintPayload({
         sigint: {
-          tlsFingerprint: { ip: "192.168.1.1" },
+          aws_cf: { ip: "192.168.1.1" },
           stun: { reflexiveIp: "198.51.100.10" },
         },
       });
@@ -514,7 +514,7 @@ describe("matching-worker handler", () => {
     it("should extract localIps[0] (API array format) as stun_local_ip", async () => {
       const payload = createFingerprintPayload({
         sigint: {
-          tlsFingerprint: { ip: "192.168.1.1" },
+          aws_cf: { ip: "192.168.1.1" },
           stun: { localIps: ["10.0.0.1", "10.0.0.2"] },
         },
       });
@@ -532,7 +532,7 @@ describe("matching-worker handler", () => {
     it("should extract localIp (web string format) as stun_local_ip", async () => {
       const payload = createFingerprintPayload({
         sigint: {
-          tlsFingerprint: { ip: "192.168.1.1" },
+          aws_cf: { ip: "192.168.1.1" },
           stun: { localIp: "10.0.0.5" },
         },
       });
@@ -552,8 +552,8 @@ describe("matching-worker handler", () => {
     it("should extract nested rtt_fingerprint format", async () => {
       const payload = createFingerprintPayload({
         sigint: {
-          tlsFingerprint: { ip: "192.168.1.1" },
-          tcpProbe: {
+          aws_cf: { ip: "192.168.1.1" },
+          tcp_probe: {
             rtt_fingerprint: {
               tcp_rtt_us: 15000,
               snd_mss: 1380,
@@ -575,8 +575,8 @@ describe("matching-worker handler", () => {
     it("should extract flat TCP probe format (rttMs)", async () => {
       const payload = createFingerprintPayload({
         sigint: {
-          tlsFingerprint: { ip: "192.168.1.1" },
-          tcpProbe: {
+          aws_cf: { ip: "192.168.1.1" },
+          tcp_probe: {
             rttMs: 25,
           },
         },
@@ -595,7 +595,7 @@ describe("matching-worker handler", () => {
     it("should extract faviconCache id", async () => {
       const payload = createFingerprintPayload({
         sigint: {
-          tlsFingerprint: { ip: "192.168.1.1" },
+          aws_cf: { ip: "192.168.1.1" },
           faviconCache: { id: "fav-cache-uuid-123" },
         },
       });

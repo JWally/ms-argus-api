@@ -118,7 +118,7 @@ describe("session-get handler", () => {
       },
     },
     sigint: {
-      tlsFingerprint: {
+      aws_cf: {
         ip: "192.168.1.1",
       },
     },

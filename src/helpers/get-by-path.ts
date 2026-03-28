@@ -12,9 +12,9 @@
  * @returns The value at the path, or undefined if not found
  *
  * @example
- * const data = { tlsFingerprint: { ja4: "abc123" } };
- * getByPath(data, "tlsFingerprint.ja4"); // "abc123"
- * getByPath(data, "tlsFingerprint.ja3"); // undefined
+ * const data = { aws_cf: { ja4: "abc123" } };
+ * getByPath(data, "aws_cf.ja4"); // "abc123"
+ * getByPath(data, "aws_cf.ja3"); // undefined
  */
 export function getByPath<T = unknown>(
   obj: Record<string, unknown> | undefined | null,

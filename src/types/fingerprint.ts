@@ -41,7 +41,7 @@ export interface Fingerprint {
   fonts_simhash?: string; // From _fonts - Font detection SimHash
   screen_simhash?: string; // From _screen - Screen resolution SimHash
   css_media_simhash?: string; // From _cssMedia - CSS media query SimHash
-  // H2 fingerprint fields (from sigint h2Probe)
+  // H2 fingerprint fields (from sigint h2)
   h2_settings_order?: string[]; // e.g. ["1:65536", "2:0", "4:131072", "5:16384"]
   h2_window_update?: number; // e.g. 12517377
   h2_pseudo_header_order?: string; // e.g. "m,p,a,s"

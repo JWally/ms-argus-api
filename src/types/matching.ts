@@ -80,7 +80,7 @@ export interface SessionCacheValue {
  * Contains TLS fingerprint, TCP probe, STUN, and favicon cache data
  */
 export interface SigintData {
-  tlsFingerprint?: {
+  aws_cf?: {
     /** Third-party cookie ID (the _fpid cookie from id.argus.pw) */
     id?: string;
     /** Whether this is a new visitor (cookie just created) */
@@ -96,19 +96,13 @@ export interface SigintData {
     /** JA4 TLS fingerprint */
     ja4?: string | null;
   } | null;
-  tcpProbe?: {
+  tcp_probe?: {
     /** TCP round-trip time in milliseconds */
     rttMs?: number;
     /** Proxy likelihood score 0-1 */
     proxyScore?: number;
     /** VPN likelihood score 0-1 */
     vpnScore?: number;
-  } | null;
-  stun?: {
-    /** Local IP addresses from WebRTC */
-    localIps?: string[];
-    /** Public IP address */
-    publicIp?: string | null;
   } | null;
   faviconCache?: {
     /** Persistent device ID via favicon cache timing */

@@ -278,9 +278,9 @@ function checkEngineMismatch(
 
 /** Extract connection IP from sigint TLS or TCP probe data. */
 function extractConnectionIp(sigint: Record<string, unknown>): string | null {
-  const tls = sigint.tlsFingerprint;
+  const tls = sigint.aws_cf;
   if (isObj(tls) && str(tls.ip)) return tls.ip;
-  const tcp = sigint.tcpProbe;
+  const tcp = sigint.tcp_probe;
   if (isObj(tcp) && str(tcp.client_ip)) return tcp.client_ip;
   return null;
 }
@@ -310,7 +310,7 @@ function checkWebrtcIpMismatch(
     return createSignal("NETWORK", AnomalyCodes.WEBRTC_IP_MISMATCH, 0.95, {
       expected: `WebRTC IP matches connection IP (${connIp})`,
       actual: `WebRTC: ${rtcIp} vs connection: ${connIp}`,
-      fields: ["webrtc.iceCandidates.publicIP", "sigint.tlsFingerprint.ip"],
+      fields: ["webrtc.iceCandidates.publicIP", "sigint.aws_cf.ip"],
     });
   }
   return null;

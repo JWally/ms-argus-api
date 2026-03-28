@@ -64,19 +64,19 @@ describe("parseSqsRecord — decryptSigintProbes", () => {
     const payload = {
       ...basePayload,
       sigint: {
-        tcpProbe: { tcp_info: null, rtt_fingerprint: { tcp_rtt_us: 5000 } },
-        h2Probe: { fingerprint: "abc", protocol: "h2" },
+        tcp_probe: { tcp_info: null, rtt_fingerprint: { tcp_rtt_us: 5000 } },
+        h2: { fingerprint: "abc", protocol: "h2" },
       },
     };
     const result = await parseSqsRecord(makeRecord(payload), deps);
     expect(result).not.toBeNull();
-    expect(result!.rawPayload.sigint?.tcpProbe).toEqual(
-      payload.sigint.tcpProbe,
+    expect(result!.rawPayload.sigint?.tcp_probe).toEqual(
+      payload.sigint.tcp_probe,
     );
-    expect(result!.rawPayload.sigint?.h2Probe).toEqual(payload.sigint.h2Probe);
+    expect(result!.rawPayload.sigint?.h2).toEqual(payload.sigint.h2);
   });
 
-  it("decrypts encrypted tcpProbe when SIGINT_AES_KEY is set", async () => {
+  it("decrypts encrypted tcp_probe when SIGINT_AES_KEY is set", async () => {
     process.env.SIGINT_AES_KEY = TEST_KEY_HEX;
     const plainTcp = {
       tcp_info: { rtt: 5000 },
@@ -89,15 +89,15 @@ describe("parseSqsRecord — decryptSigintProbes", () => {
     };
     const payload = {
       ...basePayload,
-      sigint: { tcpProbe: encrypt(plainTcp) },
+      sigint: { tcp_probe: encrypt(plainTcp) },
     };
     const result = await parseSqsRecord(makeRecord(payload), deps);
     expect(result).not.toBeNull();
-    expect(result!.rawPayload.sigint?.tcpProbe).toEqual(plainTcp);
+    expect(result!.rawPayload.sigint?.tcp_probe).toEqual(plainTcp);
     expect(mockLogger.warn).not.toHaveBeenCalled();
   });
 
-  it("decrypts encrypted h2Probe when SIGINT_AES_KEY is set", async () => {
+  it("decrypts encrypted h2 when SIGINT_AES_KEY is set", async () => {
     process.env.SIGINT_AES_KEY = TEST_KEY_HEX;
     const plainH2 = {
       settings_order: ["1:65536"],
@@ -109,11 +109,11 @@ describe("parseSqsRecord — decryptSigintProbes", () => {
     };
     const payload = {
       ...basePayload,
-      sigint: { h2Probe: encrypt(plainH2) },
+      sigint: { h2: encrypt(plainH2) },
     };
     const result = await parseSqsRecord(makeRecord(payload), deps);
     expect(result).not.toBeNull();
-    expect(result!.rawPayload.sigint?.h2Probe).toEqual(plainH2);
+    expect(result!.rawPayload.sigint?.h2).toEqual(plainH2);
   });
 
   it("decrypts both probes in one pass", async () => {
@@ -133,12 +133,12 @@ describe("parseSqsRecord — decryptSigintProbes", () => {
     };
     const payload = {
       ...basePayload,
-      sigint: { tcpProbe: encrypt(plainTcp), h2Probe: encrypt(plainH2) },
+      sigint: { tcp_probe: encrypt(plainTcp), h2: encrypt(plainH2) },
     };
     const result = await parseSqsRecord(makeRecord(payload), deps);
     expect(result).not.toBeNull();
-    expect(result!.rawPayload.sigint?.tcpProbe).toEqual(plainTcp);
-    expect(result!.rawPayload.sigint?.h2Probe).toEqual(plainH2);
+    expect(result!.rawPayload.sigint?.tcp_probe).toEqual(plainTcp);
+    expect(result!.rawPayload.sigint?.h2).toEqual(plainH2);
   });
 
   it("logs warning and continues on decryption failure", async () => {
@@ -158,7 +158,7 @@ describe("parseSqsRecord — decryptSigintProbes", () => {
     })();
     const payload = {
       ...basePayload,
-      sigint: { tcpProbe: encryptedWithWrongKey },
+      sigint: { tcp_probe: encryptedWithWrongKey },
     };
     // Should not throw — just warn and continue
     const result = await parseSqsRecord(makeRecord(payload), deps);
@@ -179,11 +179,11 @@ describe("parseSqsRecord — decryptSigintProbes", () => {
   it("skips decryption when probes are plain objects (no key)", async () => {
     const payload = {
       ...basePayload,
-      sigint: { tcpProbe: { tcp_info: null, rtt_fingerprint: null } },
+      sigint: { tcp_probe: { tcp_info: null, rtt_fingerprint: null } },
     };
     const result = await parseSqsRecord(makeRecord(payload), deps);
     expect(result).not.toBeNull();
-    expect((result!.rawPayload.sigint?.tcpProbe as any)?.tcp_info).toBeNull();
+    expect((result!.rawPayload.sigint?.tcp_probe as any)?.tcp_info).toBeNull();
   });
 
   it("returns null for malformed JSON", async () => {
@@ -209,20 +209,20 @@ describe("parseSqsRecord — decryptSigintProbes", () => {
   });
 
   it("normalizes V2 'network' field to 'sigint'", async () => {
-    const network = { tcpProbe: { tcp_info: null, rtt_fingerprint: null } };
+    const network = { tcp_probe: { tcp_info: null, rtt_fingerprint: null } };
     const payload = { ...basePayload, network };
     const result = await parseSqsRecord(makeRecord(payload), deps);
     expect(result).not.toBeNull();
     expect(result!.rawPayload.sigint).toEqual(network);
   });
 
-  it("redeems inline ProbeTokenResponse in sigint.tcpProbe", async () => {
+  it("redeems inline ProbeTokenResponse in sigint.tcp_probe", async () => {
     process.env.SIGINT_AES_KEY = TEST_KEY_HEX;
     process.env.PROBE_TOKENS_TABLE_NAME = "test-table";
-    // Library puts { token: "..." } directly inside sigint.tcpProbe
+    // Library puts { token: "..." } directly inside sigint.tcp_probe
     const payload = {
       ...basePayload,
-      sigint: { tcpProbe: { token: createValidToken() } },
+      sigint: { tcp_probe: { token: createValidToken() } },
     };
     // DynamoDB not mocked — enrichSigintFromTokens catches and warns
     const result = await parseSqsRecord(makeRecord(payload), deps);

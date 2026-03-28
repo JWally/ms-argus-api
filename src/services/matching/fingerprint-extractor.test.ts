@@ -149,7 +149,7 @@ describe("extractFingerprint", () => {
   describe("IP fallback from headers", () => {
     it("should use sigint IP when available", () => {
       const payload = basePayload({
-        sigint: { tlsFingerprint: { ip: "10.0.0.1" } },
+        sigint: { aws_cf: { ip: "10.0.0.1" } },
       });
       const fp = extractFingerprint(payload, {
         "X-Forwarded-For": "192.168.1.1",
@@ -159,7 +159,7 @@ describe("extractFingerprint", () => {
 
     it("should fall back to X-Forwarded-For when sigint IP is missing", () => {
       const payload = basePayload({
-        sigint: { tlsFingerprint: { ip: null } },
+        sigint: { aws_cf: { ip: null } },
       });
       const fp = extractFingerprint(payload, {
         "X-Forwarded-For": "192.168.1.1",
@@ -297,10 +297,10 @@ describe("extractFingerprint", () => {
   });
 
   describe("H2 probe extraction", () => {
-    it("should extract H2 fingerprint fields from sigint h2Probe", () => {
+    it("should extract H2 fingerprint fields from sigint h2", () => {
       const payload = basePayload({
         sigint: {
-          h2Probe: {
+          h2: {
             settings_order: ["1:65536", "2:0", "4:131072"],
             window_update: 12517377,
             pseudo_header_order: "m,p,a,s",
@@ -324,9 +324,9 @@ describe("extractFingerprint", () => {
       );
     });
 
-    it("should handle missing h2Probe gracefully", () => {
+    it("should handle missing h2 gracefully", () => {
       const payload = basePayload({
-        sigint: { tlsFingerprint: { ip: "1.2.3.4" } },
+        sigint: { aws_cf: { ip: "1.2.3.4" } },
       });
       const fp = extractFingerprint(payload);
       expect(fp.h2_settings_order).toBeUndefined();
@@ -336,10 +336,10 @@ describe("extractFingerprint", () => {
       expect(fp.h2_fingerprint_raw).toBeUndefined();
     });
 
-    it("should handle empty h2Probe gracefully", () => {
+    it("should handle empty h2 gracefully", () => {
       const payload = basePayload({
         sigint: {
-          h2Probe: {},
+          h2: {},
         },
       });
       const fp = extractFingerprint(payload);
@@ -388,7 +388,7 @@ describe("extractFingerprint", () => {
     it("should extract sigint fields", () => {
       const payload = basePayload({
         sigint: {
-          tlsFingerprint: {
+          aws_cf: {
             ip: "1.2.3.4",
             ja3: "ja3-hash",
             ja4: "ja4-hash",

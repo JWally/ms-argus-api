@@ -199,7 +199,7 @@ function extractWebglExtensions(
  * @param fp - The fingerprint object to populate
  */
 function extractTlsFields(
-  tls: NonNullable<ArgusPayload["sigint"]>["tlsFingerprint"],
+  tls: NonNullable<ArgusPayload["sigint"]>["aws_cf"],
   fp: Fingerprint,
 ) {
   if (!tls) return;
@@ -218,7 +218,7 @@ function extractH2Probe(
   sigint: NonNullable<ArgusPayload["sigint"]>,
   fp: Fingerprint,
 ) {
-  const h2 = sigint.h2Probe;
+  const h2 = sigint.h2;
   if (!h2) return;
 
   if (Array.isArray(h2.settings_order))
@@ -239,11 +239,10 @@ function extractH2Probe(
  */
 function extractSigint(sigint: ArgusPayload["sigint"], fp: Fingerprint) {
   if (!sigint) return;
-  extractTlsFields(sigint.tlsFingerprint, fp);
+  extractTlsFields(sigint.aws_cf, fp);
   extractTcpProbe(sigint, fp);
   extractH2Probe(sigint, fp);
   if (sigint.faviconCache?.id) fp.favicon_cache_id = sigint.faviconCache.id;
-  extractStun(sigint, fp);
 }
 
 /**
@@ -282,30 +281,11 @@ function extractTcpProbe(
   sigint: NonNullable<ArgusPayload["sigint"]>,
   fp: Fingerprint,
 ) {
-  if (!sigint.tcpProbe) return;
-  const tcp = sigint.tcpProbe as Record<string, unknown>;
+  if (!sigint.tcp_probe) return;
+  const tcp = sigint.tcp_probe as Record<string, unknown>;
   const rttFp = tcp.rtt_fingerprint as Record<string, unknown> | undefined;
   applyTcpFields(rttFp || tcp, fp, !rttFp);
   if (rttFp) applyMssFields(rttFp, fp);
-}
-
-/**
- * Extract STUN protocol data (public and local IPs from WebRTC)
- * @param sigint - The sigint section from the payload
- * @param fp - The fingerprint object to populate
- */
-function extractStun(
-  sigint: NonNullable<ArgusPayload["sigint"]>,
-  fp: Fingerprint,
-) {
-  const stun = sigint.stun as Record<string, unknown> | undefined;
-  if (!stun) return;
-
-  const publicIp = stun.publicIp ?? stun.reflexiveIp;
-  if (typeof publicIp === "string") fp.stun_public_ip = publicIp;
-
-  const localIp = stun.localIp ?? (stun.localIps as string[] | undefined)?.[0];
-  if (typeof localIp === "string") fp.stun_local_ip = localIp;
 }
 
 /**

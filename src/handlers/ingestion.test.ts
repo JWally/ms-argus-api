@@ -265,8 +265,8 @@ describe("ingestion handler", () => {
         hashes: { stable: "abc", fuzzy: "def" },
         device: {},
         sigint: {
-          tlsFingerprint: { ja4: "t13d1516h2_8daaf6152771_b0da82dd1658" },
-          tcpProbe: { rttMs: 64 },
+          aws_cf: { ja4: "t13d1516h2_8daaf6152771_b0da82dd1658" },
+          tcp_probe: { rttMs: 64 },
         },
       };
 
@@ -285,7 +285,7 @@ describe("ingestion handler", () => {
       const sqsCalls = sqsMock.commandCalls(SendMessageCommand);
       const sentBody = JSON.parse(sqsCalls[0].args[0].input.MessageBody!);
       expect(sentBody.sigint).toBeDefined();
-      expect(sentBody.sigint.tlsFingerprint.ja4).toBe(
+      expect(sentBody.sigint.aws_cf.ja4).toBe(
         "t13d1516h2_8daaf6152771_b0da82dd1658",
       );
     });
@@ -568,7 +568,7 @@ describe("ingestion handler", () => {
         },
         device: {},
         sigint: {
-          tlsFingerprint: { ja4: "test_ja4" },
+          aws_cf: { ja4: "test_ja4" },
         },
       };
       const event = createApiEvent(JSON.stringify(v3Payload));

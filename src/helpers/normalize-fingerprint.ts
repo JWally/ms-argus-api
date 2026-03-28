@@ -98,7 +98,7 @@ export function normalizeFingerprint(
  * @param fp - Fingerprint to modify
  */
 function applyTlsOverrides(
-  tls: NonNullable<SigintData["tlsFingerprint"]>,
+  tls: NonNullable<SigintData["aws_cf"]>,
   fp: Fingerprint,
 ) {
   const sigintId = sanitizeString(tls.id);
@@ -117,7 +117,7 @@ function applyTlsOverrides(
  * @param fp - Fingerprint to modify
  */
 function applyTcpOverrides(
-  tcp: NonNullable<SigintData["tcpProbe"]>,
+  tcp: NonNullable<SigintData["tcp_probe"]>,
   fp: Fingerprint,
 ) {
   const rttMs = toValidPositiveNumber(tcp.rttMs);
@@ -130,11 +130,11 @@ function applyTcpOverrides(
  * @param fp - Fingerprint to modify
  */
 function applySigintOverrides(sigint: SigintData, fp: Fingerprint) {
-  if (sigint.tlsFingerprint && typeof sigint.tlsFingerprint === "object") {
-    applyTlsOverrides(sigint.tlsFingerprint, fp);
+  if (sigint.aws_cf && typeof sigint.aws_cf === "object") {
+    applyTlsOverrides(sigint.aws_cf, fp);
   }
-  if (sigint.tcpProbe && typeof sigint.tcpProbe === "object") {
-    applyTcpOverrides(sigint.tcpProbe, fp);
+  if (sigint.tcp_probe && typeof sigint.tcp_probe === "object") {
+    applyTcpOverrides(sigint.tcp_probe, fp);
   }
   const faviconDeviceId = sanitizeString(sigint.faviconCache?.deviceId);
   if (faviconDeviceId) fp.evercookie_id = faviconDeviceId;
