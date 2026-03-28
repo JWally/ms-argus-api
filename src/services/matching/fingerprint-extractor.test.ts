@@ -301,14 +301,12 @@ describe("extractFingerprint", () => {
       const payload = basePayload({
         sigint: {
           h2Probe: {
-            h2_fingerprint: {
-              settings_order: ["1:65536", "2:0", "4:131072"],
-              window_update: 12517377,
-              pseudo_header_order: "m,p,a,s",
-              header_order: ["user-agent", "accept", "accept-encoding"],
-              fingerprint: "1:65536;2:0;4:131072|12517377|0|m,p,a,s",
-              protocol: "h2",
-            },
+            settings_order: ["1:65536", "2:0", "4:131072"],
+            window_update: 12517377,
+            pseudo_header_order: "m,p,a,s",
+            header_order: ["user-agent", "accept", "accept-encoding"],
+            fingerprint: "1:65536;2:0;4:131072|12517377|0|m,p,a,s",
+            protocol: "h2",
           },
         },
       });
@@ -338,10 +336,10 @@ describe("extractFingerprint", () => {
       expect(fp.h2_fingerprint_raw).toBeUndefined();
     });
 
-    it("should handle null h2_fingerprint gracefully", () => {
+    it("should handle empty h2Probe gracefully", () => {
       const payload = basePayload({
         sigint: {
-          h2Probe: { h2_fingerprint: null },
+          h2Probe: {},
         },
       });
       const fp = extractFingerprint(payload);

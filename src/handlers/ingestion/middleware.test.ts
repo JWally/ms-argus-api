@@ -6,7 +6,6 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 vi.mock("../../helpers/get-ecdh-keys", () => ({
   getEcdhKeys: vi.fn(),
-  getCurrentRawPublicKey: vi.fn().mockResolvedValue(null),
 }));
 
 vi.mock("../../helpers/ecdh-decrypt", () => ({

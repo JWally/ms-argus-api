@@ -5,7 +5,6 @@ import { gzipSync } from "zlib";
 
 vi.mock("../../helpers/get-ecdh-keys", () => ({
   getEcdhKeys: vi.fn().mockResolvedValue(null),
-  getCurrentRawPublicKey: vi.fn().mockResolvedValue(null),
 }));
 
 vi.mock("../../helpers/ecdh-decrypt", () => ({

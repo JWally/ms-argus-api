@@ -11,7 +11,6 @@ import { Metrics, MetricUnit } from "@aws-lambda-powertools/metrics";
 import { SQSClient, SendMessageCommand } from "@aws-sdk/client-sqs";
 import { HttpError } from "../../helpers/http-error";
 import { getSessionId, type ArgusPayload } from "../../helpers/payload-schema";
-import { getCurrentRawPublicKey } from "../../helpers/get-ecdh-keys";
 
 /** API Gateway event extended with pre-parsed body from middleware. */
 export interface ExtendedEvent extends APIGatewayProxyEventV2 {
@@ -48,33 +47,6 @@ async function routeRequest(
 
   if (event.rawPath === "/health") {
     return { statusCode: 200, body: JSON.stringify({ status: "healthy" }) };
-  }
-  if (event.rawPath === "/v1/handshake" && method === "GET") {
-    const clientPubKey = event.headers["x-argus-origin"];
-    if (!clientPubKey) {
-      return {
-        statusCode: 400,
-        body: JSON.stringify({ error: "Missing header" }),
-        headers: { "Content-Type": "application/json" },
-      };
-    }
-    const publicKey = await getCurrentRawPublicKey();
-    if (!publicKey) {
-      return {
-        statusCode: 503,
-        body: JSON.stringify({ error: "Not configured" }),
-        headers: { "Content-Type": "application/json" },
-      };
-    }
-    // Nonce + server pubkey concatenated — looks like one opaque token.
-    // Client extracts the last 88 chars to get the server pubkey.
-    const nonce = crypto.randomUUID().replace(/-/g, "");
-    const token = nonce + publicKey;
-    return {
-      statusCode: 200,
-      body: JSON.stringify({ token }),
-      headers: { "Content-Type": "application/json" },
-    };
   }
   if (method === "OPTIONS") {
     return { statusCode: 204 };

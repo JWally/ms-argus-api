@@ -65,7 +65,7 @@ describe("parseSqsRecord — decryptSigintProbes", () => {
       ...basePayload,
       sigint: {
         tcpProbe: { tcp_info: null, rtt_fingerprint: { tcp_rtt_us: 5000 } },
-        h2Probe: { h2_fingerprint: { fingerprint: "abc" } },
+        h2Probe: { fingerprint: "abc", protocol: "h2" },
       },
     };
     const result = await parseSqsRecord(makeRecord(payload), deps);
@@ -100,7 +100,10 @@ describe("parseSqsRecord — decryptSigintProbes", () => {
   it("decrypts encrypted h2Probe when SIGINT_AES_KEY is set", async () => {
     process.env.SIGINT_AES_KEY = TEST_KEY_HEX;
     const plainH2 = {
-      h2_fingerprint: { fingerprint: "1:65536|15663105|0|m,p,a,s" },
+      settings_order: ["1:65536"],
+      window_update: 15663105,
+      fingerprint: "1:65536|15663105|0|m,p,a,s",
+      protocol: "h2",
       client_ip: "5.6.7.8",
       domain: "test.io",
     };
@@ -121,7 +124,13 @@ describe("parseSqsRecord — decryptSigintProbes", () => {
       client_ip: "1.2.3.4",
       domain: "x",
     };
-    const plainH2 = { h2_fingerprint: null, client_ip: "1.2.3.4", domain: "x" };
+    const plainH2 = {
+      settings_order: [],
+      fingerprint: "",
+      protocol: "h2",
+      client_ip: "1.2.3.4",
+      domain: "x",
+    };
     const payload = {
       ...basePayload,
       sigint: { tcpProbe: encrypt(plainTcp), h2Probe: encrypt(plainH2) },

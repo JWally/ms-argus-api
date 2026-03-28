@@ -5,9 +5,14 @@
  *   npx tsx scripts/generate-ecdh-key.ts            # create (fails if exists)
  *   npx tsx scripts/generate-ecdh-key.ts --force    # overwrite existing
  *   STACK_NAME=ms-argus-api-prod npx tsx scripts/generate-ecdh-key.ts
+ *   PLATFORM_ENV=prod npx tsx scripts/generate-ecdh-key.ts
  *
  * Stored at: /${STACK_NAME}/ecdh-keypair  (SecureString)
  * Structure: { current: EcdhKeyData, previous: EcdhKeyData | null }
+ *
+ * Also publishes the raw public key (not secret) to:
+ *   /argus-platform/${PLATFORM_ENV}/api-ecdh-pubkey  (String)
+ * This allows ms-argus-sigint to distribute the key via h2-probe responses.
  */
 
 import {
@@ -17,7 +22,9 @@ import {
 } from "@aws-sdk/client-ssm";
 
 const STACK_NAME = process.env.STACK_NAME ?? "ms-argus-api-dev-jw";
+const PLATFORM_ENV = process.env.PLATFORM_ENV ?? "dev-jw";
 const PARAM_NAME = `/${STACK_NAME}/ecdh-keypair`;
+const PUBLIC_PARAM_NAME = `/argus-platform/${PLATFORM_ENV}/api-ecdh-pubkey`;
 
 interface EcdhKeyData {
   privateKey: string; // PKCS8 base64 — server import
@@ -78,7 +85,18 @@ async function main(): Promise<void> {
     }),
   );
 
+  // Also publish the raw public key (not secret) for ms-argus-sigint to embed in h2-probe responses
+  await ssm.send(
+    new PutParameterCommand({
+      Name: PUBLIC_PARAM_NAME,
+      Value: current.rawPublicKey,
+      Type: "String",
+      Overwrite: true,
+    }),
+  );
+
   console.log(`ECDH key pair stored at ${PARAM_NAME}`);
+  console.log(`Raw public key published at ${PUBLIC_PARAM_NAME}`);
   console.log(`Raw public key (88 chars): ${current.rawPublicKey}`);
 }
 

@@ -218,7 +218,7 @@ function extractH2Probe(
   sigint: NonNullable<ArgusPayload["sigint"]>,
   fp: Fingerprint,
 ) {
-  const h2 = sigint.h2Probe?.h2_fingerprint;
+  const h2 = sigint.h2Probe;
   if (!h2) return;
 
   if (Array.isArray(h2.settings_order))

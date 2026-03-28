@@ -55,6 +55,18 @@ export interface ParsedRecord {
   payload: FingerprintPayload;
 }
 
+/** Apply sigintTls JSON string to sigint.tlsFingerprint in-place. No key or DynamoDB needed. */
+function applyTlsJson(payload: SqsPayload): void {
+  if (!payload.sigintTls) return;
+  if (!payload.sigint) payload.sigint = {};
+  if (payload.sigint.tlsFingerprint) return;
+  try {
+    payload.sigint.tlsFingerprint = JSON.parse(payload.sigintTls);
+  } catch {
+    // ignore malformed TLS JSON
+  }
+}
+
 /**
  * Redeem sigint tokens (TCP/H2/TLS) in-place when SIGINT_AES_KEY and
  * PROBE_TOKENS_TABLE_NAME are set. Runs before fingerprint extraction so that
@@ -65,6 +77,8 @@ async function enrichSigintFromTokens(
   dynamodb: DynamoDBClient,
   logger: Logger,
 ): Promise<void> {
+  applyTlsJson(payload);
+
   const key = process.env.SIGINT_AES_KEY;
   const tableName = process.env.PROBE_TOKENS_TABLE_NAME;
   if (!key || !tableName) return;

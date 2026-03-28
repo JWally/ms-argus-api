@@ -85,17 +85,32 @@ export interface SigintTiming {
 }
 
 export interface SigintH2Probe {
-  h2_fingerprint?: {
-    settings_order?: string[];
-    header_table_size?: number;
-    initial_window_size?: number;
-    max_frame_size?: number;
-    window_update?: number;
-    pseudo_header_order?: string;
-    header_order?: string[];
-    fingerprint?: string;
-    protocol?: string;
-  } | null;
+  settings_order?: string[];
+  header_table_size?: number;
+  enable_push?: number;
+  max_concurrent_streams?: number;
+  initial_window_size?: number;
+  max_frame_size?: number;
+  max_header_list_size?: number;
+  window_update?: number;
+  priority_frames?: Array<{
+    stream_id: number;
+    exclusive: boolean;
+    depends_on: number;
+    weight: number;
+  }>;
+  pseudo_header_order?: string;
+  header_order?: string[];
+  fingerprint?: string;
+  protocol?: string;
+  ja4?: string;
+  tls_signals?: {
+    has_grease: boolean;
+    cipher_count: number;
+    ua_mismatch: boolean;
+    ua_hints?: string[];
+  };
+  user_agent?: string;
 }
 
 export interface PayloadSigint {

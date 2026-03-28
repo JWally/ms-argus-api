@@ -66,9 +66,10 @@ describe("decryptProbeResponse", () => {
 
   it("decrypts and parses an h2 probe response", () => {
     const original = {
-      h2_fingerprint: {
-        fingerprint: "1:65536;3:1000;4:6291456|15663105|0|m,p,a,s",
-      },
+      settings_order: ["1:65536", "3:1000", "4:6291456"],
+      window_update: 15663105,
+      fingerprint: "1:65536;3:1000;4:6291456|15663105|0|m,p,a,s",
+      protocol: "h2",
       client_ip: "5.6.7.8",
       domain: "test.io",
     };

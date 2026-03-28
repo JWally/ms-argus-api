@@ -36,13 +36,11 @@ describe("getByPath", () => {
   it("works with realistic fingerprint paths", () => {
     const network = {
       tlsFingerprint: { ja4: "t13d1516h2_abc123" },
-      h2Probe: { h2_fingerprint: { fingerprint: "akamai" } },
+      h2Probe: { fingerprint: "akamai", protocol: "h2" },
     };
 
     expect(getByPath(network, "tlsFingerprint.ja4")).toBe("t13d1516h2_abc123");
-    expect(getByPath(network, "h2Probe.h2_fingerprint.fingerprint")).toBe(
-      "akamai",
-    );
+    expect(getByPath(network, "h2Probe.fingerprint")).toBe("akamai");
     expect(getByPath(network, "tcpProbe.ja3")).toBeUndefined();
   });
 });
