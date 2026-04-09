@@ -27,16 +27,43 @@ import type { EcdhKeys, EcdhKeyData } from "./get-ecdh-keys";
 const HKDF_INFO = new TextEncoder().encode("argus-web-v1");
 
 /**
- * XOR-unscramble a buffer using a repeating key.
- *
- * The client VM bytecode XORs the payload JSON with (h2Token + deploySecret)
- * before passing it to ECDH encryption. This reverses that inner layer.
+ * v1 XOR-unscramble: repeating key = sessionToken + deploySecret.
+ * Kept for backwards compatibility with clients that don't send X-Argus-V: 2.
  */
 export function xorUnscramble(data: Buffer, key: string): Buffer {
   const keyBuf = Buffer.from(key, "utf-8");
   const result = Buffer.alloc(data.length);
   for (let i = 0; i < data.length; i++) {
     result[i] = data[i] ^ keyBuf[i % keyBuf.length];
+  }
+  return result;
+}
+
+/**
+ * v2 Fibonacci-modulated unscramble using sessionToken as sole seed.
+ *
+ * The client VM derives a per-byte XOR key: sessionToken[i] ^ fibonacci(i).
+ * The algorithm is the secret (buried in obfuscated VM bytecode), not a static key.
+ * Fibonacci resets at 1M to match the client's integer overflow prevention.
+ */
+export function deriveAndUnscramble(
+  data: Buffer,
+  sessionToken: string,
+): Buffer {
+  const result = Buffer.alloc(data.length);
+  let fib0 = 1;
+  let fib1 = 1;
+  for (let i = 0; i < data.length; i++) {
+    const t = sessionToken.charCodeAt(i % sessionToken.length);
+    const f = fib1 % 256;
+    result[i] = data[i] ^ (t ^ f);
+    const fib2 = fib0 + fib1;
+    fib0 = fib1;
+    fib1 = fib2;
+    if (fib1 > 1000000) {
+      fib0 = 1;
+      fib1 = 1;
+    }
   }
   return result;
 }
@@ -191,6 +218,65 @@ export async function decryptIntegrityPayload(
         );
         const inflated = inflateRawSync(Buffer.from(decrypted));
         const unscrambled = xorUnscramble(inflated, innerKey);
+        return JSON.parse(unscrambled.toString("utf-8"));
+      } catch {
+        // try next key/date combo
+      }
+    }
+  }
+
+  return null;
+}
+
+export interface IntegrityDecryptV2Opts {
+  body: string;
+  isBase64Encoded: boolean;
+  clientPubKey: string;
+  keys: EcdhKeys;
+  sessionToken: string;
+}
+
+/**
+ * v2: Decrypt integrity payload with Fibonacci-modulated sessionToken derivation.
+ *
+ * Same ECDH decrypt + inflate as v1, but the inner unscramble uses
+ * deriveAndUnscramble(sessionToken) instead of xorUnscramble(sessionToken + deploySecret).
+ * No static secret required — the algorithm is the secret.
+ */
+export async function decryptIntegrityPayloadV2(
+  opts: IntegrityDecryptV2Opts,
+): Promise<unknown | null> {
+  const { body, isBase64Encoded, clientPubKey, keys, sessionToken } = opts;
+  const packed = isBase64Encoded
+    ? Buffer.from(body, "base64")
+    : Buffer.from(body, "binary");
+
+  const iv = packed.subarray(0, 12);
+  const ciphertextWithTag = packed.subarray(12);
+
+  const keySets = [keys.current, keys.previous].filter(
+    (k): k is EcdhKeyData => k != null,
+  );
+  const today = new Date().toISOString().slice(0, 10);
+  const yesterday = new Date(Date.now() - 86_400_000)
+    .toISOString()
+    .slice(0, 10);
+
+  for (const keySet of keySets) {
+    for (const dateSalt of [today, yesterday]) {
+      try {
+        const aesKey = await deriveAesKey(
+          keySet.privateKey,
+          clientPubKey,
+          dateSalt,
+        );
+        const decrypted = await crypto.subtle.decrypt(
+          { name: "AES-GCM", iv },
+          aesKey,
+          ciphertextWithTag,
+        );
+        const inflated = inflateRawSync(Buffer.from(decrypted));
+        const unscrambled = deriveAndUnscramble(inflated, sessionToken);
         return JSON.parse(unscrambled.toString("utf-8"));
       } catch {
         // try next key/date combo

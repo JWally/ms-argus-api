@@ -13,6 +13,7 @@ import { getEcdhKeys } from "../../helpers/get-ecdh-keys";
 import {
   decryptArgusPayload,
   decryptIntegrityPayload,
+  decryptIntegrityPayloadV2,
 } from "../../helpers/ecdh-decrypt";
 
 /**
@@ -41,6 +42,35 @@ import {
  *   .use(binaryGzipBodyParser({ maxBodyBytes: 1024 * 100, maxDecompressedBytes: 1024 * 500 }, metrics));
  * ```
  */
+async function decryptIntegrity(
+  event: APIGatewayProxyEventV2,
+  clientPubKey: string,
+  keys: Awaited<ReturnType<typeof getEcdhKeys>> & {},
+): Promise<unknown | null> {
+  const sessionToken = event.headers["x-argus-session"] ?? "";
+  const version = event.headers["x-argus-v"] ?? "1";
+  const body = event.body ?? "";
+  const { isBase64Encoded } = event;
+
+  if (version === "2") {
+    return decryptIntegrityPayloadV2({
+      body,
+      isBase64Encoded,
+      clientPubKey,
+      keys,
+      sessionToken,
+    });
+  }
+  const deploySecret = process.env.INTEGRITY_DEPLOY_SECRET ?? "";
+  return decryptIntegrityPayload({
+    body,
+    isBase64Encoded,
+    clientPubKey,
+    keys,
+    innerKey: sessionToken + deploySecret,
+  });
+}
+
 async function handleEcdhPayload(
   event: APIGatewayProxyEventV2,
   clientPubKey: string,
@@ -56,19 +86,7 @@ async function handleEcdhPayload(
   let parsed: unknown | null;
 
   if (isIntegrity) {
-    // Integrity payloads have an inner XOR scramble layer.
-    // Key = h2Token (from X-Argus-Session) + deploySecret (from env).
-    const h2Token = event.headers["x-argus-session"] ?? "";
-    const deploySecret = process.env.INTEGRITY_DEPLOY_SECRET ?? "";
-    const innerKey = h2Token + deploySecret;
-
-    parsed = await decryptIntegrityPayload({
-      body: event.body ?? "",
-      isBase64Encoded: event.isBase64Encoded,
-      clientPubKey,
-      keys,
-      innerKey,
-    });
+    parsed = await decryptIntegrity(event, clientPubKey, keys);
     if (!parsed) {
       metrics.addMetric("IntegrityDecryptFailed", MetricUnit.Count, 1);
       throw new HttpError(400, "Integrity payload decryption failed");
@@ -88,7 +106,6 @@ async function handleEcdhPayload(
     metrics.addMetric("EcdhPayloadReceived", MetricUnit.Count, 1);
   }
 
-  // Replace body with JSON string so jsonBodyParser can parse it normally
   event.body = JSON.stringify(parsed);
   event.isBase64Encoded = false;
 }

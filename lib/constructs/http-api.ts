@@ -202,6 +202,7 @@ export class HttpApiConstruct extends Construct {
           "X-Argus-Schema-Version",
           "X-Argus-Origin",
           "X-Argus-Session",
+          "X-Argus-V",
           "X-Api-Key",
         ],
         maxAge: Duration.hours(24),

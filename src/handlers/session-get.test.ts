@@ -7,6 +7,11 @@ vi.hoisted(() => {
   process.env.SESSION_PAYLOAD_TABLE = "test-session-payload";
 });
 
+// Mock API key validation — all session-get tests assume valid auth
+vi.mock("../helpers/integrity-api-key", () => ({
+  validateIntegrityApiKey: vi.fn().mockResolvedValue(true),
+}));
+
 import { mockClient } from "aws-sdk-client-mock";
 import { DynamoDBClient, GetItemCommand } from "@aws-sdk/client-dynamodb";
 import { marshall } from "@aws-sdk/util-dynamodb";
