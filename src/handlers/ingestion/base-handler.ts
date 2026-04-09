@@ -9,7 +9,11 @@ import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from "aws-lambda";
 import { Logger } from "@aws-lambda-powertools/logger";
 import { Metrics, MetricUnit } from "@aws-lambda-powertools/metrics";
 import { SQSClient, SendMessageCommand } from "@aws-sdk/client-sqs";
-import { DynamoDBClient, PutItemCommand } from "@aws-sdk/client-dynamodb";
+import {
+  ConditionalCheckFailedException,
+  DynamoDBClient,
+  PutItemCommand,
+} from "@aws-sdk/client-dynamodb";
 import { marshall } from "@aws-sdk/util-dynamodb";
 import { HttpError } from "../../helpers/http-error";
 import { getSessionId, type ArgusPayload } from "../../helpers/payload-schema";
@@ -240,9 +244,14 @@ async function handleIntegrity(
       new PutItemCommand({
         TableName: INTEGRITY_RESULTS_TABLE,
         Item: marshall(item, { removeUndefinedValues: true }),
+        ConditionExpression: "attribute_not_exists(session_id)",
       }),
     );
   } catch (err) {
+    if (err instanceof ConditionalCheckFailedException) {
+      ctx.deps.metrics.addMetric("IntegrityReplayBlocked", MetricUnit.Count, 1);
+      throw new HttpError(409, "Session already processed");
+    }
     ctx.deps.logger.error("Integrity DynamoDB write failed", {
       error: err,
       session_id: ctx.sessionId,
