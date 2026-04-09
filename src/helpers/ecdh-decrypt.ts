@@ -42,21 +42,25 @@ export function xorUnscramble(data: Buffer, key: string): Buffer {
 /**
  * v2 Fibonacci-modulated unscramble using sessionToken as sole seed.
  *
- * The client VM derives a per-byte XOR key: sessionToken[i] ^ fibonacci(i).
- * The algorithm is the secret (buried in obfuscated VM bytecode), not a static key.
+ * The client VM XORs the JSON **string** char-by-char before TextEncoder.encode
+ * converts it to UTF-8. We must reverse this at the string level, not byte level,
+ * because XOR'd characters > 127 become multi-byte in UTF-8.
+ *
+ * Flow: inflate → decode UTF-8 to string → XOR chars → encode back to UTF-8 bytes.
  * Fibonacci resets at 1M to match the client's integer overflow prevention.
  */
 export function deriveAndUnscramble(
   data: Buffer,
   sessionToken: string,
 ): Buffer {
-  const result = Buffer.alloc(data.length);
+  const str = data.toString("utf-8");
+  let result = "";
   let fib0 = 1;
   let fib1 = 1;
-  for (let i = 0; i < data.length; i++) {
+  for (let i = 0; i < str.length; i++) {
     const t = sessionToken.charCodeAt(i % sessionToken.length);
     const f = fib1 % 256;
-    result[i] = data[i] ^ (t ^ f);
+    result += String.fromCharCode(str.charCodeAt(i) ^ (t ^ f));
     const fib2 = fib0 + fib1;
     fib0 = fib1;
     fib1 = fib2;
@@ -65,7 +69,7 @@ export function deriveAndUnscramble(
       fib1 = 1;
     }
   }
-  return result;
+  return Buffer.from(result, "utf-8");
 }
 
 async function deriveAesKey(

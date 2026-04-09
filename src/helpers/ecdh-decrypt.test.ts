@@ -28,16 +28,19 @@ describe("xorUnscramble (v1)", () => {
 });
 
 describe("deriveAndUnscramble (v2 Fibonacci)", () => {
-  /** Mirror of the client VM's Fibonacci-modulated XOR scramble */
+  /**
+   * Mirror of the client VM's Fibonacci-modulated XOR scramble.
+   * Client XORs at the string character level, then TextEncoder.encode produces UTF-8.
+   * Server receives UTF-8 after inflate, must reverse at string level too.
+   */
   function scramble(plaintext: string, sessionToken: string): Buffer {
-    const data = Buffer.from(plaintext, "utf-8");
-    const result = Buffer.alloc(data.length);
+    let scrambled = "";
     let fib0 = 1;
     let fib1 = 1;
-    for (let i = 0; i < data.length; i++) {
+    for (let i = 0; i < plaintext.length; i++) {
       const t = sessionToken.charCodeAt(i % sessionToken.length);
       const f = fib1 % 256;
-      result[i] = data[i] ^ (t ^ f);
+      scrambled += String.fromCharCode(plaintext.charCodeAt(i) ^ (t ^ f));
       const fib2 = fib0 + fib1;
       fib0 = fib1;
       fib1 = fib2;
@@ -46,7 +49,7 @@ describe("deriveAndUnscramble (v2 Fibonacci)", () => {
         fib1 = 1;
       }
     }
-    return result;
+    return Buffer.from(scrambled, "utf-8");
   }
 
   it("round-trips a simple payload", () => {
