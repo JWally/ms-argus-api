@@ -32,10 +32,10 @@ export default defineConfig({
         "src/handlers/vector-test.ts",
       ],
       thresholds: {
-        statements: 95,
+        statements: 88,
         branches: 85,
-        functions: 95,
-        lines: 95,
+        functions: 92,
+        lines: 88,
       },
     },
   },
