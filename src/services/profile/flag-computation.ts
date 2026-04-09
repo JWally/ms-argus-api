@@ -138,6 +138,8 @@ export interface FlagContext {
   hasDrift: boolean;
   /** Raw payload for cross-field anomaly detection */
   raw?: unknown;
+  /** Raw sigint payload for network probe anomaly detection */
+  sigint?: unknown;
 }
 
 /** JA4 mismatch flags that indicate proxy/interception behavior. */
@@ -175,7 +177,7 @@ export function computeFlags(
   existingProfile: DeviceProfile | null,
   ctx: FlagContext,
 ): string[] {
-  const { isNewDevice, hasDrift, raw } = ctx;
+  const { isNewDevice, hasDrift, raw, sigint } = ctx;
   const flags: string[] = [];
 
   if (isNewDevice) {
@@ -185,7 +187,7 @@ export function computeFlags(
   const botFlags = detectBotSignals(fingerprint);
   flags.push(...botFlags);
 
-  const anomalyResult = detectAllAnomalies(fingerprint, raw);
+  const anomalyResult = detectAllAnomalies(fingerprint, raw, sigint);
   flags.push(...anomalyResult.suggestedFlags);
 
   if (existingProfile && hasDrift) {

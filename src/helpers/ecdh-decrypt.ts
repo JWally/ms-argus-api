@@ -26,6 +26,21 @@ import type { EcdhKeys, EcdhKeyData } from "./get-ecdh-keys";
 
 const HKDF_INFO = new TextEncoder().encode("argus-web-v1");
 
+/**
+ * XOR-unscramble a buffer using a repeating key.
+ *
+ * The client VM bytecode XORs the payload JSON with (h2Token + deploySecret)
+ * before passing it to ECDH encryption. This reverses that inner layer.
+ */
+export function xorUnscramble(data: Buffer, key: string): Buffer {
+  const keyBuf = Buffer.from(key, "utf-8");
+  const result = Buffer.alloc(data.length);
+  for (let i = 0; i < data.length; i++) {
+    result[i] = data[i] ^ keyBuf[i % keyBuf.length];
+  }
+  return result;
+}
+
 async function deriveAesKey(
   serverPrivKeyPkcs8: string,
   clientPubKeyRaw: string,
@@ -117,6 +132,66 @@ export async function decryptArgusPayload(
         );
         const inflated = inflateRawSync(Buffer.from(decrypted));
         return JSON.parse(inflated.toString("utf-8"));
+      } catch {
+        // try next key/date combo
+      }
+    }
+  }
+
+  return null;
+}
+
+export interface IntegrityDecryptOpts {
+  body: string;
+  isBase64Encoded: boolean;
+  clientPubKey: string;
+  keys: EcdhKeys;
+  innerKey: string;
+}
+
+/**
+ * Decrypt an ECDH-encrypted integrity payload with inner XOR unscramble.
+ *
+ * Same as decryptArgusPayload but after ECDH decrypt + inflate, applies
+ * XOR unscramble with (h2Token + deploySecret) before JSON parsing.
+ * The inner scramble runs inside the client's VM bytecode, so an attacker
+ * intercepting the ECDH bridge call sees garbage instead of plaintext JSON.
+ */
+export async function decryptIntegrityPayload(
+  opts: IntegrityDecryptOpts,
+): Promise<unknown | null> {
+  const { body, isBase64Encoded, clientPubKey, keys, innerKey } = opts;
+  const packed = isBase64Encoded
+    ? Buffer.from(body, "base64")
+    : Buffer.from(body, "binary");
+
+  const iv = packed.subarray(0, 12);
+  const ciphertextWithTag = packed.subarray(12);
+
+  const keySets = [keys.current, keys.previous].filter(
+    (k): k is EcdhKeyData => k != null,
+  );
+  const today = new Date().toISOString().slice(0, 10);
+  const yesterday = new Date(Date.now() - 86_400_000)
+    .toISOString()
+    .slice(0, 10);
+
+  for (const keySet of keySets) {
+    for (const dateSalt of [today, yesterday]) {
+      try {
+        const aesKey = await deriveAesKey(
+          keySet.privateKey,
+          clientPubKey,
+          dateSalt,
+        );
+        const decrypted = await crypto.subtle.decrypt(
+          { name: "AES-GCM", iv },
+          aesKey,
+          ciphertextWithTag,
+        );
+        const inflated = inflateRawSync(Buffer.from(decrypted));
+        const unscrambled = xorUnscramble(inflated, innerKey);
+        return JSON.parse(unscrambled.toString("utf-8"));
       } catch {
         // try next key/date combo
       }

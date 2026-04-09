@@ -66,6 +66,34 @@ function buildBrowserAnomalies(
   return result;
 }
 
+/** Anomaly codes that originate from sigint (network probe + TLS/H2 coherence). */
+const SIGINT_CODES = new Set([
+  "LIKELY_PROXY",
+  "LIKELY_VPN",
+  "TLS_BROWSER_MISMATCH",
+  "TLS_PLATFORM_MISMATCH",
+  "H2_TLS_MISMATCH",
+  "QUIC_IOS_VPN",
+  "NO_ALPN_BROWSER",
+]);
+
+/**
+ * Build the sigint-scoped analysis sub-object: only signals derived from
+ * network probe and TLS/H2 fingerprint data.  Always returned (even when
+ * empty) so the schema is consistent for API consumers.
+ */
+function buildSigintAnalysis(
+  anomalies: SessionAnomalySignal[],
+): Record<string, unknown> {
+  const signals = anomalies.filter(
+    (a) => a.type === "NETWORK" || SIGINT_CODES.has(a.code),
+  );
+  return {
+    flags: [...new Set(signals.map((s) => s.code.toLowerCase()))],
+    signals,
+  };
+}
+
 function buildAnalysis(opts: {
   matchResult: MatchResult;
   anomalies: SessionAnomalySignal[];
@@ -105,6 +133,13 @@ export function buildSessionResponseData(params: {
   anomalies: SessionAnomalySignal[];
 }): Record<string, unknown> {
   const { sessionId, rawPayload, matchResult, anomalies } = params;
+
+  const sigintAnalysis = buildSigintAnalysis(anomalies);
+  const sigintOut = {
+    ...(rawPayload.sigint as object | undefined),
+    analysis: sigintAnalysis,
+  };
+
   return {
     identifiers: buildIdentifiers(sessionId, rawPayload, matchResult),
     analysis: buildAnalysis({
@@ -115,7 +150,7 @@ export function buildSessionResponseData(params: {
     }),
     hashes: rawPayload.hashes,
     device: rawPayload.device,
-    sigint: rawPayload.sigint,
+    sigint: sigintOut,
   };
 }
 

@@ -14,6 +14,7 @@ import { detectFingerprintSignals } from "./fingerprint-signals";
 import { detectCrossFieldAnomalies } from "./worker-scope-consistency";
 import { detectJa4Coherence } from "./ja4-coherence";
 import { detectIpHistoryAnomalies } from "./ip-history-detector";
+import { detectNetworkProbeAnomalies } from "./network-probe-detector";
 import type { DeviceProfile } from "../../../types/profile";
 
 const logger = new Logger({
@@ -46,6 +47,7 @@ const detectors: DetectorFn[] = [
   detectFingerprintSignals,
   detectCrossFieldAnomalies,
   detectJa4Coherence,
+  detectNetworkProbeAnomalies,
 ];
 
 /** Run a detector with error isolation, appending results to signals. */

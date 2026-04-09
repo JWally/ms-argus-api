@@ -223,6 +223,10 @@ export class ArgusApiStack extends cdk.Stack {
       sessionCacheTable: dynamodb.sessionCacheTable,
       sessionPayloadTable: dynamodb.sessionPayloadTable, // AR-XXX: Full payload for gRPC stub
       vectorResultsTable: dynamodb.vectorResultsTable, // Vector search results
+      integrityResultsTable: dynamodb.integrityResultsTable,
+      probeTokensTableName,
+      probeTokensTableArn,
+      sigintAesKeySecretArn: resolvedSigintSecretArn,
       alarmsTopic,
       config: stageConfig,
       ecdhKeyParamName: `/${stackName}/ecdh-keypair`,
@@ -251,6 +255,8 @@ export class ArgusApiStack extends cdk.Stack {
       vectorCollection: "fingerprints",
 
       payloadArchiveBucket: analytics.payloadArchiveBucket,
+      integrityArchiveBucket: analytics.integrityArchiveBucket,
+      integrityResultsTable: dynamodb.integrityResultsTable,
       sigintAesKeySecretArn: resolvedSigintSecretArn,
       probeTokensTableName,
       probeTokensTableArn,
@@ -393,6 +399,11 @@ export class ArgusApiStack extends cdk.Stack {
     new cdk.CfnOutput(this, "PayloadArchiveBucketName", {
       value: analytics.payloadArchiveBucket.bucketName,
       description: "S3 bucket for payload archives",
+    });
+
+    new cdk.CfnOutput(this, "IntegrityArchiveBucketName", {
+      value: analytics.integrityArchiveBucket.bucketName,
+      description: "S3 bucket for integrity result archives",
     });
 
     // Vector worker outputs (conditional)

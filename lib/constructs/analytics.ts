@@ -28,6 +28,7 @@ interface AnalyticsConstructProps {
 export class AnalyticsConstruct extends Construct {
   public readonly observationsBucket: s3.Bucket;
   public readonly payloadArchiveBucket: s3.Bucket;
+  public readonly integrityArchiveBucket: s3.Bucket;
   public readonly deliveryStream: kinesisfirehose.CfnDeliveryStream;
   public readonly deliveryStreamArn: string;
   public readonly glueDatabase: glue.CfnDatabase;
@@ -114,6 +115,31 @@ export class AnalyticsConstruct extends Construct {
         stage === "prod" ? RemovalPolicy.RETAIN : RemovalPolicy.DESTROY,
       autoDeleteObjects: stage !== "prod",
     });
+
+    // =====================================
+    // S3 BUCKET FOR INTEGRITY ARCHIVE
+    // =====================================
+    // Individual JSON files per session for inspection and later bulk analysis
+    // Key format: integrity/{YYYY}/{MM}/{DD}/{sessionId}.json
+
+    this.integrityArchiveBucket = new s3.Bucket(
+      this,
+      "IntegrityArchiveBucket",
+      {
+        bucketName: `${stackName}-integrity-archive-${accountId}-${region}`,
+        encryption: s3.BucketEncryption.S3_MANAGED,
+        blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+        lifecycleRules: [
+          {
+            id: "ExpireAfter14Days",
+            expiration: Duration.days(14),
+          },
+        ],
+        removalPolicy:
+          stage === "prod" ? RemovalPolicy.RETAIN : RemovalPolicy.DESTROY,
+        autoDeleteObjects: stage !== "prod",
+      },
+    );
 
     // =====================================
     // IAM ROLE FOR FIREHOSE

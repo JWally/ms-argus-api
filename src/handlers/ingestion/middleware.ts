@@ -10,7 +10,10 @@ import middy from "@middy/core";
 import { HttpError } from "../../helpers/http-error";
 import { decompressPayload } from "./gzip";
 import { getEcdhKeys } from "../../helpers/get-ecdh-keys";
-import { decryptArgusPayload } from "../../helpers/ecdh-decrypt";
+import {
+  decryptArgusPayload,
+  decryptIntegrityPayload,
+} from "../../helpers/ecdh-decrypt";
 
 /**
  * Middy middleware that handles binary gzip-encoded payloads.
@@ -48,20 +51,46 @@ async function handleEcdhPayload(
     metrics.addMetric("EcdhNotConfigured", MetricUnit.Count, 1);
     throw new HttpError(503, "Encrypted ingestion not configured");
   }
-  const parsed = await decryptArgusPayload(
-    event.body ?? "",
-    event.isBase64Encoded,
-    clientPubKey,
-    keys,
-  );
-  if (!parsed) {
-    metrics.addMetric("EcdhDecryptFailed", MetricUnit.Count, 1);
-    throw new HttpError(400, "Payload decryption failed");
+
+  const isIntegrity = event.rawPath === "/v1/integrity-collect";
+  let parsed: unknown | null;
+
+  if (isIntegrity) {
+    // Integrity payloads have an inner XOR scramble layer.
+    // Key = h2Token (from X-Argus-Session) + deploySecret (from env).
+    const h2Token = event.headers["x-argus-session"] ?? "";
+    const deploySecret = process.env.INTEGRITY_DEPLOY_SECRET ?? "";
+    const innerKey = h2Token + deploySecret;
+
+    parsed = await decryptIntegrityPayload({
+      body: event.body ?? "",
+      isBase64Encoded: event.isBase64Encoded,
+      clientPubKey,
+      keys,
+      innerKey,
+    });
+    if (!parsed) {
+      metrics.addMetric("IntegrityDecryptFailed", MetricUnit.Count, 1);
+      throw new HttpError(400, "Integrity payload decryption failed");
+    }
+    metrics.addMetric("IntegrityPayloadReceived", MetricUnit.Count, 1);
+  } else {
+    parsed = await decryptArgusPayload(
+      event.body ?? "",
+      event.isBase64Encoded,
+      clientPubKey,
+      keys,
+    );
+    if (!parsed) {
+      metrics.addMetric("EcdhDecryptFailed", MetricUnit.Count, 1);
+      throw new HttpError(400, "Payload decryption failed");
+    }
+    metrics.addMetric("EcdhPayloadReceived", MetricUnit.Count, 1);
   }
+
   // Replace body with JSON string so jsonBodyParser can parse it normally
   event.body = JSON.stringify(parsed);
   event.isBase64Encoded = false;
-  metrics.addMetric("EcdhPayloadReceived", MetricUnit.Count, 1);
 }
 
 export const binaryGzipBodyParser = (
@@ -123,7 +152,10 @@ export const jsonBodyParser = (
       return;
     }
 
-    if (event.rawPath !== "/v1/collect") {
+    if (
+      event.rawPath !== "/v1/collect" &&
+      event.rawPath !== "/v1/integrity-collect"
+    ) {
       return;
     }
 

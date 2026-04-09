@@ -166,3 +166,25 @@ export function getVectorResultsWriterEnv(): VectorResultsWriterEnvConfig {
     "argus-vector-results-writer",
   );
 }
+
+/**
+ * Environment configuration for the Integrity Archiver Lambda
+ * Triggered by DynamoDB Streams, writes to S3
+ */
+export interface IntegrityArchiverEnvConfig {
+  INTEGRITY_ARCHIVE_BUCKET: string;
+  POWERTOOLS_SERVICE_NAME: string;
+  POWERTOOLS_METRICS_NAMESPACE: string;
+}
+
+/**
+ * Get and validate environment configuration for Integrity Archiver
+ * @returns Validated IntegrityArchiverEnvConfig
+ * @throws Error if required environment variables are missing
+ */
+export function getIntegrityArchiverEnv(): IntegrityArchiverEnvConfig {
+  return buildEnvConfig<IntegrityArchiverEnvConfig>(
+    ["INTEGRITY_ARCHIVE_BUCKET"],
+    "argus-integrity-archiver",
+  );
+}

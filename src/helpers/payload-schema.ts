@@ -47,8 +47,17 @@ export interface SigintTcpProbe {
     http_first_byte_us?: number;
     total_connection_us?: number;
     snd_mss?: number;
+    rcv_mss?: number;
     pmtu?: number;
+    tls_to_tcp_ratio?: number;
+    total_to_tcp_ratio?: number;
   } | null;
+  tls_signals?: {
+    has_grease: boolean;
+    cipher_count: number;
+  } | null;
+  /** JA4 TLS fingerprint computed from ClientHello at the probe server */
+  ja4?: string;
   http2_fingerprint?: Record<string, unknown> | null;
   client_hints?: Record<string, string> | null;
   user_agent?: string;
@@ -107,8 +116,6 @@ export interface SigintH2Probe {
   tls_signals?: {
     has_grease: boolean;
     cipher_count: number;
-    ua_mismatch: boolean;
-    ua_hints?: string[];
   };
   user_agent?: string;
 }

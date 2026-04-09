@@ -16,7 +16,7 @@ import * as sns from "aws-cdk-lib/aws-sns";
 import * as actions from "aws-cdk-lib/aws-cloudwatch-actions";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as cdk from "aws-cdk-lib";
-import { Duration, RemovalPolicy } from "aws-cdk-lib";
+import { Duration, RemovalPolicy, SecretValue } from "aws-cdk-lib";
 import { StageConfig } from "../config/stage-config";
 import { createBaseLambdaConfig, createPowertoolsEnv } from "./lambda-config";
 
@@ -29,9 +29,17 @@ interface HttpApiConstructProps {
   sessionPayloadTable: dynamodb.ITable;
   /** Optional: Vector results table for async vector search results */
   vectorResultsTable?: dynamodb.ITable;
+  /** Integrity results table for VM integrity check storage */
+  integrityResultsTable: dynamodb.ITable;
   alarmsTopic: sns.ITopic;
   /** Stage-specific configuration for Lambda memory tuning */
   config: StageConfig;
+  /** Optional: probe tokens table name (for sigint token redemption) */
+  probeTokensTableName?: string;
+  /** Optional: probe tokens table ARN (for IAM grant) */
+  probeTokensTableArn?: string;
+  /** Optional: SIGINT AES key secret ARN (for sigint token HMAC verification) */
+  sigintAesKeySecretArn?: string;
   /**
    * Optional: SSM SecureString parameter name holding the ECDH key pair
    * for encrypted payload ingestion from ms-argus-web.
@@ -71,6 +79,9 @@ export class HttpApiConstruct extends Construct {
       sessionCacheTable,
       sessionPayloadTable,
       vectorResultsTable,
+      integrityResultsTable,
+      probeTokensTableName,
+      sigintAesKeySecretArn,
       alarmsTopic,
       config,
       ecdhKeyParamName,
@@ -101,6 +112,18 @@ export class HttpApiConstruct extends Construct {
           ...createPowertoolsEnv("argus-ingestion", `argus-${stage}`),
           SQS_QUEUE_URL: matchingQueue.queueUrl,
           ...(ecdhKeyParamName && { ECDH_KEY_PARAM: ecdhKeyParamName }),
+          INTEGRITY_RESULTS_TABLE: integrityResultsTable.tableName,
+          ...(process.env.INTEGRITY_DEPLOY_SECRET && {
+            INTEGRITY_DEPLOY_SECRET: process.env.INTEGRITY_DEPLOY_SECRET,
+          }),
+          ...(sigintAesKeySecretArn && {
+            SIGINT_AES_KEY: SecretValue.secretsManager(
+              sigintAesKeySecretArn,
+            ).unsafeUnwrap(),
+          }),
+          ...(probeTokensTableName && {
+            PROBE_TOKENS_TABLE_NAME: probeTokensTableName,
+          }),
         },
       },
     );
@@ -108,17 +131,7 @@ export class HttpApiConstruct extends Construct {
     // Grant SQS permissions
     matchingQueue.grantSendMessages(this.ingestionFunction);
 
-    // Grant SSM read access for ECDH key pair (encrypted payload ingestion)
-    if (ecdhKeyParamName) {
-      this.ingestionFunction.addToRolePolicy(
-        new iam.PolicyStatement({
-          actions: ["ssm:GetParameter"],
-          resources: [
-            `arn:aws:ssm:${cdk.Stack.of(this).region}:${cdk.Stack.of(this).account}:parameter${ecdhKeyParamName}`,
-          ],
-        }),
-      );
-    }
+    this.grantIngestionPermissions(props);
 
     const sessionGetLogGroup = new logs.LogGroup(this, "SessionGetLogGroup", {
       logGroupName: `/aws/lambda/${stackName}-session-get`,
@@ -147,6 +160,8 @@ export class HttpApiConstruct extends Construct {
           ...(vectorResultsTable && {
             VECTOR_RESULTS_TABLE: vectorResultsTable.tableName,
           }),
+          INTEGRITY_RESULTS_TABLE: integrityResultsTable.tableName,
+          STACK_NAME: stackName,
         },
       },
     );
@@ -154,6 +169,17 @@ export class HttpApiConstruct extends Construct {
     // Grant DynamoDB read permissions
     sessionCacheTable.grantReadData(this.sessionGetFunction);
     sessionPayloadTable.grantReadData(this.sessionGetFunction);
+    integrityResultsTable.grantReadData(this.sessionGetFunction);
+
+    // Grant SSM read for integrity API key validation
+    this.sessionGetFunction.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ["ssm:GetParameter"],
+        resources: [
+          `arn:aws:ssm:${cdk.Stack.of(this).region}:${cdk.Stack.of(this).account}:parameter/${stackName}/integrity-api-key`,
+        ],
+      }),
+    );
     if (vectorResultsTable) {
       vectorResultsTable.grantReadData(this.sessionGetFunction);
     }
@@ -176,6 +202,7 @@ export class HttpApiConstruct extends Construct {
           "X-Argus-Schema-Version",
           "X-Argus-Origin",
           "X-Argus-Session",
+          "X-Api-Key",
         ],
         maxAge: Duration.hours(24),
       },
@@ -206,10 +233,22 @@ export class HttpApiConstruct extends Construct {
       integration: lambdaIntegration,
     });
 
+    this.api.addRoutes({
+      path: "/v1/integrity-collect",
+      methods: [apigatewayv2.HttpMethod.POST],
+      integration: lambdaIntegration,
+    });
+
     const sessionGetIntegration = new integrations.HttpLambdaIntegration(
       "SessionGetIntegration",
       this.sessionGetFunction,
     );
+
+    this.api.addRoutes({
+      path: "/v1/integrity-session/{session_id}",
+      methods: [apigatewayv2.HttpMethod.GET],
+      integration: sessionGetIntegration,
+    });
 
     this.api.addRoutes({
       path: "/v1/session/{session_id}",
@@ -223,6 +262,46 @@ export class HttpApiConstruct extends Construct {
     // Alarms
     if (config.alarms.enabled) {
       this.createAlarms(stackName, alarmsTopic);
+    }
+  }
+
+  private grantIngestionPermissions(props: HttpApiConstructProps): void {
+    const {
+      integrityResultsTable,
+      probeTokensTableArn,
+      sigintAesKeySecretArn,
+      ecdhKeyParamName,
+    } = props;
+
+    integrityResultsTable.grantWriteData(this.ingestionFunction);
+
+    if (probeTokensTableArn) {
+      this.ingestionFunction.addToRolePolicy(
+        new iam.PolicyStatement({
+          actions: ["dynamodb:GetItem"],
+          resources: [probeTokensTableArn],
+        }),
+      );
+    }
+
+    if (sigintAesKeySecretArn) {
+      this.ingestionFunction.addToRolePolicy(
+        new iam.PolicyStatement({
+          actions: ["secretsmanager:GetSecretValue"],
+          resources: [sigintAesKeySecretArn],
+        }),
+      );
+    }
+
+    if (ecdhKeyParamName) {
+      this.ingestionFunction.addToRolePolicy(
+        new iam.PolicyStatement({
+          actions: ["ssm:GetParameter"],
+          resources: [
+            `arn:aws:ssm:${cdk.Stack.of(this).region}:${cdk.Stack.of(this).account}:parameter${ecdhKeyParamName}`,
+          ],
+        }),
+      );
     }
   }
 

@@ -99,10 +99,6 @@ export interface SigintData {
   tcp_probe?: {
     /** TCP round-trip time in milliseconds */
     rttMs?: number;
-    /** Proxy likelihood score 0-1 */
-    proxyScore?: number;
-    /** VPN likelihood score 0-1 */
-    vpnScore?: number;
   } | null;
   faviconCache?: {
     /** Persistent device ID via favicon cache timing */

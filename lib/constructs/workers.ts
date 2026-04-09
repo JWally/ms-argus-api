@@ -3,7 +3,12 @@
 import * as path from "path";
 import { Construct } from "constructs";
 import * as lambda from "aws-cdk-lib/aws-lambda-nodejs";
-import { Alias } from "aws-cdk-lib/aws-lambda";
+import {
+  Alias,
+  FilterCriteria,
+  FilterRule,
+  StartingPosition,
+} from "aws-cdk-lib/aws-lambda";
 import * as lambdaEventSources from "aws-cdk-lib/aws-lambda-event-sources";
 import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
 import * as iam from "aws-cdk-lib/aws-iam";
@@ -42,6 +47,10 @@ interface WorkersConstructProps {
   vectorCollection?: string;
   /** Optional: S3 bucket for payload archiving */
   payloadArchiveBucket?: s3.IBucket;
+  /** Optional: S3 bucket for integrity result archiving (DynamoDB Stream → S3) */
+  integrityArchiveBucket?: s3.IBucket;
+  /** DynamoDB integrity results table (with stream enabled) for archiver event source */
+  integrityResultsTable?: dynamodb.ITable;
   /**
    * Optional: Secrets Manager ARN for the AES-256 key used to decrypt encrypted
    * probe responses from ms-argus-sigint. The key is injected into the Lambda
@@ -76,6 +85,7 @@ export class WorkersConstruct extends Construct {
   public readonly matchingWorker: lambda.NodejsFunction;
   public readonly profileUpdater: lambda.NodejsFunction;
   public readonly vectorResultsWriter?: lambda.NodejsFunction;
+  public readonly integrityArchiver?: lambda.NodejsFunction;
   public readonly matchingWorkerAlias: Alias;
   public readonly profileUpdaterAlias: Alias;
 
@@ -102,6 +112,8 @@ export class WorkersConstruct extends Construct {
       vectorWorkerArn,
       vectorCollection = "fingerprints",
       payloadArchiveBucket,
+      integrityArchiveBucket,
+      integrityResultsTable,
       sigintAesKeySecretArn,
       probeTokensTableName,
       probeTokensTableArn,
@@ -334,6 +346,56 @@ export class WorkersConstruct extends Construct {
       this.vectorResultsWriter.addToRolePolicy(loggingPolicy);
       vectorResultsTable.grantWriteData(this.vectorResultsWriter);
       vectorResultsQueue.grantConsumeMessages(this.vectorResultsWriter);
+    }
+
+    // =====================================
+    // INTEGRITY ARCHIVER LAMBDA
+    // =====================================
+    // DynamoDB Stream (INSERT only) → S3 archive for later analysis
+    // Key format: {sessionId}.json — flat, 14-day auto-expiration
+
+    if (integrityArchiveBucket && integrityResultsTable) {
+      this.integrityArchiver = new lambda.NodejsFunction(
+        this,
+        "IntegrityArchiver",
+        {
+          ...commonConfig,
+          entry: path.join(
+            __dirname,
+            "../../src/handlers/integrity-archiver.ts",
+          ),
+          functionName: `${stackName}-integrity-archiver`,
+          memorySize: 256,
+          timeout: Duration.seconds(30),
+          environment: {
+            ...createWorkerEnv(
+              stage,
+              stackName,
+              `${stackName}-integrity-archiver`,
+            ),
+            INTEGRITY_ARCHIVE_BUCKET: integrityArchiveBucket.bucketName,
+          },
+        },
+      );
+
+      // DynamoDB Streams event source — only process INSERTs
+      this.integrityArchiver.addEventSource(
+        new lambdaEventSources.DynamoEventSource(integrityResultsTable, {
+          startingPosition: StartingPosition.LATEST,
+          batchSize: 25,
+          maxBatchingWindow: Duration.seconds(5),
+          retryAttempts: 3,
+          filters: [
+            FilterCriteria.filter({
+              eventName: FilterRule.isEqual("INSERT"),
+            }),
+          ],
+        }),
+      );
+
+      // Permissions
+      this.integrityArchiver.addToRolePolicy(loggingPolicy);
+      integrityArchiveBucket.grantWrite(this.integrityArchiver);
     }
 
     // Alarms (only for prod — dev alarms cost ~$13/month and sit in INSUFFICIENT_DATA)

@@ -63,6 +63,7 @@ const baseHandler = createBaseHandler({
   cacheService,
   payloadTable: envConfig.SESSION_PAYLOAD_TABLE,
   vectorResultsTable: envConfig.VECTOR_RESULTS_TABLE,
+  integrityResultsTable: process.env.INTEGRITY_RESULTS_TABLE,
   logger,
   metrics,
 });

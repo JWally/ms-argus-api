@@ -46,6 +46,7 @@ export interface UpdateProfileParams {
   isNewDevice?: boolean;
   hasDrift?: boolean;
   rawFingerprint?: unknown;
+  sigint?: unknown;
 }
 
 /**
@@ -163,6 +164,7 @@ export class ProfileService {
       isNewDevice = false,
       hasDrift = false,
       rawFingerprint,
+      sigint,
     } = params;
     const now = Date.now();
     const ttl =
@@ -172,6 +174,7 @@ export class ProfileService {
       isNewDevice,
       hasDrift,
       raw: rawFingerprint,
+      sigint,
     });
 
     const profileData = buildProfileData({
@@ -271,6 +274,7 @@ export class ProfileService {
       device_id,
       fingerprint,
       raw_fingerprint,
+      sigint: payloadSigint,
       timestamp,
       is_new_device = false,
       evidence_codes,
@@ -301,6 +305,7 @@ export class ProfileService {
       isNewDevice: is_new_device,
       hasDrift,
       rawFingerprint: raw_fingerprint,
+      sigint: payloadSigint,
     });
 
     const tier1Writes = await this.updateIdentityIndexes(

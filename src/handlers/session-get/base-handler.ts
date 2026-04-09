@@ -15,8 +15,10 @@ import {
   lookupSession,
   fetchPayload,
   fetchVectorResults,
+  fetchIntegrityResults,
   buildFallbackResponse,
 } from "./session-ops";
+import { validateIntegrityApiKey } from "../../helpers/integrity-api-key";
 
 /**
  * Dependencies required by the session-get handler.
@@ -26,6 +28,7 @@ interface HandlerDeps {
   cacheService: DynamoCacheService;
   payloadTable: string;
   vectorResultsTable?: string;
+  integrityResultsTable?: string;
   logger: Logger;
   metrics: Metrics;
 }
@@ -57,21 +60,101 @@ function emitSessionMetrics(
   );
 }
 
-/** Build success response with optional vector results */
+/** Build success response with optional vector + integrity results */
 function buildSuccessResponse(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   fullPayload: any,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   vectorResults?: any,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  integrityResults?: any,
 ): APIGatewayProxyResultV2 {
-  const response = vectorResults
-    ? { ...fullPayload, vector_results: vectorResults }
-    : fullPayload;
+  const response = { ...fullPayload };
+  if (vectorResults) response.vector_results = vectorResults;
+  if (integrityResults) response.integrity = integrityResults;
   return {
     statusCode: 200,
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(response),
   };
+}
+
+const JSON_HEADERS = { "Content-Type": "application/json" };
+
+async function handleIntegritySession(
+  sessionId: string,
+  deps: HandlerDeps,
+): Promise<APIGatewayProxyResultV2> {
+  if (!deps.integrityResultsTable) {
+    return {
+      statusCode: 404,
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ error: "Integrity not configured" }),
+    };
+  }
+  const integrityResults = await fetchIntegrityResults(sessionId, {
+    dynamodb: deps.dynamodb,
+    integrityResultsTable: deps.integrityResultsTable,
+    logger: deps.logger,
+    metrics: deps.metrics,
+  });
+  if (!integrityResults) {
+    return {
+      statusCode: 404,
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ error: "Session not found" }),
+    };
+  }
+  deps.metrics.addMetric("IntegritySessionRetrieved", MetricUnit.Count, 1);
+  return buildSuccessResponse(
+    { session_id: sessionId },
+    undefined,
+    integrityResults,
+  );
+}
+
+async function handleRegularSession(
+  sessionId: string,
+  startTime: number,
+  deps: HandlerDeps,
+): Promise<APIGatewayProxyResultV2> {
+  const session = await lookupSession(sessionId, {
+    cacheService: deps.cacheService,
+    logger: deps.logger,
+    metrics: deps.metrics,
+  });
+
+  const fullPayload = await fetchPayload(sessionId, {
+    dynamodb: deps.dynamodb,
+    payloadTable: deps.payloadTable,
+    logger: deps.logger,
+    metrics: deps.metrics,
+  });
+
+  let vectorResults;
+  if (deps.vectorResultsTable) {
+    vectorResults = await fetchVectorResults(sessionId, {
+      dynamodb: deps.dynamodb,
+      vectorResultsTable: deps.vectorResultsTable,
+      logger: deps.logger,
+      metrics: deps.metrics,
+    });
+  }
+
+  emitSessionMetrics(
+    {
+      session,
+      sessionId,
+      duration: Date.now() - startTime,
+      hasPayload: !!fullPayload,
+    },
+    deps,
+  );
+
+  if (fullPayload) {
+    return buildSuccessResponse(fullPayload, vectorResults);
+  }
+  return buildFallbackResponse(session, sessionId, deps.metrics);
 }
 
 /**
@@ -82,6 +165,18 @@ export function createBaseHandler(deps: HandlerDeps) {
     event: APIGatewayProxyEventV2,
   ): Promise<APIGatewayProxyResultV2> => {
     const startTime = Date.now();
+
+    const apiKey = event.headers["x-api-key"];
+    const valid = await validateIntegrityApiKey(apiKey);
+    if (!valid) {
+      deps.metrics.addMetric("ApiKeyRejected", MetricUnit.Count, 1);
+      return {
+        statusCode: 401,
+        headers: JSON_HEADERS,
+        body: JSON.stringify({ error: "Invalid or missing API key" }),
+      };
+    }
+
     let sessionId: string;
     try {
       sessionId = extractSessionId(event, deps.metrics);
@@ -91,42 +186,9 @@ export function createBaseHandler(deps: HandlerDeps) {
       throw error;
     }
 
-    const session = await lookupSession(sessionId, {
-      cacheService: deps.cacheService,
-      logger: deps.logger,
-      metrics: deps.metrics,
-    });
-
-    const fullPayload = await fetchPayload(sessionId, {
-      dynamodb: deps.dynamodb,
-      payloadTable: deps.payloadTable,
-      logger: deps.logger,
-      metrics: deps.metrics,
-    });
-
-    let vectorResults;
-    if (deps.vectorResultsTable) {
-      vectorResults = await fetchVectorResults(sessionId, {
-        dynamodb: deps.dynamodb,
-        vectorResultsTable: deps.vectorResultsTable,
-        logger: deps.logger,
-        metrics: deps.metrics,
-      });
+    if (event.rawPath.startsWith("/v1/integrity-session")) {
+      return handleIntegritySession(sessionId, deps);
     }
-
-    emitSessionMetrics(
-      {
-        session,
-        sessionId,
-        duration: Date.now() - startTime,
-        hasPayload: !!fullPayload,
-      },
-      deps,
-    );
-
-    if (fullPayload) {
-      return buildSuccessResponse(fullPayload, vectorResults);
-    }
-    return buildFallbackResponse(session, sessionId, deps.metrics);
+    return handleRegularSession(sessionId, startTime, deps);
   };
 }

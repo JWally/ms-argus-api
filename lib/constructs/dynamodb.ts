@@ -28,6 +28,7 @@ export class DynamoDbConstruct extends Construct {
   public readonly sessionCacheTable: dynamodb.Table;
   public readonly sessionPayloadTable: dynamodb.Table; // AR-XXX: Full payload for gRPC stub
   public readonly vectorResultsTable: dynamodb.Table; // Vector search results for session retrieval
+  public readonly integrityResultsTable: dynamodb.Table; // Integrity check results from VM
 
   constructor(scope: Construct, id: string, props: DynamoDbConstructProps) {
     super(scope, id);
@@ -37,24 +38,25 @@ export class DynamoDbConstruct extends Construct {
     const config = getStageConfig(stage);
     const dbConfig = config.dynamodb;
 
-    // Dev: provisioned capacity with auto-scaling (for testing the infrastructure)
-    // Prod: PAY_PER_REQUEST until capacity analysis is done
     const billingMode = dbConfig.useProvisionedCapacity
       ? dynamodb.BillingMode.PROVISIONED
       : dynamodb.BillingMode.PAY_PER_REQUEST;
 
-    // PK: device_id (no tenant - device identity is global)
+    const capacityProps = dbConfig.useProvisionedCapacity
+      ? {
+          readCapacity: dbConfig.baseReadCapacity,
+          writeCapacity: dbConfig.baseWriteCapacity,
+        }
+      : {};
+
     this.profilesTable = new dynamodb.Table(this, "ProfilesTable", {
       tableName: `${stackName}-profiles`,
       partitionKey: { name: "device_id", type: dynamodb.AttributeType.STRING },
       billingMode,
-      ...(dbConfig.useProvisionedCapacity && {
-        readCapacity: dbConfig.baseReadCapacity,
-        writeCapacity: dbConfig.baseWriteCapacity,
-      }),
+      ...capacityProps,
       pointInTimeRecovery: true,
       timeToLiveAttribute: "ttl",
-      removalPolicy: RemovalPolicy.DESTROY, // Allow destruction for schema changes
+      removalPolicy: RemovalPolicy.DESTROY,
     });
 
     // GSI for looking up profiles by stable_hash (for test cleanup and debugging)
@@ -72,12 +74,9 @@ export class DynamoDbConstruct extends Construct {
       tableName: `${stackName}-tier1-index`,
       partitionKey: { name: "hash_key", type: dynamodb.AttributeType.STRING },
       billingMode,
-      ...(dbConfig.useProvisionedCapacity && {
-        readCapacity: dbConfig.baseReadCapacity,
-        writeCapacity: dbConfig.baseWriteCapacity,
-      }),
+      ...capacityProps,
       timeToLiveAttribute: "ttl",
-      removalPolicy: RemovalPolicy.DESTROY, // Allow destruction for schema changes
+      removalPolicy: RemovalPolicy.DESTROY,
     });
 
     // Uses adjacency list pattern to avoid 400KB item size limit
@@ -89,10 +88,7 @@ export class DynamoDbConstruct extends Construct {
       partitionKey: { name: "bucket_key", type: dynamodb.AttributeType.STRING },
       sortKey: { name: "device_id", type: dynamodb.AttributeType.STRING },
       billingMode,
-      ...(dbConfig.useProvisionedCapacity && {
-        readCapacity: dbConfig.baseReadCapacity,
-        writeCapacity: dbConfig.baseWriteCapacity,
-      }),
+      ...capacityProps,
       timeToLiveAttribute: "ttl",
       removalPolicy: RemovalPolicy.DESTROY, // Allow destruction for schema changes
     });
@@ -104,10 +100,7 @@ export class DynamoDbConstruct extends Construct {
       tableName: `${stackName}-session-cache`,
       partitionKey: { name: "cache_key", type: dynamodb.AttributeType.STRING },
       billingMode,
-      ...(dbConfig.useProvisionedCapacity && {
-        readCapacity: dbConfig.baseReadCapacity,
-        writeCapacity: dbConfig.baseWriteCapacity,
-      }),
+      ...capacityProps,
       timeToLiveAttribute: "ttl",
       removalPolicy: RemovalPolicy.DESTROY, // Cache data is ephemeral
     });
@@ -120,10 +113,7 @@ export class DynamoDbConstruct extends Construct {
       tableName: `${stackName}-session-payload`,
       partitionKey: { name: "session_id", type: dynamodb.AttributeType.STRING },
       billingMode,
-      ...(dbConfig.useProvisionedCapacity && {
-        readCapacity: dbConfig.baseReadCapacity,
-        writeCapacity: dbConfig.baseWriteCapacity,
-      }),
+      ...capacityProps,
       timeToLiveAttribute: "ttl",
       removalPolicy: RemovalPolicy.DESTROY, // Ephemeral data with short TTL
     });
@@ -136,12 +126,22 @@ export class DynamoDbConstruct extends Construct {
       tableName: `${stackName}-vector-results`,
       partitionKey: { name: "session_id", type: dynamodb.AttributeType.STRING },
       billingMode,
-      ...(dbConfig.useProvisionedCapacity && {
-        readCapacity: dbConfig.baseReadCapacity,
-        writeCapacity: dbConfig.baseWriteCapacity,
-      }),
+      ...capacityProps,
       timeToLiveAttribute: "ttl",
       removalPolicy: RemovalPolicy.DESTROY, // Ephemeral data with short TTL
+    });
+
+    this.integrityResultsTable = this.createTable("IntegrityResultsTable", {
+      tableName: `${stackName}-integrity-results`,
+      partitionKey: {
+        name: "session_id",
+        type: dynamodb.AttributeType.STRING,
+      },
+      billingMode,
+      ...capacityProps,
+      timeToLiveAttribute: "ttl",
+      removalPolicy: RemovalPolicy.DESTROY,
+      stream: dynamodb.StreamViewType.NEW_IMAGE,
     });
 
     if (dbConfig.useProvisionedCapacity) {
@@ -199,6 +199,14 @@ export class DynamoDbConstruct extends Construct {
         maxCapacity,
         targetUtilization,
       );
+      this.enableAutoScaling(
+        this.integrityResultsTable,
+        "IntegrityResults",
+        dbConfig.baseReadCapacity,
+        dbConfig.baseWriteCapacity,
+        maxCapacity,
+        targetUtilization,
+      );
     }
 
     // Alarms
@@ -225,7 +233,16 @@ export class DynamoDbConstruct extends Construct {
         "VectorResults",
         alarmsTopic,
       );
+      this.createTableAlarms(
+        this.integrityResultsTable,
+        "IntegrityResults",
+        alarmsTopic,
+      );
     }
+  }
+
+  private createTable(id: string, props: dynamodb.TableProps): dynamodb.Table {
+    return new dynamodb.Table(this, id, props);
   }
 
   /**

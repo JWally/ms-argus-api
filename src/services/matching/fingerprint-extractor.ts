@@ -205,7 +205,7 @@ function extractTlsFields(
   if (!tls) return;
   if (tls.ip) fp.ip_address = tls.ip;
   if (tls.ja3) fp.ja3 = tls.ja3;
-  if (tls.ja4) fp.ja4 = tls.ja4;
+  if (tls.ja4 && !fp.ja4) fp.ja4 = tls.ja4;
   if (tls.id) fp.sigint_id = tls.id;
 }
 
@@ -239,8 +239,8 @@ function extractH2Probe(
  */
 function extractSigint(sigint: ArgusPayload["sigint"], fp: Fingerprint) {
   if (!sigint) return;
-  extractTlsFields(sigint.aws_cf, fp);
   extractTcpProbe(sigint, fp);
+  extractTlsFields(sigint.aws_cf, fp);
   extractH2Probe(sigint, fp);
   if (sigint.faviconCache?.id) fp.favicon_cache_id = sigint.faviconCache.id;
 }
@@ -273,7 +273,7 @@ function applyMssFields(source: Record<string, unknown>, fp: Fingerprint) {
 }
 
 /**
- * Extract TCP probe data (proxy score, VPN score, RTT)
+ * Extract TCP probe data (RTT, MSS, JA4)
  * @param sigint - The sigint section from the payload
  * @param fp - The fingerprint object to populate
  */
@@ -285,6 +285,8 @@ function extractTcpProbe(
   const tcp = sigint.tcp_probe as Record<string, unknown>;
   const rttFp = tcp.rtt_fingerprint as Record<string, unknown> | undefined;
   applyTcpFields(rttFp || tcp, fp, !rttFp);
+  // JA4 from probe server (top-level on tcp_probe) — primary source; aws_cf.ja4 is fallback
+  if (typeof tcp.ja4 === "string") fp.ja4 = tcp.ja4;
   if (rttFp) applyMssFields(rttFp, fp);
 }
 

@@ -64,15 +64,20 @@ export const handler = middy(baseHandler)
     ),
   )
   .use(jsonBodyParser(metrics))
-  .use(
-    validator({
-      eventSchema: transpileSchema({
-        type: "object",
-        properties: {
-          parsedBody: payloadJsonSchema,
-        },
-      }),
-    }),
-  )
+  .use({
+    before: async (request) => {
+      // Skip payload validation for /v1/integrity-collect — different schema
+      if (request.event.rawPath === "/v1/integrity-collect") return;
+      const v = validator({
+        eventSchema: transpileSchema({
+          type: "object",
+          properties: {
+            parsedBody: payloadJsonSchema,
+          },
+        }),
+      });
+      return v.before?.(request);
+    },
+  })
   .use(corsMiddleware(CORS_CONFIG))
   .use(jsonErrorHandler({ logger, exposeErrors: "all" }));

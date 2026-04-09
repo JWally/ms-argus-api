@@ -283,3 +283,61 @@ export async function fetchVectorResults(
     return undefined;
   }
 }
+
+/**
+ * Integrity results data shape stored in DynamoDB.
+ */
+interface IntegrityResultsData {
+  session_id: string;
+  tampered: boolean;
+  vm_signals: string[];
+  vm_hash: string;
+  signal_count: number;
+  hashes: Record<string, string>;
+  device_summary: Record<string, string>;
+  sigint: Record<string, string>;
+  client_ip: string;
+  user_agent: string;
+  created_at: number;
+}
+
+/**
+ * Fetches integrity check results from DynamoDB.
+ *
+ * Integrity results are written by the ingestion Lambda when handling
+ * POST /v1/integrity. Results have a 1-hour TTL.
+ */
+export async function fetchIntegrityResults(
+  sessionId: string,
+  deps: {
+    dynamodb: DynamoDBClient;
+    integrityResultsTable: string;
+    logger: Logger;
+    metrics: Metrics;
+  },
+): Promise<IntegrityResultsData | undefined> {
+  try {
+    const result = await deps.dynamodb.send(
+      new GetItemCommand({
+        TableName: deps.integrityResultsTable,
+        Key: { session_id: { S: sessionId } },
+      }),
+    );
+
+    if (!result.Item) {
+      deps.metrics.addMetric("IntegrityResultsNotFound", MetricUnit.Count, 1);
+      return undefined;
+    }
+
+    const item = unmarshall(result.Item) as IntegrityResultsData;
+    deps.metrics.addMetric("IntegrityResultsFound", MetricUnit.Count, 1);
+    return item;
+  } catch (error) {
+    deps.logger.warn("Failed to fetch integrity results", {
+      error,
+      session_id: sessionId,
+    });
+    deps.metrics.addMetric("IntegrityResultsFetchError", MetricUnit.Count, 1);
+    return undefined;
+  }
+}
