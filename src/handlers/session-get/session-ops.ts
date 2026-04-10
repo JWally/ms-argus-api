@@ -293,9 +293,26 @@ interface IntegrityResultsData {
   vm_signals: string[];
   vm_hash: string;
   signal_count: number;
-  hashes: Record<string, string>;
-  device_summary: Record<string, string>;
+  device: Record<string, unknown>;
+  meta: Record<string, unknown>;
   sigint: Record<string, string>;
+  analysis: {
+    network: {
+      proxy_score: number;
+      vpn_score: number;
+      signals: Array<{ code: string; severity: number; evidence: unknown }>;
+    };
+    worker: {
+      lied: boolean;
+      divergences: Array<{
+        field: string;
+        main: unknown;
+        web: unknown;
+        shared: unknown;
+      }>;
+      signals: Array<{ code: string; severity: number; evidence: string }>;
+    };
+  };
   client_ip: string;
   user_agent: string;
   created_at: number;

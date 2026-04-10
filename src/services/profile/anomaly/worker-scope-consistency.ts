@@ -13,6 +13,12 @@ const FIELDS: { key: string; severity: number }[] = [
   { key: "userAgent", severity: 0.8 },
   { key: "platform", severity: 0.75 },
   { key: "hardwareConcurrency", severity: 0.7 },
+  { key: "deviceMemory", severity: 0.65 },
+  { key: "languages", severity: 0.5 },
+  { key: "webglRenderer", severity: 0.6 },
+  { key: "webglVendor", severity: 0.6 },
+  { key: "webgl2Renderer", severity: 0.55 },
+  { key: "webgl2Vendor", severity: 0.55 },
 ];
 
 const DISPLAY: Record<string, string> = {

@@ -18,8 +18,7 @@ import { marshall } from "@aws-sdk/util-dynamodb";
 import { HttpError } from "../../helpers/http-error";
 import { getSessionId, type ArgusPayload } from "../../helpers/payload-schema";
 import { redeemSigintTokens } from "../../helpers/redeem-sigint-tokens";
-import { detectNetworkProbeAnomalies } from "../../services/profile/anomaly/network-probe-detector";
-import type { Fingerprint } from "../../types";
+import { analyzeNetworkProbes, analyzeWorkerScopes } from "../../analysis";
 
 /** API Gateway event extended with pre-parsed body from middleware. */
 export interface ExtendedEvent extends APIGatewayProxyEventV2 {
@@ -179,27 +178,6 @@ async function hydrateSigint(
   }
 }
 
-function analyzeNetworkProbes(sigint: unknown) {
-  const networkSignals = detectNetworkProbeAnomalies(
-    {} as Fingerprint,
-    undefined,
-    sigint,
-  );
-  const maxScore = (code: string) => {
-    const matching = networkSignals.filter((s) => s.code === code);
-    return matching.length ? Math.max(...matching.map((s) => s.severity)) : 0;
-  };
-  return {
-    proxy_score: maxScore("LIKELY_PROXY"),
-    vpn_score: maxScore("LIKELY_VPN"),
-    signals: networkSignals.map((s) => ({
-      code: s.code,
-      severity: s.severity,
-      evidence: s.evidence.actual,
-    })),
-  };
-}
-
 function sigintSummary(payload: ArgusPayload): Record<string, string> {
   const present = (v: unknown) => (v ? "present" : "absent");
   return {
@@ -224,7 +202,10 @@ function buildIntegrityItem(ctx: HandleContext, hydratedPayload: ArgusPayload) {
     device: raw.device ?? {},
     meta: raw.meta ?? {},
     sigint: hydratedPayload.sigint ?? sigintSummary(ctx.payload),
-    network_analysis: analyzeNetworkProbes(hydratedPayload.sigint),
+    analysis: {
+      network: analyzeNetworkProbes(hydratedPayload.sigint),
+      worker: analyzeWorkerScopes(raw.device),
+    },
     client_ip:
       ctx.event.headers["x-forwarded-for"]?.split(",")[0]?.trim() ?? "",
     user_agent: ctx.event.headers["user-agent"] ?? "",
