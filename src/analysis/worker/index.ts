@@ -18,6 +18,9 @@ const COMPARE_FIELDS = [
   "webglVendor",
   "webgl2Renderer",
   "webgl2Vendor",
+  "appVersion",
+  "product",
+  "onLine",
 ] as const;
 
 function isObj(v: unknown): v is Record<string, unknown> {
