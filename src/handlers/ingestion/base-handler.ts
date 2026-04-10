@@ -22,6 +22,7 @@ import {
   analyzeNetworkProbes,
   analyzeWorkerScopes,
   analyzeTimezone,
+  analyzeIpConsistency,
 } from "../../analysis";
 
 /** API Gateway event extended with pre-parsed body from middleware. */
@@ -196,6 +197,8 @@ function buildIntegrityItem(ctx: HandleContext, hydratedPayload: ArgusPayload) {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const raw = ctx.payload as any;
   const vmSignals: string[] = raw.vmSignals ?? [];
+  const clientIp =
+    ctx.event.headers["x-forwarded-for"]?.split(",")[0]?.trim() ?? "";
 
   return {
     session_id: ctx.sessionId,
@@ -210,9 +213,9 @@ function buildIntegrityItem(ctx: HandleContext, hydratedPayload: ArgusPayload) {
       network: analyzeNetworkProbes(hydratedPayload.sigint),
       worker: analyzeWorkerScopes(raw.device),
       timezone: analyzeTimezone(raw.device, hydratedPayload.sigint),
+      ip: analyzeIpConsistency(raw.device, hydratedPayload.sigint, clientIp),
     },
-    client_ip:
-      ctx.event.headers["x-forwarded-for"]?.split(",")[0]?.trim() ?? "",
+    client_ip: clientIp,
     user_agent: ctx.event.headers["user-agent"] ?? "",
     created_at: now,
     ttl: Math.floor(now / 1000) + INTEGRITY_TTL_SECONDS,

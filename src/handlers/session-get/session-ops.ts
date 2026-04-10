@@ -324,6 +324,20 @@ interface IntegrityResultsData {
       clientTimezone: string | null;
       signals: Array<{ code: string; severity: number; evidence: string }>;
     };
+    ip: {
+      lied: boolean;
+      ips: {
+        api: string | null;
+        tls: string | null;
+        tcp: string | null;
+        webrtc: string | null;
+      };
+      checks: {
+        probesConsistent: boolean;
+        webrtcMatchesProbes: boolean | null;
+      };
+      signals: Array<{ code: string; severity: number; evidence: string }>;
+    };
   };
   client_ip: string;
   user_agent: string;

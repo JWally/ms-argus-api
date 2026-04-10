@@ -66,6 +66,9 @@ export const AnomalyCodes = {
   NO_ALPN_BROWSER: "NO_ALPN_BROWSER",
   // Timezone geolocation mismatch (CloudFront IP timezone vs client-reported)
   TZ_GEOLOCATION_MISMATCH: "TZ_GEOLOCATION_MISMATCH",
+  // IP consistency across probes and WebRTC
+  IP_PROBE_SCATTER: "IP_PROBE_SCATTER",
+  WEBRTC_BLOCKED: "WEBRTC_BLOCKED",
   // Network probe anomalies (computed from tcp_info/rtt_fingerprint in the API)
   LIKELY_PROXY: "LIKELY_PROXY",
   LIKELY_VPN: "LIKELY_VPN",
