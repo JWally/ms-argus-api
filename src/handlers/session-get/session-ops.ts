@@ -312,6 +312,18 @@ interface IntegrityResultsData {
       }>;
       signals: Array<{ code: string; severity: number; evidence: string }>;
     };
+    timezone: {
+      lied: boolean;
+      checks: {
+        offsetMatchesComputed: boolean;
+        locationMatchesCfTimezone: boolean | null;
+        offsetMatchesWorker: boolean | null;
+        clientReportedLie: boolean;
+      };
+      cfTimezone: string | null;
+      clientTimezone: string | null;
+      signals: Array<{ code: string; severity: number; evidence: string }>;
+    };
   };
   client_ip: string;
   user_agent: string;

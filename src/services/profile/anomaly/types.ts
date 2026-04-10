@@ -64,6 +64,8 @@ export const AnomalyCodes = {
   H2_TLS_MISMATCH: "H2_TLS_MISMATCH",
   QUIC_IOS_VPN: "QUIC_IOS_VPN",
   NO_ALPN_BROWSER: "NO_ALPN_BROWSER",
+  // Timezone geolocation mismatch (CloudFront IP timezone vs client-reported)
+  TZ_GEOLOCATION_MISMATCH: "TZ_GEOLOCATION_MISMATCH",
   // Network probe anomalies (computed from tcp_info/rtt_fingerprint in the API)
   LIKELY_PROXY: "LIKELY_PROXY",
   LIKELY_VPN: "LIKELY_VPN",

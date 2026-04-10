@@ -18,7 +18,11 @@ import { marshall } from "@aws-sdk/util-dynamodb";
 import { HttpError } from "../../helpers/http-error";
 import { getSessionId, type ArgusPayload } from "../../helpers/payload-schema";
 import { redeemSigintTokens } from "../../helpers/redeem-sigint-tokens";
-import { analyzeNetworkProbes, analyzeWorkerScopes } from "../../analysis";
+import {
+  analyzeNetworkProbes,
+  analyzeWorkerScopes,
+  analyzeTimezone,
+} from "../../analysis";
 
 /** API Gateway event extended with pre-parsed body from middleware. */
 export interface ExtendedEvent extends APIGatewayProxyEventV2 {
@@ -205,6 +209,7 @@ function buildIntegrityItem(ctx: HandleContext, hydratedPayload: ArgusPayload) {
     analysis: {
       network: analyzeNetworkProbes(hydratedPayload.sigint),
       worker: analyzeWorkerScopes(raw.device),
+      timezone: analyzeTimezone(raw.device, hydratedPayload.sigint),
     },
     client_ip:
       ctx.event.headers["x-forwarded-for"]?.split(",")[0]?.trim() ?? "",
