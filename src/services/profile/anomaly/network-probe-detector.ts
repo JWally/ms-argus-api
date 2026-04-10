@@ -105,10 +105,28 @@ function pushIfPresent(signals: AnomalySignal[], signal: AnomalySignal | null) {
   if (signal) signals.push(signal);
 }
 
+/** Prefer refreshed tcp_info values (captured at HTTP request time) over post-TLS snapshot. */
+function resolveRtt(tcpInfo: Record<string, unknown>): {
+  rtt: number | undefined;
+  rcvRtt: number | undefined;
+} {
+  const pick = (refreshed: number | undefined, fallback: number | undefined) =>
+    refreshed && refreshed > 0 ? refreshed : fallback;
+  return {
+    rtt: pick(
+      dig(tcpInfo, "rtt_fingerprint", "rtt_refreshed"),
+      dig(tcpInfo, "tcp_info", "rtt"),
+    ),
+    rcvRtt: pick(
+      dig(tcpInfo, "rtt_fingerprint", "rcv_rtt_refreshed"),
+      dig(tcpInfo, "tcp_info", "rcv_rtt"),
+    ),
+  };
+}
+
 function detectProxySignals(tcpInfo: Record<string, unknown>): AnomalySignal[] {
   const signals: AnomalySignal[] = [];
-  const rtt = dig(tcpInfo, "tcp_info", "rtt");
-  const rcvRtt = dig(tcpInfo, "tcp_info", "rcv_rtt");
+  const { rtt, rcvRtt } = resolveRtt(tcpInfo);
   const validRtt = rtt && rtt > 0 && rcvRtt && rcvRtt > 0;
 
   pushIfPresent(signals, validRtt ? checkRttRatio(rtt, rcvRtt) : null);
