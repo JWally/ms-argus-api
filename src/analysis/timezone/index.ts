@@ -133,7 +133,11 @@ const EMPTY: TimezoneAnalysisResult = {
 
 function extractCfTimezone(sigint: unknown): string | null {
   if (!isObj(sigint) || !isObj(sigint.aws_cf)) return null;
-  return str(sigint.aws_cf.tz);
+  // Direct field (post-hydration via redeemSigintTokens)
+  const direct = str(sigint.aws_cf.tz);
+  if (direct) return direct;
+  // Nested under .data (raw client fetch result: { data, error, durationMs })
+  return isObj(sigint.aws_cf.data) ? str(sigint.aws_cf.data.tz) : null;
 }
 
 function collectSignals(
