@@ -109,18 +109,16 @@ function pushIfPresent(signals: AnomalySignal[], signal: AnomalySignal | null) {
 /**
  * Resolve best available RTT measurements for proxy detection.
  *
- * Priority for the "client-side" RTT (compared against kernel rtt):
- * 1. rcv_rtt_refreshed — kernel estimate at HTTP request time (most data)
- * 2. rcv_rtt (post-TLS) — kernel estimate at TLS handshake time
- * 3. app_rtt_us — application-layer round trip (response sent → next request)
- *    Most reliable but only available on 2nd+ request on same connection.
+ * Uses max(kernel rcv_rtt, app_rtt) to catch proxies that partially
+ * mask one signal but not the other. Both are compared against kernel
+ * rtt (which only measures the immediate TCP peer).
  */
 function resolveRtt(tcpInfo: Record<string, unknown>): {
   rtt: number | undefined;
   rcvRtt: number | undefined;
 } {
-  const pick = (refreshed: number | undefined, fallback: number | undefined) =>
-    refreshed && refreshed > 0 ? refreshed : fallback;
+  const pick = (a: number | undefined, b: number | undefined) =>
+    a && a > 0 ? a : b;
 
   const rtt = pick(
     dig(tcpInfo, "rtt_fingerprint", "rtt_refreshed"),
@@ -131,14 +129,10 @@ function resolveRtt(tcpInfo: Record<string, unknown>): {
   const rcvRttPostTls = dig(tcpInfo, "tcp_info", "rcv_rtt");
   const appRtt = dig(tcpInfo, "rtt_fingerprint", "app_rtt_us");
 
-  const rcvRtt =
-    rcvRttRefreshed && rcvRttRefreshed > 0
-      ? rcvRttRefreshed
-      : rcvRttPostTls && rcvRttPostTls > 0
-        ? rcvRttPostTls
-        : appRtt && appRtt > 0
-          ? appRtt
-          : undefined;
+  const kernelRcvRtt = pick(rcvRttRefreshed, rcvRttPostTls) ?? 0;
+  const appRcvRtt = appRtt && appRtt > 0 ? appRtt : 0;
+
+  const rcvRtt = Math.max(kernelRcvRtt, appRcvRtt) || undefined;
 
   return { rtt, rcvRtt };
 }
