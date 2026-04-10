@@ -332,6 +332,11 @@ interface IntegrityResultsData {
         tcp: string | null;
         webrtc: string | null;
       };
+      asn: {
+        number: string | null;
+        category: string | null;
+        org: string | null;
+      };
       checks: {
         probesConsistent: boolean;
         webrtcMatchesProbes: boolean | null;

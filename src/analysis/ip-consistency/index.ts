@@ -7,8 +7,11 @@
  * - TCP probe (EC2)
  * - WebRTC STUN (client-side, bypasses HTTP proxies)
  *
- * Rotating proxy pools produce different exit IPs per connection.
- * WebRTC leaks the real IP when the proxy doesn't block it.
+ * Subnet-aware: WebRTC on the same /16 as probes is likely cellular
+ * CGNAT, not a proxy. Different subnet = real mismatch.
+ *
+ * ASN classification: known datacenter, VPN, or corporate proxy ASNs
+ * are flagged with appropriate severity.
  */
 
 import {
@@ -16,6 +19,7 @@ import {
   createSignal,
   type AnomalySignal,
 } from "../../services/profile/anomaly/types";
+import { lookupAsn, type AsnCategory } from "./asn-catalog";
 
 function isObj(v: unknown): v is Record<string, unknown> {
   return v !== null && typeof v === "object" && !Array.isArray(v);
@@ -33,6 +37,11 @@ export interface IpConsistencyResult {
     tcp: string | null;
     webrtc: string | null;
   };
+  asn: {
+    number: string | null;
+    category: AsnCategory | "residential" | null;
+    org: string | null;
+  };
   checks: {
     probesConsistent: boolean;
     webrtcMatchesProbes: boolean | null;
@@ -42,10 +51,16 @@ export interface IpConsistencyResult {
 
 function extractTlsIp(sigint: unknown): string | null {
   if (!isObj(sigint) || !isObj(sigint.aws_cf)) return null;
-  // Direct field or nested under .data (raw client fetch result)
   const direct = str(sigint.aws_cf.ip);
   if (direct) return direct;
   return isObj(sigint.aws_cf.data) ? str(sigint.aws_cf.data.ip) : null;
+}
+
+function extractAsn(sigint: unknown): string | null {
+  if (!isObj(sigint) || !isObj(sigint.aws_cf)) return null;
+  const direct = str(sigint.aws_cf.asn);
+  if (direct) return direct;
+  return isObj(sigint.aws_cf.data) ? str(sigint.aws_cf.data.asn) : null;
 }
 
 function extractTcpIp(sigint: unknown): string | null {
@@ -67,6 +82,23 @@ function webrtcAvailable(device: unknown): boolean {
   return isObj(device.webrtc) && device.webrtc !== null;
 }
 
+/** Parse IPv4 into 4 octets. Returns null for non-IPv4. */
+function parseIpv4(ip: string): number[] | null {
+  const parts = ip.split(".");
+  if (parts.length !== 4) return null;
+  const octets = parts.map(Number);
+  if (octets.some((o) => isNaN(o) || o < 0 || o > 255)) return null;
+  return octets;
+}
+
+/** Check if two IPs share the same /16 subnet. */
+function sameSubnet16(a: string, b: string): boolean {
+  const oa = parseIpv4(a);
+  const ob = parseIpv4(b);
+  if (!oa || !ob) return false;
+  return oa[0] === ob[0] && oa[1] === ob[1];
+}
+
 function checkProbeScatter(probeIps: (string | null)[]): AnomalySignal | null {
   const present = probeIps.filter((ip): ip is string => ip !== null);
   if (present.length < 2) return null;
@@ -81,13 +113,17 @@ function checkProbeScatter(probeIps: (string | null)[]): AnomalySignal | null {
   });
 }
 
-function checkWebrtcMismatch(
+function checkWebrtcVsProbes(
   webrtcIp: string,
   probeIps: (string | null)[],
 ): AnomalySignal | null {
   const present = probeIps.filter((ip): ip is string => ip !== null);
   if (present.length === 0) return null;
   if (present.includes(webrtcIp)) return null;
+
+  // Same /16 subnet = likely CGNAT or cellular NAT, not a proxy
+  const sameSubnet = present.some((ip) => sameSubnet16(webrtcIp, ip));
+  if (sameSubnet) return null;
 
   return createSignal("NETWORK", AnomalyCodes.WEBRTC_IP_MISMATCH, 0.7, {
     expected: "WebRTC IP matches server-observed IP",
@@ -109,6 +145,28 @@ function checkWebrtcBlocked(device: unknown): AnomalySignal | null {
   });
 }
 
+function checkAsnCategory(asn: string | null): AnomalySignal | null {
+  const entry = lookupAsn(asn);
+  if (!entry) return null;
+
+  const severityMap: Record<AsnCategory, number> = {
+    datacenter: 0.7,
+    vpn_proxy: 0.6,
+    corporate_proxy: 0.15,
+  };
+
+  return createSignal(
+    "NETWORK",
+    AnomalyCodes.IP_PROBE_SCATTER,
+    severityMap[entry.category],
+    {
+      expected: "residential ISP ASN",
+      actual: `ASN ${asn} — ${entry.org} (${entry.category})`,
+      fields: ["sigint.aws_cf.asn"],
+    },
+  );
+}
+
 function formatSignals(
   signals: AnomalySignal[],
 ): IpConsistencyResult["signals"] {
@@ -119,12 +177,21 @@ function formatSignals(
   }));
 }
 
+function collectWebrtcSignals(
+  device: unknown,
+  webrtcIp: string | null,
+  probeIps: (string | null)[],
+): AnomalySignal[] {
+  if (webrtcIp) {
+    const sig = checkWebrtcVsProbes(webrtcIp, probeIps);
+    return sig ? [sig] : [];
+  }
+  const blocked = checkWebrtcBlocked(device);
+  return blocked ? [blocked] : [];
+}
+
 /**
  * Analyze IP consistency across probes and WebRTC.
- *
- * @param device - Device object (contains webrtc.iceCandidates.publicIP)
- * @param sigint - Hydrated sigint (contains aws_cf.ip, tcp_probe.client_ip)
- * @param clientIp - API Gateway X-Forwarded-For IP
  */
 export function analyzeIpConsistency(
   device: unknown,
@@ -135,30 +202,32 @@ export function analyzeIpConsistency(
   const tlsIp = extractTlsIp(sigint);
   const tcpIp = extractTcpIp(sigint);
   const webrtcIp = extractWebrtcIp(device);
+  const asn = extractAsn(sigint);
   const probeIps = [apiIp, tlsIp, tcpIp];
 
   const signals: AnomalySignal[] = [];
-
   const scatterSig = checkProbeScatter(probeIps);
   if (scatterSig) signals.push(scatterSig);
+  signals.push(...collectWebrtcSignals(device, webrtcIp, probeIps));
+  const asnSig = checkAsnCategory(asn);
+  if (asnSig) signals.push(asnSig);
 
-  if (webrtcIp) {
-    const mismatchSig = checkWebrtcMismatch(webrtcIp, probeIps);
-    if (mismatchSig) signals.push(mismatchSig);
-  } else {
-    const blockedSig = checkWebrtcBlocked(device);
-    if (blockedSig) signals.push(blockedSig);
-  }
-
-  const probesConsistent = !scatterSig;
-  const webrtcMatchesProbes = webrtcIp
-    ? !signals.some((s) => s.code === AnomalyCodes.WEBRTC_IP_MISMATCH)
-    : null;
+  const asnEntry = lookupAsn(asn);
 
   return {
     lied: signals.some((s) => s.severity >= 0.5),
     ips: { api: apiIp, tls: tlsIp, tcp: tcpIp, webrtc: webrtcIp },
-    checks: { probesConsistent, webrtcMatchesProbes },
+    asn: {
+      number: asn,
+      category: asnEntry?.category ?? (asn ? "residential" : null),
+      org: asnEntry?.org ?? null,
+    },
+    checks: {
+      probesConsistent: !scatterSig,
+      webrtcMatchesProbes: webrtcIp
+        ? !signals.some((s) => s.code === AnomalyCodes.WEBRTC_IP_MISMATCH)
+        : null,
+    },
     signals: formatSignals(signals),
   };
 }
