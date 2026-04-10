@@ -41,8 +41,9 @@ const MSS_FIELDS = ["tcp_probe.rtt_fingerprint.snd_mss"];
 
 /** Threshold table: [minRatio, severity] — first match wins (descending order). */
 const RTT_RATIO_THRESHOLDS: [number, number][] = [
-  [4.0, 0.6],
-  [2.5, 0.3],
+  [2.5, 0.6],
+  [2.0, 0.35],
+  [1.5, 0.15],
 ];
 
 /** Threshold table: [maxMss, severity, description] — first match wins. */
