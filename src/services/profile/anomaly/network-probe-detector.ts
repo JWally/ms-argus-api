@@ -106,23 +106,41 @@ function pushIfPresent(signals: AnomalySignal[], signal: AnomalySignal | null) {
   if (signal) signals.push(signal);
 }
 
-/** Prefer refreshed tcp_info values (captured at HTTP request time) over post-TLS snapshot. */
+/**
+ * Resolve best available RTT measurements for proxy detection.
+ *
+ * Priority for the "client-side" RTT (compared against kernel rtt):
+ * 1. rcv_rtt_refreshed — kernel estimate at HTTP request time (most data)
+ * 2. rcv_rtt (post-TLS) — kernel estimate at TLS handshake time
+ * 3. app_rtt_us — application-layer round trip (response sent → next request)
+ *    Most reliable but only available on 2nd+ request on same connection.
+ */
 function resolveRtt(tcpInfo: Record<string, unknown>): {
   rtt: number | undefined;
   rcvRtt: number | undefined;
 } {
   const pick = (refreshed: number | undefined, fallback: number | undefined) =>
     refreshed && refreshed > 0 ? refreshed : fallback;
-  return {
-    rtt: pick(
-      dig(tcpInfo, "rtt_fingerprint", "rtt_refreshed"),
-      dig(tcpInfo, "tcp_info", "rtt"),
-    ),
-    rcvRtt: pick(
-      dig(tcpInfo, "rtt_fingerprint", "rcv_rtt_refreshed"),
-      dig(tcpInfo, "tcp_info", "rcv_rtt"),
-    ),
-  };
+
+  const rtt = pick(
+    dig(tcpInfo, "rtt_fingerprint", "rtt_refreshed"),
+    dig(tcpInfo, "tcp_info", "rtt"),
+  );
+
+  const rcvRttRefreshed = dig(tcpInfo, "rtt_fingerprint", "rcv_rtt_refreshed");
+  const rcvRttPostTls = dig(tcpInfo, "tcp_info", "rcv_rtt");
+  const appRtt = dig(tcpInfo, "rtt_fingerprint", "app_rtt_us");
+
+  const rcvRtt =
+    rcvRttRefreshed && rcvRttRefreshed > 0
+      ? rcvRttRefreshed
+      : rcvRttPostTls && rcvRttPostTls > 0
+        ? rcvRttPostTls
+        : appRtt && appRtt > 0
+          ? appRtt
+          : undefined;
+
+  return { rtt, rcvRtt };
 }
 
 function detectProxySignals(tcpInfo: Record<string, unknown>): AnomalySignal[] {
