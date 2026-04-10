@@ -109,9 +109,10 @@ function pushIfPresent(signals: AnomalySignal[], signal: AnomalySignal | null) {
 /**
  * Resolve best available RTT measurements for proxy detection.
  *
- * Uses max(kernel rcv_rtt, app_rtt) to catch proxies that partially
- * mask one signal but not the other. Both are compared against kernel
- * rtt (which only measures the immediate TCP peer).
+ * Prefers kernel rcv_rtt (accurate for direct vs proxy distinction).
+ * Falls back to app_rtt_us only when rcv_rtt is 0/unavailable.
+ * Using max() caused false positives on cellular where app_rtt includes
+ * radio wake-up latency that inflates the ratio without a proxy.
  */
 function resolveRtt(tcpInfo: Record<string, unknown>): {
   rtt: number | undefined;
@@ -125,14 +126,13 @@ function resolveRtt(tcpInfo: Record<string, unknown>): {
     dig(tcpInfo, "tcp_info", "rtt"),
   );
 
-  const rcvRttRefreshed = dig(tcpInfo, "rtt_fingerprint", "rcv_rtt_refreshed");
-  const rcvRttPostTls = dig(tcpInfo, "tcp_info", "rcv_rtt");
-  const appRtt = dig(tcpInfo, "rtt_fingerprint", "app_rtt_us");
-
-  const kernelRcvRtt = pick(rcvRttRefreshed, rcvRttPostTls) ?? 0;
-  const appRcvRtt = appRtt && appRtt > 0 ? appRtt : 0;
-
-  const rcvRtt = Math.max(kernelRcvRtt, appRcvRtt) || undefined;
+  const rcvRtt = pick(
+    dig(tcpInfo, "rtt_fingerprint", "rcv_rtt_refreshed"),
+    pick(
+      dig(tcpInfo, "tcp_info", "rcv_rtt"),
+      dig(tcpInfo, "rtt_fingerprint", "app_rtt_us"),
+    ),
+  );
 
   return { rtt, rcvRtt };
 }
