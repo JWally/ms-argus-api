@@ -23,6 +23,7 @@ import {
   analyzeWorkerScopes,
   analyzeTimezone,
   analyzeIpConsistency,
+  analyzeJa4Ua,
 } from "../../analysis";
 
 /** API Gateway event extended with pre-parsed body from middleware. */
@@ -199,6 +200,7 @@ function buildIntegrityItem(ctx: HandleContext, hydratedPayload: ArgusPayload) {
   const vmSignals: string[] = raw.vmSignals ?? [];
   const clientIp =
     ctx.event.headers["x-forwarded-for"]?.split(",")[0]?.trim() ?? "";
+  const ua = ctx.event.headers["user-agent"] ?? "";
 
   return {
     session_id: ctx.sessionId,
@@ -214,9 +216,10 @@ function buildIntegrityItem(ctx: HandleContext, hydratedPayload: ArgusPayload) {
       worker: analyzeWorkerScopes(raw.device),
       timezone: analyzeTimezone(raw.device, hydratedPayload.sigint),
       ip: analyzeIpConsistency(raw.device, hydratedPayload.sigint, clientIp),
+      ja4_ua: analyzeJa4Ua(hydratedPayload.sigint, ua),
     },
     client_ip: clientIp,
-    user_agent: ctx.event.headers["user-agent"] ?? "",
+    user_agent: ua,
     created_at: now,
     ttl: Math.floor(now / 1000) + INTEGRITY_TTL_SECONDS,
   };
