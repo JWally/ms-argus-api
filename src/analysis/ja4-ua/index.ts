@@ -25,7 +25,7 @@ const CIPHER_HASH_FAMILY: Record<string, string> = {
 
 /** Safari cipher hashes that distinguish iOS from macOS. */
 const SAFARI_OS: Record<string, string> = {
-  a09f3c656075: "iOS",
+  // a09f3c656075 is shared between iOS and macOS — not OS-specific
   "2802a3db6c62": "iOS",
   "723694b0fccc": "macOS",
 };

@@ -109,13 +109,11 @@ describe("analyzeJa4Ua", () => {
   });
 
   describe("Safari OS mismatch", () => {
-    it("iOS cipher hash + macOS UA", () => {
+    it("shared cipher hash (a09f3c656075) does not flag either OS", () => {
+      // This cipher hash is used by both iOS and macOS Safari
       const result = analyzeJa4Ua(SAFARI_IOS_SIGINT, SAFARI_MAC_UA);
       const codes = result.signals.map((s) => s.code);
-      expect(codes).toContain("SAFARI_OS_MISMATCH");
-      expect(
-        result.signals.find((s) => s.code === "SAFARI_OS_MISMATCH")?.expected,
-      ).toBe("Safari TLS cipher → iOS");
+      expect(codes).not.toContain("SAFARI_OS_MISMATCH");
     });
 
     it("macOS cipher hash + iOS UA", () => {
