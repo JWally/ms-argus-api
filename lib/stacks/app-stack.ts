@@ -230,6 +230,7 @@ export class ArgusApiStack extends cdk.Stack {
       alarmsTopic,
       config: stageConfig,
       ecdhKeyParamName: `/${stackName}/ecdh-keypair`,
+      signalBaselinesTable: dynamodb.signalBaselinesTable,
     });
 
     const workers = new WorkersConstruct(this, "Workers", {
@@ -260,6 +261,7 @@ export class ArgusApiStack extends cdk.Stack {
       sigintAesKeySecretArn: resolvedSigintSecretArn,
       probeTokensTableName,
       probeTokensTableArn,
+      signalBaselinesTable: dynamodb.signalBaselinesTable,
     });
 
     // =========================================================================

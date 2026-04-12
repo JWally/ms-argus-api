@@ -47,6 +47,8 @@ interface HttpApiConstructProps {
    * Format: /${stackName}/ecdh-keypair
    */
   ecdhKeyParamName?: string;
+  /** Optional: Signal baselines table for population-based signal learning */
+  signalBaselinesTable?: dynamodb.ITable;
 }
 
 /**
@@ -123,6 +125,9 @@ export class HttpApiConstruct extends Construct {
           }),
           ...(probeTokensTableName && {
             PROBE_TOKENS_TABLE_NAME: probeTokensTableName,
+          }),
+          ...(props.signalBaselinesTable && {
+            SIGNAL_BASELINES_TABLE: props.signalBaselinesTable.tableName,
           }),
         },
       },
@@ -275,6 +280,10 @@ export class HttpApiConstruct extends Construct {
     } = props;
 
     integrityResultsTable.grantWriteData(this.ingestionFunction);
+
+    if (props.signalBaselinesTable) {
+      props.signalBaselinesTable.grantReadWriteData(this.ingestionFunction);
+    }
 
     if (probeTokensTableArn) {
       this.ingestionFunction.addToRolePolicy(

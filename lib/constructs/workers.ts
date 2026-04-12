@@ -66,6 +66,8 @@ interface WorkersConstructProps {
   probeTokensTableName?: string;
   /** Optional: ARN of PROBE_TOKENS_TABLE — used to grant dynamodb:GetItem. */
   probeTokensTableArn?: string;
+  /** Optional: Signal baselines table for population-based anomaly detection (read-only in matching worker). */
+  signalBaselinesTable?: dynamodb.ITable;
 }
 
 /**
@@ -189,8 +191,16 @@ export class WorkersConstruct extends Construct {
         ...(probeTokensTableName && {
           PROBE_TOKENS_TABLE_NAME: probeTokensTableName,
         }),
+        ...(props.signalBaselinesTable && {
+          SIGNAL_BASELINES_TABLE: props.signalBaselinesTable.tableName,
+        }),
       },
     });
+
+    // Grant matching worker read access to signal baselines for anomaly detection
+    if (props.signalBaselinesTable) {
+      props.signalBaselinesTable.grantReadData(this.matchingWorker);
+    }
 
     // Grant matching worker access to the SIGINT AES key secret
     if (sigintAesKeySecretArn) {

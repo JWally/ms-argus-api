@@ -14,8 +14,11 @@ import { detectFingerprintSignals } from "./fingerprint-signals";
 import { detectCrossFieldAnomalies } from "./worker-scope-consistency";
 import { detectJa4Coherence } from "./ja4-coherence";
 import { detectIpHistoryAnomalies } from "./ip-history-detector";
+import { detectEngineCoherence } from "./engine-coherence";
 import { detectNetworkProbeAnomalies } from "./network-probe-detector";
+import { detectSignalBaselines } from "./signal-baseline-detector";
 import type { DeviceProfile } from "../../../types/profile";
+import type { CachedBaseline } from "../../signal-learning";
 
 const logger = new Logger({
   serviceName: process.env.POWERTOOLS_SERVICE_NAME || "argus-anomaly-detector",
@@ -47,6 +50,7 @@ const detectors: DetectorFn[] = [
   detectFingerprintSignals,
   detectCrossFieldAnomalies,
   detectJa4Coherence,
+  detectEngineCoherence,
   detectNetworkProbeAnomalies,
 ];
 
@@ -74,6 +78,7 @@ export function detectAllAnomalies(
   sigint?: unknown,
   contextOpts?: {
     ipHistoryProfile?: DeviceProfile | null;
+    signalBaselines?: Map<string, CachedBaseline>;
   },
 ): AnomalyResult {
   const signals: AnomalySignal[] = [];
@@ -87,6 +92,10 @@ export function detectAllAnomalies(
       fingerprint,
       contextOpts?.ipHistoryProfile ?? null,
     ),
+  );
+
+  runSafe(signals, "SignalBaselines", () =>
+    detectSignalBaselines(raw, contextOpts?.signalBaselines),
   );
 
   return {

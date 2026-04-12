@@ -29,6 +29,7 @@ export class DynamoDbConstruct extends Construct {
   public readonly sessionPayloadTable: dynamodb.Table; // AR-XXX: Full payload for gRPC stub
   public readonly vectorResultsTable: dynamodb.Table; // Vector search results for session retrieval
   public readonly integrityResultsTable: dynamodb.Table; // Integrity check results from VM
+  public readonly signalBaselinesTable: dynamodb.Table; // Learned signal baselines per browser version
 
   constructor(scope: Construct, id: string, props: DynamoDbConstructProps) {
     super(scope, id);
@@ -144,6 +145,29 @@ export class DynamoDbConstruct extends Construct {
       stream: dynamodb.StreamViewType.NEW_IMAGE,
     });
 
+    // Signal baselines — learned population frequencies per browser version + signal module.
+    // PK: browser_key (e.g. "chrome-146"), SK: module (e.g. "math", "css_key_count").
+    // No TTL — baselines are permanent learned ground truth.
+    // Tiny table (hundreds of rows), low write volume (only unlocked groups).
+    this.signalBaselinesTable = new dynamodb.Table(
+      this,
+      "SignalBaselinesTable",
+      {
+        tableName: `${stackName}-signal-baselines`,
+        partitionKey: {
+          name: "browser_key",
+          type: dynamodb.AttributeType.STRING,
+        },
+        sortKey: {
+          name: "module",
+          type: dynamodb.AttributeType.STRING,
+        },
+        billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+        pointInTimeRecovery: true,
+        removalPolicy: RemovalPolicy.DESTROY,
+      },
+    );
+
     if (dbConfig.useProvisionedCapacity) {
       const maxCapacity = Math.ceil(
         dbConfig.baseReadCapacity * dbConfig.autoScaling.maxCapacityMultiplier,
@@ -236,6 +260,11 @@ export class DynamoDbConstruct extends Construct {
       this.createTableAlarms(
         this.integrityResultsTable,
         "IntegrityResults",
+        alarmsTopic,
+      );
+      this.createTableAlarms(
+        this.signalBaselinesTable,
+        "SignalBaselines",
         alarmsTopic,
       );
     }

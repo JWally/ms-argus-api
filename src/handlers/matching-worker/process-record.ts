@@ -11,6 +11,7 @@ import {
 } from "../../services/matching";
 import { detectAllAnomalies } from "../../services/profile/anomaly";
 import { loadProfile } from "../../services/matching/profile-loader";
+import { resolveBrowserIdentity } from "../../helpers/browser-identity";
 import type { DeviceProfile } from "../../types/profile";
 import type { SessionAnomalySignal } from "../../types";
 import type { MatchingWorkerEnvConfig } from "../../config/env";
@@ -23,6 +24,7 @@ import { recordTierMetric } from "./metrics";
 import { emitObservation } from "./observation";
 import { writeSessionPayload, buildSessionResponseData } from "./session";
 import { archivePayload } from "../ingestion/archive";
+import type { CachedBaseline } from "../../services/signal-learning";
 
 /** Dependencies required for processing SQS records in the matching worker. */
 export interface ProcessRecordDeps {
@@ -107,6 +109,7 @@ interface AnomalySignalContext {
   fingerprint: ParsedRecord["fingerprint"];
   rawPayload: SqsPayload;
   ipHistoryProfile?: DeviceProfile | null;
+  signalBaselines?: Map<string, CachedBaseline>;
 }
 
 function buildAnomalySignals(
@@ -118,6 +121,7 @@ function buildAnomalySignals(
     ctx.rawPayload.sigint,
     {
       ipHistoryProfile: ctx.ipHistoryProfile ?? null,
+      signalBaselines: ctx.signalBaselines,
     },
   );
   return result.signals.map((s) => ({
@@ -274,13 +278,41 @@ async function loadProfileForAnomalies(
   }
 }
 
+/** Load signal baselines for population-based anomaly detection. */
+async function loadSignalBaselines(
+  rawPayload: SqsPayload,
+): Promise<Map<string, CachedBaseline> | undefined> {
+  if (!process.env.SIGNAL_BASELINES_TABLE) return undefined;
+  try {
+    const { getBaselines, SIGNAL_MODULES, resolveEngineKey } =
+      await import("../../services/signal-learning");
+    const identity = resolveBrowserIdentity(
+      rawPayload.device,
+      rawPayload.sigint,
+    );
+    if (identity.baselineKey === "unknown") return undefined;
+    const { engineKey, engineVersion } = resolveEngineKey(identity);
+    if (!engineVersion) return undefined;
+    const browserKey = `${engineKey}-${engineVersion}`;
+    return await getBaselines(browserKey, SIGNAL_MODULES);
+  } catch {
+    return undefined;
+  }
+}
+
 /** Build anomaly signals from fingerprint and raw payload. */
 function buildAnomalies(
   fingerprint: ParsedRecord["fingerprint"],
   rawPayload: SqsPayload,
   ipHistoryProfile?: DeviceProfile | null,
+  signalBaselines?: Map<string, CachedBaseline>,
 ): SessionAnomalySignal[] {
-  return buildAnomalySignals({ fingerprint, rawPayload, ipHistoryProfile });
+  return buildAnomalySignals({
+    fingerprint,
+    rawPayload,
+    ipHistoryProfile,
+    signalBaselines,
+  });
 }
 
 /** Process a single SQS record through the matching pipeline. */
@@ -305,22 +337,65 @@ export async function processRecord(
     deps,
   );
 
-  // Load profile for IP history anomaly detection (skip for new devices)
-  const existingProfile = matchResult.is_new_device
-    ? null
-    : await loadProfileForAnomalies(deps, matchResult.device_id);
+  await finalizeRecord({
+    service,
+    deps,
+    rawPayload,
+    sessionId,
+    fingerprint,
+    payload,
+    idempotencyKey,
+    matchResult,
+    tier2TimedOut,
+    startTime,
+  });
+}
 
-  const anomalies = buildAnomalies(fingerprint, rawPayload, existingProfile);
+interface FinalizeArgs {
+  service: MatchingService;
+  deps: ProcessRecordDeps;
+  rawPayload: SqsPayload;
+  sessionId: string;
+  fingerprint: ParsedRecord["fingerprint"];
+  payload: ParsedRecord["payload"];
+  idempotencyKey: string;
+  matchResult: MatchResult;
+  tier2TimedOut: boolean;
+  startTime: number;
+}
+
+/** Load baselines + profile, build anomalies, persist, emit vector + metrics. */
+async function finalizeRecord(args: FinalizeArgs): Promise<void> {
+  const {
+    service,
+    deps,
+    rawPayload,
+    sessionId,
+    fingerprint,
+    payload,
+    idempotencyKey,
+    matchResult,
+    tier2TimedOut,
+    startTime,
+  } = args;
+
+  const [existingProfile, signalBaselines] = await Promise.all([
+    matchResult.is_new_device
+      ? Promise.resolve(null)
+      : loadProfileForAnomalies(deps, matchResult.device_id),
+    loadSignalBaselines(rawPayload),
+  ]);
+
+  const anomalies = buildAnomalies(
+    fingerprint,
+    rawPayload,
+    existingProfile,
+    signalBaselines,
+  );
+
   await persistResults(
     service,
-    {
-      sessionId,
-      matchResult,
-      idempotencyKey,
-      anomalies,
-      rawPayload,
-      payload,
-    },
+    { sessionId, matchResult, idempotencyKey, anomalies, rawPayload, payload },
     deps,
   );
 
