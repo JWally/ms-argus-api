@@ -188,14 +188,41 @@ function resolveProbeToken(
   return inlineToken;
 }
 
-/** Apply TLS JSON string to sigint in place. */
+/**
+ * Apply TLS JSON string to sigint in place.
+ *
+ * The client-side VM bridge wraps the TLS fetch in a SigintResult
+ * envelope `{data, error, durationMs}` before JSON-encoding. Unwrap
+ * `data` here so downstream consumers (analyzers, merchant API, dash
+ * UIs) see a flat `aws_cf.{ip, asn, country, city, lat, lon, tz, ...}`
+ * shape. Prior behavior left the wrapper intact, forcing every reader
+ * to do `aws_cf.X || aws_cf.data.X` fallbacks — and new consumers that
+ * didn't know about it (e.g., the BOT-BUSTER OBSERVED panel) silently
+ * showed blanks for every field but ASN.
+ *
+ * Failed-fetch case (data=null, error=...) is preserved as-is so
+ * operators can still see the error message in stored records.
+ */
 function applyTlsJson(
   sigintTls: string | undefined,
   sigint: ArgusPayload["sigint"],
 ): void {
   if (!sigintTls || !sigint || sigint.aws_cf) return;
   try {
-    sigint.aws_cf = JSON.parse(sigintTls);
+    const parsed = JSON.parse(sigintTls);
+    if (
+      parsed &&
+      typeof parsed === "object" &&
+      "data" in parsed &&
+      parsed.data &&
+      typeof parsed.data === "object"
+    ) {
+      // Normal case: unwrap the SigintResult envelope.
+      sigint.aws_cf = parsed.data;
+    } else {
+      // Failed-fetch envelope or already-flat shape: store as-is.
+      sigint.aws_cf = parsed;
+    }
   } catch {
     // ignore malformed TLS JSON
   }
