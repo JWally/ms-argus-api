@@ -82,6 +82,12 @@ function webrtcAvailable(device: unknown): boolean {
   return isObj(device.webrtc) && device.webrtc !== null;
 }
 
+// Field paths used in anomaly-signal metadata — extracted so sonarjs's
+// duplicate-literal rule doesn't trip across the multiple emit sites.
+const WEBRTC_IP_FIELD = "device.webrtc.iceCandidates.publicIP";
+const CF_IP_FIELD = "sigint.aws_cf.ip";
+const TCP_PROBE_IP_FIELD = "sigint.tcp_probe.client_ip";
+
 /** Parse IPv4 into 4 octets. Returns null for non-IPv4. */
 function parseIpv4(ip: string): number[] | null {
   const parts = ip.split(".");
@@ -109,7 +115,7 @@ function checkProbeScatter(probeIps: (string | null)[]): AnomalySignal | null {
   return createSignal("NETWORK", AnomalyCodes.IP_PROBE_SCATTER, severity, {
     expected: "all probes observe same IP",
     actual: `${unique.length} distinct IPs: ${unique.join(", ")}`,
-    fields: ["client_ip", "sigint.aws_cf.ip", "sigint.tcp_probe.client_ip"],
+    fields: ["client_ip", CF_IP_FIELD, TCP_PROBE_IP_FIELD],
   });
 }
 
@@ -121,18 +127,24 @@ function checkWebrtcVsProbes(
   if (present.length === 0) return null;
   if (present.includes(webrtcIp)) return null;
 
-  // Same /16 subnet = likely CGNAT or cellular NAT, not a proxy
+  // Same /16 subnet = very likely CGNAT or cellular carrier NAT, not a
+  // proxy. Emit a positive SAME_SUBNET_CGNAT signal instead of silently
+  // suppressing — downstream consumers (dashboards, demo UI) use it to
+  // label the visitor as mobile/CGNAT. Low severity because it's a
+  // benign classification, not a threat.
   const sameSubnet = present.some((ip) => sameSubnet16(webrtcIp, ip));
-  if (sameSubnet) return null;
+  if (sameSubnet) {
+    return createSignal("NETWORK", AnomalyCodes.SAME_SUBNET_CGNAT, 0.1, {
+      expected: "positive indicator, not a threat",
+      actual: `webrtc=${webrtcIp} vs probes=${[...new Set(present)].join(", ")} — same /16 (CGNAT/cellular)`,
+      fields: [WEBRTC_IP_FIELD, CF_IP_FIELD, TCP_PROBE_IP_FIELD],
+    });
+  }
 
   return createSignal("NETWORK", AnomalyCodes.WEBRTC_IP_MISMATCH, 0.7, {
     expected: "WebRTC IP matches server-observed IP",
     actual: `webrtc=${webrtcIp} vs probes=${[...new Set(present)].join(", ")}`,
-    fields: [
-      "device.webrtc.iceCandidates.publicIP",
-      "sigint.aws_cf.ip",
-      "sigint.tcp_probe.client_ip",
-    ],
+    fields: [WEBRTC_IP_FIELD, CF_IP_FIELD, TCP_PROBE_IP_FIELD],
   });
 }
 

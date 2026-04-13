@@ -74,6 +74,15 @@ export const AnomalyCodes = {
   // IP consistency across probes and WebRTC
   IP_PROBE_SCATTER: "IP_PROBE_SCATTER",
   WEBRTC_BLOCKED: "WEBRTC_BLOCKED",
+  /**
+   * WebRTC IP differs from the server-observed probe IPs, but all are on
+   * the same /16 subnet. Strong indicator of CGNAT / cellular carrier
+   * NAT (T-Mobile, Verizon, AT&T mobile, etc.) — not a proxy. Positive
+   * signal rather than a suppressed mismatch; surfaced to downstream
+   * consumers (dashboards, demo UI) so they can label the visitor as
+   * mobile/CGNAT rather than showing nothing.
+   */
+  SAME_SUBNET_CGNAT: "SAME_SUBNET_CGNAT",
   // Network probe anomalies (computed from tcp_info/rtt_fingerprint in the API)
   LIKELY_PROXY: "LIKELY_PROXY",
   LIKELY_VPN: "LIKELY_VPN",
