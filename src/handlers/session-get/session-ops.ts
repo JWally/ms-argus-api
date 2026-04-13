@@ -298,8 +298,12 @@ interface IntegrityResultsData {
   sigint: Record<string, string>;
   analysis: {
     network: {
+      /** Noisy-OR combined proxy score [0,1] — merchant-facing. */
       proxy_score: number;
-      vpn_score: number;
+      /** Continuous RTT-ratio-derived score [0,1] — internal. */
+      proxy_component: number;
+      /** Continuous MSS-derived score [0,1] — internal. */
+      vpn_component: number;
       signals: Array<{ code: string; severity: number; evidence: unknown }>;
     };
     worker: {
