@@ -81,6 +81,28 @@ function buildSuccessResponse(
 
 const JSON_HEADERS = { "Content-Type": "application/json" };
 
+/**
+ * TODO(merchant-response-shaping): this endpoint currently returns the
+ * full integrity record (device fingerprint, sigint blob, every analyzer
+ * output, raw signals). That's fine for our internal use but a
+ * reconnaissance gift for any merchant — and any bot that owns a
+ * merchant account — once they realize they can call it.
+ *
+ * Before we expose this to merchants in production, replace
+ * `integrityResults` with a stripped projection containing only fields
+ * a fraud-prevention buyer needs:
+ *   - score / decision (when scoring lands)
+ *   - a small fixed set of merchant-safe flags (e.g. ip_lied,
+ *     timezone_lied, asn_category, browser_family) — NOT the full
+ *     analyzer evidence arrays
+ *   - timestamps and the session id
+ *
+ * Keep DynamoDB storage as-is (full record); the shaping happens here in
+ * the response layer. Internal tools (admin endpoint, dashboards, PW
+ * tests) should read DDB / S3 directly with elevated auth, not via this
+ * route. PW tests in ms-argus-web-integrity already do DDB-direct so they
+ * won't silently break when this is tightened.
+ */
 async function handleIntegritySession(
   sessionId: string,
   deps: HandlerDeps,
