@@ -375,7 +375,7 @@ export class WorkersConstruct extends Construct {
             "../../src/handlers/integrity-archiver.ts",
           ),
           functionName: `${stackName}-integrity-archiver`,
-          memorySize: 256,
+          memorySize: 512, // Bumped from 256 for warmup middleware + cold-start headroom
           timeout: Duration.seconds(30),
           environment: {
             ...createWorkerEnv(

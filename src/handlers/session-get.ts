@@ -4,10 +4,12 @@ import { logMetrics } from "@aws-lambda-powertools/metrics/middleware";
 import { injectLambdaContext } from "@aws-lambda-powertools/logger/middleware";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import middy from "@middy/core";
+import warmup from "@middy/warmup";
 import { DynamoCacheService } from "../services/cache/dynamo-cache";
 import { validateRequiredEnvVars } from "../helpers/env-validation";
 import { corsMiddleware } from "../helpers/cors-middleware";
 import { jsonErrorHandler } from "../helpers/error-middleware";
+import { onWarmup } from "../helpers/middy-helpers";
 import { createBaseHandler } from "./session-get/base-handler";
 
 /**
@@ -69,6 +71,7 @@ const baseHandler = createBaseHandler({
 });
 
 export const handler = middy(baseHandler)
+  .use(warmup({ onWarmup }))
   .use(injectLambdaContext(logger))
   .use(logMetrics(metrics))
   .use(corsMiddleware({ methods: "GET, OPTIONS", headers: "Content-Type" }))

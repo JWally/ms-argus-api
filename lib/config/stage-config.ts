@@ -126,7 +126,7 @@ const devConfig: StageConfig = {
       memorySize: 512, // Bumped from 256 — testing CPU headroom for ECDH decrypt
     },
     sessionGet: {
-      memorySize: 256, // Simple DynamoDB read
+      memorySize: 512, // Bumped from 256 for cold-start headroom + warmup
     },
     vectorWorker: {
       memorySize: 512, // Network I/O to QDrant
@@ -204,10 +204,10 @@ const prodConfig: StageConfig = {
       reservedConcurrency: 500,
     },
     ingestion: {
-      memorySize: 256, // Minimal processing - just validation and SQS publish
+      memorySize: 512, // Bumped from 256 for cold-start headroom + ECDH decrypt
     },
     sessionGet: {
-      memorySize: 256, // Simple DynamoDB read
+      memorySize: 512, // Bumped from 256 for cold-start headroom + warmup
     },
     vectorWorker: {
       memorySize: 512, // Network I/O to QDrant

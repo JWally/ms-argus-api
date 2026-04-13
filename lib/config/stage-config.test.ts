@@ -75,7 +75,7 @@ describe("stage-config", () => {
 
       it("should have API Lambda memory configurations", () => {
         expect(dev.lambda.ingestion.memorySize).toBe(512);
-        expect(dev.lambda.sessionGet.memorySize).toBe(256);
+        expect(dev.lambda.sessionGet.memorySize).toBe(512);
       });
 
       it("should have no provisioned concurrency", () => {
@@ -111,8 +111,8 @@ describe("stage-config", () => {
       });
 
       it("should have API Lambda memory configurations", () => {
-        expect(prod.lambda.ingestion.memorySize).toBe(256);
-        expect(prod.lambda.sessionGet.memorySize).toBe(256);
+        expect(prod.lambda.ingestion.memorySize).toBe(512);
+        expect(prod.lambda.sessionGet.memorySize).toBe(512);
       });
 
       it("should have provisioned concurrency", () => {

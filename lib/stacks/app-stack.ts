@@ -291,6 +291,59 @@ export class ArgusApiStack extends cdk.Stack {
     );
 
     // =========================================================================
+    // Direct Lambda warmers for the integrity path.
+    //
+    // Each fires EventBridge → Lambda with `{ warmup: true, source: "warmup-rule" }`.
+    // Handlers use @middy/warmup with `isWarmingUp` from helpers/middy-helpers,
+    // which short-circuits before the real handler runs.
+    //
+    // Unlike MatchingWarmupRule (above) which warms matching-worker via SQS,
+    // these fire the Lambda directly because ingestion/session-get are API
+    // handlers, not SQS consumers.
+    // =========================================================================
+
+    const warmupPayload = events.RuleTargetInput.fromObject({
+      warmup: true,
+      source: "warmup-rule",
+      timestamp: events.EventField.time,
+    });
+
+    new events.Rule(this, "IngestionWarmupRule", {
+      ruleName: `${stackName}-ingestion-warmup`,
+      description: "Keep integrity ingestion Lambda warm",
+      schedule: events.Schedule.rate(cdk.Duration.minutes(1)),
+      targets: [
+        new targets.LambdaFunction(httpApi.ingestionFunction, {
+          event: warmupPayload,
+        }),
+      ],
+    });
+
+    new events.Rule(this, "SessionGetWarmupRule", {
+      ruleName: `${stackName}-session-get-warmup`,
+      description: "Keep session-get Lambda warm",
+      schedule: events.Schedule.rate(cdk.Duration.minutes(1)),
+      targets: [
+        new targets.LambdaFunction(httpApi.sessionGetFunction, {
+          event: warmupPayload,
+        }),
+      ],
+    });
+
+    if (workers.integrityArchiver) {
+      new events.Rule(this, "IntegrityArchiverWarmupRule", {
+        ruleName: `${stackName}-integrity-archiver-warmup`,
+        description: "Keep integrity-archiver Lambda warm",
+        schedule: events.Schedule.rate(cdk.Duration.minutes(1)),
+        targets: [
+          new targets.LambdaFunction(workers.integrityArchiver, {
+            event: warmupPayload,
+          }),
+        ],
+      });
+    }
+
+    // =========================================================================
     // EDGE LAYER
     // =========================================================================
 
