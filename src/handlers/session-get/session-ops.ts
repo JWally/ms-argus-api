@@ -17,6 +17,7 @@ import {
   type SessionResponse,
 } from "../../helpers/payload-schema";
 import { SessionCacheValue } from "../../types/matching";
+import { buildMerchantResponse } from "../../helpers/merchant-projection";
 
 /**
  * Extracts and validates the session ID from the API Gateway event.
@@ -188,6 +189,7 @@ export function buildFallbackResponse(
   metrics: Metrics,
 ): APIGatewayProxyResultV2 {
   metrics.addMetric("SessionPayloadMissing", MetricUnit.Count, 1);
+  const merchant = buildMerchantResponse({ session_id: sessionId, session });
   const body = JSON.stringify({
     identifiers: {
       session_id: sessionId,
@@ -204,6 +206,7 @@ export function buildFallbackResponse(
     },
     hashes: { stable: "unavailable", fuzzy: "unavailable" },
     device: {},
+    merchant,
   });
   return {
     statusCode: 200,
@@ -287,7 +290,7 @@ export async function fetchVectorResults(
 /**
  * Integrity results data shape stored in DynamoDB.
  */
-interface IntegrityResultsData {
+export interface IntegrityResultsData {
   session_id: string;
   tampered: boolean;
   vm_signals: string[];
