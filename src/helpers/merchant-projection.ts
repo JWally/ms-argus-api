@@ -67,6 +67,18 @@ export interface MerchantSafeResponse {
     asn_org: string | null;
     country: string | null;
   };
+  /**
+   * Cryptographic device identity. Distinct from `device_id` above — that's
+   * the match-derived ID (probabilistic); this is the client-asserted ECDSA
+   * pubkey (cryptographic). Null when the client didn't send a device_identity
+   * block (legacy bundle) or when we couldn't attribute one. Merchants can
+   * use `pubkey` as a stable re-identifier across sessions when `verified`
+   * is true. No internal verification reasons are exposed here.
+   */
+  identification: {
+    pubkey: string;
+    verified: boolean;
+  } | null;
   /** Placeholder for future policy engine. Null until a rule engine ships. */
   policy: null;
   /** Placeholder for velocity counters (FPJS-style). Null until implemented. */
@@ -281,6 +293,13 @@ export function buildMerchantResponse(
 
   const risk_score = payload?.analysis.risk_score ?? session?.risk_score ?? 0;
 
+  const identification = input.integrity?.identification
+    ? {
+        pubkey: input.integrity.identification.pubkey,
+        verified: input.integrity.identification.verified,
+      }
+    : null;
+
   return {
     session_id,
     device_id,
@@ -291,6 +310,7 @@ export function buildMerchantResponse(
     bot: deriveBot(input),
     tags: buildTags(input),
     network: deriveNetwork(input),
+    identification,
     policy: null,
     velocity: null,
   };

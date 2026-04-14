@@ -133,6 +133,16 @@ export interface ArgusPayload {
   identifiers: PayloadIdentifiers;
   hashes: PayloadHashes;
   device: PayloadDevice;
+  /**
+   * Client-side stable device identity. Pubkey is the SPKI-base64 of a
+   * persistent non-extractable ECDSA P-256 keypair (generated once, stored in
+   * IndexedDB). Sig is ECDSA over `xor(sigintH2Token, K)` — proves possession
+   * of the private key AND a fresh h2-probe call in the last 90s.
+   */
+  device_identity?: {
+    pubkey: string;
+    sig: string;
+  };
   sigint?: PayloadSigint;
   /** HMAC-signed token from TCP probe — redeemed by matching-worker for full probe data */
   sigintTcpToken?: string;
@@ -183,6 +193,15 @@ export const payloadJsonSchema = {
       type: "object",
       additionalProperties: true,
       // Device contains nested component objects - don't be strict here
+    },
+    device_identity: {
+      type: ["object", "null"],
+      additionalProperties: false,
+      required: ["pubkey", "sig"],
+      properties: {
+        pubkey: { type: "string", minLength: 1 },
+        sig: { type: "string", minLength: 1 },
+      },
     },
     sigint: {
       type: "object",
@@ -381,6 +400,17 @@ export interface IntegrityResultsData {
   device: Record<string, unknown>;
   meta: Record<string, unknown>;
   sigint: Record<string, string>;
+  /**
+   * Device-identity verification outcome. Present when the client sent a
+   * `device_identity` block in the payload (pubkey + sig over xor'd h2-token).
+   * Absent on legacy bundles pre-migration.
+   */
+  identification?: {
+    pubkey: string;
+    verified: boolean;
+    reason: string | null;
+    sig_present: boolean;
+  };
   analysis: {
     network: {
       /** Noisy-OR combined proxy score [0,1] — merchant-facing. */

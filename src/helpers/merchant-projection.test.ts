@@ -90,6 +90,7 @@ describe("buildMerchantResponse", () => {
         bot: "none",
         tags: [],
         network: { asn: null, asn_org: null, country: null },
+        identification: null,
         policy: null,
         velocity: null,
       });
@@ -397,6 +398,55 @@ describe("buildMerchantResponse", () => {
       const result = buildMerchantResponse({ session_id: "s" });
       expect(result.policy).toBeNull();
       expect(result.velocity).toBeNull();
+    });
+  });
+
+  describe("identification", () => {
+    it("is null when no integrity.identification arrived", () => {
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: baseIntegrity(),
+      });
+      expect(result.identification).toBeNull();
+    });
+
+    it("surfaces pubkey + verified when the row carries identification", () => {
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: baseIntegrity({
+          identification: {
+            pubkey: "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEXXX",
+            verified: true,
+            reason: null,
+            sig_present: true,
+          },
+        }),
+      });
+      expect(result.identification).toEqual({
+        pubkey: "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEXXX",
+        verified: true,
+      });
+    });
+
+    it("does not leak verification reasons to the merchant", () => {
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: baseIntegrity({
+          identification: {
+            pubkey: "pk",
+            verified: false,
+            reason: "sig_invalid",
+            sig_present: true,
+          },
+        }),
+      });
+      expect(result.identification).toEqual({
+        pubkey: "pk",
+        verified: false,
+      });
+      expect(
+        (result.identification as Record<string, unknown>).reason,
+      ).toBeUndefined();
     });
   });
 });
