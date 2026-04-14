@@ -38,10 +38,6 @@ function baseIntegrity(
 ): IntegrityResultsData {
   return {
     session_id: "sess-1",
-    tampered: false,
-    vm_signals: [],
-    vm_hash: "h",
-    signal_count: 0,
     device: {},
     meta: {},
     sigint: {},

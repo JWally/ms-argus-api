@@ -197,17 +197,12 @@ function buildIntegrityItem(ctx: HandleContext, hydratedPayload: ArgusPayload) {
   const now = Date.now();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const raw = ctx.payload as any;
-  const vmSignals: string[] = raw.vmSignals ?? [];
   const clientIp =
     ctx.event.headers["x-forwarded-for"]?.split(",")[0]?.trim() ?? "";
   const ua = ctx.event.headers["user-agent"] ?? "";
 
   return {
     session_id: ctx.sessionId,
-    tampered: raw.tampered ?? false,
-    vm_signals: vmSignals,
-    vm_hash: raw.vmHash ?? "",
-    signal_count: vmSignals.length,
     device: raw.device ?? {},
     meta: raw.meta ?? {},
     sigint: hydratedPayload.sigint ?? sigintSummary(ctx.payload),
