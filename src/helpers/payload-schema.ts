@@ -369,13 +369,15 @@ export function validateSessionResponse(response: unknown): SessionResponse {
  * handlers and helpers (notably merchant-projection) need this type.
  * Putting it in a handler module created a helper→handler import that
  * violated the layering rule and produced a circular dependency.
+ *
+ * `tampered` / `vm_signals` / `vm_hash` / `signal_count` were removed
+ * with the harden-jsvm cleanup — the client stopped generating them
+ * (vm:* signal strip on 2026-04-13) and nothing on the server side ever
+ * read them: stored, never queried. Existing DDB rows still carry the
+ * fields; new writes omit them.
  */
 export interface IntegrityResultsData {
   session_id: string;
-  tampered: boolean;
-  vm_signals: string[];
-  vm_hash: string;
-  signal_count: number;
   device: Record<string, unknown>;
   meta: Record<string, unknown>;
   sigint: Record<string, string>;

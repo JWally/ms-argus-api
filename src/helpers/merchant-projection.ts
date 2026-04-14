@@ -168,13 +168,11 @@ function readHeadless(
 
 function automationFromIntegrity(integrity: IntegrityResultsData): boolean {
   const headless = readHeadless(integrity);
-  if (headless?.webDriverIsOn) return true;
-  if ((headless?.likeHeadlessRating ?? 0) >= 20) return true;
-  if ((headless?.stealthRating ?? 0) > 0) return true;
-  const vmSignalCount = (integrity.vm_signals ?? []).filter((s) =>
-    /worker_lied|no_taskbar|webdriver|no_chrome/.test(s),
-  ).length;
-  return vmSignalCount >= 2;
+  return (
+    !!headless?.webDriverIsOn ||
+    (headless?.likeHeadlessRating ?? 0) >= 20 ||
+    (headless?.stealthRating ?? 0) > 0
+  );
 }
 
 /**
@@ -225,8 +223,6 @@ function deriveBot(input: MerchantProjectionInput): BotStatus {
   if (headless?.webDriverIsOn) return "confirmed";
   // Suspected: heuristic signals
   if ((headless?.likeHeadlessRating ?? 0) >= 20) return "suspected";
-  const vmSignalCount = (integrity?.vm_signals ?? []).length;
-  if (vmSignalCount >= 2) return "suspected";
   return "none";
 }
 
