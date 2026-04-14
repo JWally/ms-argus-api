@@ -361,3 +361,77 @@ export function validateSessionResponse(response: unknown): SessionResponse {
   requireField(obj, "device", "object");
   return response as SessionResponse;
 }
+
+/**
+ * Integrity results data shape stored in DynamoDB (IntegrityResults table).
+ *
+ * Lives here rather than next to the session-get handler because both
+ * handlers and helpers (notably merchant-projection) need this type.
+ * Putting it in a handler module created a helper→handler import that
+ * violated the layering rule and produced a circular dependency.
+ */
+export interface IntegrityResultsData {
+  session_id: string;
+  tampered: boolean;
+  vm_signals: string[];
+  vm_hash: string;
+  signal_count: number;
+  device: Record<string, unknown>;
+  meta: Record<string, unknown>;
+  sigint: Record<string, string>;
+  analysis: {
+    network: {
+      /** Noisy-OR combined proxy score [0,1] — merchant-facing. */
+      proxy_score: number;
+      /** Continuous RTT-ratio-derived score [0,1] — internal. */
+      proxy_component: number;
+      /** Continuous MSS-derived score [0,1] — internal. */
+      vpn_component: number;
+      signals: Array<{ code: string; severity: number; evidence: unknown }>;
+    };
+    worker: {
+      lied: boolean;
+      divergences: Array<{
+        field: string;
+        main: unknown;
+        web: unknown;
+        shared: unknown;
+      }>;
+      signals: Array<{ code: string; severity: number; evidence: string }>;
+    };
+    timezone: {
+      lied: boolean;
+      checks: {
+        offsetMatchesComputed: boolean;
+        locationMatchesCfTimezone: boolean | null;
+        offsetMatchesWorker: boolean | null;
+        clientReportedLie: boolean;
+      };
+      cfTimezone: string | null;
+      clientTimezone: string | null;
+      signals: Array<{ code: string; severity: number; evidence: string }>;
+    };
+    ip: {
+      lied: boolean;
+      ips: {
+        api: string | null;
+        tls: string | null;
+        tcp: string | null;
+        webrtc: string | null;
+      };
+      asn: {
+        number: string | null;
+        category: string | null;
+        org: string | null;
+      };
+      checks: {
+        probesConsistent: boolean;
+        webrtcMatchesProbes: boolean | null;
+      };
+      signals: Array<{ code: string; severity: number; evidence: string }>;
+    };
+  };
+  client_ip: string;
+  user_agent: string;
+  created_at: number;
+}

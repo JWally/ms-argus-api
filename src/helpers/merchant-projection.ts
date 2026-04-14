@@ -25,8 +25,7 @@
  */
 
 import type { SessionCacheValue } from "../types/matching";
-import type { SessionResponse } from "./payload-schema";
-import type { IntegrityResultsData } from "../handlers/session-get/session-ops";
+import type { SessionResponse, IntegrityResultsData } from "./payload-schema";
 
 /**
  * Categorical merchant-safe tag vocabulary. Composable — a request can be

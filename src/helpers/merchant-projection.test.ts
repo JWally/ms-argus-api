@@ -13,7 +13,7 @@ import {
   type MerchantProjectionInput,
 } from "./merchant-projection";
 import type { SessionCacheValue } from "../types/matching";
-import type { IntegrityResultsData } from "../handlers/session-get/session-ops";
+import type { IntegrityResultsData } from "./payload-schema";
 
 function baseSession(
   overrides: Partial<SessionCacheValue> = {},

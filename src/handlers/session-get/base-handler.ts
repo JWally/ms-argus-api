@@ -20,8 +20,10 @@ import {
 } from "./session-ops";
 import { validateIntegrityApiKey } from "../../helpers/integrity-api-key";
 import { buildMerchantResponse } from "../../helpers/merchant-projection";
-import type { IntegrityResultsData } from "./session-ops";
-import type { SessionResponse } from "../../helpers/payload-schema";
+import type {
+  IntegrityResultsData,
+  SessionResponse,
+} from "../../helpers/payload-schema";
 
 /**
  * Dependencies required by the session-get handler.
