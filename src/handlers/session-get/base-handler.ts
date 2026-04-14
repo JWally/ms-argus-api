@@ -19,6 +19,9 @@ import {
   buildFallbackResponse,
 } from "./session-ops";
 import { validateIntegrityApiKey } from "../../helpers/integrity-api-key";
+import { buildMerchantResponse } from "../../helpers/merchant-projection";
+import type { IntegrityResultsData } from "./session-ops";
+import type { SessionResponse } from "../../helpers/payload-schema";
 
 /**
  * Dependencies required by the session-get handler.
@@ -60,18 +63,37 @@ function emitSessionMetrics(
   );
 }
 
-/** Build success response with optional vector + integrity results */
-function buildSuccessResponse(
+/**
+ * Build success response with optional vector + integrity results.
+ *
+ * Always attaches a top-level `merchant` projection — the small,
+ * categorical, adversary-safe surface documented in
+ * helpers/merchant-projection.ts. The full internal fields remain
+ * alongside it (additive, non-breaking) so internal tools and the
+ * bot-buster demo page continue to work. Removal of the rich fields
+ * from `/v1/session` is a separate follow-up once external consumers
+ * have migrated to `merchant.*`.
+ */
+function buildSuccessResponse(params: {
+  sessionId: string;
+  fullPayload?: SessionResponse;
+  session?: import("../../types/matching").SessionCacheValue;
+  integrity?: IntegrityResultsData;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  fullPayload: any,
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  vectorResults?: any,
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  integrityResults?: any,
-): APIGatewayProxyResultV2 {
-  const response = { ...fullPayload };
-  if (vectorResults) response.vector_results = vectorResults;
-  if (integrityResults) response.integrity = integrityResults;
+  vectorResults?: any;
+}): APIGatewayProxyResultV2 {
+  const merchant = buildMerchantResponse({
+    session_id: params.sessionId,
+    session: params.session,
+    payload: params.fullPayload,
+    integrity: params.integrity,
+  });
+  const response: Record<string, unknown> = params.fullPayload
+    ? { ...params.fullPayload, merchant }
+    : { merchant };
+  if (params.vectorResults) response.vector_results = params.vectorResults;
+  if (params.integrity) response.integrity = params.integrity;
+  if (!params.fullPayload) response.session_id = params.sessionId;
   return {
     statusCode: 200,
     headers: { "Content-Type": "application/json" },
@@ -128,11 +150,24 @@ async function handleIntegritySession(
     };
   }
   deps.metrics.addMetric("IntegritySessionRetrieved", MetricUnit.Count, 1);
-  return buildSuccessResponse(
-    { session_id: sessionId },
-    undefined,
-    integrityResults,
-  );
+  // Best-effort session lookup for flag/confidence data in the projection.
+  // Integrity endpoint must not 404 just because the session cache expired,
+  // so swallow lookup failures.
+  let session: import("../../types/matching").SessionCacheValue | undefined;
+  try {
+    session = await lookupSession(sessionId, {
+      cacheService: deps.cacheService,
+      logger: deps.logger,
+      metrics: deps.metrics,
+    });
+  } catch {
+    session = undefined;
+  }
+  return buildSuccessResponse({
+    sessionId,
+    session,
+    integrity: integrityResults,
+  });
 }
 
 async function handleRegularSession(
@@ -174,7 +209,12 @@ async function handleRegularSession(
   );
 
   if (fullPayload) {
-    return buildSuccessResponse(fullPayload, vectorResults);
+    return buildSuccessResponse({
+      sessionId,
+      fullPayload,
+      session,
+      vectorResults,
+    });
   }
   return buildFallbackResponse(session, sessionId, deps.metrics);
 }
