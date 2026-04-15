@@ -19,6 +19,10 @@ import { HttpError } from "../../helpers/http-error";
 import { getSessionId, type ArgusPayload } from "../../helpers/payload-schema";
 import { redeemSigintTokens } from "../../helpers/redeem-sigint-tokens";
 import {
+  verifyDeviceIdentity,
+  type IdentityOutcome,
+} from "../../helpers/device-identity";
+import {
   analyzeNetworkProbes,
   analyzeWorkerScopes,
   analyzeTimezone,
@@ -193,7 +197,47 @@ function sigintSummary(payload: ArgusPayload): Record<string, string> {
   };
 }
 
-function buildIntegrityItem(ctx: HandleContext, hydratedPayload: ArgusPayload) {
+/**
+ * Build the `identification` column value from a verify outcome. Returns
+ * undefined when the payload had no device_identity at all — saves a column on
+ * legacy-bundle rows and keeps schemaless consumers unambiguous.
+ */
+function buildIdentificationField(
+  outcome: IdentityOutcome,
+): Record<string, unknown> | undefined {
+  if (!outcome.present) return undefined;
+  return {
+    pubkey: outcome.pubkey,
+    verified: outcome.verified,
+    reason: outcome.verified ? null : outcome.reason,
+    sig_present: outcome.sig_present,
+  };
+}
+
+function emitIdentityMetrics(
+  deps: BaseHandlerDeps,
+  outcome: IdentityOutcome,
+): void {
+  if (!outcome.present) {
+    deps.metrics.addMetric("DeviceIdentityAbsent", MetricUnit.Count, 1);
+    return;
+  }
+  if (outcome.verified) {
+    deps.metrics.addMetric("DeviceIdentityVerified", MetricUnit.Count, 1);
+    return;
+  }
+  deps.metrics.addMetric("DeviceIdentityVerifyFailed", MetricUnit.Count, 1);
+  deps.logger.warn("Device identity verification failed", {
+    reason: outcome.reason,
+    sig_present: outcome.sig_present,
+  });
+}
+
+function buildIntegrityItem(
+  ctx: HandleContext,
+  hydratedPayload: ArgusPayload,
+  identity: IdentityOutcome,
+) {
   const now = Date.now();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const raw = ctx.payload as any;
@@ -201,11 +245,14 @@ function buildIntegrityItem(ctx: HandleContext, hydratedPayload: ArgusPayload) {
     ctx.event.headers["x-forwarded-for"]?.split(",")[0]?.trim() ?? "";
   const ua = ctx.event.headers["user-agent"] ?? "";
 
+  const identification = buildIdentificationField(identity);
+
   return {
     session_id: ctx.sessionId,
     device: raw.device ?? {},
     meta: raw.meta ?? {},
     sigint: hydratedPayload.sigint ?? sigintSummary(ctx.payload),
+    ...(identification ? { identification } : {}),
     analysis: {
       network: analyzeNetworkProbes(hydratedPayload.sigint),
       worker: analyzeWorkerScopes(raw.device),
@@ -224,7 +271,12 @@ async function handleIntegrity(
   ctx: HandleContext,
 ): Promise<APIGatewayProxyResultV2> {
   const hydratedPayload = await hydrateSigint(ctx.payload, ctx.deps);
-  const item = buildIntegrityItem(ctx, hydratedPayload);
+  // Verify the client's device-identity sig against the raw (pre-hydration)
+  // payload so sigintH2Token is still available. Failures never block —
+  // the outcome is recorded on the row for analytics.
+  const identity = await verifyDeviceIdentity(ctx.payload);
+  emitIdentityMetrics(ctx.deps, identity);
+  const item = buildIntegrityItem(ctx, hydratedPayload, identity);
 
   try {
     await ddbClient.send(
