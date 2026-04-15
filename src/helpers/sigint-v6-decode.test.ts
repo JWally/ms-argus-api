@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
+  buildWebrtcSigintField,
   decodeV6Payload,
   decodeWebrtcSigintCandidates,
   ipv6StringToBytes,
@@ -146,5 +147,62 @@ describe("decodeWebrtcSigintCandidates", () => {
     const r = decodeWebrtcSigintCandidates({}, KEY_ZERO, now);
     expect(r.reason).toBe("no_candidates");
     expect(r.candidateCount).toBe(0);
+  });
+});
+
+describe("buildWebrtcSigintField", () => {
+  it("returns undefined when no candidates were present", () => {
+    expect(
+      buildWebrtcSigintField({
+        decoded: null,
+        candidateCount: 0,
+        reason: "no_candidates",
+      }),
+    ).toBeUndefined();
+  });
+
+  it("flattens decoded payload into the stored record", () => {
+    const out = buildWebrtcSigintField({
+      decoded: {
+        ip: "1.2.3.4",
+        epoch: 1776275382,
+        ageSec: 5,
+        nonce: "deadbeef",
+        macValid: true,
+        fresh: true,
+      },
+      candidateCount: 1,
+      reason: "ok",
+    });
+    expect(out).toEqual({
+      status: "ok",
+      candidate_count: 1,
+      ip: "1.2.3.4",
+      epoch: 1776275382,
+      age_sec: 5,
+      nonce: "deadbeef",
+      mac_valid: true,
+      fresh: true,
+    });
+  });
+
+  it("records status without payload fields on multi_candidates", () => {
+    expect(
+      buildWebrtcSigintField({
+        decoded: null,
+        candidateCount: 3,
+        reason: "multi_candidates",
+      }),
+    ).toEqual({ status: "multi_candidates", candidate_count: 3 });
+  });
+
+  it("records parse_fail with no ip field", () => {
+    const out = buildWebrtcSigintField({
+      decoded: null,
+      candidateCount: 1,
+      reason: "parse_fail",
+    });
+    expect(out).toEqual({ status: "parse_fail", candidate_count: 1 });
+    expect(out).not.toHaveProperty("ip");
   });
 });

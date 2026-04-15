@@ -19,8 +19,8 @@ import { HttpError } from "../../helpers/http-error";
 import { getSessionId, type ArgusPayload } from "../../helpers/payload-schema";
 import { redeemSigintTokens } from "../../helpers/redeem-sigint-tokens";
 import {
+  buildWebrtcSigintField,
   decodeWebrtcSigintCandidates,
-  type SigintCandidateDecodeResult,
 } from "../../helpers/sigint-v6-decode";
 import {
   verifyDeviceIdentity,
@@ -235,25 +235,6 @@ function emitIdentityMetrics(
     reason: outcome.reason,
     sig_present: outcome.sig_present,
   });
-}
-
-function buildWebrtcSigintField(
-  result: SigintCandidateDecodeResult,
-): Record<string, unknown> | undefined {
-  if (result.reason === "no_candidates") return undefined;
-  const base: Record<string, unknown> = {
-    status: result.reason,
-    candidate_count: result.candidateCount,
-  };
-  if (result.decoded) {
-    base.ip = result.decoded.ip;
-    base.epoch = result.decoded.epoch;
-    base.age_sec = result.decoded.ageSec;
-    base.nonce = result.decoded.nonce;
-    base.mac_valid = result.decoded.macValid;
-    base.fresh = result.decoded.fresh;
-  }
-  return base;
 }
 
 function buildIntegrityItem(

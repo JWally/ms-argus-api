@@ -218,3 +218,27 @@ export function decodeWebrtcSigintCandidates(
   }
   return { decoded, candidateCount: 1, reason: "ok" };
 }
+
+/**
+ * Build the `analysis.webrtc_sigint` field stored on integrity rows.
+ * Returns undefined when no candidates were emitted, so the column stays
+ * absent rather than being a noisy `{status: "no_candidates", ...}` stub.
+ */
+export function buildWebrtcSigintField(
+  result: SigintCandidateDecodeResult,
+): Record<string, unknown> | undefined {
+  if (result.reason === "no_candidates") return undefined;
+  const base: Record<string, unknown> = {
+    status: result.reason,
+    candidate_count: result.candidateCount,
+  };
+  if (result.decoded) {
+    base.ip = result.decoded.ip;
+    base.epoch = result.decoded.epoch;
+    base.age_sec = result.decoded.ageSec;
+    base.nonce = result.decoded.nonce;
+    base.mac_valid = result.decoded.macValid;
+    base.fresh = result.decoded.fresh;
+  }
+  return base;
+}
