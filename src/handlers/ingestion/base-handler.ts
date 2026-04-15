@@ -19,6 +19,10 @@ import { HttpError } from "../../helpers/http-error";
 import { getSessionId, type ArgusPayload } from "../../helpers/payload-schema";
 import { redeemSigintTokens } from "../../helpers/redeem-sigint-tokens";
 import {
+  decodeWebrtcSigintCandidates,
+  type SigintCandidateDecodeResult,
+} from "../../helpers/sigint-v6-decode";
+import {
   verifyDeviceIdentity,
   type IdentityOutcome,
 } from "../../helpers/device-identity";
@@ -233,6 +237,25 @@ function emitIdentityMetrics(
   });
 }
 
+function buildWebrtcSigintField(
+  result: SigintCandidateDecodeResult,
+): Record<string, unknown> | undefined {
+  if (result.reason === "no_candidates") return undefined;
+  const base: Record<string, unknown> = {
+    status: result.reason,
+    candidate_count: result.candidateCount,
+  };
+  if (result.decoded) {
+    base.ip = result.decoded.ip;
+    base.epoch = result.decoded.epoch;
+    base.age_sec = result.decoded.ageSec;
+    base.nonce = result.decoded.nonce;
+    base.mac_valid = result.decoded.macValid;
+    base.fresh = result.decoded.fresh;
+  }
+  return base;
+}
+
 function buildIntegrityItem(
   ctx: HandleContext,
   hydratedPayload: ArgusPayload,
@@ -246,6 +269,11 @@ function buildIntegrityItem(
   const ua = ctx.event.headers["user-agent"] ?? "";
 
   const identification = buildIdentificationField(identity);
+  const webrtcSigint = decodeWebrtcSigintCandidates(
+    raw.device,
+    process.env.SIGINT_AES_KEY,
+  );
+  const webrtcSigintField = buildWebrtcSigintField(webrtcSigint);
 
   return {
     session_id: ctx.sessionId,
@@ -259,6 +287,7 @@ function buildIntegrityItem(
       timezone: analyzeTimezone(raw.device, hydratedPayload.sigint),
       ip: analyzeIpConsistency(raw.device, hydratedPayload.sigint, clientIp),
       ja4_ua: analyzeJa4Ua(hydratedPayload.sigint, ua),
+      ...(webrtcSigintField ? { webrtc_sigint: webrtcSigintField } : {}),
     },
     client_ip: clientIp,
     user_agent: ua,
