@@ -12,6 +12,7 @@ import * as sqs from "aws-cdk-lib/aws-sqs";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
 import * as apigatewayv2 from "aws-cdk-lib/aws-apigatewayv2";
 import * as integrations from "aws-cdk-lib/aws-apigatewayv2-integrations";
+import { HttpIamAuthorizer } from "aws-cdk-lib/aws-apigatewayv2-authorizers";
 import * as logs from "aws-cdk-lib/aws-logs";
 import { Duration, RemovalPolicy } from "aws-cdk-lib";
 import * as ssm from "aws-cdk-lib/aws-ssm";
@@ -283,29 +284,37 @@ export class VectorWorkerConstruct extends Construct {
       this.vectorTestFunction,
     );
 
-    // Routes for vector test operations
+    // Admin-only routes — IAM-authorized so only principals with
+    // execute-api:Invoke on this API can reach Qdrant operations.
+    // See docs/vector-admin-auth.md for SigV4 invocation examples.
+    const adminAuthorizer = new HttpIamAuthorizer();
+
     this.vectorTestApi.addRoutes({
       path: "/v1/vector/health",
       methods: [apigatewayv2.HttpMethod.GET],
       integration: testIntegration,
+      authorizer: adminAuthorizer,
     });
 
     this.vectorTestApi.addRoutes({
       path: "/v1/vector/search",
       methods: [apigatewayv2.HttpMethod.POST],
       integration: testIntegration,
+      authorizer: adminAuthorizer,
     });
 
     this.vectorTestApi.addRoutes({
       path: "/v1/vector/upsert",
       methods: [apigatewayv2.HttpMethod.POST],
       integration: testIntegration,
+      authorizer: adminAuthorizer,
     });
 
     this.vectorTestApi.addRoutes({
       path: "/v1/vector/collection",
       methods: [apigatewayv2.HttpMethod.POST],
       integration: testIntegration,
+      authorizer: adminAuthorizer,
     });
 
     // =========================================================================
