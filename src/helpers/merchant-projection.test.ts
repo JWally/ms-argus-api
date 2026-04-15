@@ -63,9 +63,18 @@ function baseIntegrity(
       },
       ip: {
         lied: false,
-        ips: { api: null, tls: null, tcp: null, webrtc: null },
+        // baseline for "clean" traffic: webrtc present + verified so the
+        // no_webrtc tag doesn't fire by default in every test
+        ips: {
+          api: "1.2.3.4",
+          tls: "1.2.3.4",
+          tcp: "1.2.3.4",
+          webrtc: "1.2.3.4",
+        },
         asn: { number: null, category: null, org: null },
         checks: { probesConsistent: true, webrtcMatchesProbes: true },
+        integrity: 1.0,
+        ip: "1.2.3.4",
         signals: [],
       },
     },
@@ -89,7 +98,13 @@ describe("buildMerchantResponse", () => {
         risk_score: 0,
         bot: "none",
         tags: [],
-        network: { asn: null, asn_org: null, country: null },
+        network: {
+          asn: null,
+          asn_org: null,
+          country: null,
+          integrity: 0.5,
+          ip: null,
+        },
         identification: null,
         policy: null,
         velocity: null,
@@ -315,6 +330,92 @@ describe("buildMerchantResponse", () => {
     });
   });
 
+  describe("cellular + no_webrtc tags", () => {
+    it("emits 'cellular' when ASN category is mobile", () => {
+      const base = baseIntegrity();
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: {
+          ...base,
+          analysis: {
+            ...base.analysis,
+            ip: {
+              ...base.analysis.ip,
+              asn: {
+                number: "21928",
+                category: "mobile",
+                org: "T-Mobile USA",
+              },
+            },
+          },
+        },
+      });
+      expect(result.tags).toContain("cellular");
+    });
+
+    it("emits 'cellular' when SAME_SUBNET_CGNAT signal fired", () => {
+      const base = baseIntegrity();
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: {
+          ...base,
+          analysis: {
+            ...base.analysis,
+            ip: {
+              ...base.analysis.ip,
+              signals: [
+                {
+                  code: "SAME_SUBNET_CGNAT",
+                  severity: 0.1,
+                  evidence: "webrtc same /16",
+                },
+              ],
+            },
+          },
+        },
+      });
+      expect(result.tags).toContain("cellular");
+    });
+
+    it("emits 'no_webrtc' when webrtc IP absent and integrity > 0", () => {
+      const base = baseIntegrity();
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: {
+          ...base,
+          analysis: {
+            ...base.analysis,
+            ip: {
+              ...base.analysis.ip,
+              ips: { ...base.analysis.ip.ips, webrtc: null },
+              integrity: 0.5,
+            },
+          },
+        },
+      });
+      expect(result.tags).toContain("no_webrtc");
+    });
+
+    it("suppresses 'no_webrtc' at integrity 0 (forgery — no hints)", () => {
+      const base = baseIntegrity();
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: {
+          ...base,
+          analysis: {
+            ...base.analysis,
+            ip: {
+              ...base.analysis.ip,
+              ips: { ...base.analysis.ip.ips, webrtc: null },
+              integrity: 0,
+            },
+          },
+        },
+      });
+      expect(result.tags).not.toContain("no_webrtc");
+    });
+  });
+
   describe("network block", () => {
     it("parses AS-prefixed ASN to a number", () => {
       const base = baseIntegrity();
@@ -333,6 +434,32 @@ describe("buildMerchantResponse", () => {
       });
       expect(result.network.asn).toBe(16509);
       expect(result.network.asn_org).toBe("AMAZON");
+    });
+
+    it("surfaces network.integrity and network.ip from analysis.ip", () => {
+      const base = baseIntegrity();
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: {
+          ...base,
+          analysis: {
+            ...base.analysis,
+            ip: {
+              ...base.analysis.ip,
+              integrity: 0.8,
+              ip: "9.9.9.9",
+            },
+          },
+        },
+      });
+      expect(result.network.integrity).toBe(0.8);
+      expect(result.network.ip).toBe("9.9.9.9");
+    });
+
+    it("defaults network.integrity to 0.5 when no integrity data", () => {
+      const result = buildMerchantResponse({ session_id: "s" });
+      expect(result.network.integrity).toBe(0.5);
+      expect(result.network.ip).toBeNull();
     });
 
     it("falls back to sigint.aws_cf when integrity is absent", () => {

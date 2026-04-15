@@ -21,6 +21,7 @@ import { redeemSigintTokens } from "../../helpers/redeem-sigint-tokens";
 import {
   buildWebrtcSigintField,
   decodeWebrtcSigintCandidates,
+  type SigintCandidateDecodeResult,
 } from "../../helpers/sigint-v6-decode";
 import {
   verifyDeviceIdentity,
@@ -218,6 +219,22 @@ function buildIdentificationField(
   };
 }
 
+/**
+ * Translate the sigint decode result into the evidence shape
+ * analyzeIpConsistency wants. The IP only counts when MAC-valid AND fresh;
+ * forgery fires only when candidates were submitted and failed HMAC.
+ */
+function webrtcSigintEvidence(result: SigintCandidateDecodeResult): {
+  ip: string | null;
+  forgery: boolean;
+} {
+  const decoded = result.decoded;
+  return {
+    ip: decoded?.macValid && decoded.fresh ? decoded.ip : null,
+    forgery: result.candidateCount > 0 && decoded !== null && !decoded.macValid,
+  };
+}
+
 function emitIdentityMetrics(
   deps: BaseHandlerDeps,
   outcome: IdentityOutcome,
@@ -266,7 +283,12 @@ function buildIntegrityItem(
       network: analyzeNetworkProbes(hydratedPayload.sigint),
       worker: analyzeWorkerScopes(raw.device),
       timezone: analyzeTimezone(raw.device, hydratedPayload.sigint),
-      ip: analyzeIpConsistency(raw.device, hydratedPayload.sigint, clientIp),
+      ip: analyzeIpConsistency(
+        raw.device,
+        hydratedPayload.sigint,
+        clientIp,
+        webrtcSigintEvidence(webrtcSigint),
+      ),
       ja4_ua: analyzeJa4Ua(hydratedPayload.sigint, ua),
       ...(webrtcSigintField ? { webrtc_sigint: webrtcSigintField } : {}),
     },

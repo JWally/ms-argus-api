@@ -5,9 +5,14 @@
  * - datacenter: cloud/hosting providers — real browsers don't originate here
  * - vpn_proxy: known VPN and proxy service infrastructure
  * - corporate_proxy: enterprise security gateways (Zscaler, Umbrella, etc.)
+ * - mobile: cellular carriers — used with SAME_SUBNET_CGNAT to tag cellular
  */
 
-export type AsnCategory = "datacenter" | "vpn_proxy" | "corporate_proxy";
+export type AsnCategory =
+  | "datacenter"
+  | "vpn_proxy"
+  | "corporate_proxy"
+  | "mobile";
 
 interface AsnEntry {
   category: AsnCategory;
@@ -84,6 +89,29 @@ const ASN_CATALOG: Record<string, AsnEntry> = {
     category: "corporate_proxy",
     org: "Palo Alto Networks / Prisma Access",
   },
+
+  // ── Mobile Carriers (US) ──────────────────────────────────────
+  // T-Mobile / Sprint (merged)
+  "21928": { category: "mobile", org: "T-Mobile USA" },
+  "20057": { category: "mobile", org: "AT&T Mobility" },
+  "22394": { category: "mobile", org: "Cellco Partnership (Verizon Wireless)" },
+  "6167": { category: "mobile", org: "Cellco Partnership (Verizon Wireless)" },
+  "10507": { category: "mobile", org: "Sprint PCS (legacy)" },
+  // Cricket (AT&T)
+  "19108": { category: "mobile", org: "Cricket Wireless / AT&T" },
+  // US Cellular (regional)
+  "6315": { category: "mobile", org: "United States Cellular Corp." },
+  // ── Mobile Carriers (UK / EU) ─────────────────────────────────
+  "25135": { category: "mobile", org: "Vodafone UK (mobile)" },
+  "5607": { category: "mobile", org: "Sky UK (mobile)" },
+  "12576": { category: "mobile", org: "EE Limited (UK mobile)" },
+  "6805": { category: "mobile", org: "Telefonica Deutschland (O2)" },
+  // ── Mobile Carriers (APAC) ────────────────────────────────────
+  "45609": { category: "mobile", org: "Bharti Airtel (India mobile)" },
+  "55836": { category: "mobile", org: "Reliance Jio (India mobile)" },
+  "17639": { category: "mobile", org: "Globe Telecom (PH mobile)" },
+  "17858": { category: "mobile", org: "LG U+ (KR mobile)" },
+  "9605": { category: "mobile", org: "NTT DOCOMO (JP mobile)" },
 };
 
 /**

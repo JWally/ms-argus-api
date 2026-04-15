@@ -460,6 +460,10 @@ export interface IntegrityResultsData {
         probesConsistent: boolean;
         webrtcMatchesProbes: boolean | null;
       };
+      /** Network-trust score 0.0–1.0. See analyzeIpConsistency. */
+      integrity: number;
+      /** Representative client IP. Null at integrity < 0.5. */
+      ip: string | null;
       signals: Array<{ code: string; severity: number; evidence: string }>;
     };
   };

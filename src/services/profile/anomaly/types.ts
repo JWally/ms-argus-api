@@ -83,6 +83,15 @@ export const AnomalyCodes = {
    * mobile/CGNAT rather than showing nothing.
    */
   SAME_SUBNET_CGNAT: "SAME_SUBNET_CGNAT",
+  /**
+   * Client submitted WebRTC srflx candidates whose encrypted payload
+   * failed HMAC verification against our shared STUN secret. This cannot
+   * occur through normal browser/network paths — a legitimate client
+   * talking to our STUN always returns a MAC-valid blob. Indicates
+   * active forgery: mock STUN, MITM of our STUN response, or synthetic
+   * candidate injection. High severity; no benign explanation.
+   */
+  WEBRTC_SIGINT_FORGERY: "WEBRTC_SIGINT_FORGERY",
   // Network probe anomalies (computed from tcp_info/rtt_fingerprint in the API)
   LIKELY_PROXY: "LIKELY_PROXY",
   LIKELY_VPN: "LIKELY_VPN",

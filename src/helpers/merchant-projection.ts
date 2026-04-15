@@ -49,7 +49,14 @@ export type MerchantTag =
   | "corporate_shield"
   | "browser_tampering"
   | "automation"
-  | "incognito";
+  | "incognito"
+  /** Client appears to be on a cellular carrier (ASN is a known mobile
+   *  carrier or webrtc-vs-probes pattern matches CGNAT mobile NAT). */
+  | "cellular"
+  /** Client did not submit a MAC-verified WebRTC srflx candidate.
+   *  Merchants should cross-correlate with ASN (corp proxies strip it)
+   *  and browser tags to decide policy. */
+  | "no_webrtc";
 
 /** Ternary bot-status enum, matching FingerprintJS Pro's `bot.result` shape. */
 export type BotStatus = "none" | "suspected" | "confirmed";
@@ -77,6 +84,21 @@ export interface MerchantSafeResponse {
     asn: number | null;
     asn_org: string | null;
     country: string | null;
+    /**
+     * Discrete network-trust score 0.0–1.0. Tiers:
+     *   1.0 = all probes + webrtc agree (or CGNAT-pattern webrtc solo),
+     *   0.5–0.8 = partial scatter within same /16,
+     *   0.5 = no webrtc submitted,
+     *   0.1 = any IP on a different /16 (proxy, VPN, corp gateway),
+     *   0.0 = cryptographic forgery evidence.
+     * Distinct from `risk_score` — this is network-layer only.
+     */
+    integrity: number;
+    /**
+     * Representative client IP. MAC-verified webrtc IP when available;
+     * else tls/tcp consensus. Null at integrity < 0.5.
+     */
+    ip: string | null;
   };
   /**
    * Cryptographic device identity. Distinct from `device_id` above — that's
@@ -219,6 +241,31 @@ function detectIncognito(input: MerchantProjectionInput): boolean {
   return hasFlag(input.session?.flags, "incognito_browser_mismatch");
 }
 
+/**
+ * Cellular tag: fires when the ASN is a known mobile carrier, or when the
+ * WebRTC-vs-probes pattern matches CGNAT (SAME_SUBNET_CGNAT signal). Either
+ * gate alone is enough — many iOS browsers don't emit WebRTC, so ASN is the
+ * only available signal in those cases.
+ */
+function detectCellular(input: MerchantProjectionInput): boolean {
+  if (input.integrity?.analysis.ip.asn.category === "mobile") return true;
+  const signals = input.integrity?.analysis.ip.signals ?? [];
+  return signals.some((s) => s.code === "SAME_SUBNET_CGNAT");
+}
+
+/**
+ * `no_webrtc` tag: no MAC-verified WebRTC IP available. Fires whether
+ * WebRTC was absent entirely, blocked at UDP, or submitted with bad
+ * candidates. Suppressed when forgery was detected (score 0.0) — at that
+ * tier we give no hints.
+ */
+function detectNoWebrtc(input: MerchantProjectionInput): boolean {
+  const ipAnalysis = input.integrity?.analysis.ip;
+  if (!ipAnalysis) return false;
+  if (ipAnalysis.integrity === 0) return false;
+  return ipAnalysis.ips.webrtc === null;
+}
+
 function buildTags(input: MerchantProjectionInput): MerchantTag[] {
   const tags: MerchantTag[] = [];
   if (detectVpn(input)) tags.push("vpn");
@@ -228,6 +275,8 @@ function buildTags(input: MerchantProjectionInput): MerchantTag[] {
   if (detectBrowserTampering(input)) tags.push("browser_tampering");
   if (detectAutomation(input)) tags.push("automation");
   if (detectIncognito(input)) tags.push("incognito");
+  if (detectCellular(input)) tags.push("cellular");
+  if (detectNoWebrtc(input)) tags.push("no_webrtc");
   return tags;
 }
 
@@ -263,14 +312,21 @@ function deriveNetwork(
   input: MerchantProjectionInput,
 ): MerchantSafeResponse["network"] {
   const { integrity, payload } = input;
-  // Prefer integrity analysis (already resolved + categorized), fall back
-  // to raw sigint data in the session payload.
-  const asnFromIntegrity = integrity?.analysis.ip.asn;
+  const ipAnalysis = integrity?.analysis.ip;
+  // Defaults when integrity data is absent (legacy bundle / session-only).
+  // Integrity score defaults to 0.5 (unknown) rather than 0 so a merchant
+  // that hasn't hit integrity-collect yet doesn't get flagged as forged.
+  const integrityScore = ipAnalysis?.integrity ?? 0.5;
+  const ip = ipAnalysis?.ip ?? null;
+
+  const asnFromIntegrity = ipAnalysis?.asn;
   if (asnFromIntegrity) {
     return {
       asn: parseAsnNumber(asnFromIntegrity.number),
       asn_org: asnFromIntegrity.org ?? null,
       country: null, // country isn't in integrity analysis.ip today
+      integrity: integrityScore,
+      ip,
     };
   }
   const awsCf = (
@@ -282,6 +338,8 @@ function deriveNetwork(
     asn: parseAsnNumber(awsCf?.asn),
     asn_org: null,
     country: awsCf?.country ?? null,
+    integrity: integrityScore,
+    ip,
   };
 }
 

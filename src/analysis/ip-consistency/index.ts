@@ -2,16 +2,21 @@
  * IP consistency analysis for integrity ingestion.
  *
  * Compares IP addresses observed across independent channels:
- * - API Gateway (X-Forwarded-For)
+ * - API Gateway (X-Forwarded-For) — client-editable
  * - TLS fingerprint edge (CloudFront)
  * - TCP probe (EC2)
- * - WebRTC STUN (client-side, bypasses HTTP proxies)
+ * - WebRTC STUN — MAC-verified authentic client IP via our own STUN
  *
- * Subnet-aware: WebRTC on the same /16 as probes is likely cellular
- * CGNAT, not a proxy. Different subnet = real mismatch.
- *
- * ASN classification: known datacenter, VPN, or corporate proxy ASNs
- * are flagged with appropriate severity.
+ * Produces:
+ *  - Anomaly signals (WEBRTC_IP_MISMATCH, SAME_SUBNET_CGNAT,
+ *    IP_PROBE_SCATTER, WEBRTC_SIGINT_FORGERY, WEBRTC_BLOCKED, ASN-category).
+ *  - `integrity` score 0.0–1.0 — narrow network-trust gauge. Separate from
+ *    the global risk_score. Tiers are discrete: see `computeIntegrityScore`.
+ *  - `ip` — one representative client IP, surfaced only when integrity ≥ 0.5.
+ *    Prefers the MAC-verified WebRTC IP; falls back to tls/tcp consensus.
+ *    Never surfaced at 0.0 (forgery) or 0.1 (/16 mismatch) — either we
+ *    don't trust the value or which of the conflicting IPs to expose is
+ *    ambiguous.
  */
 
 import {
@@ -27,6 +32,14 @@ function isObj(v: unknown): v is Record<string, unknown> {
 
 function str(v: unknown): string | null {
   return typeof v === "string" && v.length > 0 ? v : null;
+}
+
+/** MAC-verified WebRTC evidence fed in from the sigint-v6-decode path. */
+export interface WebrtcSigintEvidence {
+  /** Decoded client IP when MAC was valid and payload was fresh, else null. */
+  ip: string | null;
+  /** True when sigintCandidates were submitted but HMAC verification failed. */
+  forgery: boolean;
 }
 
 export interface IpConsistencyResult {
@@ -46,6 +59,14 @@ export interface IpConsistencyResult {
     probesConsistent: boolean;
     webrtcMatchesProbes: boolean | null;
   };
+  /** Discrete 0.0–1.0 network-trust score. See computeIntegrityScore. */
+  integrity: number;
+  /**
+   * Representative client IP. MAC-verified WebRTC IP when available; else
+   * the tls/tcp consensus. Null at integrity < 0.5 or when no trusted
+   * source is available.
+   */
+  ip: string | null;
   signals: Array<{ code: string; severity: number; evidence: string }>;
 }
 
@@ -69,22 +90,12 @@ function extractTcpIp(sigint: unknown): string | null {
   return isObj(tcp) ? str(tcp.client_ip) : null;
 }
 
-function extractWebrtcIp(device: unknown): string | null {
-  if (!isObj(device)) return null;
-  const webrtc = device.webrtc;
-  if (!isObj(webrtc)) return null;
-  const ice = webrtc.iceCandidates;
-  return isObj(ice) ? str(ice.publicIP) : null;
-}
-
 function webrtcAvailable(device: unknown): boolean {
   if (!isObj(device)) return false;
   return isObj(device.webrtc) && device.webrtc !== null;
 }
 
-// Field paths used in anomaly-signal metadata — extracted so sonarjs's
-// duplicate-literal rule doesn't trip across the multiple emit sites.
-const WEBRTC_IP_FIELD = "device.webrtc.iceCandidates.publicIP";
+const WEBRTC_IP_FIELD = "analysis.webrtc_sigint.ip";
 const CF_IP_FIELD = "sigint.aws_cf.ip";
 const TCP_PROBE_IP_FIELD = "sigint.tcp_probe.client_ip";
 
@@ -103,6 +114,17 @@ function sameSubnet16(a: string, b: string): boolean {
   const ob = parseIpv4(b);
   if (!oa || !ob) return false;
   return oa[0] === ob[0] && oa[1] === ob[1];
+}
+
+/** Every IP in the set falls in the same /16. Empty set returns true. */
+function allSameSubnet16(ips: string[]): boolean {
+  if (ips.length < 2) return true;
+  const ref = parseIpv4(ips[0]);
+  if (!ref) return false;
+  return ips.every((ip) => {
+    const o = parseIpv4(ip);
+    return o !== null && o[0] === ref[0] && o[1] === ref[1];
+  });
 }
 
 function checkProbeScatter(probeIps: (string | null)[]): AnomalySignal | null {
@@ -127,11 +149,6 @@ function checkWebrtcVsProbes(
   if (present.length === 0) return null;
   if (present.includes(webrtcIp)) return null;
 
-  // Same /16 subnet = very likely CGNAT or cellular carrier NAT, not a
-  // proxy. Emit a positive SAME_SUBNET_CGNAT signal instead of silently
-  // suppressing — downstream consumers (dashboards, demo UI) use it to
-  // label the visitor as mobile/CGNAT. Low severity because it's a
-  // benign classification, not a threat.
   const sameSubnet = present.some((ip) => sameSubnet16(webrtcIp, ip));
   if (sameSubnet) {
     return createSignal("NETWORK", AnomalyCodes.SAME_SUBNET_CGNAT, 0.1, {
@@ -157,26 +174,33 @@ function checkWebrtcBlocked(device: unknown): AnomalySignal | null {
   });
 }
 
+function checkForgery(forgery: boolean): AnomalySignal | null {
+  if (!forgery) return null;
+  return createSignal("NETWORK", AnomalyCodes.WEBRTC_SIGINT_FORGERY, 0.9, {
+    expected: "STUN response HMAC verifies against shared secret",
+    actual: "sigint candidate submitted but MAC invalid — forged or spoofed",
+    fields: [WEBRTC_IP_FIELD],
+  });
+}
+
 function checkAsnCategory(asn: string | null): AnomalySignal | null {
   const entry = lookupAsn(asn);
   if (!entry) return null;
 
-  const severityMap: Record<AsnCategory, number> = {
+  const severityMap: Partial<Record<AsnCategory, number>> = {
     datacenter: 0.7,
     vpn_proxy: 0.6,
     corporate_proxy: 0.15,
+    // mobile: no anomaly — mobile is context, not a threat
   };
+  const severity = severityMap[entry.category];
+  if (severity === undefined) return null;
 
-  return createSignal(
-    "NETWORK",
-    AnomalyCodes.IP_PROBE_SCATTER,
-    severityMap[entry.category],
-    {
-      expected: "residential ISP ASN",
-      actual: `ASN ${asn} — ${entry.org} (${entry.category})`,
-      fields: ["sigint.aws_cf.asn"],
-    },
-  );
+  return createSignal("NETWORK", AnomalyCodes.IP_PROBE_SCATTER, severity, {
+    expected: "residential ISP ASN",
+    actual: `ASN ${asn} — ${entry.org} (${entry.category})`,
+    fields: ["sigint.aws_cf.asn"],
+  });
 }
 
 function formatSignals(
@@ -193,38 +217,145 @@ function collectWebrtcSignals(
   device: unknown,
   webrtcIp: string | null,
   probeIps: (string | null)[],
+  forgery: boolean,
 ): AnomalySignal[] {
+  const out: AnomalySignal[] = [];
+  const forgerySig = checkForgery(forgery);
+  if (forgerySig) out.push(forgerySig);
   if (webrtcIp) {
     const sig = checkWebrtcVsProbes(webrtcIp, probeIps);
-    return sig ? [sig] : [];
+    if (sig) out.push(sig);
+    return out;
   }
+  // No MAC-verified webrtc evidence to compare with. If the client didn't
+  // submit a webrtc block at all, emit WEBRTC_BLOCKED (low severity context).
+  // When forgery was emitted the device.webrtc block is present, so this
+  // won't double-fire.
   const blocked = checkWebrtcBlocked(device);
-  return blocked ? [blocked] : [];
+  if (blocked) out.push(blocked);
+  return out;
+}
+
+/**
+ * Count IP occurrences and return the sorted bucket sizes + webrtc's bucket.
+ */
+function bucketStats(
+  all: string[],
+  webrtcIp: string,
+): { buckets: number[]; webrtcCount: number; distinct: number } {
+  const counts = new Map<string, number>();
+  for (const ip of all) counts.set(ip, (counts.get(ip) ?? 0) + 1);
+  return {
+    buckets: [...counts.values()].sort((a, b) => b - a),
+    webrtcCount: counts.get(webrtcIp) ?? 0,
+    distinct: counts.size,
+  };
+}
+
+function scoreFour(
+  buckets: number[],
+  webrtcCount: number,
+  distinct: number,
+): number {
+  if (buckets[0] === 3 && buckets[1] === 1) {
+    return webrtcCount === 1 ? 1.0 : 0.8;
+  }
+  if (buckets[0] === 2 && buckets[1] === 2) return 0.7;
+  if (distinct === 3) return 0.6;
+  return 0.5; // 4 distinct
+}
+
+function scoreThree(buckets: number[], webrtcCount: number): number {
+  if (buckets[0] === 2 && buckets[1] === 1) {
+    return webrtcCount === 1 ? 1.0 : 0.8;
+  }
+  return 0.5; // 3 distinct
+}
+
+/**
+ * Compute the discrete network-integrity score. Tiers:
+ *
+ *   0.0 — WebRTC sigint forgery (cryptographic evidence of tampering).
+ *   0.1 — Any IP lies on a different /16 than the majority.
+ *   0.5 — No WebRTC evidence submitted (merchant cross-correlates w/ ASN).
+ *   0.5 — All 4 IPs distinct but within the same /16 (heavy CGNAT).
+ *   0.6 — 3 distinct IPs (2+1+1 pattern) within one /16.
+ *   0.7 — 2+2 split within one /16.
+ *   0.8 — 3+1 split where the solo IP is NOT webrtc (probe scatter).
+ *   1.0 — All IPs identical, OR 3+1 split where the solo IP IS webrtc
+ *         (classic mobile-CGNAT NAT mapping — benign).
+ *
+ * With fewer than 4 signals (e.g. tcp probe missing), tiers collapse
+ * sensibly: the same counting logic applies and fully-distinct sets
+ * land at 0.5.
+ */
+function computeIntegrityScore(
+  probeIps: (string | null)[],
+  webrtcIp: string | null,
+  forgery: boolean,
+): number {
+  if (forgery) return 0.0;
+  if (!webrtcIp) return 0.5;
+
+  const probes = probeIps.filter((x): x is string => x !== null);
+  const all = [...probes, webrtcIp];
+  if (all.length < 2) return 0.5;
+  if (!allSameSubnet16(all)) return 0.1;
+
+  const { buckets, webrtcCount, distinct } = bucketStats(all, webrtcIp);
+  if (distinct === 1) return 1.0;
+  if (all.length === 4) return scoreFour(buckets, webrtcCount, distinct);
+  if (all.length === 3) return scoreThree(buckets, webrtcCount);
+  return 0.7; // exactly 2 present, both different — treat as 2+2-ish
+}
+
+/**
+ * Pick the IP to surface externally (merchant projection).
+ * Only called when the caller has decided it's trustworthy to surface.
+ * Prefers the MAC-verified webrtc IP; falls back to tls (CloudFront), then
+ * tcp probe, then X-Forwarded-For last (client-editable).
+ */
+function pickSurfaceIp(
+  webrtcIp: string | null,
+  tlsIp: string | null,
+  tcpIp: string | null,
+  apiIp: string | null,
+): string | null {
+  return webrtcIp ?? tlsIp ?? tcpIp ?? apiIp;
 }
 
 /**
  * Analyze IP consistency across probes and WebRTC.
+ *
+ * `webrtcSigint` carries the MAC-verified client IP decoded from our
+ * STUN response (and a `forgery` flag when HMAC verification failed).
+ * When absent or null, analysis falls back to signals based on probes only.
  */
 export function analyzeIpConsistency(
   device: unknown,
   sigint: unknown,
   clientIp: string,
+  webrtcSigint?: WebrtcSigintEvidence,
 ): IpConsistencyResult {
   const apiIp = str(clientIp);
   const tlsIp = extractTlsIp(sigint);
   const tcpIp = extractTcpIp(sigint);
-  const webrtcIp = extractWebrtcIp(device);
+  const webrtcIp = webrtcSigint?.ip ?? null;
+  const forgery = webrtcSigint?.forgery ?? false;
   const asn = extractAsn(sigint);
   const probeIps = [apiIp, tlsIp, tcpIp];
 
   const signals: AnomalySignal[] = [];
   const scatterSig = checkProbeScatter(probeIps);
   if (scatterSig) signals.push(scatterSig);
-  signals.push(...collectWebrtcSignals(device, webrtcIp, probeIps));
+  signals.push(...collectWebrtcSignals(device, webrtcIp, probeIps, forgery));
   const asnSig = checkAsnCategory(asn);
   if (asnSig) signals.push(asnSig);
 
   const asnEntry = lookupAsn(asn);
+  const integrity = computeIntegrityScore(probeIps, webrtcIp, forgery);
+  const surfaceIp =
+    integrity >= 0.5 ? pickSurfaceIp(webrtcIp, tlsIp, tcpIp, apiIp) : null;
 
   return {
     lied: signals.some((s) => s.severity >= 0.5),
@@ -240,6 +371,8 @@ export function analyzeIpConsistency(
         ? !signals.some((s) => s.code === AnomalyCodes.WEBRTC_IP_MISMATCH)
         : null,
     },
+    integrity,
+    ip: surfaceIp,
     signals: formatSignals(signals),
   };
 }
