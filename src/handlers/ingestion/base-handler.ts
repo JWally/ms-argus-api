@@ -221,17 +221,16 @@ function buildIdentificationField(
 
 /**
  * Translate the sigint decode result into the evidence shape
- * analyzeIpConsistency wants. The IP only counts when MAC-valid AND fresh;
- * forgery fires only when candidates were submitted and failed HMAC.
+ * analyzeIpConsistency wants. IP is populated only on the "ok" path;
+ * forgery fires when candidates were submitted and none MAC-verified.
  */
 function webrtcSigintEvidence(result: SigintCandidateDecodeResult): {
   ip: string | null;
   forgery: boolean;
 } {
-  const decoded = result.decoded;
   return {
-    ip: decoded?.macValid && decoded.fresh ? decoded.ip : null,
-    forgery: result.candidateCount > 0 && decoded !== null && !decoded.macValid,
+    ip: result.reason === "ok" ? (result.decoded?.ip ?? null) : null,
+    forgery: result.reason === "forgery",
   };
 }
 

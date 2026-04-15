@@ -113,19 +113,39 @@ describe("decodeWebrtcSigintCandidates", () => {
     expect(r.decoded).toBeNull();
   });
 
-  it("skips decode when multiple candidates are present (multi-egress)", () => {
+  it("picks the first MAC-valid candidate when multiple submitted", () => {
+    // Multi-NIC clients legitimately submit several srflx candidates;
+    // the first valid one is authentic evidence of that egress.
     const device = {
       webrtc: {
         iceCandidates: {
           sigintCandidates: [
             { address: vectorAddress, port: 443 },
-            { address: "1111:2222::3333", port: 443 },
+            { address: "1111:2222::3333", port: 443 }, // garbage, fails MAC
           ],
         },
       },
     };
     const r = decodeWebrtcSigintCandidates(device, KEY_ZERO, now);
-    expect(r.reason).toBe("multi_candidates");
+    expect(r.reason).toBe("ok");
+    expect(r.candidateCount).toBe(2);
+    expect(r.decoded?.ip).toBe(VECTOR.expectedIp);
+  });
+
+  it("flags forgery when candidates submitted but none verify", () => {
+    // All candidates parse as IPv6 but none came from our STUN — synthetic.
+    const device = {
+      webrtc: {
+        iceCandidates: {
+          sigintCandidates: [
+            { address: "1111:2222::3333", port: 443 },
+            { address: "4444:5555::6666", port: 443 },
+          ],
+        },
+      },
+    };
+    const r = decodeWebrtcSigintCandidates(device, KEY_ZERO, now);
+    expect(r.reason).toBe("forgery");
     expect(r.candidateCount).toBe(2);
     expect(r.decoded).toBeNull();
   });
@@ -186,14 +206,14 @@ describe("buildWebrtcSigintField", () => {
     });
   });
 
-  it("records status without payload fields on multi_candidates", () => {
+  it("records status without payload fields on forgery", () => {
     expect(
       buildWebrtcSigintField({
         decoded: null,
         candidateCount: 3,
-        reason: "multi_candidates",
+        reason: "forgery",
       }),
-    ).toEqual({ status: "multi_candidates", candidate_count: 3 });
+    ).toEqual({ status: "forgery", candidate_count: 3 });
   });
 
   it("records parse_fail with no ip field", () => {

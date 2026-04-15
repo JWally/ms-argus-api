@@ -140,21 +140,27 @@ export function ipv6StringToBytes(addr: string): Buffer | null {
   return hextetsToBytes(hextets);
 }
 
+export type SigintDecodeReason =
+  | "ok"
+  | "no_candidates"
+  | "parse_fail"
+  | "decode_fail"
+  | "forgery";
+
 export interface SigintCandidateDecodeResult {
-  /** Decoded payload from the single valid srflx candidate, if any. */
+  /** Decoded payload from the first valid srflx candidate, if any. */
   decoded: DecodedV6Payload | null;
-  /** Candidates seen on the wire (for diagnostics, even when we skip them). */
+  /** Total srflx candidates submitted (multiple = multi-NIC/dual-stack). */
   candidateCount: number;
   /**
-   * Why the result may be null despite candidates being present.
-   * "no_candidates" | "multi_candidates" | "parse_fail" | "decode_fail"
+   * Outcome:
+   *   "ok"            — at least one candidate verified; decoded is populated.
+   *   "no_candidates" — none submitted (client had no usable WebRTC egress).
+   *   "parse_fail"    — candidates present but none parseable as IPv6.
+   *   "decode_fail"   — server misconfiguration (missing/invalid key).
+   *   "forgery"       — candidates present and parseable, but no MAC verified.
    */
-  reason:
-    | "ok"
-    | "no_candidates"
-    | "multi_candidates"
-    | "parse_fail"
-    | "decode_fail";
+  reason: SigintDecodeReason;
 }
 
 interface RawSigintCandidate {
@@ -173,12 +179,58 @@ function extractSigintCandidates(device: unknown): RawSigintCandidate[] | null {
   return raw as RawSigintCandidate[];
 }
 
+interface DecodePassResult {
+  decoded: DecodedV6Payload | null;
+  parsedAny: boolean;
+  sawMacFailure: boolean;
+}
+
+function tryDecodeOne(
+  candidate: RawSigintCandidate,
+  secretHex: string,
+  now: Date,
+): DecodedV6Payload | "mac_fail" | "parse_fail" {
+  if (typeof candidate.address !== "string") return "parse_fail";
+  const bytes = ipv6StringToBytes(candidate.address);
+  if (!bytes) return "parse_fail";
+  const decoded = decodeV6Payload(bytes, secretHex, now);
+  if (!decoded) return "parse_fail";
+  if (decoded.macValid && decoded.fresh) return decoded;
+  return "mac_fail";
+}
+
+function attemptDecodeAll(
+  candidates: RawSigintCandidate[],
+  secretHex: string,
+  now: Date,
+): DecodePassResult {
+  let parsedAny = false;
+  let sawMacFailure = false;
+  for (const c of candidates) {
+    const result = tryDecodeOne(c, secretHex, now);
+    if (result === "parse_fail") continue;
+    parsedAny = true;
+    if (result === "mac_fail") {
+      sawMacFailure = true;
+      continue;
+    }
+    return { decoded: result, parsedAny, sawMacFailure };
+  }
+  return { decoded: null, parsedAny, sawMacFailure };
+}
+
 /**
  * Decode the sigint STUN srflx candidate(s) embedded in a device fingerprint.
  *
- * Policy: exactly one candidate is expected for single-homed clients. Zero or
- * multiple candidates short-circuit to null — multi = multi-egress (dual-stack
- * / VPN) and needs separate handling downstream, not silent picking.
+ * Iterates all submitted candidates and returns the first one with a valid
+ * HMAC + fresh timestamp. Multi-NIC clients (dual-stack, VPN, Linux with
+ * multiple interfaces visible to WebRTC) legitimately produce several
+ * candidates — any one verifying is proof we spoke to that egress, which
+ * is enough. `candidateCount` is kept so downstream can see how many were
+ * submitted without inferring a threat from the number.
+ *
+ * If candidates are present but none verify, that's forgery (someone
+ * submitted synthetic blobs instead of talking to our STUN).
  */
 export function decodeWebrtcSigintCandidates(
   device: unknown,
@@ -196,27 +248,35 @@ export function decodeWebrtcSigintCandidates(
   if (candidates.length === 0) {
     return { decoded: null, candidateCount: 0, reason: "no_candidates" };
   }
-  if (candidates.length > 1) {
+
+  const pass = attemptDecodeAll(candidates, secretHex, now);
+  if (pass.decoded) {
+    return {
+      decoded: pass.decoded,
+      candidateCount: candidates.length,
+      reason: "ok",
+    };
+  }
+  if (pass.sawMacFailure) {
     return {
       decoded: null,
       candidateCount: candidates.length,
-      reason: "multi_candidates",
+      reason: "forgery",
     };
   }
-
-  const { address } = candidates[0];
-  if (typeof address !== "string") {
-    return { decoded: null, candidateCount: 1, reason: "parse_fail" };
+  if (!pass.parsedAny) {
+    return {
+      decoded: null,
+      candidateCount: candidates.length,
+      reason: "parse_fail",
+    };
   }
-  const bytes = ipv6StringToBytes(address);
-  if (!bytes) {
-    return { decoded: null, candidateCount: 1, reason: "parse_fail" };
-  }
-  const decoded = decodeV6Payload(bytes, secretHex, now);
-  if (!decoded) {
-    return { decoded: null, candidateCount: 1, reason: "decode_fail" };
-  }
-  return { decoded, candidateCount: 1, reason: "ok" };
+  // Parsed but all stale (MAC-valid but fresh=false) — treat as decode_fail.
+  return {
+    decoded: null,
+    candidateCount: candidates.length,
+    reason: "decode_fail",
+  };
 }
 
 /**
