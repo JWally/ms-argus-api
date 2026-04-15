@@ -24,8 +24,19 @@
  * @module helpers/merchant-projection
  */
 
+import { createHash } from "node:crypto";
 import type { SessionCacheValue } from "../types/matching";
 import type { SessionResponse, IntegrityResultsData } from "./payload-schema";
+
+/**
+ * SHA-256 hex of the SPKI-base64 pubkey. Exposed to merchants as a stable
+ * cross-session identifier without handing them the raw key bytes. Same
+ * input always → same output, so correlation works; merchants can't use the
+ * hash to impersonate the client or reconstruct the key.
+ */
+function hashPubkey(pubkey: string): string {
+  return createHash("sha256").update(pubkey).digest("hex");
+}
 
 /**
  * Categorical merchant-safe tag vocabulary. Composable — a request can be
@@ -72,11 +83,13 @@ export interface MerchantSafeResponse {
    * the match-derived ID (probabilistic); this is the client-asserted ECDSA
    * pubkey (cryptographic). Null when the client didn't send a device_identity
    * block (legacy bundle) or when we couldn't attribute one. Merchants can
-   * use `pubkey` as a stable re-identifier across sessions when `verified`
-   * is true. No internal verification reasons are exposed here.
+   * use `device_id` as a stable re-identifier across sessions when `verified`
+   * is true. The field is SHA-256(pubkey) rather than the raw key — correlation
+   * works across sessions (same input → same hash) without exposing the
+   * pubkey bytes. No internal verification reasons are exposed here.
    */
   identification: {
-    pubkey: string;
+    device_id: string;
     verified: boolean;
   } | null;
   /** Placeholder for future policy engine. Null until a rule engine ships. */
@@ -295,7 +308,7 @@ export function buildMerchantResponse(
 
   const identification = input.integrity?.identification
     ? {
-        pubkey: input.integrity.identification.pubkey,
+        device_id: hashPubkey(input.integrity.identification.pubkey),
         verified: input.integrity.identification.verified,
       }
     : null;

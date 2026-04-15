@@ -410,22 +410,95 @@ describe("buildMerchantResponse", () => {
       expect(result.identification).toBeNull();
     });
 
-    it("surfaces pubkey + verified when the row carries identification", () => {
+    it("surfaces hashed device_id + verified when the row carries identification", () => {
+      const pubkey = "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEXXX";
       const result = buildMerchantResponse({
         session_id: "s",
         integrity: baseIntegrity({
           identification: {
-            pubkey: "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEXXX",
+            pubkey,
             verified: true,
             reason: null,
             sig_present: true,
           },
         }),
       });
+      // SHA-256 hex, 64 chars — correlation works without exposing the key
       expect(result.identification).toEqual({
-        pubkey: "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEXXX",
+        device_id: expect.stringMatching(/^[0-9a-f]{64}$/) as unknown,
         verified: true,
       });
+    });
+
+    it("produces the same hash for the same pubkey across calls", () => {
+      const pubkey = "repeatable-pubkey-bytes";
+      const a = buildMerchantResponse({
+        session_id: "s1",
+        integrity: baseIntegrity({
+          identification: {
+            pubkey,
+            verified: true,
+            reason: null,
+            sig_present: true,
+          },
+        }),
+      });
+      const b = buildMerchantResponse({
+        session_id: "s2",
+        integrity: baseIntegrity({
+          identification: {
+            pubkey,
+            verified: true,
+            reason: null,
+            sig_present: true,
+          },
+        }),
+      });
+      expect(a.identification?.device_id).toBe(b.identification?.device_id);
+    });
+
+    it("produces different hashes for different pubkeys", () => {
+      const a = buildMerchantResponse({
+        session_id: "s",
+        integrity: baseIntegrity({
+          identification: {
+            pubkey: "key-A",
+            verified: true,
+            reason: null,
+            sig_present: true,
+          },
+        }),
+      });
+      const b = buildMerchantResponse({
+        session_id: "s",
+        integrity: baseIntegrity({
+          identification: {
+            pubkey: "key-B",
+            verified: true,
+            reason: null,
+            sig_present: true,
+          },
+        }),
+      });
+      expect(a.identification?.device_id).not.toBe(b.identification?.device_id);
+    });
+
+    it("never leaks the raw pubkey to the merchant", () => {
+      const pubkey = "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE_RAW_KEY_BYTES_";
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: baseIntegrity({
+          identification: {
+            pubkey,
+            verified: true,
+            reason: null,
+            sig_present: true,
+          },
+        }),
+      });
+      const serialized = JSON.stringify(result);
+      expect(serialized).not.toContain(pubkey);
+      expect(serialized).not.toContain("MFkwEwYHKoZIzj0");
     });
 
     it("does not leak verification reasons to the merchant", () => {
@@ -441,7 +514,7 @@ describe("buildMerchantResponse", () => {
         }),
       });
       expect(result.identification).toEqual({
-        pubkey: "pk",
+        device_id: expect.stringMatching(/^[0-9a-f]{64}$/) as unknown,
         verified: false,
       });
       expect(
