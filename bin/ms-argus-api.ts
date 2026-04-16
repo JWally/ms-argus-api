@@ -22,8 +22,6 @@ new ArgusApiStack(app, "ms-argus-api-dev-jw", {
   region: PIPELINE_HOME_REGION,
   account: AWS_ACCOUNT_ID,
   synthesizer,
-  // Connect to ms-argus-vector stack (SSM params at /argus-vector/{stage}/...)
-  vectorEnvironment: "dev-jw",
   // Read SIGINT AES key ARN from ms-argus-platform SSM exports at synth time.
   // The key value is injected via CF dynamic reference — never in the template.
   sigintPlatformEnvironment: "dev-jw",

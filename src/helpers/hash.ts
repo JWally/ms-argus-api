@@ -1,5 +1,4 @@
 import { FNV1A_OFFSET_BASIS, FNV1A_PRIME } from "./constants";
-import type { FuzzyMatchInfo } from "../types/matching";
 
 /**
  * FNV-1a 32-bit hash function.
@@ -84,32 +83,4 @@ export function hammingDistance(hash1: string, hash2: string): number {
   }
 
   return distance;
-}
-
-/**
- * Compute fuzzy match info for drift detection
- * Computes Hamming distance between incoming and stored fuzzy_hash
- * @param incomingHash - Incoming fuzzy hash from request
- * @param storedHash - Stored fuzzy hash from profile
- * @returns FuzzyMatchInfo if both hashes present, undefined otherwise
- */
-export function computeFuzzyMatchInfo(
-  incomingHash: string | undefined,
-  storedHash: string | undefined,
-): FuzzyMatchInfo | undefined {
-  if (!incomingHash || !storedHash) {
-    return undefined;
-  }
-
-  const distance = hammingDistance(incomingHash, storedHash);
-
-  // Compute total bits from hash length (4 bits per hex char)
-  const totalBits = incomingHash.replace(/^0x/i, "").length * 4;
-
-  return {
-    incoming_hash: incomingHash,
-    stored_hash: storedHash,
-    hamming_distance: distance,
-    similarity: distance >= 0 ? 1 - distance / totalBits : 0,
-  };
 }

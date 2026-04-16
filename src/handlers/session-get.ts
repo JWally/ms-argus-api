@@ -5,40 +5,22 @@ import { injectLambdaContext } from "@aws-lambda-powertools/logger/middleware";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import middy from "@middy/core";
 import warmup from "@middy/warmup";
-import { DynamoCacheService } from "../services/cache/dynamo-cache";
 import { validateRequiredEnvVars } from "../helpers/env-validation";
 import { corsMiddleware } from "../helpers/cors-middleware";
 import { jsonErrorHandler } from "../helpers/error-middleware";
 import { onWarmup } from "../helpers/middy-helpers";
 import { createBaseHandler } from "./session-get/base-handler";
 
-/**
- * Environment configuration for session-get handler
- */
 interface SessionGetEnvConfig {
-  /** DynamoDB table for session cache */
-  SESSION_CACHE_TABLE: string;
-  /** DynamoDB table for session payloads */
-  SESSION_PAYLOAD_TABLE: string;
-  /** DynamoDB table for vector results (optional) */
-  VECTOR_RESULTS_TABLE?: string;
-  /** Powertools service name */
+  INTEGRITY_RESULTS_TABLE: string;
   POWERTOOLS_SERVICE_NAME: string;
-  /** Powertools metrics namespace */
   POWERTOOLS_METRICS_NAMESPACE: string;
 }
 
-/**
- * Get and validate environment configuration
- * @returns Validated environment configuration
- */
 function getEnvConfig(): SessionGetEnvConfig {
-  validateRequiredEnvVars(["SESSION_CACHE_TABLE", "SESSION_PAYLOAD_TABLE"]);
-
+  validateRequiredEnvVars(["INTEGRITY_RESULTS_TABLE"]);
   return {
-    SESSION_CACHE_TABLE: process.env.SESSION_CACHE_TABLE as string,
-    SESSION_PAYLOAD_TABLE: process.env.SESSION_PAYLOAD_TABLE as string,
-    VECTOR_RESULTS_TABLE: process.env.VECTOR_RESULTS_TABLE,
+    INTEGRITY_RESULTS_TABLE: process.env.INTEGRITY_RESULTS_TABLE as string,
     POWERTOOLS_SERVICE_NAME:
       process.env.POWERTOOLS_SERVICE_NAME ?? "argus-session-get",
     POWERTOOLS_METRICS_NAMESPACE:
@@ -54,18 +36,10 @@ const metrics = new Metrics({
 });
 
 const dynamodb = new DynamoDBClient({});
-const cacheService = new DynamoCacheService(dynamodb, {
-  tableName: envConfig.SESSION_CACHE_TABLE,
-  sessionTtlSeconds: 3600, // Not used for reads
-  mutationGateTtlSeconds: 60, // Not used for reads
-});
 
 const baseHandler = createBaseHandler({
   dynamodb,
-  cacheService,
-  payloadTable: envConfig.SESSION_PAYLOAD_TABLE,
-  vectorResultsTable: envConfig.VECTOR_RESULTS_TABLE,
-  integrityResultsTable: process.env.INTEGRITY_RESULTS_TABLE,
+  integrityResultsTable: envConfig.INTEGRITY_RESULTS_TABLE,
   logger,
   metrics,
 });

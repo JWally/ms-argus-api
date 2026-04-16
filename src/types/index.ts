@@ -1,9 +1,4 @@
 /**
- * Type definitions for ms-argus-api
- * Re-exports all types from submodules
+ * Type definitions for ms-argus-api.
  */
 export * from "./fingerprint";
-export * from "./flags";
-export * from "./matching";
-export * from "./matching-tiers";
-export * from "./profile";

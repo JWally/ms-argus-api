@@ -43,14 +43,6 @@ export const TLS_STACKS: Record<
   },
 };
 
-/** H2 pseudo-header order → browser family. */
-export const H2_FAMILIES: Record<string, string> = {
-  "m,a,s,p": "chromium",
-  "m,s,p,a": "apple",
-  "m,s,a,p": "apple",
-  "m,p,a,s": "firefox",
-};
-
 /** TLS stack → expected browser family. */
 export const STACK_H2_FAMILY: Record<string, string> = {
   boringssl: "chromium",
@@ -60,15 +52,6 @@ export const STACK_H2_FAMILY: Record<string, string> = {
   nss: "firefox",
   securetransport: "apple",
   "securetransport-legacy": "apple",
-};
-
-/** Browsers whose baseline key maps to a TLS family for cross-validation. */
-export const BROWSER_TLS_FAMILY: Record<string, string> = {
-  chrome: "chromium",
-  edge: "chromium",
-  opera: "chromium",
-  firefox: "firefox",
-  safari: "apple",
 };
 
 /** Parse JA4 string into components. */

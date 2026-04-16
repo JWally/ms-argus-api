@@ -11,26 +11,7 @@ import {
   buildMerchantResponse,
   type MerchantProjectionInput,
 } from "./merchant-projection";
-import type { SessionCacheValue } from "../types/matching";
 import type { IntegrityResultsData } from "./payload-schema";
-
-function baseSession(
-  overrides: Partial<SessionCacheValue> = {},
-): SessionCacheValue {
-  return {
-    status: "complete",
-    device_id: "dev-abc",
-    risk_score: 0.1,
-    confidence: 0.9,
-    match_tier: 1,
-    match_version: 1,
-    idempotency_key: "idem-1",
-    flags: [],
-    evidence_codes: [],
-    updated_at: 0,
-    ...overrides,
-  };
-}
 
 function baseIntegrity(
   overrides: Partial<IntegrityResultsData> = {},
@@ -329,29 +310,9 @@ describe("buildMerchantResponse", () => {
       expect(result.tags).toContain("incognito");
     });
 
-    it("incognito.result falls back to the session flag when integrity absent", () => {
-      const result = buildMerchantResponse({
-        session_id: "s",
-        session: baseSession({ flags: ["incognito_browser_mismatch"] }),
-      });
-      expect(result.incognito.result).toBe(true);
-    });
-
-    it("falls back to session flags when integrity is absent", () => {
-      const result = buildMerchantResponse({
-        session_id: "s",
-        session: baseSession({ flags: ["likely_vpn", "bot_detected"] }),
-      });
-      expect(result.vpn.probability).toBeGreaterThanOrEqual(50);
-      expect(result.bot.probability).toBe(100);
-      expect(result.tags).toContain("vpn");
-      expect(result.tags).toContain("automation");
-    });
-
     it("returns clean defaults for clean traffic", () => {
       const result = buildMerchantResponse({
         session_id: "s",
-        session: baseSession(),
         integrity: baseIntegrity(),
       });
       expect(result.tags).toEqual([]);
@@ -503,63 +464,27 @@ describe("buildMerchantResponse", () => {
       expect(result.ip).toBeNull();
     });
 
-    it("falls back to payload.sigint.aws_cf when integrity is absent", () => {
+    it("reads aws_cf location data from integrity.sigint", () => {
+      const base = baseIntegrity();
       const result = buildMerchantResponse({
         session_id: "s",
-        payload: {
-          identifiers: { session_id: "s", device_id: "d" },
-          analysis: {
-            status: "complete",
-            confidence: 0.5,
-            match_tier: 1,
-            is_new_device: false,
-            risk_score: 0.1,
-            flags: [],
-            evidence_codes: [],
-          },
-          hashes: { stable: "x", fuzzy: "y" },
-          device: {},
+        integrity: {
+          ...base,
           sigint: {
             aws_cf: { asn: "13335", country: "US", city: "Houston" },
-          } as unknown as Record<string, Record<string, unknown>>,
+          } as unknown as Record<string, string>,
         },
       });
-      expect(result.ipInfo.asn.number).toBe(13335);
+      // asn is read from analysis.ip.asn (populated by analyzers); location
+      // fields are stamped by the TLS edge and read from sigint.aws_cf.
       expect(result.ipLocation.country).toBe("US");
       expect(result.ipLocation.city).toBe("Houston");
     });
   });
 
   describe("identification", () => {
-    it("wires confidence, risk_score, and device_id from payload", () => {
-      const result = buildMerchantResponse({
-        session_id: "s",
-        payload: {
-          identifiers: { session_id: "s", device_id: "d" },
-          analysis: {
-            status: "complete",
-            confidence: 0.87,
-            match_tier: 1,
-            is_new_device: true,
-            risk_score: 0.42,
-            flags: [],
-            evidence_codes: [],
-          },
-          hashes: { stable: "x", fuzzy: "y" },
-          device: {},
-        },
-      });
-      expect(result.identification.confidence.score).toBe(0.87);
-      expect(result.identification.is_new_device).toBe(true);
-      expect(result.identification.device_id).toBe("d");
-      expect(result.suspectScore.result).toBe(0.42);
-    });
-
     it("first_seen_at and last_seen_at are null (DeviceProfile placeholders)", () => {
-      const result = buildMerchantResponse({
-        session_id: "s",
-        session: baseSession(),
-      });
+      const result = buildMerchantResponse({ session_id: "s" });
       expect(result.identification.first_seen_at).toBeNull();
       expect(result.identification.last_seen_at).toBeNull();
     });

@@ -31,8 +31,7 @@
  */
 
 import { createHash } from "node:crypto";
-import type { SessionCacheValue } from "../types/matching";
-import type { SessionResponse, IntegrityResultsData } from "./payload-schema";
+import type { IntegrityResultsData } from "./payload-schema";
 
 /** Truncated SHA-256 length (hex chars). 40 bits of entropy — ample for
  *  cross-session correlation at merchant scale; compact enough to read. */
@@ -199,19 +198,15 @@ export interface MerchantSafeResponse {
   velocity: null;
 }
 
-/** Input bundle for the projection. All fields optional — richer data = richer projection. */
+/** Input bundle for the projection. Accepts an integrity record only — the
+ *  old session/payload shapes were tied to the fingerprint matching pipeline
+ *  which was removed in remove-fingerprint. */
 export interface MerchantProjectionInput {
   session_id: string;
-  session?: SessionCacheValue;
-  payload?: SessionResponse;
   integrity?: IntegrityResultsData;
 }
 
 // --- Tag derivation helpers (pure, testable) ---
-
-function hasFlag(flags: string[] | undefined, flag: string): boolean {
-  return !!flags?.includes(flag);
-}
 
 function detectHyperscaler(input: MerchantProjectionInput): boolean {
   return input.integrity?.analysis.ip.asn.category === "datacenter";
@@ -230,26 +225,13 @@ function detectCorporateShield(input: MerchantProjectionInput): boolean {
  */
 function vpnScore(input: MerchantProjectionInput): number {
   if (detectCorporateShield(input)) return 0;
-  const component = input.integrity?.analysis.network.vpn_component ?? 0;
-  if (component > 0) return component;
-  return hasFlag(input.session?.flags, "likely_vpn") ? 0.5 : 0;
+  return input.integrity?.analysis.network.vpn_component ?? 0;
 }
 
 function proxyScore(input: MerchantProjectionInput): number {
   if (detectCorporateShield(input)) return 0;
-  const component = input.integrity?.analysis.network.proxy_component ?? 0;
-  if (component > 0) return component;
-  return hasFlag(input.session?.flags, "likely_proxy") ? 0.5 : 0;
+  return input.integrity?.analysis.network.proxy_component ?? 0;
 }
-
-const TAMPERING_FLAGS: readonly string[] = [
-  "navigator_lies",
-  "tls_platform_mismatch",
-  "tls_browser_mismatch",
-  "worker_mismatch",
-  "worker_locale_mismatch",
-  "engine_mismatch",
-];
 
 interface HeadlessSignals {
   webDriverIsOn?: boolean;
@@ -270,8 +252,7 @@ function detectIncognito(input: MerchantProjectionInput): boolean {
       | { incognito?: { isPrivate?: boolean } }
       | undefined
   )?.incognito?.isPrivate;
-  if (isPrivate === true) return true;
-  return hasFlag(input.session?.flags, "incognito_browser_mismatch");
+  return isPrivate === true;
 }
 
 function detectCellular(input: MerchantProjectionInput): boolean {
@@ -305,14 +286,9 @@ function buildTags(
 }
 
 function botProbability(input: MerchantProjectionInput): number {
-  const { integrity, session } = input;
-  if (
-    hasFlag(session?.flags, "bot_detected") ||
-    hasFlag(session?.flags, "headless_browser")
-  ) {
-    return 100;
-  }
-  const headless = readHeadless(integrity ?? ({} as IntegrityResultsData));
+  const headless = readHeadless(
+    input.integrity ?? ({} as IntegrityResultsData),
+  );
   if (headless?.webDriverIsOn) return 100;
   const rating = headless?.likeHeadlessRating ?? 0;
   const stealth = headless?.stealthRating ?? 0;
@@ -453,11 +429,7 @@ function tamperingProbabilityFromEvidence(e: TamperingEvidence): number {
 }
 
 function tamperingProbability(input: MerchantProjectionInput): number {
-  if (!input.integrity) {
-    return TAMPERING_FLAGS.some((f) => hasFlag(input.session?.flags, f))
-      ? 60
-      : 0;
-  }
+  if (!input.integrity) return 0;
   return tamperingProbabilityFromEvidence(
     collectTamperingEvidence(input.integrity),
   );
@@ -490,11 +462,7 @@ interface AwsCfSigint {
 }
 
 function readAwsCf(input: MerchantProjectionInput): AwsCfSigint | undefined {
-  const fromIntegrity = (
-    input.integrity?.sigint as { aws_cf?: AwsCfSigint } | undefined
-  )?.aws_cf;
-  if (fromIntegrity) return fromIntegrity;
-  return (input.payload?.sigint as { aws_cf?: AwsCfSigint } | undefined)
+  return (input.integrity?.sigint as { aws_cf?: AwsCfSigint } | undefined)
     ?.aws_cf;
 }
 
@@ -704,30 +672,23 @@ function deriveThirdPartyCookie(input: MerchantProjectionInput): TpcFields {
 function deriveIdentification(
   input: MerchantProjectionInput,
 ): MerchantIdentification {
-  const { session, payload, integrity } = input;
-  const device_id =
-    session?.device_id || payload?.identifiers.device_id || null;
-
-  const is_new_device =
-    payload?.analysis.is_new_device ??
-    session?.evidence_codes?.includes("NEW_DEVICE") ??
-    false;
-
-  const confidence = payload?.analysis.confidence ?? session?.confidence ?? 0;
-
+  const { integrity } = input;
   const crypto_device_id = integrity?.identification
     ? hashPubkey(integrity.identification.pubkey)
     : null;
   const crypto_verified = integrity?.identification?.verified ?? null;
-
   const tpc = deriveThirdPartyCookie(input);
 
   return {
-    device_id,
-    is_new_device,
+    // device_id / is_new_device / confidence came from the fingerprint-matching
+    // pipeline which was removed. Merchants should rely on crypto_device_id
+    // (ECDSA pubkey hash) and tpc_id (CF-stamped cookie) for cross-session
+    // identity instead.
+    device_id: null,
+    is_new_device: false,
     first_seen_at: null,
     last_seen_at: null,
-    confidence: { score: confidence },
+    confidence: { score: 0 },
     crypto_device_id,
     crypto_verified,
     tpc_id: tpc.tpc_id,
@@ -756,16 +717,16 @@ function deriveRequestHeaders(
 export function buildMerchantResponse(
   input: MerchantProjectionInput,
 ): MerchantSafeResponse {
-  const { session, payload, session_id, integrity } = input;
+  const { session_id, integrity } = input;
 
   const rawNetworkScore = integrity?.analysis.ip.integrity ?? 0.5;
   const networkIntegrityScore = computeNetworkIntegrityScore(
     input,
     rawNetworkScore,
   );
-  // Null (not zero) when neither the payload nor session has a risk score —
-  // lets the client distinguish "risk model didn't run" from "ran, returned 0".
-  const risk = payload?.analysis.risk_score ?? session?.risk_score ?? null;
+  // Risk model isn't wired to the integrity-only flow — always null until a
+  // risk service exists downstream of the integrity record.
+  const risk: number | null = null;
 
   const probs = {
     bot: botProbability(input),

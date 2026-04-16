@@ -1,10 +1,5 @@
 import { describe, it, expect } from "vitest";
-import {
-  fnv1a,
-  fnv1aNum,
-  hammingDistance,
-  computeFuzzyMatchInfo,
-} from "./hash";
+import { fnv1a, fnv1aNum, hammingDistance } from "./hash";
 
 describe("fnv1a", () => {
   // Known test vectors from FNV spec: http://www.isthe.com/chongo/tech/comp/fnv/
@@ -130,89 +125,6 @@ describe("hammingDistance", () => {
     it("should return -1 for unsupported lengths", () => {
       // 32 chars (128 bits) not supported
       expect(hammingDistance("0".repeat(32), "0".repeat(32))).toBe(-1);
-    });
-  });
-});
-
-describe("computeFuzzyMatchInfo", () => {
-  describe("64-bit hashes", () => {
-    it("should return correct hamming_distance and similarity for two valid hashes", () => {
-      // 000f vs 0000 in first band = 4 bits different
-      const result = computeFuzzyMatchInfo(
-        "000f000000000000",
-        "0000000000000000",
-      );
-      expect(result).toBeDefined();
-      expect(result!.hamming_distance).toBe(4);
-      expect(result!.similarity).toBeCloseTo(1 - 4 / 64, 5);
-      expect(result!.incoming_hash).toBe("000f000000000000");
-      expect(result!.stored_hash).toBe("0000000000000000");
-    });
-
-    it("should return distance 0 and similarity 1.0 for identical hashes", () => {
-      const result = computeFuzzyMatchInfo(
-        "abcdef1234567890",
-        "abcdef1234567890",
-      );
-      expect(result).toBeDefined();
-      expect(result!.hamming_distance).toBe(0);
-      expect(result!.similarity).toBe(1);
-    });
-
-    it("should return correct values for known hamming distance", () => {
-      // ffff vs 0000 in first 4 hex chars = 16 bits different
-      const result = computeFuzzyMatchInfo(
-        "ffff000000000000",
-        "0000000000000000",
-      );
-      expect(result).toBeDefined();
-      expect(result!.hamming_distance).toBe(16);
-      expect(result!.similarity).toBeCloseTo(1 - 16 / 64, 5);
-    });
-  });
-
-  describe("256-bit hashes", () => {
-    const zeros256 = "0".repeat(64);
-    const sample256 = "0123456789abcdef".repeat(4);
-
-    it("should return distance 0 and similarity 1.0 for identical 256-bit hashes", () => {
-      const result = computeFuzzyMatchInfo(sample256, sample256);
-      expect(result).toBeDefined();
-      expect(result!.hamming_distance).toBe(0);
-      expect(result!.similarity).toBe(1);
-    });
-
-    it("should compute similarity correctly for 256-bit hashes", () => {
-      // 000f vs 0000 in first band = 4 bits different out of 256
-      const hash1 = "000f" + "0".repeat(60);
-      const result = computeFuzzyMatchInfo(hash1, zeros256);
-      expect(result).toBeDefined();
-      expect(result!.hamming_distance).toBe(4);
-      expect(result!.similarity).toBeCloseTo(1 - 4 / 256, 5);
-    });
-
-    it("should return similarity 0 for maximally different 256-bit hashes", () => {
-      const result = computeFuzzyMatchInfo("f".repeat(64), zeros256);
-      expect(result).toBeDefined();
-      expect(result!.hamming_distance).toBe(256);
-      expect(result!.similarity).toBe(0);
-    });
-  });
-
-  describe("edge cases", () => {
-    it("should return undefined when incomingHash is undefined", () => {
-      const result = computeFuzzyMatchInfo(undefined, "0123456789abcdef");
-      expect(result).toBeUndefined();
-    });
-
-    it("should return undefined when storedHash is undefined", () => {
-      const result = computeFuzzyMatchInfo("0123456789abcdef", undefined);
-      expect(result).toBeUndefined();
-    });
-
-    it("should return undefined when both hashes are undefined", () => {
-      const result = computeFuzzyMatchInfo(undefined, undefined);
-      expect(result).toBeUndefined();
     });
   });
 });

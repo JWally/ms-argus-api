@@ -10,13 +10,11 @@ import * as ssm from "aws-cdk-lib/aws-ssm";
 import { Construct } from "constructs";
 
 import { SecretConstruct } from "../constructs/secrets";
-import { QueuesConstruct } from "../constructs/queues";
 import { DynamoDbConstruct } from "../constructs/dynamodb";
 import { HttpApiConstruct } from "../constructs/http-api";
 import { WorkersConstruct } from "../constructs/workers";
 import { CloudFrontWafConstruct } from "../constructs/cloudfront";
 import { AnalyticsConstruct } from "../constructs/analytics";
-import { VectorWorkerConstruct } from "../constructs/vector-worker";
 import { getStageConfig } from "../config";
 
 interface ArgusApiStackProps extends cdk.StackProps {
@@ -26,12 +24,6 @@ interface ArgusApiStackProps extends cdk.StackProps {
   stage: string;
   region: string;
   account: string;
-  /**
-   * Optional: Name of the ms-argus-vector environment to connect to.
-   * If provided, deploys a vector worker Lambda in the vector VPC.
-   * Typically matches the stage (e.g., 'dev', 'prod').
-   */
-  vectorEnvironment?: string;
   /**
    * Optional: Secrets Manager ARN for the AES-256 key used to decrypt encrypted
    * probe responses from ms-argus-sigint. Managed in ms-argus-platform.
@@ -49,28 +41,16 @@ interface ArgusApiStackProps extends cdk.StackProps {
 }
 
 /**
- * Argus API Stack - V5 Architecture
+ * Argus API Stack — integrity-only architecture.
  *
- * Simplified serverless architecture:
- * Browser → CloudFront → HTTP API → Lambda (ingestion) → SQS → Lambda (workers) → DynamoDB
- *
- * What changed from V4:
- * - Removed: VPC, NAT Gateway, ALB, ECS Fargate, Redis
- * - Added: HTTP API Gateway, ingestion Lambda
- * - Result: ~$50-70/month savings, simpler infrastructure
- *
- * Why we removed Go/ECS:
- * - Go service was 200 lines doing: validate JSON → write SQS → return 204
- * - Lambda does the same for ~$1/month vs ~$30/month (ALB + Fargate)
- * - HTTP API is $1/million requests (vs REST API $3.50/million)
- * - TypeScript consistency (one language for entire backend)
- * - Easier to test, deploy, and debug
- *
- * Why we removed VPC:
- * - Only needed VPC for Redis (ElastiCache) and ECS
- * - DynamoDB and SQS accessible via IAM (no network path needed)
- * - Removes NAT Gateway (~$32/month) and VPC endpoint costs
- * - Faster Lambda cold starts (no ENI attachment)
+ * Browser → CloudFront → HTTP API → Lambda (ingestion) → DynamoDB
+ *                                                    → EventBridge warmup
+ * Simplified from the earlier V5 architecture: the /v1/collect fingerprint
+ * pipeline (matching-worker, profile-updater, vector-worker, and their
+ * SQS queues + DDB tables) was removed. Identity now comes from the
+ * integrity record alone — crypto_device_id (ECDSA pubkey hash) and
+ * tpc_id (CF-stamped third-party cookie) — which is strictly better for
+ * authenticated browsers than the probabilistic hash matching it replaced.
  */
 function resolveSigintParams(
   scope: cdk.Stack,
@@ -114,7 +94,6 @@ export class ArgusApiStack extends cdk.Stack {
       rootDomain,
       stage,
       region,
-      vectorEnvironment,
       sigintAesKeySecretArn,
       sigintPlatformEnvironment,
     } = props;
@@ -171,42 +150,10 @@ export class ArgusApiStack extends cdk.Stack {
       stage,
     });
 
-    const queues = new QueuesConstruct(this, "Queues", {
-      stackName,
-      stage,
-      alarmsTopic,
-    });
-
-    // =========================================================================
-
-    // =========================================================================
-
     const analytics = new AnalyticsConstruct(this, "Analytics", {
       stackName,
       stage,
     });
-
-    // =========================================================================
-    // VECTOR WORKER (Optional - for QDrant integration)
-    // =========================================================================
-    // Only deploy if vectorEnvironment is specified
-    // Runs in ms-argus-vector VPC to access internal ALB
-    // Created before WorkersConstruct so we can pass the vector queue
-
-    let vectorWorker: VectorWorkerConstruct | undefined;
-    if (vectorEnvironment) {
-      vectorWorker = new VectorWorkerConstruct(this, "VectorWorker", {
-        stackName,
-        stage,
-        alarmsTopic,
-        vectorEnvironment,
-        // Pass vector results queue for publishing search results
-        vectorResultsQueue: queues.vectorResultsQueue,
-      });
-    }
-
-    const deliveryStreamName = analytics.deliveryStream
-      .deliveryStreamName as string;
 
     // =========================================================================
     // COMPUTE LAYER
@@ -214,15 +161,9 @@ export class ArgusApiStack extends cdk.Stack {
 
     const stageConfig = getStageConfig(stage);
 
-    // HTTP API + Lambda for ingestion (replaces ALB + ECS)
-
     const httpApi = new HttpApiConstruct(this, "HttpApi", {
       stackName,
       stage,
-      matchingQueue: queues.matchingQueue,
-      sessionCacheTable: dynamodb.sessionCacheTable,
-      sessionPayloadTable: dynamodb.sessionPayloadTable, // AR-XXX: Full payload for gRPC stub
-      vectorResultsTable: dynamodb.vectorResultsTable, // Vector search results
       integrityResultsTable: dynamodb.integrityResultsTable,
       probeTokensTableName,
       probeTokensTableArn,
@@ -238,68 +179,12 @@ export class ArgusApiStack extends cdk.Stack {
       stage,
       projectName: id,
       alarmsTopic,
-      matchingQueue: queues.matchingQueue,
-      profileQueue: queues.profileQueue,
-      profilesTable: dynamodb.profilesTable,
-      tier1IndexTable: dynamodb.tier1IndexTable,
-      tier2BucketsTable: dynamodb.tier2BucketsTable,
-      sessionCacheTable: dynamodb.sessionCacheTable,
-      sessionPayloadTable: dynamodb.sessionPayloadTable, // AR-XXX: Full payload for gRPC stub
-      vectorResultsTable: dynamodb.vectorResultsTable, // Vector search results
-      observationsDeliveryStreamName: deliveryStreamName,
-      // Vector queue for Qdrant embeddings (enabled)
-      vectorQueue: vectorWorker?.vectorQueue,
-      // Vector results queue for search result writes
-      vectorResultsQueue: queues.vectorResultsQueue,
-      // Vector worker ARN for Tier 2 vector search (replaces compound buckets)
-      vectorWorkerArn: vectorWorker?.vectorWorker.functionArn,
-      vectorCollection: "fingerprints",
-
-      payloadArchiveBucket: analytics.payloadArchiveBucket,
       integrityArchiveBucket: analytics.integrityArchiveBucket,
       integrityResultsTable: dynamodb.integrityResultsTable,
-      sigintAesKeySecretArn: resolvedSigintSecretArn,
-      probeTokensTableName,
-      probeTokensTableArn,
-      signalBaselinesTable: dynamodb.signalBaselinesTable,
     });
 
     // =========================================================================
-
-    // =========================================================================
-    // Sends warmup message to matching queue every minute to keep:
-    // - SQS pollers active (they process the warmup message)
-    // - Lambda execution environment warm (recent invocation)
-    // - DynamoDB connections warm
-    // This eliminates the ~10 second cold-start latency when scaling from zero
-
-    const warmupRule = new events.Rule(this, "MatchingWarmupRule", {
-      ruleName: `${stackName}-matching-warmup`,
-      description:
-        "Keep matching pipeline warm by sending periodic warmup messages",
-      schedule: events.Schedule.rate(cdk.Duration.minutes(1)),
-    });
-
-    warmupRule.addTarget(
-      new targets.SqsQueue(queues.matchingQueue, {
-        message: events.RuleTargetInput.fromObject({
-          warmup: true,
-          source: "warmup-rule",
-          timestamp: events.EventField.time,
-        }),
-      }),
-    );
-
-    // =========================================================================
-    // Direct Lambda warmers for the integrity path.
-    //
-    // Each fires EventBridge → Lambda with `{ warmup: true, source: "warmup-rule" }`.
-    // Handlers use @middy/warmup with `isWarmingUp` from helpers/middy-helpers,
-    // which short-circuits before the real handler runs.
-    //
-    // Unlike MatchingWarmupRule (above) which warms matching-worker via SQS,
-    // these fire the Lambda directly because ingestion/session-get are API
-    // handlers, not SQS consumers.
+    // WARMERS — Keep ingestion + session-get + integrity-archiver hot
     // =========================================================================
 
     const warmupPayload = events.RuleTargetInput.fromObject({
@@ -393,106 +278,9 @@ export class ArgusApiStack extends cdk.Stack {
       description: "Session retrieval Lambda ARN",
     });
 
-    new cdk.CfnOutput(this, "MatchingQueueUrl", {
-      value: queues.matchingQueue.queueUrl,
-      description: "SQS URL for matching queue",
-    });
-
-    new cdk.CfnOutput(this, "ProfileQueueUrl", {
-      value: queues.profileQueue.queueUrl,
-      description: "SQS URL for profile queue",
-    });
-
-    new cdk.CfnOutput(this, "ProfilesTableName", {
-      value: dynamodb.profilesTable.tableName,
-      description: "DynamoDB profiles table name",
-    });
-
-    new cdk.CfnOutput(this, "SessionCacheTableName", {
-      value: dynamodb.sessionCacheTable.tableName,
-      description: "DynamoDB session cache table name",
-    });
-
-    new cdk.CfnOutput(this, "VectorResultsTableName", {
-      value: dynamodb.vectorResultsTable.tableName,
-      description: "DynamoDB vector results table name",
-    });
-
-    new cdk.CfnOutput(this, "VectorResultsQueueUrl", {
-      value: queues.vectorResultsQueue.queueUrl,
-      description: "SQS URL for vector results queue",
-    });
-
-    new cdk.CfnOutput(this, "MatchingWorkerArn", {
-      value: workers.matchingWorker.functionArn,
-      description: "Matching worker Lambda ARN",
-    });
-
-    new cdk.CfnOutput(this, "ProfileUpdaterArn", {
-      value: workers.profileUpdater.functionArn,
-      description: "Profile updater Lambda ARN",
-    });
-
-    // Vector results writer Lambda output (if enabled)
-    if (workers.vectorResultsWriter) {
-      new cdk.CfnOutput(this, "VectorResultsWriterArn", {
-        value: workers.vectorResultsWriter.functionArn,
-        description: "Vector results writer Lambda ARN",
-      });
-    }
-
-    new cdk.CfnOutput(this, "ObservationsBucketName", {
-      value: analytics.observationsBucket.bucketName,
-      description: "S3 bucket for match observations",
-    });
-
-    new cdk.CfnOutput(this, "ObservationsDeliveryStreamName", {
-      value: deliveryStreamName,
-      description: "Firehose delivery stream for observations",
-    });
-
-    new cdk.CfnOutput(this, "PayloadArchiveBucketName", {
-      value: analytics.payloadArchiveBucket.bucketName,
-      description: "S3 bucket for payload archives",
-    });
-
     new cdk.CfnOutput(this, "IntegrityArchiveBucketName", {
       value: analytics.integrityArchiveBucket.bucketName,
       description: "S3 bucket for integrity result archives",
     });
-
-    // Vector worker outputs (conditional)
-    if (vectorWorker) {
-      new cdk.CfnOutput(this, "VectorWorkerArn", {
-        value: vectorWorker.vectorWorker.functionArn,
-        description: "Vector worker Lambda ARN",
-      });
-
-      new cdk.CfnOutput(this, "VectorQueueUrl", {
-        value: vectorWorker.vectorQueue.queueUrl,
-        description: "SQS URL for vector operations queue",
-      });
-
-      new cdk.CfnOutput(this, "VectorQueueArn", {
-        value: vectorWorker.vectorQueue.queueArn,
-        description: "SQS ARN for vector operations queue",
-        exportName: `${stackName}-vector-queue-arn`,
-      });
-
-      // Vector test API outputs (experimental)
-      if (vectorWorker.vectorTestApi) {
-        new cdk.CfnOutput(this, "VectorTestApiEndpoint", {
-          value: vectorWorker.vectorTestApi.apiEndpoint,
-          description: "Vector test API endpoint (experimental)",
-        });
-      }
-
-      if (vectorWorker.vectorTestFunction) {
-        new cdk.CfnOutput(this, "VectorTestFunctionArn", {
-          value: vectorWorker.vectorTestFunction.functionArn,
-          description: "Vector test Lambda ARN",
-        });
-      }
-    }
   }
 }
