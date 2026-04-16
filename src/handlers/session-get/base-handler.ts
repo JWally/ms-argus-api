@@ -66,21 +66,14 @@ function emitSessionMetrics(
 }
 
 /**
- * Build success response with optional vector + integrity results.
- *
- * Always attaches a top-level `merchant` projection — the small,
- * categorical, adversary-safe surface documented in
- * helpers/merchant-projection.ts. The full internal fields remain
- * alongside it (additive, non-breaking) so internal tools and the
- * bot-buster demo page continue to work. Removal of the rich fields
- * from `/v1/session` is a separate follow-up once external consumers
- * have migrated to `merchant.*`.
+ * Build a regular-session response for the internal `/v1/session` path.
+ * Retains the rich fullPayload + vector_results + merchant projection —
+ * internal dashboards and tools read this route with elevated auth.
  */
-function buildSuccessResponse(params: {
+function buildRegularSessionResponse(params: {
   sessionId: string;
   fullPayload?: SessionResponse;
-  session?: import("../../types/matching").SessionCacheValue;
-  integrity?: IntegrityResultsData;
+  session?: SessionCacheValue;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   vectorResults?: any;
 }): APIGatewayProxyResultV2 {
@@ -88,14 +81,11 @@ function buildSuccessResponse(params: {
     session_id: params.sessionId,
     session: params.session,
     payload: params.fullPayload,
-    integrity: params.integrity,
   });
   const response: Record<string, unknown> = params.fullPayload
     ? { ...params.fullPayload, merchant }
-    : { merchant };
+    : { merchant, session_id: params.sessionId };
   if (params.vectorResults) response.vector_results = params.vectorResults;
-  if (params.integrity) response.integrity = params.integrity;
-  if (!params.fullPayload) response.session_id = params.sessionId;
   return {
     statusCode: 200,
     headers: { "Content-Type": "application/json" },
@@ -103,30 +93,34 @@ function buildSuccessResponse(params: {
   };
 }
 
+/**
+ * Build the merchant-facing integrity response.
+ *
+ * Returns ONLY the merchant-safe projection (spread at the top level).
+ * Does NOT return the raw integrity record — fingerprint, sigint blob,
+ * analyzer evidence, and raw signals are a reconnaissance gift and
+ * deliberately withheld. Internal tools that need the raw record should
+ * read DynamoDB / S3 directly with elevated auth, not via this route.
+ */
+function buildIntegrityResponse(params: {
+  sessionId: string;
+  session?: SessionCacheValue;
+  integrity: IntegrityResultsData;
+}): APIGatewayProxyResultV2 {
+  const merchant = buildMerchantResponse({
+    session_id: params.sessionId,
+    session: params.session,
+    integrity: params.integrity,
+  });
+  return {
+    statusCode: 200,
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(merchant),
+  };
+}
+
 const JSON_HEADERS = { "Content-Type": "application/json" };
 
-/**
- * TODO(merchant-response-shaping): this endpoint currently returns the
- * full integrity record (device fingerprint, sigint blob, every analyzer
- * output, raw signals). That's fine for our internal use but a
- * reconnaissance gift for any merchant — and any bot that owns a
- * merchant account — once they realize they can call it.
- *
- * Before we expose this to merchants in production, replace
- * `integrityResults` with a stripped projection containing only fields
- * a fraud-prevention buyer needs:
- *   - score / decision (when scoring lands)
- *   - a small fixed set of merchant-safe flags (e.g. ip_lied,
- *     timezone_lied, asn_category, browser_family) — NOT the full
- *     analyzer evidence arrays
- *   - timestamps and the session id
- *
- * Keep DynamoDB storage as-is (full record); the shaping happens here in
- * the response layer. Internal tools (admin endpoint, dashboards, PW
- * tests) should read DDB / S3 directly with elevated auth, not via this
- * route. PW tests in ms-argus-web-integrity already do DDB-direct so they
- * won't silently break when this is tightened.
- */
 async function handleIntegritySession(
   sessionId: string,
   deps: HandlerDeps,
@@ -155,7 +149,7 @@ async function handleIntegritySession(
   // Best-effort session lookup for flag/confidence data in the projection.
   // Integrity endpoint must not 404 just because the session cache expired,
   // so swallow lookup failures.
-  let session: import("../../types/matching").SessionCacheValue | undefined;
+  let session: SessionCacheValue | undefined;
   try {
     session = await lookupSession(sessionId, {
       cacheService: deps.cacheService,
@@ -165,7 +159,7 @@ async function handleIntegritySession(
   } catch {
     session = undefined;
   }
-  return buildSuccessResponse({
+  return buildIntegrityResponse({
     sessionId,
     session,
     integrity: integrityResults,
@@ -211,7 +205,7 @@ async function handleRegularSession(
   );
 
   if (fullPayload) {
-    return buildSuccessResponse({
+    return buildRegularSessionResponse({
       sessionId,
       fullPayload,
       session,
@@ -229,6 +223,12 @@ export function createBaseHandler(deps: HandlerDeps) {
     event: APIGatewayProxyEventV2,
   ): Promise<APIGatewayProxyResultV2> => {
     const startTime = Date.now();
+
+    // Short-circuit CORS preflight before auth — OPTIONS has no X-Api-Key.
+    // The cors middleware attaches ACAO/ACAC headers in its `after` hook.
+    if (event.requestContext.http.method === "OPTIONS") {
+      return { statusCode: 204 };
+    }
 
     const apiKey = event.headers["x-api-key"];
     const valid = await validateIntegrityApiKey(apiKey);

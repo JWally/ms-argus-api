@@ -190,12 +190,14 @@ describe("session-get handler", () => {
       // Merchant-safe projection must always be present and shaped correctly
       expect(body.merchant).toBeDefined();
       expect(body.merchant.session_id).toBe(sessionId);
-      expect(body.merchant.device_id).toBe("device-abc123");
-      expect(body.merchant.confidence).toBe(0.95);
-      expect(body.merchant.risk_score).toBe(0.2);
-      expect(body.merchant.bot).toBe("none");
+      expect(body.merchant.identification.device_id).toBe("device-abc123");
+      expect(body.merchant.identification.confidence.score).toBe(0.95);
+      expect(body.merchant.suspectScore.result).toBe(0.2);
+      expect(body.merchant.bot.probability).toBe(0);
       expect(Array.isArray(body.merchant.tags)).toBe(true);
-      expect(body.merchant.network).toBeDefined();
+      expect(body.merchant.ipInfo).toBeDefined();
+      expect(body.merchant.ipLocation).toBeDefined();
+      expect(body.merchant.networkIntegrity.score).toBeGreaterThanOrEqual(0);
       expect(body.merchant.policy).toBeNull();
       expect(body.merchant.velocity).toBeNull();
     });

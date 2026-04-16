@@ -127,6 +127,9 @@ interface HandleContext {
   start: number;
 }
 
+const UA_HEADER = "user-agent";
+const XFF_HEADER = "x-forwarded-for";
+
 async function handleCollect(
   ctx: HandleContext,
 ): Promise<APIGatewayProxyResultV2> {
@@ -134,9 +137,9 @@ async function handleCollect(
   const sqsPayload = {
     ...payload,
     _headers: {
-      "User-Agent": event.headers["user-agent"],
+      "User-Agent": event.headers[UA_HEADER],
       "Accept-Language": event.headers["accept-language"],
-      "X-Forwarded-For": event.headers["x-forwarded-for"],
+      "X-Forwarded-For": event.headers[XFF_HEADER],
     },
     _timestamp: Date.now(),
   };
@@ -256,6 +259,61 @@ function emitIdentityMetrics(
   });
 }
 
+// Request headers we preserve on the integrity record. Curated — not a blanket
+// dump — because (a) DDB item size budget and (b) a few headers leak session
+// state (Authorization, actual cookie values) and must not be archived.
+const CAPTURED_REQUEST_HEADER_NAMES: readonly string[] = [
+  "user-agent",
+  "accept",
+  "accept-language",
+  "accept-encoding",
+  "referer",
+  "origin",
+  "dnt",
+  "sec-ch-ua",
+  "sec-ch-ua-mobile",
+  "sec-ch-ua-platform",
+  "sec-ch-ua-platform-version",
+  "sec-ch-ua-full-version-list",
+  "sec-fetch-site",
+  "sec-fetch-mode",
+  "sec-fetch-dest",
+  "sec-fetch-user",
+  "cloudfront-viewer-country",
+  "cloudfront-viewer-country-region",
+  "cloudfront-viewer-city",
+  "cloudfront-viewer-asn",
+  "cloudfront-viewer-time-zone",
+  "cloudfront-viewer-tls",
+  "cloudfront-viewer-http-version",
+  "cloudfront-viewer-address",
+  "cloudfront-is-mobile-viewer",
+  "cloudfront-is-tablet-viewer",
+  "cloudfront-is-desktop-viewer",
+  "cloudfront-is-smarttv-viewer",
+];
+
+interface CapturedRequestHeaders {
+  headers: Record<string, string>;
+  /** Cookie *names* the client sent (values deliberately discarded). */
+  cookie_names: string[];
+}
+
+function captureRequestHeaders(event: ExtendedEvent): CapturedRequestHeaders {
+  const out: Record<string, string> = {};
+  for (const name of CAPTURED_REQUEST_HEADER_NAMES) {
+    const v = event.headers[name];
+    if (typeof v === "string" && v.length > 0) out[name] = v;
+  }
+  // API GW V2 surfaces cookies as a separate array of raw "name=value" pairs,
+  // not in the `headers` map. Pull the names only so we can show presence
+  // without ever persisting values.
+  const cookieNames = (event.cookies ?? [])
+    .map((pair) => pair.split("=", 1)[0]?.trim())
+    .filter((n): n is string => Boolean(n));
+  return { headers: out, cookie_names: cookieNames };
+}
+
 function buildIntegrityItem(
   ctx: HandleContext,
   hydratedPayload: ArgusPayload,
@@ -264,9 +322,8 @@ function buildIntegrityItem(
   const now = Date.now();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const raw = ctx.payload as any;
-  const clientIp =
-    ctx.event.headers["x-forwarded-for"]?.split(",")[0]?.trim() ?? "";
-  const ua = ctx.event.headers["user-agent"] ?? "";
+  const clientIp = ctx.event.headers[XFF_HEADER]?.split(",")[0]?.trim() ?? "";
+  const ua = ctx.event.headers[UA_HEADER] ?? "";
 
   const identification = buildIdentificationField(identity);
   const webrtcSigint = decodeWebrtcSigintCandidates(
@@ -274,6 +331,7 @@ function buildIntegrityItem(
     process.env.SIGINT_AES_KEY,
   );
   const webrtcSigintField = buildWebrtcSigintField(webrtcSigint);
+  const requestHeaders = captureRequestHeaders(ctx.event);
 
   return {
     session_id: ctx.sessionId,
@@ -296,6 +354,7 @@ function buildIntegrityItem(
     },
     client_ip: clientIp,
     user_agent: ua,
+    request_headers: requestHeaders,
     created_at: now,
     ttl: Math.floor(now / 1000) + INTEGRITY_TTL_SECONDS,
   };

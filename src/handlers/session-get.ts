@@ -74,5 +74,10 @@ export const handler = middy(baseHandler)
   .use(warmup({ onWarmup }))
   .use(injectLambdaContext(logger))
   .use(logMetrics(metrics))
-  .use(corsMiddleware({ methods: "GET, OPTIONS", headers: "Content-Type" }))
+  .use(
+    corsMiddleware({
+      methods: "GET, OPTIONS",
+      headers: "Content-Type, X-Api-Key",
+    }),
+  )
   .use(jsonErrorHandler({ logger }));

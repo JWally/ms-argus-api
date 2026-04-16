@@ -189,29 +189,15 @@ export class HttpApiConstruct extends Construct {
       vectorResultsTable.grantReadData(this.sessionGetFunction);
     }
 
-    // HTTP API Gateway
+    // HTTP API Gateway — CORS is intentionally handled at the Lambda layer
+    // (see helpers/cors-middleware.ts). API GW's `corsPreflight` only accepts
+    // a static origin list, which breaks `credentials: 'include'` flows that
+    // need per-request origin reflection + `Access-Control-Allow-Credentials`.
+    // Removing it here routes OPTIONS preflight to the Lambda, where the
+    // middleware reflects Origin and emits ACAC:true correctly.
     this.api = new apigatewayv2.HttpApi(this, "HttpApi", {
       apiName: `${stackName}-api`,
       description: "Argus fingerprint ingestion API",
-      corsPreflight: {
-        allowOrigins: ["*"], // CloudFront handles real CORS
-        allowMethods: [
-          apigatewayv2.CorsHttpMethod.GET,
-          apigatewayv2.CorsHttpMethod.POST,
-          apigatewayv2.CorsHttpMethod.OPTIONS,
-        ],
-
-        allowHeaders: [
-          "Content-Type",
-          "Content-Encoding",
-          "X-Argus-Schema-Version",
-          "X-Argus-Origin",
-          "X-Argus-Session",
-          "X-Argus-V",
-          "X-Api-Key",
-        ],
-        maxAge: Duration.hours(24),
-      },
     });
 
     // Lambda integration
@@ -220,10 +206,14 @@ export class HttpApiConstruct extends Construct {
       this.ingestionFunction,
     );
 
-    // Routes
+    // Routes. OPTIONS is added to every non-health path so preflight hits
+    // the Lambda (which emits CORS + ACAC:true via cors-middleware). We had
+    // gateway-level corsPreflight handling this before, but that only supports
+    // static `allowOrigins` lists — incompatible with `credentials: 'include'`
+    // which needs per-request Origin reflection.
     this.api.addRoutes({
       path: "/v1/collect",
-      methods: [apigatewayv2.HttpMethod.POST],
+      methods: [apigatewayv2.HttpMethod.POST, apigatewayv2.HttpMethod.OPTIONS],
       integration: lambdaIntegration,
     });
 
@@ -235,13 +225,13 @@ export class HttpApiConstruct extends Construct {
 
     this.api.addRoutes({
       path: "/v1/handshake",
-      methods: [apigatewayv2.HttpMethod.GET],
+      methods: [apigatewayv2.HttpMethod.GET, apigatewayv2.HttpMethod.OPTIONS],
       integration: lambdaIntegration,
     });
 
     this.api.addRoutes({
       path: "/v1/integrity-collect",
-      methods: [apigatewayv2.HttpMethod.POST],
+      methods: [apigatewayv2.HttpMethod.POST, apigatewayv2.HttpMethod.OPTIONS],
       integration: lambdaIntegration,
     });
 
@@ -252,13 +242,13 @@ export class HttpApiConstruct extends Construct {
 
     this.api.addRoutes({
       path: "/v1/integrity-session/{session_id}",
-      methods: [apigatewayv2.HttpMethod.GET],
+      methods: [apigatewayv2.HttpMethod.GET, apigatewayv2.HttpMethod.OPTIONS],
       integration: sessionGetIntegration,
     });
 
     this.api.addRoutes({
       path: "/v1/session/{session_id}",
-      methods: [apigatewayv2.HttpMethod.GET],
+      methods: [apigatewayv2.HttpMethod.GET, apigatewayv2.HttpMethod.OPTIONS],
       integration: sessionGetIntegration,
     });
 

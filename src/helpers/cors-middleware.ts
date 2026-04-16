@@ -53,6 +53,7 @@ export const corsMiddleware = (
       response.headers = {
         ...response.headers,
         "Access-Control-Allow-Origin": origin,
+        "Access-Control-Allow-Credentials": "true",
         ...corsHeaders,
       };
     },
@@ -67,6 +68,7 @@ export const corsMiddleware = (
       response.headers = {
         ...response.headers,
         "Access-Control-Allow-Origin": origin,
+        "Access-Control-Allow-Credentials": "true",
         ...corsHeaders,
       };
     },

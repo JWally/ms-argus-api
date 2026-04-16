@@ -483,5 +483,14 @@ export interface IntegrityResultsData {
   };
   client_ip: string;
   user_agent: string;
+  /**
+   * Curated request headers captured at ingestion — see CAPTURED_REQUEST_HEADER_NAMES
+   * in handlers/ingestion/base-handler.ts. Cookie values are *not* stored;
+   * only names, in `cookie_names`.
+   */
+  request_headers?: {
+    headers: Record<string, string>;
+    cookie_names: string[];
+  };
   created_at: number;
 }
