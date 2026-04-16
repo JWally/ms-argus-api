@@ -18,6 +18,7 @@ import { marshall } from "@aws-sdk/util-dynamodb";
 import { HttpError } from "../../helpers/http-error";
 import { getSessionId, type ArgusPayload } from "../../helpers/payload-schema";
 import { redeemSigintTokens } from "../../helpers/redeem-sigint-tokens";
+import { extractFpidCookie } from "../../helpers/verify-cf-token";
 import {
   buildWebrtcSigintField,
   decodeWebrtcSigintCandidates,
@@ -173,6 +174,7 @@ async function handleCollect(
 async function hydrateSigint(
   payload: ArgusPayload,
   deps: BaseHandlerDeps,
+  event: ExtendedEvent,
 ): Promise<ArgusPayload> {
   const sigintAesKey = process.env.SIGINT_AES_KEY;
   const probeTokensTable = process.env.PROBE_TOKENS_TABLE_NAME;
@@ -184,6 +186,7 @@ async function hydrateSigint(
       probeTokensTableName: probeTokensTable,
       dynamo: ddbClient,
       logger: deps.logger,
+      fpidCookie: extractFpidCookie(event.cookies),
     });
     deps.metrics.addMetric("IntegritySigintRedeemed", MetricUnit.Count, 1);
     return hydrated;
@@ -301,7 +304,7 @@ function buildIntegrityItem(
 async function handleIntegrity(
   ctx: HandleContext,
 ): Promise<APIGatewayProxyResultV2> {
-  const hydratedPayload = await hydrateSigint(ctx.payload, ctx.deps);
+  const hydratedPayload = await hydrateSigint(ctx.payload, ctx.deps, ctx.event);
   // Verify the client's device-identity sig against the raw (pre-hydration)
   // payload so sigintH2Token is still available. Failures never block —
   // the outcome is recorded on the row for analytics.

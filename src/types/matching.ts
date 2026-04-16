@@ -83,6 +83,8 @@ export interface SigintData {
   aws_cf?: {
     /** Third-party cookie ID (the _fpid cookie from id.argus.pw) */
     id?: string;
+    /** Unix seconds when the _fpid cookie was originally minted (tamper-evident at CF edge) */
+    issuedAt?: number;
     /** Whether this is a new visitor (cookie just created) */
     new?: boolean;
     /** Client IP as seen by CloudFront edge */
@@ -95,6 +97,18 @@ export interface SigintData {
     ja3?: string | null;
     /** JA4 TLS fingerprint */
     ja4?: string | null;
+    /** Unix seconds when this token was minted — used for freshness check */
+    ts?: number;
+    /** SipHash-2-4 of `id|issuedAt|ip|asn|ts` from the CF edge */
+    sig?: string;
+    /** Set by API during verification: true if `ts` is outside the ±90s window */
+    expired?: boolean;
+    /** Set by API during verification: true if token sig missing / mismatched / unverifiable */
+    tampered?: boolean;
+    /** Set by API: true if the `_fpid` cookie sig failed validation or the cookie was absent */
+    cookieTampered?: boolean;
+    /** Set by API: true if cookie's uuid/issuedAt matches what's in the token payload */
+    cookieMatchesToken?: boolean;
   } | null;
   tcp_probe?: {
     /** TCP round-trip time in milliseconds */

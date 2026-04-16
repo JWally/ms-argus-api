@@ -27,12 +27,26 @@ export type PayloadDevice = Record<string, Record<string, unknown> | undefined>;
 
 export interface SigintTlsFingerprint {
   id?: string;
+  /** Unix seconds when the _fpid cookie was originally minted (tamper-evident at CF edge) */
+  issuedAt?: number;
   new?: boolean;
   ip?: string | null;
   asn?: string | null;
   country?: string | null;
   ja3?: string | null;
   ja4?: string | null;
+  /** Unix seconds when this token was minted — used for freshness check */
+  ts?: number;
+  /** SipHash-2-4 of `id|issuedAt|ip|asn|ts` from the CF edge */
+  sig?: string;
+  /** Set by API during verification: true if `ts` is outside the ±90s window */
+  expired?: boolean;
+  /** Set by API during verification: true if token sig missing / mismatched / unverifiable */
+  tampered?: boolean;
+  /** Set by API: true if the `_fpid` cookie sig failed validation or the cookie was absent */
+  cookieTampered?: boolean;
+  /** Set by API: true if cookie's uuid/issuedAt matches what's in the token payload */
+  cookieMatchesToken?: boolean;
 }
 
 // TCP Probe response - web client sends full TcpProbeResponse with nested rtt_fingerprint

@@ -21,6 +21,10 @@ import {
   redeemSigintTokens,
   extractInlineToken,
 } from "../../helpers/redeem-sigint-tokens";
+import {
+  verifyCfToken,
+  type CfTokenFields,
+} from "../../helpers/verify-cf-token";
 
 /**
  * Extended payload structure received from the ingestion handler via SQS.
@@ -78,13 +82,26 @@ function normalizeSigintFieldNames(payload: SqsPayload): void {
   delete s.stun;
 }
 
-/** Apply sigintTls JSON string to sigint.aws_cf in-place. No key or DynamoDB needed. */
+/**
+ * Apply sigintTls JSON to sigint.aws_cf. When SIGINT_AES_KEY is available,
+ * also verifies the CF SipHash signature and stamps `expired`/`tampered`
+ * flags on aws_cf for downstream consumers. No DynamoDB needed.
+ */
 function applyTlsJson(payload: SqsPayload): void {
   if (!payload.sigintTls) return;
   if (!payload.sigint) payload.sigint = {};
   if (payload.sigint.aws_cf) return;
   try {
-    payload.sigint.aws_cf = JSON.parse(payload.sigintTls);
+    const parsed = JSON.parse(payload.sigintTls);
+    if (!parsed || typeof parsed !== "object") return;
+    const awsCf = { ...(parsed as Record<string, unknown>) };
+    const key = process.env.SIGINT_AES_KEY;
+    if (key) {
+      const { expired, tampered } = verifyCfToken(awsCf as CfTokenFields, key);
+      awsCf.expired = expired;
+      awsCf.tampered = tampered;
+    }
+    payload.sigint.aws_cf = awsCf;
   } catch {
     // ignore malformed TLS JSON
   }

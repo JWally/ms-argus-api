@@ -11,6 +11,11 @@ import { DynamoDBClient, GetItemCommand } from "@aws-sdk/client-dynamodb";
 import { unmarshall } from "@aws-sdk/util-dynamodb";
 import type { Logger } from "@aws-lambda-powertools/logger";
 import type { ArgusPayload } from "./payload-schema";
+import {
+  verifyCfToken,
+  verifyCfCookie,
+  type CfTokenFields,
+} from "./verify-cf-token";
 
 /**
  * Check only the expiry portion of a token (fast path, no key needed).
@@ -203,36 +208,68 @@ function resolveProbeToken(
  * Failed-fetch case (data=null, error=...) is preserved as-is so
  * operators can still see the error message in stored records.
  */
+/** Extract the aws_cf record from either an unwrapped envelope or a flat payload. */
+function unwrapTlsPayload(raw: string): Record<string, unknown> | null {
+  try {
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return null;
+    if ("data" in parsed && parsed.data && typeof parsed.data === "object") {
+      return { ...(parsed.data as Record<string, unknown>) };
+    }
+    return { ...(parsed as Record<string, unknown>) };
+  } catch {
+    return null;
+  }
+}
+
+/** Stamp cookie verification flags on aws_cf. Absent cookie = cookieTampered. */
+function stampCookieFlags(
+  awsCf: Record<string, unknown>,
+  sigintAesKeyHex: string,
+  fpidCookie: string | undefined,
+): void {
+  if (!fpidCookie) {
+    awsCf.cookieTampered = true;
+    return;
+  }
+  const check = verifyCfCookie(fpidCookie, sigintAesKeyHex);
+  awsCf.cookieTampered = !check.valid;
+  if (check.valid) {
+    awsCf.cookieMatchesToken =
+      awsCf.id === check.id && awsCf.issuedAt === check.issuedAt;
+  }
+}
+
 function applyTlsJson(
   sigintTls: string | undefined,
   sigint: ArgusPayload["sigint"],
+  sigintAesKeyHex: string | undefined,
+  fpidCookie?: string,
 ): void {
   if (!sigintTls || !sigint || sigint.aws_cf) return;
-  try {
-    const parsed = JSON.parse(sigintTls);
-    if (
-      parsed &&
-      typeof parsed === "object" &&
-      "data" in parsed &&
-      parsed.data &&
-      typeof parsed.data === "object"
-    ) {
-      // Normal case: unwrap the SigintResult envelope.
-      sigint.aws_cf = parsed.data;
-    } else {
-      // Failed-fetch envelope or already-flat shape: store as-is.
-      sigint.aws_cf = parsed;
-    }
-  } catch {
-    // ignore malformed TLS JSON
+  const awsCf = unwrapTlsPayload(sigintTls);
+  if (!awsCf) return;
+  if (sigintAesKeyHex) {
+    const { expired, tampered } = verifyCfToken(
+      awsCf as CfTokenFields,
+      sigintAesKeyHex,
+    );
+    awsCf.expired = expired;
+    awsCf.tampered = tampered;
+    stampCookieFlags(awsCf, sigintAesKeyHex, fpidCookie);
   }
+  sigint.aws_cf = awsCf;
 }
 
 export async function redeemSigintTokens(
   payload: ArgusPayload,
-  ctx: Omit<RedeemCtx, "tableName"> & { probeTokensTableName: string },
+  ctx: Omit<RedeemCtx, "tableName"> & {
+    probeTokensTableName: string;
+    fpidCookie?: string;
+  },
 ): Promise<ArgusPayload> {
-  const { sigintAesKeyHex, probeTokensTableName, dynamo, logger } = ctx;
+  const { sigintAesKeyHex, probeTokensTableName, dynamo, logger, fpidCookie } =
+    ctx;
   const sigint: ArgusPayload["sigint"] = payload.sigint
     ? { ...payload.sigint }
     : {};
@@ -250,7 +287,7 @@ export async function redeemSigintTokens(
     "h2",
   );
 
-  applyTlsJson(payload.sigintTls, sigint);
+  applyTlsJson(payload.sigintTls, sigint, sigintAesKeyHex, fpidCookie);
 
   const redeemCtx: RedeemCtx = {
     sigintAesKeyHex,
