@@ -276,7 +276,11 @@ function isTunneledAsn(input: MerchantProjectionInput): boolean {
 
 /**
  * Apply the WebRTC-anchored fusion rules on top of a raw network component
- * score. Shared by `proxyScore` and `vpnScore`.
+ * score. The damper only fires when `applyDamper` is true, which is proxy-
+ * only: proxy_component is RTT-derived (noise-prone) and benefits from
+ * WebRTC context. vpn_component is MSS-derived — a physical-layer
+ * fingerprint of tunnel encapsulation — and should pass through
+ * regardless of WebRTC match state.
  *
  * Rules (in precedence order):
  *   1. Corporate shield → 0. Strongest carve-out; benign enterprise egress.
@@ -284,24 +288,20 @@ function isTunneledAsn(input: MerchantProjectionInput): boolean {
  *      produces a 5× gap between rcv_rtt and rtt_refreshed. Overrides
  *      cellular carve-out AND WebRTC match (covers the motivated-attacker
  *      case who rents a proxy exit in the victim's /16 to fake a match).
- *   3. Cellular / CGNAT → pass through. WebRTC often blocked at mobile
- *      carrier, but we don't uplift because CGNAT mobile users with a bit
- *      of jitter are common.
- *   4. WebRTC present and matches probes at /16 AND ASN is NOT
+ *   3. Cellular / CGNAT → pass through.
+ *   4. (proxy only) WebRTC matches probes at /16 AND ASN is NOT
  *      datacenter/vpn_proxy → cap at 0.3. Suspect but not damning.
- *      Scope to non-tunneled ASNs is critical: a VPN running on AWS
- *      (or any hosting ASN) tunnels both HTTP and WebRTC, so the IPs
- *      always agree — WebRTC match there proves tunnel uniformity,
- *      not non-proxy-ness, and would silence the MSS-reduction signal
- *      that correctly flags the tunnel.
+ *      Damper is scoped in two dimensions: (a) proxy component only —
+ *      MSS/vpn signal stays authoritative; (b) non-tunneled ASNs only —
+ *      a VPN on AWS tunnels WebRTC through the same exit so matching is
+ *      tunnel uniformity, not non-proxy-ness.
  *   5. No WebRTC submitted and component elevated (> 0.3) → floor at 0.9.
- *      The "everyone has WebRTC; if you don't, proxy metrics need to be
- *      pristine" rule.
  *   6. Otherwise → pass through.
  */
 function applyWebrtcFusion(
   input: MerchantProjectionInput,
   rawComponent: number,
+  applyDamper: boolean,
 ): number {
   if (detectCorporateShield(input)) return 0;
 
@@ -314,7 +314,7 @@ function applyWebrtcFusion(
 
   if (detectCellular(input)) return rawComponent;
 
-  if (webrtcMatchesNetwork(input) && !isTunneledAsn(input)) {
+  if (applyDamper && webrtcMatchesNetwork(input) && !isTunneledAsn(input)) {
     return Math.min(rawComponent, WEBRTC_MATCH_DAMPER_CAP);
   }
 
@@ -327,12 +327,12 @@ function applyWebrtcFusion(
 
 function vpnScore(input: MerchantProjectionInput): number {
   const raw = input.integrity?.analysis.network.vpn_component ?? 0;
-  return applyWebrtcFusion(input, raw);
+  return applyWebrtcFusion(input, raw, false);
 }
 
 function proxyScore(input: MerchantProjectionInput): number {
   const raw = input.integrity?.analysis.network.proxy_component ?? 0;
-  return applyWebrtcFusion(input, raw);
+  return applyWebrtcFusion(input, raw, true);
 }
 
 interface HeadlessSignals {

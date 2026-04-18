@@ -1145,7 +1145,11 @@ describe("buildMerchantResponse", () => {
         expect(result.tags).not.toContain("proxy");
       });
 
-      it("caps vpn symmetrically when component would exceed 0.3", () => {
+      it("does NOT damp vpn even when WebRTC matches — MSS reduction is a structural tunnel fingerprint, not jitter", () => {
+        // Residential user on Mullvad/WireGuard tunneling everything,
+        // including WebRTC, through the VPN → WebRTC srflx matches the
+        // tunnel exit IP → old damper fired → vpn silenced. MSS
+        // reduction proves the tunnel regardless of WebRTC.
         const result = buildMerchantResponse(
           fusionInput({
             vpnComponent: 0.7,
@@ -1154,8 +1158,8 @@ describe("buildMerchantResponse", () => {
             asnCategory: "residential",
           }),
         );
-        expect(result.vpn.probability).toBe(30);
-        expect(result.tags).not.toContain("vpn");
+        expect(result.vpn.probability).toBe(70);
+        expect(result.tags).toContain("vpn");
       });
 
       it("leaves low components alone (nothing to cap)", () => {
