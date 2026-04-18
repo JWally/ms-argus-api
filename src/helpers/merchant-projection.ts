@@ -264,6 +264,16 @@ function webrtcMatchesNetwork(input: MerchantProjectionInput): boolean {
   return input.integrity?.analysis.ip.checks.webrtcMatchesProbes === true;
 }
 
+/** Datacenter / declared-VPN ASNs — both run traffic through explicit
+ *  tunnels. WebRTC matching on these ASNs proves tunnel uniformity
+ *  (HTTP and WebRTC ride the same tunnel → same egress IP), not
+ *  non-proxy-ness. The damper must not fire here or it silences the
+ *  MSS-reduction signal that catches AWS-VPN / WireGuard-over-TLS. */
+function isTunneledAsn(input: MerchantProjectionInput): boolean {
+  const cat = input.integrity?.analysis.ip.asn.category;
+  return cat === "datacenter" || cat === "vpn_proxy";
+}
+
 /**
  * Apply the WebRTC-anchored fusion rules on top of a raw network component
  * score. Shared by `proxyScore` and `vpnScore`.
@@ -277,9 +287,13 @@ function webrtcMatchesNetwork(input: MerchantProjectionInput): boolean {
  *   3. Cellular / CGNAT → pass through. WebRTC often blocked at mobile
  *      carrier, but we don't uplift because CGNAT mobile users with a bit
  *      of jitter are common.
- *   4. WebRTC present and matches probes at /16 → cap at 0.3. Suspect
- *      but not damning. Applies across the full sub-ceiling range so
- *      jitter spikes (e.g. real user at 3.27×) don't false-positive.
+ *   4. WebRTC present and matches probes at /16 AND ASN is NOT
+ *      datacenter/vpn_proxy → cap at 0.3. Suspect but not damning.
+ *      Scope to non-tunneled ASNs is critical: a VPN running on AWS
+ *      (or any hosting ASN) tunnels both HTTP and WebRTC, so the IPs
+ *      always agree — WebRTC match there proves tunnel uniformity,
+ *      not non-proxy-ness, and would silence the MSS-reduction signal
+ *      that correctly flags the tunnel.
  *   5. No WebRTC submitted and component elevated (> 0.3) → floor at 0.9.
  *      The "everyone has WebRTC; if you don't, proxy metrics need to be
  *      pristine" rule.
@@ -300,7 +314,7 @@ function applyWebrtcFusion(
 
   if (detectCellular(input)) return rawComponent;
 
-  if (webrtcMatchesNetwork(input)) {
+  if (webrtcMatchesNetwork(input) && !isTunneledAsn(input)) {
     return Math.min(rawComponent, WEBRTC_MATCH_DAMPER_CAP);
   }
 

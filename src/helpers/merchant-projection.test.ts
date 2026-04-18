@@ -1455,10 +1455,15 @@ describe("buildMerchantResponse", () => {
         expect(result.tags).toContain("hyperscaler");
       });
 
-      it("datacenter ASN with elevated RTT + WebRTC match falls into damper (hyperscaler still tags)", () => {
+      it("datacenter ASN with WebRTC match is NOT damped — WebRTC + HTTP ride the same tunnel so matching is tunnel uniformity, not non-proxy-ness", () => {
+        // The 52.32.41.53 archive pattern: user's own VPN on AWS with
+        // WebRTC leaking through the same tunnel. MSS reduction in
+        // vpn_component correctly flags the tunnel; damper used to
+        // silence it. Scoped fix: damper skipped on datacenter ASNs.
         const result = buildMerchantResponse(
           fusionInput({
             proxyComponent: 0.6,
+            vpnComponent: 1.0,
             webrtcIp: "52.32.41.53",
             webrtcMatches: true,
             asnCategory: "datacenter",
@@ -1466,9 +1471,24 @@ describe("buildMerchantResponse", () => {
             rttRefreshedUs: 18614,
           }),
         );
-        expect(result.proxy.probability).toBe(30);
-        expect(result.tags).not.toContain("proxy");
+        // Raw proxy component flows through; damper is scoped out.
+        expect(result.proxy.probability).toBe(60);
+        expect(result.vpn.probability).toBe(100);
+        expect(result.tags).toContain("proxy");
+        expect(result.tags).toContain("vpn");
         expect(result.tags).toContain("hyperscaler");
+      });
+
+      it("vpn_proxy ASN category also skips the damper", () => {
+        const result = buildMerchantResponse(
+          fusionInput({
+            vpnComponent: 1.0,
+            webrtcIp: "1.2.3.4",
+            webrtcMatches: true,
+            asnCategory: "vpn_proxy",
+          }),
+        );
+        expect(result.vpn.probability).toBe(100);
       });
     });
 
