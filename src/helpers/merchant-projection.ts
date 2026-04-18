@@ -104,6 +104,11 @@ export interface MerchantIdentification {
    *  client didn't send a `device_identity` block. No verification reasons
    *  are exposed — those are internal pipeline state. */
   crypto_verified: boolean | null;
+  /** Three-store client UUID (IndexedDB + localStorage + first-party cookie),
+   *  respawned across stores by the client so it survives any single-store
+   *  clear. Stable across sessions for the same browser profile. Null when
+   *  every store failed (private mode + sandboxed iframe, etc). */
+  client_uuid: string | null;
   /** Opaque id carried across sessions in the CloudFront-stamped third-party
    *  cookie. Null when the cookie is absent or failed verification. */
   tpc_id: string | null;
@@ -223,14 +228,97 @@ function detectCorporateShield(input: MerchantProjectionInput): boolean {
  * component scores are false positives — zero them out rather than double-
  * flagging the same benign condition.
  */
-function vpnScore(input: MerchantProjectionInput): number {
+
+/** rcv_rtt/rtt_refreshed at or above this is structurally impossible for
+ *  direct/CGNAT/jittery networks. Overrides both the WebRTC damper and
+ *  the cellular carve-out — physics wins. */
+const RTT_RATIO_CEILING = 5.0;
+/** Component above this counts as "elevated" for the no-webrtc uplift.
+ *  0.3 corresponds to rcv_rtt/rtt ≈ 1.6 on the current scorer. */
+const COMPONENT_ELEVATED_THRESHOLD = 0.3;
+/** Floor applied when no WebRTC + elevated RTT ("GTFO" rule). */
+const NO_WEBRTC_UPLIFT_FLOOR = 0.9;
+/** Floor applied when ratio >= RTT_RATIO_CEILING. Above any damper. */
+const CEILING_UPLIFT_FLOOR = 0.95;
+/** Ceiling applied when WebRTC is present and matches probes — caps proxy
+ *  component at "suspect, not damning" for plausibly-legit ratios. */
+const WEBRTC_MATCH_DAMPER_CAP = 0.3;
+
+/** Unclamped rcv_rtt_refreshed/rtt_refreshed ratio from the TCP probe. Null
+ *  when data is missing (legacy records, probe failure). */
+function readRttRatio(input: MerchantProjectionInput): number | null {
+  const sigint = input.integrity?.sigint as
+    | { tcp_probe?: { rtt_fingerprint?: Record<string, number> } }
+    | undefined;
+  const rtt = sigint?.tcp_probe?.rtt_fingerprint;
+  if (!rtt) return null;
+  const rcv = rtt.rcv_rtt_refreshed;
+  const ref = rtt.rtt_refreshed;
+  if (!rcv || !ref || rcv <= 0 || ref <= 0) return null;
+  return rcv / ref;
+}
+
+/** Whether the MAC-verified WebRTC IP is present and agrees with the probe
+ *  IPs at /16 granularity (the existing analyzer's contract). */
+function webrtcMatchesNetwork(input: MerchantProjectionInput): boolean {
+  return input.integrity?.analysis.ip.checks.webrtcMatchesProbes === true;
+}
+
+/**
+ * Apply the WebRTC-anchored fusion rules on top of a raw network component
+ * score. Shared by `proxyScore` and `vpnScore`.
+ *
+ * Rules (in precedence order):
+ *   1. Corporate shield → 0. Strongest carve-out; benign enterprise egress.
+ *   2. Ratio ≥ 5.0 → floor at 0.95. Physics ceiling: no legitimate network
+ *      produces a 5× gap between rcv_rtt and rtt_refreshed. Overrides
+ *      cellular carve-out AND WebRTC match (covers the motivated-attacker
+ *      case who rents a proxy exit in the victim's /16 to fake a match).
+ *   3. Cellular / CGNAT → pass through. WebRTC often blocked at mobile
+ *      carrier, but we don't uplift because CGNAT mobile users with a bit
+ *      of jitter are common.
+ *   4. WebRTC present and matches probes at /16 → cap at 0.3. Suspect
+ *      but not damning. Applies across the full sub-ceiling range so
+ *      jitter spikes (e.g. real user at 3.27×) don't false-positive.
+ *   5. No WebRTC submitted and component elevated (> 0.3) → floor at 0.9.
+ *      The "everyone has WebRTC; if you don't, proxy metrics need to be
+ *      pristine" rule.
+ *   6. Otherwise → pass through.
+ */
+function applyWebrtcFusion(
+  input: MerchantProjectionInput,
+  rawComponent: number,
+): number {
   if (detectCorporateShield(input)) return 0;
-  return input.integrity?.analysis.network.vpn_component ?? 0;
+
+  const ratio = readRttRatio(input);
+
+  // Physics ceiling wins over every non-corporate carve-out.
+  if (ratio !== null && ratio >= RTT_RATIO_CEILING) {
+    return Math.max(rawComponent, CEILING_UPLIFT_FLOOR);
+  }
+
+  if (detectCellular(input)) return rawComponent;
+
+  if (webrtcMatchesNetwork(input)) {
+    return Math.min(rawComponent, WEBRTC_MATCH_DAMPER_CAP);
+  }
+
+  if (detectNoWebrtc(input) && rawComponent > COMPONENT_ELEVATED_THRESHOLD) {
+    return Math.max(rawComponent, NO_WEBRTC_UPLIFT_FLOOR);
+  }
+
+  return rawComponent;
+}
+
+function vpnScore(input: MerchantProjectionInput): number {
+  const raw = input.integrity?.analysis.network.vpn_component ?? 0;
+  return applyWebrtcFusion(input, raw);
 }
 
 function proxyScore(input: MerchantProjectionInput): number {
-  if (detectCorporateShield(input)) return 0;
-  return input.integrity?.analysis.network.proxy_component ?? 0;
+  const raw = input.integrity?.analysis.network.proxy_component ?? 0;
+  return applyWebrtcFusion(input, raw);
 }
 
 interface HeadlessSignals {
@@ -669,6 +757,14 @@ function deriveThirdPartyCookie(input: MerchantProjectionInput): TpcFields {
   };
 }
 
+function readClientUuid(
+  integrity: IntegrityResultsData | undefined,
+): string | null {
+  const raw = (integrity?.device as { client_uuid?: unknown } | undefined)
+    ?.client_uuid;
+  return typeof raw === "string" && raw.length > 0 ? raw : null;
+}
+
 function deriveIdentification(
   input: MerchantProjectionInput,
 ): MerchantIdentification {
@@ -691,6 +787,7 @@ function deriveIdentification(
     confidence: { score: 0 },
     crypto_device_id,
     crypto_verified,
+    client_uuid: readClientUuid(integrity),
     tpc_id: tpc.tpc_id,
     tpc_created: tpc.tpc_created,
     tpc_verified: tpc.tpc_verified,

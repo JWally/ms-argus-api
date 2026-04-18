@@ -79,6 +79,7 @@ describe("buildMerchantResponse", () => {
           confidence: { score: 0 },
           crypto_device_id: null,
           crypto_verified: null,
+          client_uuid: null,
           tpc_id: null,
           tpc_created: null,
           tpc_verified: null,
@@ -142,19 +143,29 @@ describe("buildMerchantResponse", () => {
     });
 
     it("rounds probabilities to the nearest 5, never exposes raw component", () => {
+      const base = baseIntegrity();
       const result = buildMerchantResponse({
         session_id: "s",
-        integrity: baseIntegrity({
+        integrity: {
+          ...base,
           analysis: {
-            ...baseIntegrity().analysis,
+            ...base.analysis,
             network: {
               proxy_score: 0.73,
               proxy_component: 0,
               vpn_component: 0.73,
               signals: [],
             },
+            // WebRTC present but IPs disagree — no damper, no uplift,
+            // raw vpn_component flows through so the rounding assertion
+            // is about the rounding step, not the fusion rule.
+            ip: {
+              ...base.analysis.ip,
+              ips: { ...base.analysis.ip.ips, webrtc: "8.8.8.8" },
+              checks: { probesConsistent: true, webrtcMatchesProbes: false },
+            },
           },
-        }),
+        },
       });
       // 0.73 → 73% → rounds to 75, not 73
       expect(result.vpn.probability).toBe(75);
@@ -167,19 +178,26 @@ describe("buildMerchantResponse", () => {
 
   describe("product blocks", () => {
     it("vpn tag fires when probability >= 50, proxy stays 0", () => {
+      const base = baseIntegrity();
       const result = buildMerchantResponse({
         session_id: "s",
-        integrity: baseIntegrity({
+        integrity: {
+          ...base,
           analysis: {
-            ...baseIntegrity().analysis,
+            ...base.analysis,
             network: {
               proxy_score: 0.5,
               proxy_component: 0,
               vpn_component: 0.85,
               signals: [],
             },
+            ip: {
+              ...base.analysis.ip,
+              ips: { ...base.analysis.ip.ips, webrtc: "8.8.8.8" },
+              checks: { probesConsistent: true, webrtcMatchesProbes: false },
+            },
           },
-        }),
+        },
       });
       expect(result.vpn.probability).toBe(85);
       expect(result.proxy.probability).toBe(0);
@@ -188,19 +206,26 @@ describe("buildMerchantResponse", () => {
     });
 
     it("proxy tag fires when probability >= 50", () => {
+      const base = baseIntegrity();
       const result = buildMerchantResponse({
         session_id: "s",
-        integrity: baseIntegrity({
+        integrity: {
+          ...base,
           analysis: {
-            ...baseIntegrity().analysis,
+            ...base.analysis,
             network: {
               proxy_score: 0.5,
               proxy_component: 0.6,
               vpn_component: 0,
               signals: [],
             },
+            ip: {
+              ...base.analysis.ip,
+              ips: { ...base.analysis.ip.ips, webrtc: "8.8.8.8" },
+              checks: { probesConsistent: true, webrtcMatchesProbes: false },
+            },
           },
-        }),
+        },
       });
       expect(result.proxy.probability).toBe(60);
       expect(result.vpn.probability).toBe(0);
@@ -504,6 +529,32 @@ describe("buildMerchantResponse", () => {
       expect(result.identification.crypto_verified).toBeNull();
     });
 
+    it("surfaces client_uuid from device block when present", () => {
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: baseIntegrity({
+          device: { client_uuid: "11111111-2222-4333-8444-555555555555" },
+        }),
+      });
+      expect(result.identification.client_uuid).toBe(
+        "11111111-2222-4333-8444-555555555555",
+      );
+    });
+
+    it("client_uuid is null when absent or empty", () => {
+      const absent = buildMerchantResponse({
+        session_id: "s",
+        integrity: baseIntegrity(),
+      });
+      expect(absent.identification.client_uuid).toBeNull();
+
+      const empty = buildMerchantResponse({
+        session_id: "s",
+        integrity: baseIntegrity({ device: { client_uuid: "" } }),
+      });
+      expect(empty.identification.client_uuid).toBeNull();
+    });
+
     it("surfaces hashed crypto_device_id + verified when identification present", () => {
       const pubkey = "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEXXX";
       const result = buildMerchantResponse({
@@ -767,11 +818,13 @@ describe("buildMerchantResponse", () => {
     });
 
     it("still surfaces vpn/proxy probabilities for non-corporate ASNs", () => {
+      const base = baseIntegrity();
       const input: MerchantProjectionInput = {
         session_id: "s",
-        integrity: baseIntegrity({
+        integrity: {
+          ...base,
           analysis: {
-            ...baseIntegrity().analysis,
+            ...base.analysis,
             network: {
               proxy_score: 1,
               proxy_component: 1,
@@ -779,11 +832,13 @@ describe("buildMerchantResponse", () => {
               signals: [],
             },
             ip: {
-              ...baseIntegrity().analysis.ip,
+              ...base.analysis.ip,
+              ips: { ...base.analysis.ip.ips, webrtc: "8.8.8.8" },
+              checks: { probesConsistent: true, webrtcMatchesProbes: false },
               asn: { number: "7018", org: "AT&T", category: "residential" },
             },
           },
-        }),
+        },
       };
       const result = buildMerchantResponse(input);
       expect(result.vpn.probability).toBe(100);
@@ -974,6 +1029,608 @@ describe("buildMerchantResponse", () => {
         }),
       });
       expect(result.networkIntegrity.score).toBe(0.5);
+    });
+  });
+
+  // =====================================================================
+  // WebRTC-anchored proxy/vpn fusion rule.
+  //
+  // Covers the full decision table:
+  //   1. Corporate shield → 0 (wins over everything)
+  //   2. Cellular / CGNAT → pass through (no uplift)
+  //   3. Ratio ≥ 5 → floor 0.95 (overrides damper)
+  //   4. WebRTC matches probes + ratio < 2.5 → cap 0.3 (damper)
+  //   5. No WebRTC + component > 0.3 → floor 0.9 (GTFO uplift)
+  //   6. Otherwise → pass through
+  // =====================================================================
+  describe("proxy/vpn fusion rule", () => {
+    interface FusionOpts {
+      proxyComponent?: number;
+      vpnComponent?: number;
+      webrtcIp?: string | null;
+      webrtcMatches?: boolean | null;
+      asnCategory?: string | null;
+      ipSignals?: Array<{ code: string; severity: number; evidence: string }>;
+      rcvRttUs?: number;
+      rttRefreshedUs?: number;
+      sigintOverride?: Record<string, unknown> | null;
+    }
+
+    function buildSigint(
+      opts: FusionOpts,
+      base: IntegrityResultsData,
+    ): Record<string, string> {
+      if (opts.sigintOverride === null) return {} as Record<string, string>;
+      if (opts.sigintOverride) {
+        return opts.sigintOverride as unknown as Record<string, string>;
+      }
+      const hasRttOverride =
+        opts.rcvRttUs !== undefined || opts.rttRefreshedUs !== undefined;
+      if (!hasRttOverride) return base.sigint;
+      return {
+        tcp_probe: {
+          rtt_fingerprint: {
+            rcv_rtt_refreshed: opts.rcvRttUs ?? 36000,
+            rtt_refreshed: opts.rttRefreshedUs ?? 18614,
+          },
+        },
+      } as unknown as Record<string, string>;
+    }
+
+    function buildIpAnalysis(
+      opts: FusionOpts,
+      base: IntegrityResultsData["analysis"]["ip"],
+    ): IntegrityResultsData["analysis"]["ip"] {
+      return {
+        ...base,
+        ips: {
+          ...base.ips,
+          webrtc: opts.webrtcIp === undefined ? "1.2.3.4" : opts.webrtcIp,
+        },
+        checks: {
+          probesConsistent: true,
+          webrtcMatchesProbes:
+            opts.webrtcMatches === undefined ? true : opts.webrtcMatches,
+        },
+        asn: {
+          number: opts.asnCategory === "residential" ? "7018" : null,
+          category: opts.asnCategory ?? null,
+          org: null,
+        },
+        signals: opts.ipSignals ?? [],
+        integrity: opts.webrtcIp === null ? 0.5 : 1.0,
+      };
+    }
+
+    /** Build an integrity record with explicit fusion inputs. */
+    function fusionInput(opts: FusionOpts): MerchantProjectionInput {
+      const base = baseIntegrity();
+      return {
+        session_id: "s",
+        integrity: {
+          ...base,
+          sigint: buildSigint(opts, base),
+          analysis: {
+            ...base.analysis,
+            network: {
+              proxy_score: 0,
+              proxy_component: opts.proxyComponent ?? 0,
+              vpn_component: opts.vpnComponent ?? 0,
+              signals: [],
+            },
+            ip: buildIpAnalysis(opts, base.analysis.ip),
+          },
+        },
+      };
+    }
+
+    // -----------------------------------------------------------------
+    // Rule 4 — WebRTC damper (WebRTC matches + ratio < 2.5 → cap at 0.3)
+    // -----------------------------------------------------------------
+    describe("damper (rule 4)", () => {
+      it("caps proxy at 0.3 when WebRTC matches probes and ratio is below 2.5", () => {
+        // ratio 1.93 (our real session)
+        const result = buildMerchantResponse(
+          fusionInput({
+            proxyComponent: 0.467,
+            webrtcIp: "1.2.3.4",
+            webrtcMatches: true,
+            asnCategory: "residential",
+            rcvRttUs: 36000,
+            rttRefreshedUs: 18614,
+          }),
+        );
+        // 0.467 would → 45. Damped to 0.3 → rounds to 30.
+        expect(result.proxy.probability).toBe(30);
+        expect(result.tags).not.toContain("proxy");
+      });
+
+      it("caps vpn symmetrically when component would exceed 0.3", () => {
+        const result = buildMerchantResponse(
+          fusionInput({
+            vpnComponent: 0.7,
+            webrtcIp: "1.2.3.4",
+            webrtcMatches: true,
+            asnCategory: "residential",
+          }),
+        );
+        expect(result.vpn.probability).toBe(30);
+        expect(result.tags).not.toContain("vpn");
+      });
+
+      it("leaves low components alone (nothing to cap)", () => {
+        const result = buildMerchantResponse(
+          fusionInput({
+            proxyComponent: 0.1,
+            webrtcIp: "1.2.3.4",
+            webrtcMatches: true,
+            asnCategory: "residential",
+          }),
+        );
+        expect(result.proxy.probability).toBe(10);
+      });
+
+      it("catches the AT&T jitter-spike false positive seen in archive data", () => {
+        // 107.210.133.127 session at 22:36:33 — ratio 3.27, webrtc matches.
+        // Raw component would be 1.0; damper still applies because ratio < 5.
+        const result = buildMerchantResponse(
+          fusionInput({
+            proxyComponent: 1.0,
+            webrtcIp: "107.210.133.127",
+            webrtcMatches: true,
+            asnCategory: "residential",
+            rcvRttUs: 327000,
+            rttRefreshedUs: 99987,
+          }),
+        );
+        expect(result.proxy.probability).toBe(30);
+        expect(result.tags).not.toContain("proxy");
+      });
+    });
+
+    // -----------------------------------------------------------------
+    // Rule 5 — GTFO uplift (no WebRTC + elevated → floor 0.9)
+    // -----------------------------------------------------------------
+    describe("GTFO uplift (rule 5)", () => {
+      it("floors proxy at 0.9 when no WebRTC and component > 0.3", () => {
+        // The 54.166 AWS session we've been tracking.
+        const result = buildMerchantResponse(
+          fusionInput({
+            proxyComponent: 0.467,
+            webrtcIp: null,
+            webrtcMatches: null,
+            asnCategory: "datacenter",
+            rcvRttUs: 36000,
+            rttRefreshedUs: 18614,
+          }),
+        );
+        expect(result.proxy.probability).toBe(90);
+        expect(result.tags).toContain("proxy");
+      });
+
+      it("leaves component untouched when no WebRTC but component is under 0.3", () => {
+        // Resi client with no WebRTC but clean RTT — don't punish privacy
+        // users without signal.
+        const result = buildMerchantResponse(
+          fusionInput({
+            proxyComponent: 0.1,
+            webrtcIp: null,
+            webrtcMatches: null,
+            asnCategory: "residential",
+            rcvRttUs: 36000,
+            rttRefreshedUs: 35000,
+          }),
+        );
+        expect(result.proxy.probability).toBe(10);
+        expect(result.tags).not.toContain("proxy");
+      });
+
+      it("exactly at component=0.3 does NOT trigger uplift (strictly greater)", () => {
+        const result = buildMerchantResponse(
+          fusionInput({
+            proxyComponent: 0.3,
+            webrtcIp: null,
+            webrtcMatches: null,
+            asnCategory: "residential",
+          }),
+        );
+        expect(result.proxy.probability).toBe(30);
+        expect(result.tags).not.toContain("proxy");
+      });
+    });
+
+    // -----------------------------------------------------------------
+    // Rule 3 — ratio ≥ 5 ceiling (overrides damper)
+    // -----------------------------------------------------------------
+    describe("extreme-ratio ceiling (rule 3)", () => {
+      it("floors proxy at 0.95 when ratio ≥ 5 even if WebRTC matches", () => {
+        // The motivated-attacker case: rented proxy exit in victim's /16,
+        // so WebRTC appears to match — but RTT ratio is physically impossible.
+        // Use a low raw component so the ceiling FLOOR is observable:
+        // damper would have pinned at 0.3; ceiling overrides to 0.95.
+        const result = buildMerchantResponse(
+          fusionInput({
+            proxyComponent: 0.1,
+            webrtcIp: "1.2.3.4",
+            webrtcMatches: true,
+            asnCategory: "residential",
+            rcvRttUs: 180000,
+            rttRefreshedUs: 20000,
+          }),
+        );
+        expect(result.proxy.probability).toBe(95);
+        expect(result.tags).toContain("proxy");
+      });
+
+      it("ratio=5.0 exactly triggers ceiling (boundary inclusive)", () => {
+        const result = buildMerchantResponse(
+          fusionInput({
+            proxyComponent: 0.1,
+            webrtcIp: "1.2.3.4",
+            webrtcMatches: true,
+            asnCategory: "residential",
+            rcvRttUs: 50000,
+            rttRefreshedUs: 10000,
+          }),
+        );
+        expect(result.proxy.probability).toBe(95);
+      });
+
+      it("ratio 4.9 still falls into damper (everything sub-ceiling damps)", () => {
+        const result = buildMerchantResponse(
+          fusionInput({
+            proxyComponent: 1.0,
+            webrtcIp: "1.2.3.4",
+            webrtcMatches: true,
+            asnCategory: "residential",
+            rcvRttUs: 49000,
+            rttRefreshedUs: 10000,
+          }),
+        );
+        // ratio 4.9 — right under ceiling. WebRTC matches, so damper
+        // applies. A motivated attacker picking a proxy exit in the
+        // victim's /16 who happens to produce 4.9× (not 5×+) escapes
+        // here; that's the residual false-negative of this rule set.
+        expect(result.proxy.probability).toBe(30);
+      });
+
+      it("ratio 90× on residential with no WebRTC → ceiling floor (not uplift)", () => {
+        // Ceiling takes precedence over uplift.
+        const result = buildMerchantResponse(
+          fusionInput({
+            proxyComponent: 0.0,
+            webrtcIp: null,
+            webrtcMatches: null,
+            asnCategory: "residential",
+            rcvRttUs: 900000,
+            rttRefreshedUs: 10000,
+          }),
+        );
+        expect(result.proxy.probability).toBe(95);
+      });
+    });
+
+    // -----------------------------------------------------------------
+    // Rule 1 — corporate shield (wins over all other rules)
+    // -----------------------------------------------------------------
+    describe("corporate shield carve-out (rule 1)", () => {
+      it("zeros proxy even with no WebRTC and elevated ratio", () => {
+        const result = buildMerchantResponse(
+          fusionInput({
+            proxyComponent: 0.8,
+            webrtcIp: null,
+            webrtcMatches: null,
+            asnCategory: "corporate_proxy",
+            rcvRttUs: 36000,
+            rttRefreshedUs: 18000,
+          }),
+        );
+        expect(result.proxy.probability).toBe(0);
+        expect(result.vpn.probability).toBe(0);
+        expect(result.tags).toContain("corporate_shield");
+        expect(result.tags).not.toContain("proxy");
+      });
+
+      it("zeros proxy even at ratio ≥ 5 (employee on VPN into corp)", () => {
+        const result = buildMerchantResponse(
+          fusionInput({
+            proxyComponent: 1.0,
+            webrtcIp: null,
+            webrtcMatches: null,
+            asnCategory: "corporate_proxy",
+            rcvRttUs: 100000,
+            rttRefreshedUs: 10000,
+          }),
+        );
+        expect(result.proxy.probability).toBe(0);
+        expect(result.tags).toContain("corporate_shield");
+      });
+
+      it("zeros proxy even when WebRTC matches (damper would have fired anyway)", () => {
+        const result = buildMerchantResponse(
+          fusionInput({
+            proxyComponent: 0.5,
+            webrtcIp: "1.2.3.4",
+            webrtcMatches: true,
+            asnCategory: "corporate_proxy",
+          }),
+        );
+        expect(result.proxy.probability).toBe(0);
+      });
+    });
+
+    // -----------------------------------------------------------------
+    // Rule 2 — cellular/CGNAT carve-out (no uplift)
+    // -----------------------------------------------------------------
+    describe("cellular carve-out (rule 2)", () => {
+      it("does NOT apply GTFO uplift on cellular ASN without WebRTC", () => {
+        const result = buildMerchantResponse(
+          fusionInput({
+            proxyComponent: 0.467,
+            webrtcIp: null,
+            webrtcMatches: null,
+            asnCategory: "mobile",
+            rcvRttUs: 36000,
+            rttRefreshedUs: 18614,
+          }),
+        );
+        // Component 0.467 passes through — no uplift to 0.9.
+        expect(result.proxy.probability).toBe(45);
+        expect(result.tags).not.toContain("proxy");
+        expect(result.tags).toContain("cellular");
+      });
+
+      it("CGNAT detected via SAME_SUBNET_CGNAT signal also carves out", () => {
+        const result = buildMerchantResponse(
+          fusionInput({
+            proxyComponent: 0.467,
+            webrtcIp: null,
+            webrtcMatches: null,
+            asnCategory: "residential",
+            ipSignals: [
+              { code: "SAME_SUBNET_CGNAT", severity: 0.1, evidence: "" },
+            ],
+            rcvRttUs: 36000,
+            rttRefreshedUs: 18614,
+          }),
+        );
+        expect(result.proxy.probability).toBe(45);
+        expect(result.tags).not.toContain("proxy");
+      });
+
+      it("cellular does NOT protect against physics ceiling (ratio ≥ 5)", () => {
+        // Physics ceiling runs before cellular carve-out. Cellular with a
+        // 10× ratio is either a weirdly broken mobile network or a mobile-
+        // carrier-ASN proxy service — either way, flag it.
+        const result = buildMerchantResponse(
+          fusionInput({
+            proxyComponent: 0.1,
+            webrtcIp: null,
+            webrtcMatches: null,
+            asnCategory: "mobile",
+            rcvRttUs: 100000,
+            rttRefreshedUs: 10000,
+          }),
+        );
+        expect(result.proxy.probability).toBe(95);
+        expect(result.tags).toContain("proxy");
+      });
+    });
+
+    // -----------------------------------------------------------------
+    // Hyperscaler interaction — orthogonal to fusion, both can tag.
+    // -----------------------------------------------------------------
+    describe("hyperscaler interaction", () => {
+      it("datacenter ASN with no WebRTC + elevated RTT → proxy tag AND hyperscaler tag", () => {
+        // The 54.166 AWS session — both signals legitimately fire.
+        const result = buildMerchantResponse(
+          fusionInput({
+            proxyComponent: 0.467,
+            webrtcIp: null,
+            webrtcMatches: null,
+            asnCategory: "datacenter",
+            rcvRttUs: 36000,
+            rttRefreshedUs: 18614,
+          }),
+        );
+        expect(result.proxy.probability).toBe(90);
+        expect(result.tags).toContain("proxy");
+        expect(result.tags).toContain("hyperscaler");
+      });
+
+      it("datacenter ASN with WebRTC match + clean RTT → hyperscaler only, no proxy", () => {
+        // The 52.32 session — legit headless Chrome on EC2.
+        const result = buildMerchantResponse(
+          fusionInput({
+            proxyComponent: 0.0,
+            webrtcIp: "52.32.41.53",
+            webrtcMatches: true,
+            asnCategory: "datacenter",
+            rcvRttUs: 118000,
+            rttRefreshedUs: 127000,
+          }),
+        );
+        expect(result.proxy.probability).toBe(0);
+        expect(result.tags).not.toContain("proxy");
+        expect(result.tags).toContain("hyperscaler");
+      });
+
+      it("datacenter ASN with elevated RTT + WebRTC match falls into damper (hyperscaler still tags)", () => {
+        const result = buildMerchantResponse(
+          fusionInput({
+            proxyComponent: 0.6,
+            webrtcIp: "52.32.41.53",
+            webrtcMatches: true,
+            asnCategory: "datacenter",
+            rcvRttUs: 36000,
+            rttRefreshedUs: 18614,
+          }),
+        );
+        expect(result.proxy.probability).toBe(30);
+        expect(result.tags).not.toContain("proxy");
+        expect(result.tags).toContain("hyperscaler");
+      });
+    });
+
+    // -----------------------------------------------------------------
+    // WebRTC present but MISMATCHED (different /16) — neither rule fires.
+    // -----------------------------------------------------------------
+    describe("webrtc present but mismatch (no protection, no punish)", () => {
+      it("passes raw component through when WebRTC is on a different /16", () => {
+        const result = buildMerchantResponse(
+          fusionInput({
+            proxyComponent: 0.6,
+            webrtcIp: "8.8.8.8",
+            webrtcMatches: false,
+            asnCategory: "residential",
+          }),
+        );
+        expect(result.proxy.probability).toBe(60);
+        expect(result.tags).toContain("proxy");
+      });
+
+      it("clean RTT + mismatched WebRTC + low component → stays clean", () => {
+        const result = buildMerchantResponse(
+          fusionInput({
+            proxyComponent: 0.05,
+            webrtcIp: "8.8.8.8",
+            webrtcMatches: false,
+            asnCategory: "residential",
+          }),
+        );
+        expect(result.proxy.probability).toBe(5);
+      });
+    });
+
+    // -----------------------------------------------------------------
+    // Missing sigint (legacy record, probe failure) — ratio=null path.
+    // -----------------------------------------------------------------
+    describe("missing ratio data (legacy records)", () => {
+      it("still applies damper when WebRTC matches and no sigint present", () => {
+        const result = buildMerchantResponse(
+          fusionInput({
+            proxyComponent: 0.8,
+            webrtcIp: "1.2.3.4",
+            webrtcMatches: true,
+            asnCategory: "residential",
+            sigintOverride: null,
+          }),
+        );
+        // Null ratio → damper still fires (ratio check is "< 2.5 OR null").
+        expect(result.proxy.probability).toBe(30);
+      });
+
+      it("no ceiling override possible without ratio data", () => {
+        // Can't invoke ceiling without a ratio. Damper wins.
+        const result = buildMerchantResponse(
+          fusionInput({
+            proxyComponent: 1.0,
+            webrtcIp: "1.2.3.4",
+            webrtcMatches: true,
+            asnCategory: "residential",
+            sigintOverride: null,
+          }),
+        );
+        expect(result.proxy.probability).toBe(30);
+      });
+
+      it("no WebRTC + elevated + no ratio data → uplift still fires", () => {
+        const result = buildMerchantResponse(
+          fusionInput({
+            proxyComponent: 0.5,
+            webrtcIp: null,
+            webrtcMatches: null,
+            asnCategory: "residential",
+            sigintOverride: null,
+          }),
+        );
+        expect(result.proxy.probability).toBe(90);
+      });
+    });
+
+    // -----------------------------------------------------------------
+    // End-to-end scenarios mirroring real sessions from the archive.
+    // -----------------------------------------------------------------
+    describe("real session replays (from archive)", () => {
+      it("54.166.186.154 AWS + no WebRTC + ratio 1.93 → proxy tag, hyperscaler tag", () => {
+        const result = buildMerchantResponse(
+          fusionInput({
+            proxyComponent: 0.467,
+            vpnComponent: 0.075,
+            webrtcIp: null,
+            webrtcMatches: null,
+            asnCategory: "datacenter",
+            rcvRttUs: 36000,
+            rttRefreshedUs: 18614,
+          }),
+        );
+        expect(result.proxy.probability).toBeGreaterThanOrEqual(90);
+        expect(result.tags).toContain("proxy");
+        expect(result.tags).toContain("hyperscaler");
+      });
+
+      it("50.73.28.174 Comcast + no WebRTC + ratio 4.86 → proxy tag (residential proxy exit)", () => {
+        const result = buildMerchantResponse(
+          fusionInput({
+            proxyComponent: 1.0,
+            webrtcIp: null,
+            webrtcMatches: null,
+            asnCategory: "residential",
+            rcvRttUs: 193000,
+            rttRefreshedUs: 39722,
+          }),
+        );
+        expect(result.proxy.probability).toBe(100);
+        expect(result.tags).toContain("proxy");
+        expect(result.tags).not.toContain("hyperscaler");
+      });
+
+      it("107.210.133.127 AT&T + WebRTC match + clean RTT → clean", () => {
+        const result = buildMerchantResponse(
+          fusionInput({
+            proxyComponent: 0.035,
+            webrtcIp: "107.210.133.127",
+            webrtcMatches: true,
+            asnCategory: "residential",
+            rcvRttUs: 37000,
+            rttRefreshedUs: 34559,
+          }),
+        );
+        expect(result.proxy.probability).toBe(5);
+        expect(result.tags).not.toContain("proxy");
+      });
+
+      it("107.210.133.127 AT&T + WebRTC match + jitter spike → damped (no FP)", () => {
+        const result = buildMerchantResponse(
+          fusionInput({
+            proxyComponent: 1.0,
+            webrtcIp: "107.210.133.127",
+            webrtcMatches: true,
+            asnCategory: "residential",
+            rcvRttUs: 327000,
+            rttRefreshedUs: 99987,
+          }),
+        );
+        // This is the one the OLD scorer would false-positive on.
+        expect(result.proxy.probability).toBe(30);
+        expect(result.tags).not.toContain("proxy");
+      });
+
+      it("52.32.41.53 AWS + WebRTC match + clean RTT → hyperscaler only", () => {
+        const result = buildMerchantResponse(
+          fusionInput({
+            proxyComponent: 0.0,
+            webrtcIp: "52.32.41.53",
+            webrtcMatches: true,
+            asnCategory: "datacenter",
+            rcvRttUs: 118000,
+            rttRefreshedUs: 127000,
+          }),
+        );
+        expect(result.proxy.probability).toBe(0);
+        expect(result.tags).toContain("hyperscaler");
+        expect(result.tags).not.toContain("proxy");
+      });
     });
   });
 });
