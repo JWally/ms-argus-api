@@ -318,8 +318,6 @@ async function handleIntegrity(
 
   ctx.deps.metrics.addMetric("IntegrityStored", MetricUnit.Count, 1);
 
-  await maybeLearnSignalBaseline(ctx, hydratedPayload);
-
   ctx.deps.metrics.addMetric(
     "IntegrityDuration",
     MetricUnit.Milliseconds,
@@ -331,38 +329,4 @@ async function handleIntegrity(
     body: JSON.stringify({ session_id: ctx.sessionId }),
     headers: { "Content-Type": "application/json" },
   };
-}
-
-/**
- * Fire-and-forget: feed the session into the signal-learning baseline pipeline.
- * Errors are logged and metric-counted but never thrown — baseline learning
- * must not block or fail the integrity response.
- */
-async function maybeLearnSignalBaseline(
-  ctx: HandleContext,
-  hydratedPayload: Awaited<ReturnType<typeof hydrateSigint>>,
-): Promise<void> {
-  if (!process.env.SIGNAL_BASELINES_TABLE) return;
-  try {
-    const {
-      extractSignalObservation,
-      passesDeterministicChecks,
-      learnSignals,
-    } = await import("../../services/signal-learning");
-    const device = (ctx.payload as unknown as Record<string, unknown>).device;
-    const observation = extractSignalObservation(
-      device,
-      hydratedPayload.sigint,
-    );
-    if (
-      observation &&
-      passesDeterministicChecks(device, hydratedPayload.sigint)
-    ) {
-      await learnSignals(observation);
-      ctx.deps.metrics.addMetric("SignalLearningWritten", MetricUnit.Count, 1);
-    }
-  } catch (err) {
-    ctx.deps.logger.warn("Signal learning failed", { error: err });
-    ctx.deps.metrics.addMetric("SignalLearningError", MetricUnit.Count, 1);
-  }
 }

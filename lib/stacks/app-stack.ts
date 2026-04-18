@@ -171,7 +171,6 @@ export class ArgusApiStack extends cdk.Stack {
       alarmsTopic,
       config: stageConfig,
       ecdhKeyParamName: `/${stackName}/ecdh-keypair`,
-      signalBaselinesTable: dynamodb.signalBaselinesTable,
     });
 
     const workers = new WorkersConstruct(this, "Workers", {

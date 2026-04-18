@@ -26,8 +26,6 @@ export default defineConfig({
         "cdk.out",
         "src/types/**",
         "**/index.ts",
-        // signal-learning: new subsystem, tests pending
-        "src/services/signal-learning/**",
         // Lambda entry-point shells (middy config + env wiring only — actual
         // logic lives in handlers/*/base-handler.ts). Integration tests for
         // these paths were removed with the matching pipeline.
@@ -53,7 +51,6 @@ export default defineConfig({
         "src/helpers/error-middleware.ts",
         "src/helpers/middy-helpers.ts",
         "src/services/profile/anomaly/tls-maps.ts",
-        "src/services/profile/anomaly/engine-coherence.ts",
         "src/services/profile/anomaly/network-probe-detector.ts",
       ],
       thresholds: {

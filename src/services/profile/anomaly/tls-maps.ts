@@ -2,8 +2,8 @@
  * Shared TLS / H2 Reference Maps
  *
  * Maps JA4 cipher hashes to TLS stacks, TLS stacks to browser families,
- * and H2 pseudo-header orders to browser families. Used by both
- * ja4-coherence and engine-coherence detectors.
+ * and H2 pseudo-header orders to browser families. Used by the
+ * ja4-coherence detector.
  *
  * @module services/profile/anomaly/tls-maps
  */

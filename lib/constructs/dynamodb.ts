@@ -19,15 +19,12 @@ interface DynamoDbConstructProps {
  *
  *  - integrityResultsTable: per-session integrity record (PK: session_id),
  *    stream-enabled for archiving to S3. 1-hour TTL.
- *  - signalBaselinesTable: learned population frequencies per browser version
- *    (PK: browser_key, SK: module). No TTL — permanent ground truth.
  *
  * Profiles / tier1-index / tier2-buckets / session-cache / session-payload /
  * vector-results were removed along with the fingerprint matching pipeline.
  */
 export class DynamoDbConstruct extends Construct {
   public readonly integrityResultsTable: dynamodb.Table;
-  public readonly signalBaselinesTable: dynamodb.Table;
 
   constructor(scope: Construct, id: string, props: DynamoDbConstructProps) {
     super(scope, id);
@@ -65,25 +62,6 @@ export class DynamoDbConstruct extends Construct {
       },
     );
 
-    this.signalBaselinesTable = new dynamodb.Table(
-      this,
-      "SignalBaselinesTable",
-      {
-        tableName: `${stackName}-signal-baselines`,
-        partitionKey: {
-          name: "browser_key",
-          type: dynamodb.AttributeType.STRING,
-        },
-        sortKey: {
-          name: "module",
-          type: dynamodb.AttributeType.STRING,
-        },
-        billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-        pointInTimeRecovery: true,
-        removalPolicy: RemovalPolicy.DESTROY,
-      },
-    );
-
     if (dbConfig.useProvisionedCapacity) {
       const maxCapacity = Math.ceil(
         dbConfig.baseReadCapacity * dbConfig.autoScaling.maxCapacityMultiplier,
@@ -102,11 +80,6 @@ export class DynamoDbConstruct extends Construct {
       this.createTableAlarms(
         this.integrityResultsTable,
         "IntegrityResults",
-        alarmsTopic,
-      );
-      this.createTableAlarms(
-        this.signalBaselinesTable,
-        "SignalBaselines",
         alarmsTopic,
       );
     }
