@@ -22,10 +22,9 @@
  *    low/medium/high `confidence`. This kills the scalar tuning oracle.
  *  - `networkIntegrity.score` is our differentiator — FPJS doesn't
  *    publish a WebRTC↔probe consensus score.
- *  - Forward-compat nulls (`policy`, `velocity`, `first_seen_at`,
- *    `last_seen_at`) are deliberate promises — customers integrate
- *    against the shape now, real values arrive in follow-up work
- *    without a breaking change.
+ *  - Forward-compat nulls (`policy`, `velocity`) are deliberate
+ *    promises — customers integrate against the shape now, real
+ *    values arrive in follow-up work without a breaking change.
  *
  * @module helpers/merchant-projection
  */
@@ -88,17 +87,8 @@ export interface BrowserDetails {
 }
 
 export interface MerchantIdentification {
-  /** Probabilistic, match-derived device ID — stable across sessions. */
-  device_id: string | null;
-  is_new_device: boolean;
-  /** Epoch ms. Null until DeviceProfile wiring lands. */
-  first_seen_at: number | null;
-  /** Epoch ms. Null until DeviceProfile wiring lands. */
-  last_seen_at: number | null;
-  /** Match confidence — did we re-identify this device accurately? */
-  confidence: { score: number };
-  /** SHA-256 of the client's ECDSA pubkey. Cryptographic identity, distinct
-   *  from `device_id` (match-derived). Null on legacy bundles. */
+  /** SHA-256 of the client's ECDSA pubkey. Cryptographic identity.
+   *  Null on legacy bundles. */
   crypto_device_id: string | null;
   /** Whether the cryptographic identity signature verified. Null when the
    *  client didn't send a `device_identity` block. No verification reasons
@@ -790,15 +780,6 @@ function deriveIdentification(
   const tpc = deriveThirdPartyCookie(input);
 
   return {
-    // device_id / is_new_device / confidence came from the fingerprint-matching
-    // pipeline which was removed. Merchants should rely on crypto_device_id
-    // (ECDSA pubkey hash) and tpc_id (CF-stamped cookie) for cross-session
-    // identity instead.
-    device_id: null,
-    is_new_device: false,
-    first_seen_at: null,
-    last_seen_at: null,
-    confidence: { score: 0 },
     crypto_device_id,
     crypto_verified,
     client_uuid: readClientUuid(integrity),

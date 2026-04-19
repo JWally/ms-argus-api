@@ -72,11 +72,6 @@ describe("buildMerchantResponse", () => {
         created_at: null,
         ttl: null,
         identification: {
-          device_id: null,
-          is_new_device: false,
-          first_seen_at: null,
-          last_seen_at: null,
-          confidence: { score: 0 },
           crypto_device_id: null,
           crypto_verified: null,
           client_uuid: null,
@@ -508,12 +503,6 @@ describe("buildMerchantResponse", () => {
   });
 
   describe("identification", () => {
-    it("first_seen_at and last_seen_at are null (DeviceProfile placeholders)", () => {
-      const result = buildMerchantResponse({ session_id: "s" });
-      expect(result.identification.first_seen_at).toBeNull();
-      expect(result.identification.last_seen_at).toBeNull();
-    });
-
     it("policy and velocity are null (forward-compat placeholders)", () => {
       const result = buildMerchantResponse({ session_id: "s" });
       expect(result.policy).toBeNull();
