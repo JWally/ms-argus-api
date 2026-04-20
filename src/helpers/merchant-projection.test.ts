@@ -391,6 +391,55 @@ describe("buildMerchantResponse", () => {
       expect(JSON.stringify(result)).not.toContain("SAME_SUBNET_CGNAT");
     });
 
+    it("emits 'privacy_relay' when ASN category is privacy_relay (Cloudflare/Apple PR)", () => {
+      const base = baseIntegrity();
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: {
+          ...base,
+          analysis: {
+            ...base.analysis,
+            ip: {
+              ...base.analysis.ip,
+              asn: {
+                number: "13335",
+                category: "privacy_relay",
+                org: "Cloudflare",
+              },
+            },
+          },
+        },
+      });
+      expect(result.tags).toContain("privacy_relay");
+    });
+
+    it("does NOT emit 'privacy_relay' for other categories", () => {
+      const cats = [
+        "datacenter",
+        "vpn_proxy",
+        "corporate_proxy",
+        "mobile",
+        null,
+      ] as const;
+      for (const cat of cats) {
+        const base = baseIntegrity();
+        const result = buildMerchantResponse({
+          session_id: "s",
+          integrity: {
+            ...base,
+            analysis: {
+              ...base.analysis,
+              ip: {
+                ...base.analysis.ip,
+                asn: { number: "x", category: cat, org: null },
+              },
+            },
+          },
+        });
+        expect(result.tags).not.toContain("privacy_relay");
+      }
+    });
+
     it("emits 'no_webrtc' when webrtc IP absent and integrity > 0", () => {
       const base = baseIntegrity();
       const result = buildMerchantResponse({

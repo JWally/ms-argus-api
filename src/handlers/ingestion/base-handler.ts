@@ -37,6 +37,7 @@ import {
   classifyProxy,
   type WebrtcSigintStatus,
 } from "../../analysis";
+import type { AsnCategory } from "../../analysis/ip-consistency/asn-catalog";
 
 /** API Gateway event extended with pre-parsed body from middleware. */
 export interface ExtendedEvent extends APIGatewayProxyEventV2 {
@@ -273,12 +274,17 @@ function buildAnalysisBlock(inputs: AnalysisInputs) {
     webrtcSigint,
     webrtcSigintField,
   } = inputs;
-  const network = analyzeNetworkProbes(hydratedPayload.sigint);
+  // ip analysis runs first so its asn.category can feed the network
+  // analyzer's VPN-category override.
   const ip = analyzeIpConsistency(
     raw.device,
     hydratedPayload.sigint,
     clientIp,
     webrtcSigintEvidence(webrtcSigint),
+  );
+  const network = analyzeNetworkProbes(
+    hydratedPayload.sigint,
+    ip.asn.category as AsnCategory | null,
   );
   const proxyWaterfall = classifyProxy({
     tcpIp: ip.ips.tcp,

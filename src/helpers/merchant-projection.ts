@@ -68,6 +68,7 @@ export type MerchantTag =
   | "proxy"
   | "hyperscaler"
   | "corporate_shield"
+  | "privacy_relay"
   | "browser_tampering"
   | "automation"
   | "incognito"
@@ -365,21 +366,33 @@ function detectProxy(input: MerchantProjectionInput): boolean {
   return (input.integrity?.analysis?.proxy_waterfall?.threat_score ?? 0) >= 50;
 }
 
+/**
+ * Apple Private Relay / Cloudflare WARP / similar consumer privacy
+ * relays. Not a fraud signal on its own — merchants decide.
+ */
+function detectPrivacyRelay(input: MerchantProjectionInput): boolean {
+  return input.integrity?.analysis?.ip?.asn?.category === "privacy_relay";
+}
+
+type TagPredicate = [MerchantTag, (i: MerchantProjectionInput) => boolean];
+
 function buildTags(
   input: MerchantProjectionInput,
   probs: { bot: number; vpn: number; proxy: number; tampering: number },
 ): MerchantTag[] {
-  const tags: MerchantTag[] = [];
-  if (probs.vpn >= 50) tags.push("vpn");
-  if (detectProxy(input)) tags.push("proxy");
-  if (detectHyperscaler(input)) tags.push("hyperscaler");
-  if (detectCorporateShield(input)) tags.push("corporate_shield");
-  if (probs.tampering >= 50) tags.push("browser_tampering");
-  if (probs.bot >= 50) tags.push("automation");
-  if (detectIncognito(input)) tags.push("incognito");
-  if (detectCellular(input)) tags.push("cellular");
-  if (detectNoWebrtc(input)) tags.push("no_webrtc");
-  return tags;
+  const predicates: TagPredicate[] = [
+    ["vpn", () => probs.vpn >= 50],
+    ["proxy", detectProxy],
+    ["hyperscaler", detectHyperscaler],
+    ["corporate_shield", detectCorporateShield],
+    ["privacy_relay", detectPrivacyRelay],
+    ["browser_tampering", () => probs.tampering >= 50],
+    ["automation", () => probs.bot >= 50],
+    ["incognito", detectIncognito],
+    ["cellular", detectCellular],
+    ["no_webrtc", detectNoWebrtc],
+  ];
+  return predicates.filter(([, p]) => p(input)).map(([tag]) => tag);
 }
 
 function botProbability(input: MerchantProjectionInput): number {
