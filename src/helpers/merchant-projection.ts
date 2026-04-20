@@ -73,6 +73,7 @@ export type MerchantTag =
   | "automation"
   | "incognito"
   | "cellular"
+  | "location_mismatch"
   | "no_webrtc";
 
 export interface BrowserDetails {
@@ -374,6 +375,17 @@ function detectPrivacyRelay(input: MerchantProjectionInput): boolean {
   return input.integrity?.analysis?.ip?.asn?.category === "privacy_relay";
 }
 
+/**
+ * Visitor's claimed location (timezone, accept-language) contradicts
+ * CloudFront-observed IP geolocation. Strongest when cross-continent
+ * language mismatch; weaker for TZ-only or same-continent language.
+ */
+function detectLocationMismatch(input: MerchantProjectionInput): boolean {
+  if (!input.integrity) return false;
+  const e = collectTamperingEvidence(input.integrity);
+  return e.tzGeoMismatch || e.langGeoCrossContinent || e.langGeoCrossCountry;
+}
+
 type TagPredicate = [MerchantTag, (i: MerchantProjectionInput) => boolean];
 
 function buildTags(
@@ -390,6 +402,7 @@ function buildTags(
     ["automation", () => probs.bot >= 50],
     ["incognito", detectIncognito],
     ["cellular", detectCellular],
+    ["location_mismatch", detectLocationMismatch],
     ["no_webrtc", detectNoWebrtc],
   ];
   return predicates.filter(([, p]) => p(input)).map(([tag]) => tag);
@@ -500,6 +513,51 @@ interface TamperingEvidence {
   uaDivergence: boolean;
   platformLie: boolean;
   uaHeaderMismatch: boolean;
+  /** Any client-hints vs UA mismatch (Group 3, sev >= 0.8). */
+  chUaMismatch: boolean;
+  /** Any locale-internal mismatch (Group A, sev >= 0.75). */
+  localeTamper: boolean;
+  /** Timezone location doesn't match IP geo (existing TZ_GEOLOCATION_MISMATCH). */
+  tzGeoMismatch: boolean;
+  /** Accept-Language vs CF country cross-continent mismatch (severe). */
+  langGeoCrossContinent: boolean;
+  /** Accept-Language vs CF country same-continent mismatch (mild). */
+  langGeoCrossCountry: boolean;
+}
+
+function readChUaMismatch(integrity: IntegrityResultsData): boolean {
+  const chUa = (
+    integrity.analysis as {
+      client_hints_ua?: { hasStrongMismatch?: boolean };
+    }
+  ).client_hints_ua;
+  return chUa?.hasStrongMismatch === true;
+}
+
+function readLocaleGeoSignals(integrity: IntegrityResultsData): {
+  localeTamper: boolean;
+  crossContinent: boolean;
+  crossCountry: boolean;
+} {
+  const lg = (
+    integrity.analysis as {
+      locale_geo?: {
+        hasLocaleTamper?: boolean;
+        signals?: Array<{ code: string }>;
+      };
+    }
+  ).locale_geo;
+  const codes = (lg?.signals ?? []).map((s) => s.code);
+  return {
+    localeTamper: lg?.hasLocaleTamper === true,
+    crossContinent: codes.includes("ACCEPT_LANG_GEO_CROSS_CONTINENT"),
+    crossCountry: codes.includes("ACCEPT_LANG_GEO_CROSS_COUNTRY"),
+  };
+}
+
+function readTzGeoMismatch(integrity: IntegrityResultsData): boolean {
+  const tz = integrity.analysis.timezone;
+  return (tz?.signals ?? []).some((s) => s.code === "TZ_GEOLOCATION_MISMATCH");
 }
 
 function collectTamperingEvidence(
@@ -511,6 +569,7 @@ function collectTamperingEvidence(
   const divergences = (integrity.analysis.worker.divergences ?? []).filter(
     (d) => /navigator|css|screen/i.test(d.field),
   ).length;
+  const locale = readLocaleGeoSignals(integrity);
   return {
     lies,
     divergences,
@@ -519,12 +578,20 @@ function collectTamperingEvidence(
     uaDivergence: hasUaWorkerDivergence(integrity),
     platformLie: hasPlatformLie(integrity),
     uaHeaderMismatch: detectUaFamilyHeaderMismatch(integrity),
+    chUaMismatch: readChUaMismatch(integrity),
+    localeTamper: locale.localeTamper,
+    tzGeoMismatch: readTzGeoMismatch(integrity),
+    langGeoCrossContinent: locale.crossContinent,
+    langGeoCrossCountry: locale.crossCountry,
   };
 }
 
 function isDefinitiveTampering(e: TamperingEvidence): boolean {
   if (e.lies >= 20 || e.ja4Mismatch || e.divergences >= 3) return true;
   if (e.webrtcApiTampered) return true;
+  // Client-hints vs UA disagreement (platform/mobile/brand) is proof of
+  // partial spoofing — real browsers never have this split.
+  if (e.chUaMismatch) return true;
   // (D) Compound: lies + a second-order spoof-indicator
   return e.lies >= 5 && (e.uaDivergence || e.platformLie);
 }
@@ -534,6 +601,17 @@ function tamperingProbabilityFromEvidence(e: TamperingEvidence): number {
   if (e.lies >= 5 || e.divergences >= 1) return 60;
   // (E) Header/UA inconsistency on Chromium — credible spoof even without lies
   if (e.uaHeaderMismatch) return 60;
+  // Locale-internal inconsistency (intl vs navigator, or worker vs main).
+  // Real browsers don't disagree on their own locale — strong spoof tell.
+  if (e.localeTamper) return 60;
+  // Cross-continent language vs IP geo — carder pattern (e.g.,
+  // accept-language: zh-CN from US residential proxy).
+  if (e.langGeoCrossContinent) return 45;
+  // TZ location vs IP TZ disagreement — VPN/proxy tell, often benign for
+  // travelers but still worth surfacing.
+  if (e.tzGeoMismatch) return 35;
+  // Same-continent language vs country (e.g., US visitor with fr-FR UI).
+  if (e.langGeoCrossCountry) return 25;
   if (e.lies >= 1) return 25;
   return 0;
 }

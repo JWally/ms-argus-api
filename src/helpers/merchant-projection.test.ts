@@ -440,6 +440,190 @@ describe("buildMerchantResponse", () => {
       }
     });
 
+    describe("location_mismatch tag + tampering ladder", () => {
+      it("emits 'location_mismatch' when TZ_GEOLOCATION_MISMATCH fires", () => {
+        const base = baseIntegrity();
+        const result = buildMerchantResponse({
+          session_id: "s",
+          integrity: {
+            ...base,
+            analysis: {
+              ...base.analysis,
+              timezone: {
+                ...base.analysis.timezone,
+                signals: [
+                  {
+                    code: "TZ_GEOLOCATION_MISMATCH",
+                    severity: 0.6,
+                    evidence:
+                      "client=America/Chicago, cloudfront=Europe/Berlin",
+                  },
+                ],
+              },
+            },
+          },
+        });
+        expect(result.tags).toContain("location_mismatch");
+      });
+
+      it("emits 'location_mismatch' when ACCEPT_LANG_GEO_CROSS_CONTINENT fires", () => {
+        const base = baseIntegrity();
+        const result = buildMerchantResponse({
+          session_id: "s",
+          integrity: {
+            ...base,
+            analysis: {
+              ...base.analysis,
+              locale_geo: {
+                hasLocationMismatch: true,
+                hasLocaleTamper: false,
+                signals: [
+                  {
+                    code: "ACCEPT_LANG_GEO_CROSS_CONTINENT",
+                    severity: 0.7,
+                    evidence: "zh-CN vs US",
+                  },
+                ],
+              },
+            },
+          },
+        });
+        expect(result.tags).toContain("location_mismatch");
+      });
+
+      it("tampering probability floor 35 on TZ_GEOLOCATION_MISMATCH alone", () => {
+        const base = baseIntegrity();
+        const result = buildMerchantResponse({
+          session_id: "s",
+          integrity: {
+            ...base,
+            analysis: {
+              ...base.analysis,
+              timezone: {
+                ...base.analysis.timezone,
+                signals: [
+                  {
+                    code: "TZ_GEOLOCATION_MISMATCH",
+                    severity: 0.6,
+                    evidence: "mismatch",
+                  },
+                ],
+              },
+            },
+          },
+        });
+        expect(result.tampering.probability).toBe(35);
+      });
+
+      it("tampering probability 45 on cross-continent accept-lang mismatch", () => {
+        const base = baseIntegrity();
+        const result = buildMerchantResponse({
+          session_id: "s",
+          integrity: {
+            ...base,
+            analysis: {
+              ...base.analysis,
+              locale_geo: {
+                hasLocationMismatch: true,
+                hasLocaleTamper: false,
+                signals: [
+                  {
+                    code: "ACCEPT_LANG_GEO_CROSS_CONTINENT",
+                    severity: 0.7,
+                    evidence: "zh-CN vs US",
+                  },
+                ],
+              },
+            },
+          },
+        });
+        expect(result.tampering.probability).toBe(45);
+      });
+
+      it("tampering probability 25 on same-continent accept-lang mismatch", () => {
+        const base = baseIntegrity();
+        const result = buildMerchantResponse({
+          session_id: "s",
+          integrity: {
+            ...base,
+            analysis: {
+              ...base.analysis,
+              locale_geo: {
+                hasLocationMismatch: true,
+                hasLocaleTamper: false,
+                signals: [
+                  {
+                    code: "ACCEPT_LANG_GEO_CROSS_COUNTRY",
+                    severity: 0.4,
+                    evidence: "fr-FR vs DE",
+                  },
+                ],
+              },
+            },
+          },
+        });
+        expect(result.tampering.probability).toBe(25);
+      });
+
+      it("tampering probability 60 on intl vs navigator locale mismatch", () => {
+        const base = baseIntegrity();
+        const result = buildMerchantResponse({
+          session_id: "s",
+          integrity: {
+            ...base,
+            analysis: {
+              ...base.analysis,
+              locale_geo: {
+                hasLocationMismatch: false,
+                hasLocaleTamper: true,
+                signals: [
+                  {
+                    code: "LOCALE_NAV_INTL_MISMATCH",
+                    severity: 0.85,
+                    evidence: "intl=fr vs nav=en",
+                  },
+                ],
+              },
+            },
+          },
+        });
+        expect(result.tampering.probability).toBe(60);
+      });
+
+      it("tampering probability 100 on client-hints strong mismatch (definitive)", () => {
+        const base = baseIntegrity();
+        const result = buildMerchantResponse({
+          session_id: "s",
+          integrity: {
+            ...base,
+            analysis: {
+              ...base.analysis,
+              client_hints_ua: {
+                hasStrongMismatch: true,
+                signals: [
+                  {
+                    code: "CH_UA_PLATFORM_MISMATCH",
+                    severity: 0.85,
+                    evidence: "macOS vs Windows",
+                  },
+                ],
+              },
+            },
+          },
+        });
+        expect(result.tampering.probability).toBe(100);
+      });
+
+      it("clean session → no tampering, no location_mismatch tag", () => {
+        const result = buildMerchantResponse({
+          session_id: "s",
+          integrity: baseIntegrity(),
+        });
+        expect(result.tampering.probability).toBe(0);
+        expect(result.tags).not.toContain("location_mismatch");
+      });
+    });
+
     it("emits 'no_webrtc' when webrtc IP absent and integrity > 0", () => {
       const base = baseIntegrity();
       const result = buildMerchantResponse({
