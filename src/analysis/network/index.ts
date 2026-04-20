@@ -30,8 +30,8 @@ const RTT_RATIO_MAX = 3.0;
 /** RTT ratio where the score is 0. Direct connections sit here. */
 const RTT_RATIO_MIN = 1.0;
 
-/** MSS where the score is 0. Standard ethernet path. */
-const MSS_HIGH = 1460;
+/** MSS where the score is 0. Tolerates PPPoE/DS-Lite/6rd overhead. */
+const MSS_HIGH = 1440;
 /** MSS where the continuous score saturates at 1.0. Heavy tunnels. */
 const MSS_LOW = 1300;
 

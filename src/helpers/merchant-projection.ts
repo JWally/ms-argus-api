@@ -22,10 +22,6 @@
  *    low/medium/high `confidence`. This kills the scalar tuning oracle.
  *  - `networkIntegrity.score` is our differentiator — FPJS doesn't
  *    publish a WebRTC↔probe consensus score.
- *  - Forward-compat nulls (`policy`, `velocity`, `first_seen_at`,
- *    `last_seen_at`) are deliberate promises — customers integrate
- *    against the shape now, real values arrive in follow-up work
- *    without a breaking change.
  *
  * @module helpers/merchant-projection
  */
@@ -88,17 +84,8 @@ export interface BrowserDetails {
 }
 
 export interface MerchantIdentification {
-  /** Probabilistic, match-derived device ID — stable across sessions. */
-  device_id: string | null;
-  is_new_device: boolean;
-  /** Epoch ms. Null until DeviceProfile wiring lands. */
-  first_seen_at: number | null;
-  /** Epoch ms. Null until DeviceProfile wiring lands. */
-  last_seen_at: number | null;
-  /** Match confidence — did we re-identify this device accurately? */
-  confidence: { score: number };
-  /** SHA-256 of the client's ECDSA pubkey. Cryptographic identity, distinct
-   *  from `device_id` (match-derived). Null on legacy bundles. */
+  /** SHA-256 of the client's ECDSA pubkey. Cryptographic identity.
+   *  Null on legacy bundles. */
   crypto_device_id: string | null;
   /** Whether the cryptographic identity signature verified. Null when the
    *  client didn't send a `device_identity` block. No verification reasons
@@ -172,7 +159,11 @@ export interface MerchantSafeResponse {
    */
   bot: { probability: number };
   vpn: { probability: number };
-  proxy: { probability: number };
+  /**
+   * Proxy threat score in [0, 100]. 0 = clean, 100 = confirmed threat,
+   * mid = ambiguous. Derived from the proxy-detection waterfall.
+   */
+  proxy: { threat: number };
   tampering: { probability: number };
   /** Direct observation (client flag), not probabilistic. */
   incognito: { result: boolean };
@@ -196,11 +187,6 @@ export interface MerchantSafeResponse {
 
   /** Curated request headers preserved at ingestion. Null for pre-capture records. */
   requestHeaders: MerchantRequestHeaders | null;
-
-  /** Placeholder for future policy engine. Null until a rule engine ships. */
-  policy: null;
-  /** Placeholder for velocity counters (FPJS-style). Null until implemented. */
-  velocity: null;
 }
 
 /** Input bundle for the projection. Accepts an integrity record only — the
@@ -370,13 +356,22 @@ function detectNoWebrtc(input: MerchantProjectionInput): boolean {
   return ipAnalysis.ips.webrtc === null;
 }
 
+/**
+ * "proxy" tag fires when the waterfall's merchant-facing threat score
+ * is >= 50. Decouples the tag from the legacy proxyScore() so tags
+ * agree with the threat value shown on the merchant response.
+ */
+function detectProxy(input: MerchantProjectionInput): boolean {
+  return (input.integrity?.analysis?.proxy_waterfall?.threat_score ?? 0) >= 50;
+}
+
 function buildTags(
   input: MerchantProjectionInput,
   probs: { bot: number; vpn: number; proxy: number; tampering: number },
 ): MerchantTag[] {
   const tags: MerchantTag[] = [];
   if (probs.vpn >= 50) tags.push("vpn");
-  if (probs.proxy >= 50) tags.push("proxy");
+  if (detectProxy(input)) tags.push("proxy");
   if (detectHyperscaler(input)) tags.push("hyperscaler");
   if (detectCorporateShield(input)) tags.push("corporate_shield");
   if (probs.tampering >= 50) tags.push("browser_tampering");
@@ -790,15 +785,6 @@ function deriveIdentification(
   const tpc = deriveThirdPartyCookie(input);
 
   return {
-    // device_id / is_new_device / confidence came from the fingerprint-matching
-    // pipeline which was removed. Merchants should rely on crypto_device_id
-    // (ECDSA pubkey hash) and tpc_id (CF-stamped cookie) for cross-session
-    // identity instead.
-    device_id: null,
-    is_new_device: false,
-    first_seen_at: null,
-    last_seen_at: null,
-    confidence: { score: 0 },
     crypto_device_id,
     crypto_verified,
     client_uuid: readClientUuid(integrity),
@@ -859,7 +845,7 @@ export function buildMerchantResponse(
 
     bot: { probability: probs.bot },
     vpn: { probability: probs.vpn },
-    proxy: { probability: probs.proxy },
+    proxy: { threat: integrity?.analysis?.proxy_waterfall?.threat_score ?? 0 },
     tampering: { probability: probs.tampering },
     incognito: { result: detectIncognito(input) },
     networkIntegrity: { score: networkIntegrityScore },
@@ -868,8 +854,5 @@ export function buildMerchantResponse(
     tags: buildTags(input, probs),
 
     requestHeaders: deriveRequestHeaders(input),
-
-    policy: null,
-    velocity: null,
   };
 }
