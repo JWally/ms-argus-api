@@ -480,6 +480,17 @@ export interface IntegrityResultsData {
       ip: string | null;
       signals: Array<{ code: string; severity: number; evidence: string }>;
     };
+    /** Locale / geo cross-verification. See analyzeLocaleGeo. */
+    locale_geo?: {
+      signals: Array<{ code: string; severity: number; evidence: string }>;
+      hasLocationMismatch: boolean;
+      hasLocaleTamper: boolean;
+    };
+    /** Client-hints vs UA cross-verification. See analyzeClientHintsUa. */
+    client_hints_ua?: {
+      signals: Array<{ code: string; severity: number; evidence: string }>;
+      hasStrongMismatch: boolean;
+    };
     /** Proxy-detection waterfall verdict. See classifyProxy. */
     proxy_waterfall?: {
       /** Internal verdict label — stored, not merchant-facing. */

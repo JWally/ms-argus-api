@@ -34,6 +34,8 @@ import {
   analyzeTimezone,
   analyzeIpConsistency,
   analyzeJa4Ua,
+  analyzeLocaleGeo,
+  analyzeClientHintsUa,
   classifyProxy,
   type WebrtcSigintStatus,
 } from "../../analysis";
@@ -261,6 +263,8 @@ interface AnalysisInputs {
   hydratedPayload: ArgusPayload;
   clientIp: string;
   ua: string;
+  acceptLanguage: string | null;
+  requestHeaders: Record<string, string> | null;
   webrtcSigint: SigintCandidateDecodeResult;
   webrtcSigintField: ReturnType<typeof buildWebrtcSigintField>;
 }
@@ -271,6 +275,8 @@ function buildAnalysisBlock(inputs: AnalysisInputs) {
     hydratedPayload,
     clientIp,
     ua,
+    acceptLanguage,
+    requestHeaders,
     webrtcSigint,
     webrtcSigintField,
   } = inputs;
@@ -295,15 +301,33 @@ function buildAnalysisBlock(inputs: AnalysisInputs) {
     webrtcStatus: webrtcSigint.reason as WebrtcSigintStatus,
     rttRatio: extractRttRatio(hydratedPayload.sigint),
   });
+  const localeGeo = analyzeLocaleGeo(
+    raw.device,
+    acceptLanguage,
+    extractCfCountry(hydratedPayload.sigint),
+  );
+  const clientHintsUa = analyzeClientHintsUa(
+    ua,
+    requestHeaders,
+    (hydratedPayload.sigint as { tcp_probe?: unknown } | undefined)?.tcp_probe,
+  );
   return {
     network,
     worker: analyzeWorkerScopes(raw.device),
     timezone: analyzeTimezone(raw.device, hydratedPayload.sigint),
     ip,
     ja4_ua: analyzeJa4Ua(hydratedPayload.sigint, ua),
+    locale_geo: localeGeo,
+    client_hints_ua: clientHintsUa,
     proxy_waterfall: proxyWaterfall,
     ...(webrtcSigintField ? { webrtc_sigint: webrtcSigintField } : {}),
   };
+}
+
+function extractCfCountry(sigint: unknown): string | null {
+  const cf = (sigint as { aws_cf?: { country?: unknown } } | undefined)?.aws_cf;
+  const c = cf?.country;
+  return typeof c === "string" && c.length > 0 ? c : null;
 }
 
 function buildIntegrityItem(
@@ -316,6 +340,7 @@ function buildIntegrityItem(
   const raw = ctx.payload as any;
   const clientIp = ctx.event.headers[XFF_HEADER]?.split(",")[0]?.trim() ?? "";
   const ua = ctx.event.headers[UA_HEADER] ?? "";
+  const acceptLanguage = ctx.event.headers["accept-language"] ?? null;
 
   const identification = buildIdentificationField(identity);
   const webrtcSigint = decodeWebrtcSigintCandidates(
@@ -336,6 +361,8 @@ function buildIntegrityItem(
       hydratedPayload,
       clientIp,
       ua,
+      acceptLanguage,
+      requestHeaders: requestHeaders?.headers ?? null,
       webrtcSigint,
       webrtcSigintField,
     }),
