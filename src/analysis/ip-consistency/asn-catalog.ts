@@ -2,16 +2,20 @@
  * Known ASN catalog for IP classification.
  *
  * Categories:
- * - datacenter: cloud/hosting providers — real browsers don't originate here
- * - vpn_proxy: known VPN and proxy service infrastructure
- * - corporate_proxy: enterprise security gateways (Zscaler, Umbrella, etc.)
- * - mobile: cellular carriers — used with SAME_SUBNET_CGNAT to tag cellular
+ * - datacenter:     cloud/hosting providers — real browsers don't originate here
+ * - vpn_proxy:      known VPN and proxy service infrastructure
+ * - corporate_proxy:enterprise security gateways (Zscaler, Umbrella, etc.)
+ * - privacy_relay:  consumer privacy relays (Apple Private Relay, Cloudflare
+ *                   WARP). Network-layer looks like a proxy, but users are
+ *                   legitimate consumers — don't auto-fail.
+ * - mobile:         cellular carriers — used with SAME_SUBNET_CGNAT to tag cellular
  */
 
 export type AsnCategory =
   | "datacenter"
   | "vpn_proxy"
   | "corporate_proxy"
+  | "privacy_relay"
   | "mobile";
 
 interface AsnEntry {
@@ -33,8 +37,6 @@ const ASN_CATALOG: Record<string, AsnEntry> = {
   // Microsoft / Azure
   "8075": { category: "datacenter", org: "Microsoft Corporation" },
   "8068": { category: "datacenter", org: "Microsoft Corporation" },
-  // Cloudflare (also used for WARP/Gateway — dual categorized below)
-  "13335": { category: "datacenter", org: "Cloudflare" },
   // DigitalOcean
   "14061": { category: "datacenter", org: "DigitalOcean" },
   // OVH
@@ -82,12 +84,30 @@ const ASN_CATALOG: Record<string, AsnEntry> = {
   "398324": { category: "corporate_proxy", org: "Zscaler" },
   "22616": { category: "corporate_proxy", org: "Zscaler" },
   "62044": { category: "corporate_proxy", org: "Zscaler" },
-  // Cloudflare WARP / Gateway
-  "209242": { category: "corporate_proxy", org: "Cloudflare WARP" },
   // Palo Alto Prisma Access
   "396507": {
     category: "corporate_proxy",
     org: "Palo Alto Networks / Prisma Access",
+  },
+
+  // ── Privacy Relays (consumer privacy, not fraud signal) ───────
+  // Cloudflare (main AS) — hosts the CDN, WARP consumer VPN, and
+  // edges for Apple Private Relay (egress side). Consumer traffic
+  // from AS13335 is almost always a legit privacy-conscious user.
+  "13335": { category: "privacy_relay", org: "Cloudflare" },
+  // Cloudflare WARP (1.1.1.1 consumer VPN)
+  "209242": { category: "privacy_relay", org: "Cloudflare WARP" },
+  // Apple — iCloud Private Relay (Apple One, iCloud+ subscribers)
+  "714": { category: "privacy_relay", org: "Apple Inc." },
+  "6185": { category: "privacy_relay", org: "Apple Inc." },
+  // Akamai — second-hop egress for Apple Private Relay
+  "16625": {
+    category: "privacy_relay",
+    org: "Akamai Technologies (Apple Private Relay egress)",
+  },
+  "20940": {
+    category: "privacy_relay",
+    org: "Akamai International (Apple Private Relay egress)",
   },
 
   // ── Mobile Carriers (US) ──────────────────────────────────────

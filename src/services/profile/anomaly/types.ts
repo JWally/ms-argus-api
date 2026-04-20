@@ -95,6 +95,18 @@ export const AnomalyCodes = {
   // Network probe anomalies (computed from tcp_info/rtt_fingerprint in the API)
   LIKELY_PROXY: "LIKELY_PROXY",
   LIKELY_VPN: "LIKELY_VPN",
+  /**
+   * ASN category is known-VPN (datacenter or vpn_proxy). Categorical
+   * override that bypasses MSS math — catches tuned-MTU WG that would
+   * score low on MSS alone but originates from a known hosting ASN.
+   */
+  CATEGORY_VPN: "CATEGORY_VPN",
+  /**
+   * ASN category is privacy_relay (Apple Private Relay, Cloudflare WARP).
+   * Consumer privacy layer, not a fraud signal — surfaced but not
+   * auto-elevated. Moderate score so merchants can decide policy.
+   */
+  CATEGORY_PRIVACY_RELAY: "CATEGORY_PRIVACY_RELAY",
 } as const;
 
 export type AnomalyCode = (typeof AnomalyCodes)[keyof typeof AnomalyCodes];

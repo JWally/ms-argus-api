@@ -22,7 +22,10 @@
  * in session-get handler) projects this to `{proxy_score}` only.
  */
 
+import type { AsnCategory } from "../ip-consistency/asn-catalog";
 import { detectNetworkProbeAnomalies } from "../../services/profile/anomaly/network-probe-detector";
+import { AnomalyCodes } from "../../services/profile/anomaly/types";
+import type { AnomalyCode } from "../../services/profile/anomaly/types";
 import type { Fingerprint } from "../../types";
 
 /** RTT ratio where the continuous score saturates at 1.0. */
@@ -34,6 +37,38 @@ const RTT_RATIO_MIN = 1.0;
 const MSS_HIGH = 1440;
 /** MSS where the continuous score saturates at 1.0. Heavy tunnels. */
 const MSS_LOW = 1300;
+
+/**
+ * VPN score by ASN category. When the ASN is in a known-VPN class,
+ * MSS math is bypassed — categorical evidence is stronger than
+ * tunnel-overhead inference, and MSS alone missed tuned-MTU WG.
+ *
+ *   datacenter / vpn_proxy → 1.0  (no real consumer originates here)
+ *   privacy_relay          → 0.5  (Apple Private Relay, Cloudflare WARP)
+ *   corporate_proxy        → skip (user is a real employee; don't auto-fail)
+ *   mobile / undefined     → skip (fall through to MSS math)
+ */
+function vpnByCategory(category: AsnCategory | null | undefined): {
+  score: number;
+  code: AnomalyCode;
+  severity: number;
+} | null {
+  if (category === "datacenter" || category === "vpn_proxy") {
+    return {
+      score: 1.0,
+      code: AnomalyCodes.CATEGORY_VPN,
+      severity: 1.0,
+    };
+  }
+  if (category === "privacy_relay") {
+    return {
+      score: 0.5,
+      code: AnomalyCodes.CATEGORY_PRIVACY_RELAY,
+      severity: 0.5,
+    };
+  }
+  return null;
+}
 
 function clamp01(n: number): number {
   return Math.max(0, Math.min(1, n));
@@ -86,21 +121,33 @@ function computeVpnComponent(tcp: Record<string, unknown>): number {
   return clamp01((MSS_HIGH - sndMss) / (MSS_HIGH - MSS_LOW));
 }
 
-export function analyzeNetworkProbes(sigint: unknown) {
+export function analyzeNetworkProbes(
+  sigint: unknown,
+  asnCategory: AsnCategory | null | undefined = null,
+) {
   const tcp = (sigint as Record<string, unknown> | undefined)?.tcp_probe as
     | Record<string, unknown>
     | undefined;
 
   // Legacy threshold-based signals — kept for internal diagnostics and
   // the older profile/matching path. Not exposed via merchant API.
-  const signals = detectNetworkProbeAnomalies(
+  const legacySignals = detectNetworkProbeAnomalies(
     {} as Fingerprint,
     undefined,
     sigint,
   );
 
   const proxyComponent = tcp ? computeProxyComponent(tcp) : 0;
-  const vpnComponent = tcp ? computeVpnComponent(tcp) : 0;
+  const mssVpnComponent = tcp ? computeVpnComponent(tcp) : 0;
+
+  // Category override: when the ASN is in a known-VPN class, override
+  // the MSS-derived score. A tuned-MTU WG on AWS shows MSS ~1400 and
+  // would score 0.29 on MSS alone, but the datacenter ASN is ground
+  // truth — use the max of the two signals so we never under-score.
+  const categoryHit = vpnByCategory(asnCategory);
+  const vpnComponent = categoryHit
+    ? Math.max(categoryHit.score, mssVpnComponent)
+    : mssVpnComponent;
 
   // Noisy-OR: independence-assumed evidence fusion. Both components
   // reading strong evidence gives a combined score approaching 1; either
@@ -108,14 +155,23 @@ export function analyzeNetworkProbes(sigint: unknown) {
   // independent indicators stack" and symmetric between p and v.
   const combined = 1 - (1 - proxyComponent) * (1 - vpnComponent);
 
+  const signals = legacySignals.map((s) => ({
+    code: s.code,
+    severity: s.severity,
+    evidence: s.evidence.actual as unknown,
+  }));
+  if (categoryHit) {
+    signals.push({
+      code: categoryHit.code,
+      severity: categoryHit.severity,
+      evidence: `asn.category=${asnCategory}`,
+    });
+  }
+
   return {
     proxy_score: combined,
     proxy_component: proxyComponent,
     vpn_component: vpnComponent,
-    signals: signals.map((s) => ({
-      code: s.code,
-      severity: s.severity,
-      evidence: s.evidence.actual,
-    })),
+    signals,
   };
 }
