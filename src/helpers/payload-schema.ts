@@ -480,6 +480,19 @@ export interface IntegrityResultsData {
       ip: string | null;
       signals: Array<{ code: string; severity: number; evidence: string }>;
     };
+    /** Proxy-detection waterfall verdict. See classifyProxy. */
+    proxy_waterfall?: {
+      /** Internal verdict label — stored, not merchant-facing. */
+      verdict: "SAFE" | "HIGH" | "KILL";
+      /** Rule # that fired (0-8) — stored, not merchant-facing. */
+      rule: number;
+      /** Short reason code — stored, not merchant-facing. */
+      reason: string;
+      /** Merchant-facing threat score in [0, 100]. */
+      threat_score: number;
+      shared_prefix: number | null;
+      ratio: number | null;
+    };
   };
   client_ip: string;
   user_agent: string;

@@ -34,6 +34,8 @@ import {
   analyzeTimezone,
   analyzeIpConsistency,
   analyzeJa4Ua,
+  classifyProxy,
+  type WebrtcSigintStatus,
 } from "../../analysis";
 
 /** API Gateway event extended with pre-parsed body from middleware. */
@@ -164,6 +166,21 @@ function webrtcSigintEvidence(result: SigintCandidateDecodeResult): {
   };
 }
 
+function extractRttRatio(sigint: unknown): number | null {
+  const tcp = (sigint as Record<string, unknown> | undefined)?.tcp_probe as
+    | Record<string, unknown>
+    | undefined;
+  const fp = tcp?.rtt_fingerprint as Record<string, unknown> | undefined;
+  const rtt =
+    typeof fp?.rtt_refreshed === "number" ? fp.rtt_refreshed : undefined;
+  const rcv =
+    typeof fp?.rcv_rtt_refreshed === "number"
+      ? fp.rcv_rtt_refreshed
+      : undefined;
+  if (!rtt || rtt <= 0 || !rcv || rcv <= 0) return null;
+  return rcv / rtt;
+}
+
 function emitIdentityMetrics(
   deps: BaseHandlerDeps,
   outcome: IdentityOutcome,
@@ -238,6 +255,51 @@ function captureRequestHeaders(event: ExtendedEvent): CapturedRequestHeaders {
   return { headers: out, cookie_names: cookieNames };
 }
 
+interface AnalysisInputs {
+  raw: { device?: unknown };
+  hydratedPayload: ArgusPayload;
+  clientIp: string;
+  ua: string;
+  webrtcSigint: SigintCandidateDecodeResult;
+  webrtcSigintField: ReturnType<typeof buildWebrtcSigintField>;
+}
+
+function buildAnalysisBlock(inputs: AnalysisInputs) {
+  const {
+    raw,
+    hydratedPayload,
+    clientIp,
+    ua,
+    webrtcSigint,
+    webrtcSigintField,
+  } = inputs;
+  const network = analyzeNetworkProbes(hydratedPayload.sigint);
+  const ip = analyzeIpConsistency(
+    raw.device,
+    hydratedPayload.sigint,
+    clientIp,
+    webrtcSigintEvidence(webrtcSigint),
+  );
+  const proxyWaterfall = classifyProxy({
+    tcpIp: ip.ips.tcp,
+    webrtcIp: ip.ips.webrtc,
+    // Read reason from the decoder result, not the stored field —
+    // buildWebrtcSigintField() omits the entire field when reason is
+    // "no_candidates", so the stored status would be undefined.
+    webrtcStatus: webrtcSigint.reason as WebrtcSigintStatus,
+    rttRatio: extractRttRatio(hydratedPayload.sigint),
+  });
+  return {
+    network,
+    worker: analyzeWorkerScopes(raw.device),
+    timezone: analyzeTimezone(raw.device, hydratedPayload.sigint),
+    ip,
+    ja4_ua: analyzeJa4Ua(hydratedPayload.sigint, ua),
+    proxy_waterfall: proxyWaterfall,
+    ...(webrtcSigintField ? { webrtc_sigint: webrtcSigintField } : {}),
+  };
+}
+
 function buildIntegrityItem(
   ctx: HandleContext,
   hydratedPayload: ArgusPayload,
@@ -263,19 +325,14 @@ function buildIntegrityItem(
     meta: raw.meta ?? {},
     sigint: hydratedPayload.sigint ?? sigintSummary(ctx.payload),
     ...(identification ? { identification } : {}),
-    analysis: {
-      network: analyzeNetworkProbes(hydratedPayload.sigint),
-      worker: analyzeWorkerScopes(raw.device),
-      timezone: analyzeTimezone(raw.device, hydratedPayload.sigint),
-      ip: analyzeIpConsistency(
-        raw.device,
-        hydratedPayload.sigint,
-        clientIp,
-        webrtcSigintEvidence(webrtcSigint),
-      ),
-      ja4_ua: analyzeJa4Ua(hydratedPayload.sigint, ua),
-      ...(webrtcSigintField ? { webrtc_sigint: webrtcSigintField } : {}),
-    },
+    analysis: buildAnalysisBlock({
+      raw,
+      hydratedPayload,
+      clientIp,
+      ua,
+      webrtcSigint,
+      webrtcSigintField,
+    }),
     client_ip: clientIp,
     user_agent: ua,
     request_headers: requestHeaders,
