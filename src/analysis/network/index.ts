@@ -84,8 +84,21 @@ function dig(obj: unknown, ...keys: string[]): number | undefined {
 }
 
 /**
- * Resolve the rtt / rcv_rtt pair the old detector uses. Kept identical
- * so the continuous score reads the same raw data as the legacy signals.
+ * Resolve the rtt / rcv_rtt pair for proxy-component scoring.
+ *
+ * `rcv_rtt` is a kernel EWMA that only populates when the receive side
+ * has accumulated enough TCP timestamp samples. On short low-latency
+ * residential connections the kernel often leaves it at 0 — that is
+ * meant to be read as "no measurement," not "substitute something else."
+ *
+ * Historically this function fell back to `app_rtt_us` (the gap between
+ * the server's previous response and the current request on a keep-alive
+ * socket). Empirically that fallback only fired on clean fiber scans
+ * (28% of iPhone traffic in the 200-sample audit of 2026-04-24) and
+ * produced phantom 3–10% proxy_component scores on traffic that wasn't
+ * proxied. Every real proxy in the same audit — datacenter, vpn_proxy,
+ * residential-proxy with verdict KILL — populated `rcv_rtt` honestly.
+ * Dropping the fallback loses zero detection and eliminates the phantom.
  */
 function resolveRtt(tcp: Record<string, unknown>): {
   rtt?: number;
@@ -99,10 +112,7 @@ function resolveRtt(tcp: Record<string, unknown>): {
   );
   const rcvRtt = pick(
     dig(tcp, "rtt_fingerprint", "rcv_rtt_refreshed"),
-    pick(
-      dig(tcp, "tcp_info", "rcv_rtt"),
-      dig(tcp, "rtt_fingerprint", "app_rtt_us"),
-    ),
+    dig(tcp, "tcp_info", "rcv_rtt"),
   );
   return { rtt, rcvRtt };
 }
