@@ -30,6 +30,7 @@ import {
   type NetworkCategory,
 } from "../../services/network/asn-classifier";
 import { lookupCidrOverlay } from "../../services/network/cidr-overlay";
+import { lookupAutoOverlaySync } from "../../services/network/auto-overlay";
 import {
   deriveNetworkId,
   type NetworkIdSource,
@@ -207,36 +208,69 @@ function checkForgery(forgery: boolean): AnomalySignal | null {
 }
 
 /**
- * Resolve the broader `network_class` for an IP+ASN pair. Resolution order:
+ * Resolve the broader `network_class` for an IP+ASN pair. Resolution order
+ * (most authoritative first):
  *
- *   1. Dynamic IPtoASN dataset (asn-classifier) — covers ~99% of consumer
- *      ASNs via regex-on-org-name + manual overrides.
- *   2. CIDR overlay (cidr-overlay) — disambiguates mixed-use ASNs like AT&T
- *      7018 where ASN alone is insufficient (U-Verse residential vs Mobility
- *      cellular live on the same ASN). Tries each candidate IP in turn so
- *      that a proxied session (where webrtc leaks an off-network IP) still
- *      classifies based on the server-observed probe IPs that ARE in the
- *      overlay.
- *   3. Legacy AsnCategory from the static catalog — pre-existing classifier
+ *   1. Hand-curated CIDR overlay (cidr-overlay.ts) — small, manually-vetted
+ *      rules for known mixed-use ASNs (AT&T 7018, T-Mobile cellular blocks,
+ *      etc.). Wins because it's the most-vetted source.
+ *   2. Auto-discovered overlay (auto-overlay.ts) — S3-loaded rules
+ *      populated by the nightly ip-class-discoverer Lambda from RDAP
+ *      lookups. Covers the long tail and international carriers without
+ *      hand maintenance.
+ *   3. Dynamic IPtoASN dataset (asn-classifier) — regex-on-org-name +
+ *      manual overrides, ~3000 ASNs classified at ASN granularity.
+ *   4. Legacy AsnCategory from the static catalog — pre-existing classifier
  *      kept for backwards compat with checkAsnCategory + vpnByCategory.
+ *
+ * Tries each candidate IP for the CIDR-based layers (1, 2) so that a
+ * proxied session leaking an off-network IP via webrtc still classifies
+ * based on the server-observed probe IPs that ARE in the overlay.
  */
+function classifyByHandCuratedOverlay(
+  ips: (string | null)[],
+): NetworkCategory | null {
+  for (const ip of ips) {
+    if (!ip) continue;
+    const hit = lookupCidrOverlay(ip);
+    if (hit) return hit.category;
+  }
+  return null;
+}
+
+function classifyByAutoOverlay(ips: (string | null)[]): NetworkCategory | null {
+  for (const ip of ips) {
+    if (!ip) continue;
+    const hit = lookupAutoOverlaySync(ip);
+    if (hit) return hit.category;
+  }
+  return null;
+}
+
+function classifyByDynamicDict(asn: string | null): NetworkCategory | null {
+  if (!asn) return null;
+  const dynamic = classifyAsnSync(Number(asn));
+  return dynamic === "unknown" ? null : dynamic;
+}
+
+function classifyByLegacyCatalog(
+  legacyCategory: AsnCategory | undefined,
+): NetworkCategory | null {
+  if (legacyCategory === "corporate_proxy") return "security_filter";
+  return legacyCategory ?? null;
+}
+
 function deriveNetworkClass(
   asn: string | null,
   ips: (string | null)[],
   legacyCategory: AsnCategory | undefined,
 ): NetworkCategory | null {
-  if (asn) {
-    const dynamic = classifyAsnSync(Number(asn));
-    if (dynamic !== "unknown") return dynamic;
-  }
-  for (const ip of ips) {
-    if (!ip) continue;
-    const overlay = lookupCidrOverlay(ip);
-    if (overlay) return overlay.category;
-  }
-  if (legacyCategory === "corporate_proxy") return "security_filter";
-  if (legacyCategory) return legacyCategory;
-  return null;
+  return (
+    classifyByHandCuratedOverlay(ips) ??
+    classifyByAutoOverlay(ips) ??
+    classifyByDynamicDict(asn) ??
+    classifyByLegacyCatalog(legacyCategory)
+  );
 }
 
 function checkAsnCategory(asn: string | null): AnomalySignal | null {

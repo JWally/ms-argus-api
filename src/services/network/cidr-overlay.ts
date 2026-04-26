@@ -24,7 +24,7 @@
  *   2. Append an entry below.
  *   3. Re-deploy. No build pipeline rebuild needed (unlike the ASN dict).
  */
-import type { NetworkCategory } from "./asn-classifier";
+import type { NetworkCategory } from "./categorize";
 
 interface CidrOverlayEntry {
   cidr: string;
@@ -109,62 +109,28 @@ const RAW_OVERLAY: CidrOverlayEntry[] = [
   },
 ];
 
-interface CompiledRange {
-  start: number;
-  end: number;
-  category: NetworkCategory;
-  note: string;
-}
+import { compileCidrList, lookupInRanges } from "./cidr-tree";
 
-function ipToInt(ip: string): number {
-  const parts = ip.split(".").map(Number);
-  // Bitwise ops in JS produce signed int32, so the final `>>> 0` is required
-  // to surface the value as unsigned (otherwise high IPs go negative).
-  return (
-    ((parts[0] << 24) | (parts[1] << 16) | (parts[2] << 8) | parts[3]) >>> 0
-  );
-}
-
-function compileEntry(e: CidrOverlayEntry): CompiledRange {
-  const [ip, prefixStr] = e.cidr.split("/");
-  const prefix = Number(prefixStr);
-  const mask = prefix === 0 ? 0 : (0xffffffff << (32 - prefix)) >>> 0;
-  // `>>> 0` on each step — without it, high-IP CIDRs (e.g. 174.192.0.0/9)
-  // get stored as negative signed int32, which breaks the unsigned binary
-  // search comparison below.
-  const base = (ipToInt(ip) & mask) >>> 0;
-  const end = (base | (~mask >>> 0)) >>> 0;
-  return { start: base, end, category: e.category, note: e.note };
-}
-
-const COMPILED: readonly CompiledRange[] = RAW_OVERLAY.map(compileEntry).sort(
-  (a, b) => a.start - b.start,
+const COMPILED = compileCidrList(
+  RAW_OVERLAY.map((e) => ({
+    cidr: e.cidr,
+    category: e.category,
+    meta: { note: e.note },
+  })),
 );
 
 /**
- * Look up an IPv4 address against the CIDR overlay. Returns the matching
- * category + note when the IP falls inside any overlay range, else null.
- *
- * O(log n) binary search on a sorted range list. ~30 entries → ~5 comparisons.
+ * Look up an IPv4 address against the hand-curated overlay. Returns the
+ * matching category + note when the IP falls inside any overlay range,
+ * else null. O(log n) binary search; ~30 entries → ~5 comparisons.
  */
 export function lookupCidrOverlay(
   ip: string,
 ): { category: NetworkCategory; note: string } | null {
-  if (!/^\d+\.\d+\.\d+\.\d+$/.test(ip)) return null;
-  const ipInt = ipToInt(ip);
-  let lo = 0;
-  let hi = COMPILED.length - 1;
-  while (lo <= hi) {
-    const mid = (lo + hi) >>> 1;
-    if (COMPILED[mid].start > ipInt) hi = mid - 1;
-    else if (COMPILED[mid].end < ipInt) lo = mid + 1;
-    else return { category: COMPILED[mid].category, note: COMPILED[mid].note };
-  }
-  if (lo > 0 && COMPILED[lo - 1].end >= ipInt) {
-    return {
-      category: COMPILED[lo - 1].category,
-      note: COMPILED[lo - 1].note,
-    };
-  }
-  return null;
+  const hit = lookupInRanges(COMPILED, ip);
+  if (!hit) return null;
+  return {
+    category: hit.category,
+    note: (hit.meta as { note: string } | undefined)?.note ?? "",
+  };
 }

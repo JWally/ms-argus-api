@@ -24,6 +24,10 @@ import {
   _seedCacheForTesting,
   type NetworkCategory,
 } from "./asn-classifier";
+import {
+  _resetAutoOverlayForTesting,
+  _seedAutoOverlayForTesting,
+} from "./auto-overlay";
 
 /** Realistic device shape that satisfies webrtcAvailable(). */
 function device(): Record<string, unknown> {
@@ -59,8 +63,14 @@ function analyze(opts: {
   );
 }
 
-beforeEach(() => _resetCacheForTesting());
-afterEach(() => _resetCacheForTesting());
+beforeEach(() => {
+  _resetCacheForTesting();
+  _resetAutoOverlayForTesting();
+});
+afterEach(() => {
+  _resetCacheForTesting();
+  _resetAutoOverlayForTesting();
+});
 
 // ────────────────────────────────────────────────────────────────────────
 //  Headline regression: AT&T 7018 mobile vs residential disambiguation
@@ -202,10 +212,12 @@ describe("Other-carrier classification via dataset / overlay", () => {
 // ────────────────────────────────────────────────────────────────────────
 
 describe("Evidence priority — dataset > CIDR overlay > legacy catalog", () => {
-  it("dataset hit wins over CIDR overlay", () => {
-    // 107.116.185.73 is in the AT&T cellular CIDR overlay (mobile). If
-    // we seed the dataset with ASN 7018 → "residential", the dataset wins
-    // (overlay never consulted) per deriveNetworkClass's resolution order.
+  it("hand-curated CIDR overlay wins over the dataset", () => {
+    // 107.116.185.73 is in the AT&T cellular CIDR overlay (mobile).
+    // Even if the dataset is seeded with ASN 7018 → "residential" (which
+    // is wrong for cellular IPs in this block), the hand-curated overlay
+    // wins because it's the most-vetted source of per-IP truth — exactly
+    // why the overlay exists for mixed-use ASNs like 7018.
     _seedCacheForTesting({ "7018": "residential" });
     const r = analyze({
       cfIp: "107.116.185.73",
@@ -213,7 +225,7 @@ describe("Evidence priority — dataset > CIDR overlay > legacy catalog", () => 
       webrtcIp: "107.116.185.73",
       asn: "7018",
     });
-    expect(r.asn.network_class).toBe("residential");
+    expect(r.asn.network_class).toBe("mobile");
   });
 
   it("dataset miss → CIDR overlay wins over legacy catalog", () => {
@@ -390,5 +402,84 @@ describe("Invariants", () => {
     expect(a.asn.network_class).toBe(b.asn.network_class);
     expect(a.integrity).toBe(b.integrity);
     expect(a.signals.length).toBe(b.signals.length);
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────────
+//  Auto-overlay priority cascade
+// ────────────────────────────────────────────────────────────────────────
+
+describe("Auto-overlay layer (between hand-curated overlay and ASN dict)", () => {
+  it("auto-overlay wins over the ASN dict for IPs the dict misclassifies", () => {
+    // Seed the dict with a wrong-on-purpose category (residential for what
+    // is actually a hosting network) and the auto-overlay with the correct
+    // hosting_proxy classification. Auto-overlay should win.
+    _seedCacheForTesting({ "999999": "residential" });
+    _seedAutoOverlayForTesting([
+      {
+        cidr: "203.0.113.0/24",
+        category: "hosting_proxy",
+        name: "DISCOVERED-HOSTING",
+      },
+    ]);
+    const r = analyze({
+      cfIp: "203.0.113.42",
+      tcpIp: "203.0.113.42",
+      webrtcIp: "203.0.113.42",
+      asn: "999999",
+    });
+    expect(r.asn.network_class).toBe("hosting_proxy");
+  });
+
+  it("hand-curated overlay STILL wins over auto-overlay (highest priority)", () => {
+    // The hand-curated rule (107.64.0.0/10 → mobile) takes precedence even
+    // when the auto-overlay disagrees on the same IP. This guards against
+    // the discoverer mis-categorizing something the team already vetted.
+    _seedAutoOverlayForTesting([
+      {
+        cidr: "107.64.0.0/10",
+        category: "residential", // Wrong — auto-overlay shouldn't override hand-curated
+        name: "DISCOVERED-WRONG",
+      },
+    ]);
+    const r = analyze({
+      cfIp: "107.116.185.73",
+      tcpIp: "107.116.185.73",
+      webrtcIp: "107.116.185.73",
+      asn: "7018",
+    });
+    expect(r.asn.network_class).toBe("mobile");
+  });
+
+  it("auto-overlay falls through to ASN dict for IPs it doesn't cover", () => {
+    _seedCacheForTesting({ "7922": "residential" });
+    _seedAutoOverlayForTesting([
+      // Cover an unrelated range — does NOT match the test IP
+      {
+        cidr: "203.0.113.0/24",
+        category: "datacenter",
+        name: "UNRELATED",
+      },
+    ]);
+    const r = analyze({
+      cfIp: "73.43.1.77", // Comcast residential (in dict, not in overlays)
+      tcpIp: "73.43.1.77",
+      webrtcIp: "73.43.1.77",
+      asn: "7922",
+    });
+    expect(r.asn.network_class).toBe("residential");
+  });
+
+  it("integration: empty auto-overlay = pre-discoverer behavior unchanged", () => {
+    _seedAutoOverlayForTesting([]); // no rules
+    _seedCacheForTesting({ "21928": "mobile" });
+    const r = analyze({
+      cfIp: "172.58.11.182",
+      tcpIp: "172.58.11.182",
+      webrtcIp: "172.58.11.182",
+      asn: "21928",
+    });
+    // T-Mobile cellular caught by the hand-curated overlay (not the dict)
+    expect(r.asn.network_class).toBe("mobile");
   });
 });

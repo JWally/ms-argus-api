@@ -14,21 +14,14 @@
  */
 import { S3Client, GetObjectCommand } from "@aws-sdk/client-s3";
 import { gunzipSync } from "node:zlib";
+import type { NetworkCategory as BaseNetworkCategory } from "./categorize";
 
-export type NetworkCategory =
-  | "mobile"
-  | "residential"
-  | "datacenter"
-  | "vpn_proxy"
-  | "hosting_proxy"
-  | "cdn"
-  | "satellite"
-  | "privacy_relay"
-  | "security_filter"
-  | "business"
-  | "education"
-  | "government"
-  | "unknown";
+/**
+ * Re-export so existing import paths (`from "./asn-classifier"`) still work.
+ * Adds `"unknown"` for callers that need to model dataset misses as a string
+ * value rather than a null fallthrough.
+ */
+export type NetworkCategory = BaseNetworkCategory | "unknown";
 
 interface DatasetPayload {
   generated_at: string;

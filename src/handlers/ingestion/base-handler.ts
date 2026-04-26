@@ -41,6 +41,7 @@ import {
 } from "../../analysis";
 import type { AsnCategory } from "../../analysis/ip-consistency/asn-catalog";
 import { prewarmAsnDataset } from "../../services/network/asn-classifier";
+import { prewarmAutoOverlay } from "../../services/network/auto-overlay";
 
 /** API Gateway event extended with pre-parsed body from middleware. */
 export interface ExtendedEvent extends APIGatewayProxyEventV2 {
@@ -390,6 +391,9 @@ async function handleIntegrity(
     verifyDeviceIdentity(ctx.payload),
     prewarmAsnDataset().catch((err) => {
       ctx.deps.logger.warn("ASN dataset prewarm failed", { error: err });
+    }),
+    prewarmAutoOverlay().catch((err) => {
+      ctx.deps.logger.warn("Auto-overlay prewarm failed", { error: err });
     }),
   ]);
   emitIdentityMetrics(ctx.deps, identity);

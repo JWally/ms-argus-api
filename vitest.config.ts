@@ -55,9 +55,16 @@ export default defineConfig({
         // ip-class-builder Lambda fetches the IPtoASN dataset and uploads to
         // S3 — same exclusion shape as other AWS-dependent handlers.
         "src/handlers/ip-class-builder.ts",
-        // S3-backed dataset loader — sync classifier + cache hooks are
-        // exercised via the integration tests; loadDataset path needs S3 mock.
+        // ip-class-discoverer Lambda walks S3 archive + RDAP + S3 upload —
+        // entirely network I/O; same exclusion shape.
+        "src/handlers/ip-class-discoverer.ts",
+        // S3-backed dataset loaders — sync classifier + cache hooks are
+        // exercised via integration tests; load paths need S3 mock.
         "src/services/network/asn-classifier.ts",
+        "src/services/network/auto-overlay.ts",
+        // RDAP client — pure HTTP client; logic is testable but mocking
+        // 5 RIR endpoints adds little value over the empirical POC results.
+        "src/services/network/rdap-client.ts",
         // Pure data file — no logic to unit-test.
         "src/services/network/asn-overrides.ts",
       ],

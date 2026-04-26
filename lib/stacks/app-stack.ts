@@ -13,6 +13,7 @@ import { SecretConstruct } from "../constructs/secrets";
 import { DynamoDbConstruct } from "../constructs/dynamodb";
 import { HttpApiConstruct } from "../constructs/http-api";
 import { IpClassBuilderConstruct } from "../constructs/ip-class-builder";
+import { IpClassDiscovererConstruct } from "../constructs/ip-class-discoverer";
 import { WorkersConstruct } from "../constructs/workers";
 import { CloudFrontWafConstruct } from "../constructs/cloudfront";
 import { AnalyticsConstruct } from "../constructs/analytics";
@@ -194,6 +195,26 @@ export class ArgusApiStack extends cdk.Stack {
     ipClass.grantReadTo(httpApi.sessionGetFunction);
     if (workers.integrityArchiver) {
       ipClass.grantReadTo(workers.integrityArchiver);
+    }
+
+    // Auto-overlay discoverer: nightly cron walks recent unmapped IPs,
+    // RDAPs them, populates auto-overlay.json.gz alongside the ASN dict.
+    // Runtime classifier consults the overlay between hand-curated CIDR
+    // rules and the IPtoASN dict (see analyzeIpConsistency precedence).
+    const ipClassDiscoverer = new IpClassDiscovererConstruct(
+      this,
+      "IpClassDiscoverer",
+      {
+        stackName,
+        stage,
+        overlayBucket: ipClass.bucket,
+        archiveBucket: analytics.integrityArchiveBucket,
+      },
+    );
+    ipClassDiscoverer.grantReadTo(httpApi.ingestionFunction);
+    ipClassDiscoverer.grantReadTo(httpApi.sessionGetFunction);
+    if (workers.integrityArchiver) {
+      ipClassDiscoverer.grantReadTo(workers.integrityArchiver);
     }
 
     // =========================================================================
