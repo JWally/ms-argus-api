@@ -25,6 +25,15 @@ import {
   type AnomalySignal,
 } from "../../services/profile/anomaly/types";
 import { lookupAsn, type AsnCategory } from "./asn-catalog";
+import {
+  classifyAsnSync,
+  type NetworkCategory,
+} from "../../services/network/asn-classifier";
+import { lookupCidrOverlay } from "../../services/network/cidr-overlay";
+import {
+  deriveNetworkId,
+  type NetworkIdSource,
+} from "../../services/network/network-id";
 
 function isObj(v: unknown): v is Record<string, unknown> {
   return v !== null && typeof v === "object" && !Array.isArray(v);
@@ -54,7 +63,21 @@ export interface IpConsistencyResult {
     number: string | null;
     category: AsnCategory | "residential" | null;
     org: string | null;
+    /**
+     * Broader consumer-network classification from the dynamic IPtoASN+regex
+     * dataset (built weekly by ip-class-builder Lambda). Distinguishes
+     * residential vs mobile vs datacenter etc., including within mixed-use
+     * ASNs like AT&T 7018. Null when the ASN isn't in the dataset.
+     */
+    network_class: NetworkCategory | null;
   };
+  /**
+   * Network-derived stable user ID. Backup identifier when crypto_device_id
+   * and tpc_id aren't available. See services/network/network-id.ts.
+   * Computed only when `userAgent` is passed to analyzeIpConsistency.
+   */
+  network_id: string | null;
+  network_id_source: NetworkIdSource;
   checks: {
     probesConsistent: boolean;
     webrtcMatchesProbes: boolean | null;
@@ -181,6 +204,39 @@ function checkForgery(forgery: boolean): AnomalySignal | null {
     actual: "sigint candidate submitted but MAC invalid — forged or spoofed",
     fields: [WEBRTC_IP_FIELD],
   });
+}
+
+/**
+ * Resolve the broader `network_class` for an IP+ASN pair. Resolution order:
+ *
+ *   1. Dynamic IPtoASN dataset (asn-classifier) — covers ~99% of consumer
+ *      ASNs via regex-on-org-name + manual overrides.
+ *   2. CIDR overlay (cidr-overlay) — disambiguates mixed-use ASNs like AT&T
+ *      7018 where ASN alone is insufficient (U-Verse residential vs Mobility
+ *      cellular live on the same ASN). Tries each candidate IP in turn so
+ *      that a proxied session (where webrtc leaks an off-network IP) still
+ *      classifies based on the server-observed probe IPs that ARE in the
+ *      overlay.
+ *   3. Legacy AsnCategory from the static catalog — pre-existing classifier
+ *      kept for backwards compat with checkAsnCategory + vpnByCategory.
+ */
+function deriveNetworkClass(
+  asn: string | null,
+  ips: (string | null)[],
+  legacyCategory: AsnCategory | undefined,
+): NetworkCategory | null {
+  if (asn) {
+    const dynamic = classifyAsnSync(Number(asn));
+    if (dynamic !== "unknown") return dynamic;
+  }
+  for (const ip of ips) {
+    if (!ip) continue;
+    const overlay = lookupCidrOverlay(ip);
+    if (overlay) return overlay.category;
+  }
+  if (legacyCategory === "corporate_proxy") return "security_filter";
+  if (legacyCategory) return legacyCategory;
+  return null;
 }
 
 function checkAsnCategory(asn: string | null): AnomalySignal | null {
@@ -331,11 +387,60 @@ function pickSurfaceIp(
  * STUN response (and a `forgery` flag when HMAC verification failed).
  * When absent or null, analysis falls back to signals based on probes only.
  */
+interface IpSignalInputs {
+  device: unknown;
+  webrtcIp: string | null;
+  probeIps: (string | null)[];
+  forgery: boolean;
+  asn: string | null;
+}
+
+function gatherIpSignals(input: IpSignalInputs): AnomalySignal[] {
+  const { device, webrtcIp, probeIps, forgery, asn } = input;
+  const signals: AnomalySignal[] = [];
+  const scatter = checkProbeScatter(probeIps);
+  if (scatter) signals.push(scatter);
+  signals.push(...collectWebrtcSignals(device, webrtcIp, probeIps, forgery));
+  const asnSig = checkAsnCategory(asn);
+  if (asnSig) signals.push(asnSig);
+  return signals;
+}
+
+function buildAsnBlock(
+  asn: string | null,
+  candidateIps: (string | null)[],
+): IpConsistencyResult["asn"] {
+  const asnEntry = lookupAsn(asn);
+  return {
+    number: asn,
+    category: asnEntry?.category ?? (asn ? "residential" : null),
+    org: asnEntry?.org ?? null,
+    network_class: deriveNetworkClass(asn, candidateIps, asnEntry?.category),
+  };
+}
+
+function buildNetworkId(opts: {
+  asn: string | null;
+  networkClass: NetworkCategory | null;
+  ip: string | null;
+  userAgent: string | null | undefined;
+}): { id: string | null; source: NetworkIdSource } {
+  if (!opts.userAgent) return { id: null, source: "none" };
+  return deriveNetworkId({
+    asn: opts.asn ? Number(opts.asn) : null,
+    networkClass: opts.networkClass,
+    ip: opts.ip,
+    userAgent: opts.userAgent,
+  });
+}
+
+// eslint-disable-next-line max-params -- optional 5th param (UA) enables network_id derivation; refactoring the public signature would ripple through ~30 call sites
 export function analyzeIpConsistency(
   device: unknown,
   sigint: unknown,
   clientIp: string,
   webrtcSigint?: WebrtcSigintEvidence,
+  userAgent?: string | null,
 ): IpConsistencyResult {
   const apiIp = str(clientIp);
   const tlsIp = extractTlsIp(sigint);
@@ -345,32 +450,37 @@ export function analyzeIpConsistency(
   const asn = extractAsn(sigint);
   const probeIps = [apiIp, tlsIp, tcpIp];
 
-  const signals: AnomalySignal[] = [];
-  const scatterSig = checkProbeScatter(probeIps);
-  if (scatterSig) signals.push(scatterSig);
-  signals.push(...collectWebrtcSignals(device, webrtcIp, probeIps, forgery));
-  const asnSig = checkAsnCategory(asn);
-  if (asnSig) signals.push(asnSig);
-
-  const asnEntry = lookupAsn(asn);
+  const signals = gatherIpSignals({
+    device,
+    webrtcIp,
+    probeIps,
+    forgery,
+    asn,
+  });
   const integrity = computeIntegrityScore(probeIps, webrtcIp, forgery);
   const surfaceIp =
     integrity >= 0.5 ? pickSurfaceIp(webrtcIp, tlsIp, tcpIp, apiIp) : null;
+  const asnBlock = buildAsnBlock(asn, [webrtcIp, tlsIp, tcpIp, apiIp]);
+  const networkId = buildNetworkId({
+    asn,
+    networkClass: asnBlock.network_class,
+    ip: surfaceIp ?? webrtcIp ?? tlsIp ?? tcpIp ?? apiIp,
+    userAgent,
+  });
+  const probesConsistent = !signals.some(
+    (s) => s.code === AnomalyCodes.IP_PROBE_SCATTER,
+  );
+  const webrtcMatchesProbes = webrtcIp
+    ? !signals.some((s) => s.code === AnomalyCodes.WEBRTC_IP_MISMATCH)
+    : null;
 
   return {
     lied: signals.some((s) => s.severity >= 0.5),
     ips: { api: apiIp, tls: tlsIp, tcp: tcpIp, webrtc: webrtcIp },
-    asn: {
-      number: asn,
-      category: asnEntry?.category ?? (asn ? "residential" : null),
-      org: asnEntry?.org ?? null,
-    },
-    checks: {
-      probesConsistent: !scatterSig,
-      webrtcMatchesProbes: webrtcIp
-        ? !signals.some((s) => s.code === AnomalyCodes.WEBRTC_IP_MISMATCH)
-        : null,
-    },
+    asn: asnBlock,
+    network_id: networkId.id,
+    network_id_source: networkId.source,
+    checks: { probesConsistent, webrtcMatchesProbes },
     integrity,
     ip: surfaceIp,
     signals: formatSignals(signals),

@@ -78,6 +78,8 @@ describe("buildMerchantResponse", () => {
           tpc_id: null,
           tpc_created: null,
           tpc_verified: null,
+          network_id: null,
+          network_id_source: "none",
           browserDetails: {
             browserName: null,
             browserVersion: null,
@@ -96,8 +98,14 @@ describe("buildMerchantResponse", () => {
           timezone: null,
         },
         ipInfo: {
-          asn: { number: null, organization: null, category: null },
+          asn: {
+            number: null,
+            organization: null,
+            category: null,
+            network_class: null,
+          },
           datacenter: { result: false },
+          mobile: { result: false },
         },
         bot: { probability: 0 },
         vpn: { probability: 0 },

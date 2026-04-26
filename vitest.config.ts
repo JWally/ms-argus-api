@@ -52,6 +52,14 @@ export default defineConfig({
         "src/helpers/middy-helpers.ts",
         "src/services/profile/anomaly/tls-maps.ts",
         "src/services/profile/anomaly/network-probe-detector.ts",
+        // ip-class-builder Lambda fetches the IPtoASN dataset and uploads to
+        // S3 — same exclusion shape as other AWS-dependent handlers.
+        "src/handlers/ip-class-builder.ts",
+        // S3-backed dataset loader — sync classifier + cache hooks are
+        // exercised via the integration tests; loadDataset path needs S3 mock.
+        "src/services/network/asn-classifier.ts",
+        // Pure data file — no logic to unit-test.
+        "src/services/network/asn-overrides.ts",
       ],
       thresholds: {
         statements: 88,

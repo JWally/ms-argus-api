@@ -107,6 +107,19 @@ export interface MerchantIdentification {
   /** "pass" iff the cookie verified against the current TLS token; "fail"
    *  when the cookie arrived but tampered/mismatched; null when absent. */
   tpc_verified: "pass" | "fail" | null;
+  /**
+   * Network-derived stable ID — backup identifier for fraud prevention when
+   * crypto_device_id and tpc_id aren't available. Two-pass derivation:
+   *   - "category_residential": hash(ip_/24 + ua) for residential / satellite
+   *     networks. Stable for weeks-to-months per household.
+   *   - "asn_fallback": hash(asn + ip_/24 + ua) for ASNs the classifier
+   *     doesn't recognize. Lower trust — merchant should weight accordingly.
+   *   - null + source "none": mobile / vpn / datacenter / corporate / etc.
+   *     IP+UA hashing collapses strangers in these populations; rely on
+   *     crypto_device_id or device fingerprinting instead.
+   */
+  network_id: string | null;
+  network_id_source: "category_residential" | "asn_fallback" | "none";
   browserDetails: BrowserDetails;
 }
 
@@ -123,8 +136,21 @@ export interface MerchantIpInfo {
     number: number | null;
     organization: string | null;
     category: string | null;
+    /**
+     * Broader consumer-network class derived from the IPtoASN+regex dataset
+     * (mobile / residential / datacenter / vpn_proxy / hosting_proxy / cdn /
+     * satellite / privacy_relay / security_filter / business / education /
+     * government). Distinguishes residential vs cellular within mixed-use
+     * ASNs (notably AT&T 7018). Null when the ASN isn't in the dataset.
+     */
+    network_class: string | null;
   };
   datacenter: { result: boolean };
+  /**
+   * Convenience boolean: true when the ASN's network_class is mobile.
+   * Useful for stable-ID branching ("on mobile, drop IP from the hash").
+   */
+  mobile: { result: boolean };
 }
 
 export interface MerchantRequestHeaders {
@@ -674,13 +700,16 @@ function deriveIpLocation(input: MerchantProjectionInput): MerchantIpLocation {
 function deriveIpInfo(input: MerchantProjectionInput): MerchantIpInfo {
   const asnFromIntegrity = input.integrity?.analysis.ip.asn;
   if (asnFromIntegrity) {
+    const networkClass = asnFromIntegrity.network_class ?? null;
     return {
       asn: {
         number: parseAsnNumber(asnFromIntegrity.number),
         organization: asnFromIntegrity.org,
         category: asnFromIntegrity.category,
+        network_class: networkClass,
       },
       datacenter: { result: asnFromIntegrity.category === "datacenter" },
+      mobile: { result: networkClass === "mobile" },
     };
   }
   const awsCf = readAwsCf(input);
@@ -689,8 +718,10 @@ function deriveIpInfo(input: MerchantProjectionInput): MerchantIpInfo {
       number: parseAsnNumber(awsCf?.asn),
       organization: null,
       category: null,
+      network_class: null,
     },
     datacenter: { result: false },
+    mobile: { result: false },
   };
 }
 
@@ -875,6 +906,15 @@ function deriveIdentification(
   const crypto_verified = integrity?.identification?.verified ?? null;
   const tpc = deriveThirdPartyCookie(input);
 
+  // network_id and network_id_source are pre-computed by analyzeIpConsistency
+  // during ingestion (so the helpers/ layer doesn't need to import services/).
+  // Older records that pre-date the field default to ("none", null).
+  const ipBlock = integrity?.analysis.ip;
+  const network_id = ipBlock?.network_id ?? null;
+  const network_id_source =
+    (ipBlock?.network_id_source as MerchantIdentification["network_id_source"]) ??
+    "none";
+
   return {
     crypto_device_id,
     crypto_verified,
@@ -882,6 +922,8 @@ function deriveIdentification(
     tpc_id: tpc.tpc_id,
     tpc_created: tpc.tpc_created,
     tpc_verified: tpc.tpc_verified,
+    network_id,
+    network_id_source,
     browserDetails: deriveBrowserDetails(input),
   };
 }

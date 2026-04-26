@@ -12,6 +12,7 @@ import { Construct } from "constructs";
 import { SecretConstruct } from "../constructs/secrets";
 import { DynamoDbConstruct } from "../constructs/dynamodb";
 import { HttpApiConstruct } from "../constructs/http-api";
+import { IpClassBuilderConstruct } from "../constructs/ip-class-builder";
 import { WorkersConstruct } from "../constructs/workers";
 import { CloudFrontWafConstruct } from "../constructs/cloudfront";
 import { AnalyticsConstruct } from "../constructs/analytics";
@@ -182,6 +183,19 @@ export class ArgusApiStack extends cdk.Stack {
       integrityResultsTable: dynamodb.integrityResultsTable,
     });
 
+    // ASN→category dataset: weekly cron pulls IPtoASN, regex-categorizes,
+    // uploads to S3. Consumers (ingestion, integrity-archiver) read on cold
+    // start via services/network/asn-classifier.ts.
+    const ipClass = new IpClassBuilderConstruct(this, "IpClass", {
+      stackName,
+      stage,
+    });
+    ipClass.grantReadTo(httpApi.ingestionFunction);
+    ipClass.grantReadTo(httpApi.sessionGetFunction);
+    if (workers.integrityArchiver) {
+      ipClass.grantReadTo(workers.integrityArchiver);
+    }
+
     // =========================================================================
     // WARMERS — Keep ingestion + session-get + integrity-archiver hot
     // =========================================================================
@@ -280,6 +294,16 @@ export class ArgusApiStack extends cdk.Stack {
     new cdk.CfnOutput(this, "IntegrityArchiveBucketName", {
       value: analytics.integrityArchiveBucket.bucketName,
       description: "S3 bucket for integrity result archives",
+    });
+
+    new cdk.CfnOutput(this, "IpClassBucketName", {
+      value: ipClass.bucket.bucketName,
+      description: "S3 bucket for ASN→category dataset",
+    });
+
+    new cdk.CfnOutput(this, "IpClassBuilderFunctionArn", {
+      value: ipClass.builderFunction.functionArn,
+      description: "Weekly ASN dataset builder Lambda ARN",
     });
   }
 }

@@ -469,7 +469,16 @@ export interface IntegrityResultsData {
         number: string | null;
         category: string | null;
         org: string | null;
+        /** Broader consumer-network classification from IPtoASN dataset. */
+        network_class?: string | null;
       };
+      /**
+       * Network-derived stable user ID. Computed during ingestion by
+       * analyzeIpConsistency and stored on the integrity record so the
+       * merchant-projection layer can read it without re-importing services.
+       */
+      network_id?: string | null;
+      network_id_source?: "category_residential" | "asn_fallback" | "none";
       checks: {
         probesConsistent: boolean;
         webrtcMatchesProbes: boolean | null;

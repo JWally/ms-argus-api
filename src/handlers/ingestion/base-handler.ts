@@ -40,6 +40,7 @@ import {
   type WebrtcSigintStatus,
 } from "../../analysis";
 import type { AsnCategory } from "../../analysis/ip-consistency/asn-catalog";
+import { prewarmAsnDataset } from "../../services/network/asn-classifier";
 
 /** API Gateway event extended with pre-parsed body from middleware. */
 export interface ExtendedEvent extends APIGatewayProxyEventV2 {
@@ -287,6 +288,7 @@ function buildAnalysisBlock(inputs: AnalysisInputs) {
     hydratedPayload.sigint,
     clientIp,
     webrtcSigintEvidence(webrtcSigint),
+    ua,
   );
   const network = analyzeNetworkProbes(
     hydratedPayload.sigint,
@@ -381,7 +383,15 @@ async function handleIntegrity(
   // Verify the client's device-identity sig against the raw (pre-hydration)
   // payload so sigintH2Token is still available. Failures never block —
   // the outcome is recorded on the row for analytics.
-  const identity = await verifyDeviceIdentity(ctx.payload);
+  // Run identity verification and ASN-dataset prewarm in parallel — the
+  // dataset is needed by analyzeIpConsistency below; on cold start it costs
+  // ~50–100 ms (one S3 GET), warm calls are no-ops.
+  const [identity] = await Promise.all([
+    verifyDeviceIdentity(ctx.payload),
+    prewarmAsnDataset().catch((err) => {
+      ctx.deps.logger.warn("ASN dataset prewarm failed", { error: err });
+    }),
+  ]);
   emitIdentityMetrics(ctx.deps, identity);
   const item = buildIntegrityItem(ctx, hydratedPayload, identity);
 
