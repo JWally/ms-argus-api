@@ -87,6 +87,13 @@ const RAW_OVERLAY: CidrOverlayEntry[] = [
   { cidr: "97.0.0.0/10", category: "mobile", note: VZW },
   { cidr: "159.4.0.0/16", category: "mobile", note: VZW },
 
+  // ─── US Cellular (ASN 6614 — `mobile.uscc.com` PTR; verified via SOAX-mobile
+  //     batch 2026-04-26: USCC exits 166.181.x and 166.182.x came back as
+  //     `network_class: null` because ASN 6614 isn't in the dynamic dict. Both
+  //     /16s are USL-63 in ARIN RDAP.)
+  { cidr: "166.181.0.0/16", category: "mobile", note: "US Cellular (USL-63)" },
+  { cidr: "166.182.0.0/16", category: "mobile", note: "US Cellular (USL-63)" },
+
   // ─── RFC 6598 CGNAT shared address space (ISP-internal — never directly routable)
   {
     cidr: "100.64.0.0/10",

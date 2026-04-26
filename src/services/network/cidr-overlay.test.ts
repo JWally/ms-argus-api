@@ -37,6 +37,19 @@ describe("lookupCidrOverlay — Verizon Wireless", () => {
   });
 });
 
+describe("lookupCidrOverlay — US Cellular (ASN 6614)", () => {
+  it("166.181.x is mobile (USL-63 block)", () => {
+    expect(lookupCidrOverlay("166.181.82.203")?.category).toBe("mobile");
+  });
+  it("166.182.x is mobile (USL-63 block)", () => {
+    expect(lookupCidrOverlay("166.182.255.43")?.category).toBe("mobile");
+  });
+  it("166.180.255.255 (one below) is not in USCC blocks", () => {
+    const r = lookupCidrOverlay("166.180.255.255");
+    if (r) expect(r.note).not.toContain("US Cellular");
+  });
+});
+
 describe("lookupCidrOverlay — RFC6598 CGNAT shared space", () => {
   it("100.64/10 is mobile (carrier CGNAT)", () => {
     expect(lookupCidrOverlay("100.64.5.5")?.category).toBe("mobile");
