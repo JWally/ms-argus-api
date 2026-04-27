@@ -62,9 +62,17 @@ interface DiscoverResult {
 const POLITE_DELAY_MS = 400;
 const ARCHIVE_LOOKBACK_HOURS = 48;
 
+type ArchiveFormat = "legacy" | "firehose";
+const ARCHIVE_FORMAT: ArchiveFormat =
+  process.env.INTEGRITY_ARCHIVE_FORMAT === "legacy" ? "legacy" : "firehose";
+
 const s3 = new S3Client({});
 
-async function listRecentArchiveKeys(
+/**
+ * Pre-Firehose archive layout: one JSON file per session at the bucket
+ * root (`{sessionId}.json`). Listed flat and filtered by LastModified.
+ */
+async function listRecentLegacyKeys(
   bucket: string,
   hours: number,
 ): Promise<string[]> {
@@ -87,6 +95,69 @@ async function listRecentArchiveKeys(
     token = out.NextContinuationToken;
   } while (token);
   return keys;
+}
+
+function buildHourlyPrefixes(now: number, hours: number): string[] {
+  const prefixes: string[] = [];
+  for (let i = 0; i < hours; i++) {
+    const t = new Date(now - i * 60 * 60 * 1000);
+    const y = t.getUTCFullYear();
+    const m = String(t.getUTCMonth() + 1).padStart(2, "0");
+    const d = String(t.getUTCDate()).padStart(2, "0");
+    const h = String(t.getUTCHours()).padStart(2, "0");
+    prefixes.push(`firehose/year=${y}/month=${m}/day=${d}/hour=${h}/`);
+  }
+  return prefixes;
+}
+
+async function listAllUnderPrefix(
+  bucket: string,
+  prefix: string,
+): Promise<string[]> {
+  const keys: string[] = [];
+  let token: string | undefined;
+  do {
+    const out = await s3.send(
+      new ListObjectsV2Command({
+        Bucket: bucket,
+        Prefix: prefix,
+        ContinuationToken: token,
+        MaxKeys: 1000,
+      }),
+    );
+    for (const c of (out.Contents ?? []) as _Object[]) {
+      if (c.Key) keys.push(c.Key);
+    }
+    token = out.NextContinuationToken;
+  } while (token);
+  return keys;
+}
+
+/**
+ * Firehose archive layout: gzipped NDJSON batches at
+ * `firehose/year=YYYY/month=MM/day=DD/hour=HH/...gz`. List by enumerating
+ * the hour-prefixes for the lookback window — vastly fewer S3 LIST calls
+ * than the flat namespace once volume scales (1B/mo would be ~150M flat
+ * keys vs ~3K Firehose batches in 48h).
+ */
+async function listRecentFirehoseKeys(
+  bucket: string,
+  hours: number,
+): Promise<string[]> {
+  const prefixes = buildHourlyPrefixes(Date.now(), hours);
+  const groups = await Promise.all(
+    prefixes.map((p) => listAllUnderPrefix(bucket, p)),
+  );
+  return groups.flat();
+}
+
+async function listRecentArchiveKeys(
+  bucket: string,
+  hours: number,
+): Promise<string[]> {
+  return ARCHIVE_FORMAT === "firehose"
+    ? listRecentFirehoseKeys(bucket, hours)
+    : listRecentLegacyKeys(bucket, hours);
 }
 
 interface SessionMinimal {
@@ -123,7 +194,7 @@ function parseSessionRecord(d: Record<string, unknown>): SessionMinimal {
   };
 }
 
-async function fetchSession(
+async function fetchLegacySession(
   bucket: string,
   key: string,
 ): Promise<SessionMinimal | null> {
@@ -137,6 +208,50 @@ async function fetchSession(
   } catch {
     return null;
   }
+}
+
+/**
+ * Read one Firehose batch (gzipped NDJSON), parse every line, return all
+ * sessions. Bad lines are skipped — Firehose can rarely include
+ * partial records around delivery boundaries.
+ */
+async function fetchSessionsFromBatch(
+  bucket: string,
+  key: string,
+): Promise<SessionMinimal[]> {
+  try {
+    const obj = await s3.send(
+      new GetObjectCommand({ Bucket: bucket, Key: key }),
+    );
+    if (!obj.Body) return [];
+    const buf = Buffer.from(await obj.Body.transformToByteArray());
+    const text = gunzipSync(buf).toString("utf-8");
+    const out: SessionMinimal[] = [];
+    for (const line of text.split("\n")) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      try {
+        const parsed = JSON.parse(trimmed) as Record<string, unknown>;
+        out.push(parseSessionRecord(parsed));
+      } catch {
+        // skip malformed line
+      }
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
+async function loadSessionsFromKey(
+  bucket: string,
+  key: string,
+): Promise<SessionMinimal[]> {
+  if (ARCHIVE_FORMAT === "firehose") {
+    return fetchSessionsFromBatch(bucket, key);
+  }
+  const session = await fetchLegacySession(bucket, key);
+  return session ? [session] : [];
 }
 
 const PRIVATE_RANGES: ReadonlyArray<(a: number, b: number) => boolean> = [
@@ -398,32 +513,40 @@ async function fetchSessionBatch(
   archiveBucket: string,
   batch: string[],
   candidates: Set<string>,
-): Promise<void> {
-  const sessions = await Promise.all(
-    batch.map((k) => fetchSession(archiveBucket, k)),
+): Promise<number> {
+  const groups = await Promise.all(
+    batch.map((k) => loadSessionsFromKey(archiveBucket, k)),
   );
-  for (const s of sessions) {
-    if (s) addSessionIps(s, candidates);
+  let total = 0;
+  for (const sessions of groups) {
+    for (const s of sessions) {
+      total += 1;
+      addSessionIps(s, candidates);
+    }
   }
+  return total;
 }
 
-async function collectCandidateIps(
-  archiveBucket: string,
-): Promise<{ keys: string[]; candidates: Set<string> }> {
+async function collectCandidateIps(archiveBucket: string): Promise<{
+  keys: string[];
+  candidates: Set<string>;
+  sessionsScanned: number;
+}> {
   const keys = await listRecentArchiveKeys(
     archiveBucket,
     ARCHIVE_LOOKBACK_HOURS,
   );
   const candidates = new Set<string>();
   const CONCURRENCY = 16;
+  let sessionsScanned = 0;
   for (let i = 0; i < keys.length; i += CONCURRENCY) {
-    await fetchSessionBatch(
+    sessionsScanned += await fetchSessionBatch(
       archiveBucket,
       keys.slice(i, i + CONCURRENCY),
       candidates,
     );
   }
-  return { keys, candidates };
+  return { keys, candidates, sessionsScanned };
 }
 
 export async function handler(): Promise<DiscoverResult> {
@@ -437,14 +560,15 @@ export async function handler(): Promise<DiscoverResult> {
 
   const existingRules = await loadExistingOverlay(overlayBucket, overlayKey);
   const existingRanges = compileForLookup(existingRules);
-  const { keys, candidates } = await collectCandidateIps(archiveBucket);
+  const { candidates, sessionsScanned } =
+    await collectCandidateIps(archiveBucket);
   const ips = [...candidates];
   const stats = await walkCandidateIps(ips, existingRanges);
   const merged = dedupe([...existingRules, ...stats.newRules]);
   await writeOverlay(overlayBucket, overlayKey, merged);
 
   return {
-    archive_sessions_scanned: keys.length,
+    archive_sessions_scanned: sessionsScanned,
     ips_walked: ips.length,
     ips_skipped_existing: stats.skipped,
     rdap_ip_lookups: stats.rdapCalls,

@@ -80,7 +80,17 @@ export class CloudFrontWafConstruct extends Construct {
               managedRuleGroupStatement: {
                 name: "AWSManagedRulesCommonRuleSet",
                 vendorName: "AWS",
-                excludedRules: [],
+                // Body-inspection rules excluded — ingestion payloads are
+                // gzipped (and may be encrypted) binary, so SQL/XSS scans
+                // can't match anything useful. Body size is still capped by
+                // the LimitBodySize100KB rule below.
+                excludedRules: [
+                  { name: "SizeRestrictions_BODY" },
+                  { name: "EC2MetaDataSSRF_BODY" },
+                  { name: "GenericLFI_BODY" },
+                  { name: "GenericRFI_BODY" },
+                  { name: "CrossSiteScripting_BODY" },
+                ],
               },
             },
             overrideAction: { none: {} },

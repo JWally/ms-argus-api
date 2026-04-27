@@ -83,11 +83,13 @@ export function createBaseLambdaConfig(
 export function createPowertoolsEnv(
   serviceName: string,
   metricsNamespace: string,
+  stage = "dev",
 ): Record<string, string> {
   return {
     POWERTOOLS_SERVICE_NAME: serviceName,
     POWERTOOLS_METRICS_NAMESPACE: metricsNamespace,
     NODE_OPTIONS: "--enable-source-maps",
+    LOG_LEVEL: stage === "prod" ? "WARN" : "INFO",
   };
 }
 
@@ -109,7 +111,7 @@ export function createWorkerEnv(
     ENVIRONMENT: stage,
     POWERTOOLS_SERVICE_NAME: serviceName,
     POWERTOOLS_METRICS_NAMESPACE: stackName,
-    LOG_LEVEL: "INFO",
+    LOG_LEVEL: stage === "prod" ? "WARN" : "INFO",
   };
 }
 

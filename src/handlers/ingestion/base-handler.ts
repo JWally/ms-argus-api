@@ -42,6 +42,7 @@ import {
 import type { AsnCategory } from "../../analysis/ip-consistency/asn-catalog";
 import { prewarmAsnDataset } from "../../services/network/asn-classifier";
 import { prewarmAutoOverlay } from "../../services/network/auto-overlay";
+import { archiveToFirehose } from "../../helpers/firehose-archive";
 
 /** API Gateway event extended with pre-parsed body from middleware. */
 export interface ExtendedEvent extends APIGatewayProxyEventV2 {
@@ -79,6 +80,7 @@ async function routeRequest(
 
 const ddbClient = new DynamoDBClient({});
 const INTEGRITY_RESULTS_TABLE = process.env.INTEGRITY_RESULTS_TABLE ?? "";
+const INTEGRITY_FIREHOSE_STREAM = process.env.INTEGRITY_FIREHOSE_STREAM;
 const INTEGRITY_TTL_SECONDS = 3600; // 1 hour
 
 export function createBaseHandler(deps: BaseHandlerDeps) {
@@ -377,6 +379,46 @@ function buildIntegrityItem(
   };
 }
 
+/**
+ * Dual-write the integrity record. DDB is required (its result drives the
+ * HTTP response). Firehose archive runs in parallel and never throws —
+ * errors are logged + metered inside the helper. Shadow mode: the existing
+ * DDB-stream → integrity-archiver path keeps writing per-session JSON
+ * until Firehose is validated.
+ */
+async function persistIntegrityRecord(
+  ctx: HandleContext,
+  item: Record<string, unknown>,
+): Promise<void> {
+  try {
+    await Promise.all([
+      ddbClient.send(
+        new PutItemCommand({
+          TableName: INTEGRITY_RESULTS_TABLE,
+          Item: marshall(item, { removeUndefinedValues: true }),
+          ConditionExpression: "attribute_not_exists(session_id)",
+        }),
+      ),
+      archiveToFirehose(item, {
+        streamName: INTEGRITY_FIREHOSE_STREAM,
+        logger: ctx.deps.logger,
+        metrics: ctx.deps.metrics,
+      }),
+    ]);
+  } catch (err) {
+    if (err instanceof ConditionalCheckFailedException) {
+      ctx.deps.metrics.addMetric("IntegrityReplayBlocked", MetricUnit.Count, 1);
+      throw new HttpError(409, "Session already processed");
+    }
+    ctx.deps.logger.error("Integrity DynamoDB write failed", {
+      error: err,
+      session_id: ctx.sessionId,
+    });
+    ctx.deps.metrics.addMetric("IntegrityWriteFailed", MetricUnit.Count, 1);
+    throw new HttpError(503, "Service temporarily unavailable");
+  }
+}
+
 async function handleIntegrity(
   ctx: HandleContext,
 ): Promise<APIGatewayProxyResultV2> {
@@ -399,26 +441,7 @@ async function handleIntegrity(
   emitIdentityMetrics(ctx.deps, identity);
   const item = buildIntegrityItem(ctx, hydratedPayload, identity);
 
-  try {
-    await ddbClient.send(
-      new PutItemCommand({
-        TableName: INTEGRITY_RESULTS_TABLE,
-        Item: marshall(item, { removeUndefinedValues: true }),
-        ConditionExpression: "attribute_not_exists(session_id)",
-      }),
-    );
-  } catch (err) {
-    if (err instanceof ConditionalCheckFailedException) {
-      ctx.deps.metrics.addMetric("IntegrityReplayBlocked", MetricUnit.Count, 1);
-      throw new HttpError(409, "Session already processed");
-    }
-    ctx.deps.logger.error("Integrity DynamoDB write failed", {
-      error: err,
-      session_id: ctx.sessionId,
-    });
-    ctx.deps.metrics.addMetric("IntegrityWriteFailed", MetricUnit.Count, 1);
-    throw new HttpError(503, "Service temporarily unavailable");
-  }
+  await persistIntegrityRecord(ctx, item);
 
   ctx.deps.metrics.addMetric("IntegrityStored", MetricUnit.Count, 1);
 

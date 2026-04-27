@@ -45,7 +45,12 @@ export interface StageConfig {
       reservedConcurrency: number;
     };
     provisionedConcurrency: number;
-    /** Enable X-Ray tracing for worker Lambdas (expensive in dev with no traffic) */
+    /**
+     * Enable X-Ray active tracing on all Lambdas. Off by default in every
+     * stage — at 1B req/mo, X-Ray costs ~$5K/mo with no business value for
+     * the integrity-only architecture. Flip to `true` per-incident if you
+     * need request tracing temporarily.
+     */
     tracingEnabled: boolean;
   };
 
@@ -134,7 +139,7 @@ const devConfig: StageConfig = {
       reservedConcurrency: 10, // Low concurrency in dev
     },
     provisionedConcurrency: 0, // No warm instances in dev
-    tracingEnabled: false, // X-Ray costs ~$5/month with no benefit in dev
+    tracingEnabled: false, // see StageConfig.lambda.tracingEnabled
   },
 
   sqs: {
@@ -215,7 +220,7 @@ const prodConfig: StageConfig = {
       reservedConcurrency: 100, // Higher concurrency in prod
     },
     provisionedConcurrency: 2, // Keep 2 warm in prod
-    tracingEnabled: true,
+    tracingEnabled: false, // see StageConfig.lambda.tracingEnabled
   },
 
   sqs: {

@@ -38,6 +38,11 @@ interface HttpApiConstructProps {
    * Format: /${stackName}/ecdh-keypair
    */
   ecdhKeyParamName?: string;
+  /**
+   * Optional: Firehose delivery stream name for batched NDJSON archive.
+   * When set, the ingestion handler dual-writes to DDB and Firehose.
+   */
+  integrityFirehoseStreamName?: string;
 }
 
 /**
@@ -69,6 +74,7 @@ export class HttpApiConstruct extends Construct {
       alarmsTopic,
       config,
       ecdhKeyParamName,
+      integrityFirehoseStreamName,
     } = props;
 
     const logGroup = new logs.LogGroup(this, "IngestionLogGroup", {
@@ -89,7 +95,7 @@ export class HttpApiConstruct extends Construct {
         timeout: Duration.seconds(10),
         logGroup,
         environment: {
-          ...createPowertoolsEnv("argus-ingestion", `argus-${stage}`),
+          ...createPowertoolsEnv("argus-ingestion", `argus-${stage}`, stage),
           ...(ecdhKeyParamName && { ECDH_KEY_PARAM: ecdhKeyParamName }),
           INTEGRITY_RESULTS_TABLE: integrityResultsTable.tableName,
           ...(process.env.INTEGRITY_DEPLOY_SECRET && {
@@ -102,6 +108,9 @@ export class HttpApiConstruct extends Construct {
           }),
           ...(probeTokensTableName && {
             PROBE_TOKENS_TABLE_NAME: probeTokensTableName,
+          }),
+          ...(integrityFirehoseStreamName && {
+            INTEGRITY_FIREHOSE_STREAM: integrityFirehoseStreamName,
           }),
         },
       },
@@ -127,7 +136,7 @@ export class HttpApiConstruct extends Construct {
         timeout: Duration.seconds(10),
         logGroup: sessionGetLogGroup,
         environment: {
-          ...createPowertoolsEnv("argus-session-get", `argus-${stage}`),
+          ...createPowertoolsEnv("argus-session-get", `argus-${stage}`, stage),
           INTEGRITY_RESULTS_TABLE: integrityResultsTable.tableName,
           STACK_NAME: stackName,
         },

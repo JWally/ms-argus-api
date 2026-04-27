@@ -17,6 +17,7 @@ import { IpClassDiscovererConstruct } from "../constructs/ip-class-discoverer";
 import { WorkersConstruct } from "../constructs/workers";
 import { CloudFrontWafConstruct } from "../constructs/cloudfront";
 import { AnalyticsConstruct } from "../constructs/analytics";
+import { IntegrityFirehoseConstruct } from "../constructs/integrity-firehose";
 import { getStageConfig } from "../config";
 
 interface ArgusApiStackProps extends cdk.StackProps {
@@ -157,6 +158,20 @@ export class ArgusApiStack extends cdk.Stack {
       stage,
     });
 
+    // Batched NDJSON archive — runs in parallel with the per-session
+    // integrity-archiver Lambda during shadow mode. Both write into the
+    // same bucket under different prefixes (`{sessionId}.json` vs
+    // `firehose/year=.../...gz`).
+    const integrityFirehose = new IntegrityFirehoseConstruct(
+      this,
+      "IntegrityFirehose",
+      {
+        stackName,
+        stage,
+        archiveBucket: analytics.integrityArchiveBucket,
+      },
+    );
+
     // =========================================================================
     // COMPUTE LAYER
     // =========================================================================
@@ -173,7 +188,10 @@ export class ArgusApiStack extends cdk.Stack {
       alarmsTopic,
       config: stageConfig,
       ecdhKeyParamName: `/${stackName}/ecdh-keypair`,
+      integrityFirehoseStreamName: integrityFirehose.deliveryStreamName,
     });
+
+    integrityFirehose.grantPutRecord(httpApi.ingestionFunction);
 
     const workers = new WorkersConstruct(this, "Workers", {
       stackName,
