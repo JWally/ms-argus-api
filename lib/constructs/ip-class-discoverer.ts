@@ -19,13 +19,6 @@ interface IpClassDiscovererProps {
   archiveBucket: s3.IBucket;
   /** Cron hour (UTC) to run nightly. Default 03:00. */
   hour?: string;
-  /**
-   * Archive layout to read.
-   * - `firehose` (default): batched gzipped NDJSON under `firehose/year=.../`.
-   * - `legacy`: per-session JSON files at the bucket root (the old
-   *   integrity-archiver Lambda path). Will be removed in Phase 3.
-   */
-  archiveFormat?: "legacy" | "firehose";
 }
 
 /**
@@ -56,7 +49,6 @@ export class IpClassDiscovererConstruct extends Construct {
       overlayBucket,
       archiveBucket,
       hour = "3",
-      archiveFormat = "firehose",
     } = props;
     const config = getStageConfig(stage);
     this.overlayKey = "auto-overlay.json.gz";
@@ -79,7 +71,6 @@ export class IpClassDiscovererConstruct extends Construct {
         IP_CLASS_BUCKET: overlayBucket.bucketName,
         IP_CLASS_AUTO_OVERLAY_KEY: this.overlayKey,
         INTEGRITY_ARCHIVE_BUCKET: archiveBucket.bucketName,
-        INTEGRITY_ARCHIVE_FORMAT: archiveFormat,
       },
       // Single-instance only — concurrent runs would race on overlay file.
       reservedConcurrentExecutions: 1,

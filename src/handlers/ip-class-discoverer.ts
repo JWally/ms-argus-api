@@ -62,40 +62,7 @@ interface DiscoverResult {
 const POLITE_DELAY_MS = 400;
 const ARCHIVE_LOOKBACK_HOURS = 48;
 
-type ArchiveFormat = "legacy" | "firehose";
-const ARCHIVE_FORMAT: ArchiveFormat =
-  process.env.INTEGRITY_ARCHIVE_FORMAT === "legacy" ? "legacy" : "firehose";
-
 const s3 = new S3Client({});
-
-/**
- * Pre-Firehose archive layout: one JSON file per session at the bucket
- * root (`{sessionId}.json`). Listed flat and filtered by LastModified.
- */
-async function listRecentLegacyKeys(
-  bucket: string,
-  hours: number,
-): Promise<string[]> {
-  const cutoff = Date.now() - hours * 60 * 60 * 1000;
-  const keys: string[] = [];
-  let token: string | undefined;
-  do {
-    const out = await s3.send(
-      new ListObjectsV2Command({
-        Bucket: bucket,
-        ContinuationToken: token,
-        MaxKeys: 1000,
-      }),
-    );
-    for (const c of (out.Contents ?? []) as _Object[]) {
-      if (c.LastModified && c.LastModified.getTime() >= cutoff && c.Key) {
-        keys.push(c.Key);
-      }
-    }
-    token = out.NextContinuationToken;
-  } while (token);
-  return keys;
-}
 
 function buildHourlyPrefixes(now: number, hours: number): string[] {
   const prefixes: string[] = [];
@@ -137,10 +104,10 @@ async function listAllUnderPrefix(
  * Firehose archive layout: gzipped NDJSON batches at
  * `firehose/year=YYYY/month=MM/day=DD/hour=HH/...gz`. List by enumerating
  * the hour-prefixes for the lookback window — vastly fewer S3 LIST calls
- * than the flat namespace once volume scales (1B/mo would be ~150M flat
+ * than a flat namespace once volume scales (1B/mo would be ~150M flat
  * keys vs ~3K Firehose batches in 48h).
  */
-async function listRecentFirehoseKeys(
+async function listRecentArchiveKeys(
   bucket: string,
   hours: number,
 ): Promise<string[]> {
@@ -149,15 +116,6 @@ async function listRecentFirehoseKeys(
     prefixes.map((p) => listAllUnderPrefix(bucket, p)),
   );
   return groups.flat();
-}
-
-async function listRecentArchiveKeys(
-  bucket: string,
-  hours: number,
-): Promise<string[]> {
-  return ARCHIVE_FORMAT === "firehose"
-    ? listRecentFirehoseKeys(bucket, hours)
-    : listRecentLegacyKeys(bucket, hours);
 }
 
 interface SessionMinimal {
@@ -194,28 +152,12 @@ function parseSessionRecord(d: Record<string, unknown>): SessionMinimal {
   };
 }
 
-async function fetchLegacySession(
-  bucket: string,
-  key: string,
-): Promise<SessionMinimal | null> {
-  try {
-    const obj = await s3.send(
-      new GetObjectCommand({ Bucket: bucket, Key: key }),
-    );
-    if (!obj.Body) return null;
-    const body = await obj.Body.transformToString();
-    return parseSessionRecord(JSON.parse(body) as Record<string, unknown>);
-  } catch {
-    return null;
-  }
-}
-
 /**
  * Read one Firehose batch (gzipped NDJSON), parse every line, return all
  * sessions. Bad lines are skipped — Firehose can rarely include
  * partial records around delivery boundaries.
  */
-async function fetchSessionsFromBatch(
+async function loadSessionsFromKey(
   bucket: string,
   key: string,
 ): Promise<SessionMinimal[]> {
@@ -241,17 +183,6 @@ async function fetchSessionsFromBatch(
   } catch {
     return [];
   }
-}
-
-async function loadSessionsFromKey(
-  bucket: string,
-  key: string,
-): Promise<SessionMinimal[]> {
-  if (ARCHIVE_FORMAT === "firehose") {
-    return fetchSessionsFromBatch(bucket, key);
-  }
-  const session = await fetchLegacySession(bucket, key);
-  return session ? [session] : [];
 }
 
 const PRIVATE_RANGES: ReadonlyArray<(a: number, b: number) => boolean> = [

@@ -18,7 +18,8 @@ interface DynamoDbConstructProps {
  * DynamoDB tables for the integrity-only pipeline.
  *
  *  - integrityResultsTable: per-session integrity record (PK: session_id),
- *    stream-enabled for archiving to S3. 1-hour TTL.
+ *    1-hour TTL. Archive to S3 happens at write time via Firehose
+ *    (ingestion handler dual-writes); no DDB stream needed.
  *
  * Profiles / tier1-index / tier2-buckets / session-cache / session-payload /
  * vector-results were removed along with the fingerprint matching pipeline.
@@ -58,7 +59,6 @@ export class DynamoDbConstruct extends Construct {
         ...capacityProps,
         timeToLiveAttribute: "ttl",
         removalPolicy: RemovalPolicy.DESTROY,
-        stream: dynamodb.StreamViewType.NEW_IMAGE,
       },
     );
 

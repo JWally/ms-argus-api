@@ -14,7 +14,6 @@ import { DynamoDbConstruct } from "../constructs/dynamodb";
 import { HttpApiConstruct } from "../constructs/http-api";
 import { IpClassBuilderConstruct } from "../constructs/ip-class-builder";
 import { IpClassDiscovererConstruct } from "../constructs/ip-class-discoverer";
-import { WorkersConstruct } from "../constructs/workers";
 import { CloudFrontWafConstruct } from "../constructs/cloudfront";
 import { AnalyticsConstruct } from "../constructs/analytics";
 import { IntegrityFirehoseConstruct } from "../constructs/integrity-firehose";
@@ -158,10 +157,10 @@ export class ArgusApiStack extends cdk.Stack {
       stage,
     });
 
-    // Batched NDJSON archive — runs in parallel with the per-session
-    // integrity-archiver Lambda during shadow mode. Both write into the
-    // same bucket under different prefixes (`{sessionId}.json` vs
-    // `firehose/year=.../...gz`).
+    // Batched NDJSON archive: ingestion Lambda PutRecords directly to
+    // Firehose, which writes gzipped batches into the integrity-archive
+    // bucket under `firehose/year=.../...gz`. Replaced the earlier
+    // DDB-stream → integrity-archiver Lambda → per-session-JSON path.
     const integrityFirehose = new IntegrityFirehoseConstruct(
       this,
       "IntegrityFirehose",
@@ -193,27 +192,14 @@ export class ArgusApiStack extends cdk.Stack {
 
     integrityFirehose.grantPutRecord(httpApi.ingestionFunction);
 
-    const workers = new WorkersConstruct(this, "Workers", {
-      stackName,
-      stage,
-      projectName: id,
-      alarmsTopic,
-      integrityArchiveBucket: analytics.integrityArchiveBucket,
-      integrityResultsTable: dynamodb.integrityResultsTable,
-    });
-
     // ASN→category dataset: weekly cron pulls IPtoASN, regex-categorizes,
-    // uploads to S3. Consumers (ingestion, integrity-archiver) read on cold
-    // start via services/network/asn-classifier.ts.
+    // uploads to S3. Read on cold start via services/network/asn-classifier.ts.
     const ipClass = new IpClassBuilderConstruct(this, "IpClass", {
       stackName,
       stage,
     });
     ipClass.grantReadTo(httpApi.ingestionFunction);
     ipClass.grantReadTo(httpApi.sessionGetFunction);
-    if (workers.integrityArchiver) {
-      ipClass.grantReadTo(workers.integrityArchiver);
-    }
 
     // Auto-overlay discoverer: nightly cron walks recent unmapped IPs,
     // RDAPs them, populates auto-overlay.json.gz alongside the ASN dict.
@@ -231,12 +217,9 @@ export class ArgusApiStack extends cdk.Stack {
     );
     ipClassDiscoverer.grantReadTo(httpApi.ingestionFunction);
     ipClassDiscoverer.grantReadTo(httpApi.sessionGetFunction);
-    if (workers.integrityArchiver) {
-      ipClassDiscoverer.grantReadTo(workers.integrityArchiver);
-    }
 
     // =========================================================================
-    // WARMERS — Keep ingestion + session-get + integrity-archiver hot
+    // WARMERS — Keep ingestion + session-get hot
     // =========================================================================
 
     const warmupPayload = events.RuleTargetInput.fromObject({
@@ -266,19 +249,6 @@ export class ArgusApiStack extends cdk.Stack {
         }),
       ],
     });
-
-    if (workers.integrityArchiver) {
-      new events.Rule(this, "IntegrityArchiverWarmupRule", {
-        ruleName: `${stackName}-integrity-archiver-warmup`,
-        description: "Keep integrity-archiver Lambda warm",
-        schedule: events.Schedule.rate(cdk.Duration.minutes(1)),
-        targets: [
-          new targets.LambdaFunction(workers.integrityArchiver, {
-            event: warmupPayload,
-          }),
-        ],
-      });
-    }
 
     // =========================================================================
     // EDGE LAYER
