@@ -43,6 +43,18 @@ interface HttpApiConstructProps {
    * When set, the ingestion handler dual-writes to DDB and Firehose.
    */
   integrityFirehoseStreamName?: string;
+  /**
+   * SSM path of the ms-argus-platform Ed25519 public key used to verify
+   * merchant API tokens on the new `GET /v1/session/{cpi}/{session_id}`
+   * route. Format: `/argus-platform/{env}/api-signing-pubkey`.
+   */
+  platformPubkeySsmPath: string;
+  /**
+   * Whether the legacy `/v1/integrity-session/{session_id}` route still
+   * accepts the shared SSM secret. Default true; flip to false (and clean
+   * up everything tagged LEGACY_SHARED_SECRET_AUTH) when no callers remain.
+   */
+  enableLegacySharedSecret?: boolean;
 }
 
 /**
@@ -75,6 +87,8 @@ export class HttpApiConstruct extends Construct {
       config,
       ecdhKeyParamName,
       integrityFirehoseStreamName,
+      platformPubkeySsmPath,
+      enableLegacySharedSecret = true,
     } = props;
 
     const logGroup = new logs.LogGroup(this, "IngestionLogGroup", {
@@ -139,18 +153,26 @@ export class HttpApiConstruct extends Construct {
           ...createPowertoolsEnv("argus-session-get", `argus-${stage}`, stage),
           INTEGRITY_RESULTS_TABLE: integrityResultsTable.tableName,
           STACK_NAME: stackName,
+          PLATFORM_PUBKEY_SSM_PATH: platformPubkeySsmPath,
+          // LEGACY_SHARED_SECRET_AUTH — drop this env (and the legacy code
+          // path it gates) when no internal callers remain on the old route.
+          ENABLE_LEGACY_SHARED_SECRET: enableLegacySharedSecret
+            ? "true"
+            : "false",
         },
       },
     );
 
     integrityResultsTable.grantReadData(this.sessionGetFunction);
 
-    // SSM read for integrity API key validation.
+    // SSM read for: (a) legacy integrity API key (LEGACY_SHARED_SECRET_AUTH),
+    // (b) the platform's Ed25519 pubkey for verifying merchant tokens.
     this.sessionGetFunction.addToRolePolicy(
       new iam.PolicyStatement({
         actions: ["ssm:GetParameter"],
         resources: [
           `arn:aws:ssm:${cdk.Stack.of(this).region}:${cdk.Stack.of(this).account}:parameter/${stackName}/integrity-api-key`,
+          `arn:aws:ssm:${cdk.Stack.of(this).region}:${cdk.Stack.of(this).account}:parameter${platformPubkeySsmPath}`,
         ],
       }),
     );

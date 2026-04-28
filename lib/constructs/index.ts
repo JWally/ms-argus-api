@@ -8,3 +8,4 @@ export * from "./ip-class-builder";
 export * from "./ip-class-discoverer";
 export * from "./integrity-firehose";
 export * from "./http-api";
+export * from "./rest-api";

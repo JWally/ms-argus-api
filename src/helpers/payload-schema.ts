@@ -12,6 +12,14 @@ export interface PayloadIdentifiers {
   session_id: string;
   evercookie_id?: string;
   public_key?: string;
+  /**
+   * Public client id minted by ms-argus-platform and embedded in the
+   * merchant's browser SDK. Used as the partition key on the integrity
+   * results table so cross-tenant scans are structurally impossible.
+   * Optional today; ingestions without one fall through to the unbound
+   * partition (LEGACY_UNBOUND_INGEST) until all callers are upgraded.
+   */
+  cpi?: string;
 }
 
 export interface PayloadHashes {
@@ -268,6 +276,29 @@ export const payloadJsonSchema = {
  */
 export function getSessionId(payload: ArgusPayload): string {
   return payload.identifiers.session_id;
+}
+
+const CPI_FORMAT = /^argus_cpi_(test|live)_[A-Za-z0-9]{10,40}$/;
+
+/**
+ * Resolve the cpi (public client id) for an inbound payload.
+ *
+ * If the SDK sent a well-formed cpi, use it. Otherwise fall through to the
+ * unbound partition — `argus_cpi_${env}_unbound` — so legacy callers (older
+ * SDK versions, internal demo sites that haven't migrated) keep working.
+ * The legacy GET route reads from this partition via the legacySessionIdIndex
+ * GSI. LEGACY_UNBOUND_INGEST: drop the fallback once all callers send a real
+ * cpi.
+ */
+export function resolveCpi(
+  payload: ArgusPayload,
+  env: string,
+): { cpi: string; bound: boolean } {
+  const supplied = payload.identifiers.cpi;
+  if (typeof supplied === "string" && CPI_FORMAT.test(supplied)) {
+    return { cpi: supplied, bound: true };
+  }
+  return { cpi: `argus_cpi_${env}_unbound`, bound: false };
 }
 
 /**
