@@ -96,14 +96,16 @@ export function createBaseHandler(deps: BaseHandlerDeps) {
 
     const payload = event.parsedBody as ArgusPayload;
     const sessionId = getSessionId(payload);
-    const stage = process.env.STAGE ?? "dev";
     // Header is the preferred source — see resolveCpi() docstring.
     const cpiHeader =
       event.headers?.["x-argus-cpi"] ?? event.headers?.["X-Argus-Cpi"];
-    const { cpi, bound } = resolveCpi(payload, stage, cpiHeader);
-    if (!bound) {
-      // LEGACY_UNBOUND_INGEST: bump so we can dashboard the migration.
-      deps.metrics.addMetric("LegacyUnboundIngest", MetricUnit.Count, 1);
+    const cpi = resolveCpi(payload, cpiHeader);
+    if (!cpi) {
+      deps.metrics.addMetric("MissingCpi", MetricUnit.Count, 1);
+      throw new HttpError(
+        400,
+        "Missing or malformed cpi — set x-argus-cpi header or identifiers.cpi",
+      );
     }
     return handleIntegrity({ payload, sessionId, cpi, event, deps, start });
   };

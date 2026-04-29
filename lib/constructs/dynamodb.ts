@@ -24,12 +24,6 @@ interface DynamoDbConstructProps {
  *    Archive to S3 happens at write time via Firehose (ingestion handler
  *    dual-writes); no DDB stream needed.
  *
- *    GSI `legacySessionIdIndex` exists temporarily so the deprecated
- *    `GET /v1/integrity-session/{session_id}` route (single shared-secret
- *    auth, internal callers only) can still resolve a session by id alone
- *    during migration. Drop the GSI when ENABLE_LEGACY_SHARED_SECRET is
- *    flipped to false everywhere — search for LEGACY_SHARED_SECRET_AUTH.
- *
  * Profiles / tier1-index / tier2-buckets / session-cache / session-payload /
  * vector-results were removed along with the fingerprint matching pipeline.
  */
@@ -78,16 +72,6 @@ export class DynamoDbConstruct extends Construct {
         removalPolicy: RemovalPolicy.DESTROY,
       },
     );
-
-    // LEGACY_SHARED_SECRET_AUTH: drop alongside the deprecated route.
-    this.integrityResultsTable.addGlobalSecondaryIndex({
-      indexName: "legacySessionIdIndex",
-      partitionKey: {
-        name: "session_id",
-        type: dynamodb.AttributeType.STRING,
-      },
-      projectionType: dynamodb.ProjectionType.ALL,
-    });
 
     if (dbConfig.useProvisionedCapacity) {
       const maxCapacity = Math.ceil(

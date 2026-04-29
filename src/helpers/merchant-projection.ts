@@ -162,7 +162,7 @@ export interface MerchantRequestHeaders {
 
 /**
  * The merchant-safe response shape. Returned as the top-level body of
- * `/v1/integrity-session` (spread, not wrapped).
+ * `GET /v1/session/{cpi}/{session_id}` (spread, not wrapped).
  */
 export interface MerchantSafeResponse {
   session_id: string;

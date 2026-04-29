@@ -45,28 +45,24 @@ interface HttpApiConstructProps {
   integrityFirehoseStreamName?: string;
   /**
    * SSM path of the ms-argus-platform Ed25519 public key used to verify
-   * merchant API tokens on the new `GET /v1/session/{cpi}/{session_id}`
-   * route. Format: `/argus-platform/{env}/api-signing-pubkey`.
+   * merchant API tokens. Format: `/argus-platform/{env}/api-signing-pubkey`.
    */
   platformPubkeySsmPath: string;
-  /**
-   * Whether the legacy `/v1/integrity-session/{session_id}` route still
-   * accepts the shared SSM secret. Default true; flip to false (and clean
-   * up everything tagged LEGACY_SHARED_SECRET_AUTH) when no callers remain.
-   */
-  enableLegacySharedSecret?: boolean;
 }
 
 /**
  * HTTP API Gateway + Lambda for the integrity collection surface:
  *
- *   POST /v1/integrity-collect             → ingestion Lambda
- *   GET  /v1/integrity-session/{session_id} → session-get Lambda
- *   GET  /health                            → ingestion Lambda (static)
+ *   POST /v1/integrity-collect → ingestion Lambda
+ *   GET  /health               → ingestion Lambda (static)
  *
- * OPTIONS preflight routes to the same Lambdas so the cors-middleware can
- * reflect Origin and emit `Access-Control-Allow-Credentials: true` (required
- * for the `_fpid` cross-subdomain cookie flow).
+ * The session-get Lambda is fronted only by the merchant REST API (see
+ * RestApiConstruct); it's referenced from this construct purely so the
+ * stack can grant table reads + SSM access in one place.
+ *
+ * OPTIONS preflight routes to the ingestion Lambda so the cors-middleware
+ * can reflect Origin and emit `Access-Control-Allow-Credentials: true`
+ * (required for the `_fpid` cross-subdomain cookie flow).
  */
 export class HttpApiConstruct extends Construct {
   public readonly api: apigatewayv2.HttpApi;
@@ -88,7 +84,6 @@ export class HttpApiConstruct extends Construct {
       ecdhKeyParamName,
       integrityFirehoseStreamName,
       platformPubkeySsmPath,
-      enableLegacySharedSecret = true,
     } = props;
 
     const logGroup = new logs.LogGroup(this, "IngestionLogGroup", {
@@ -154,24 +149,17 @@ export class HttpApiConstruct extends Construct {
           INTEGRITY_RESULTS_TABLE: integrityResultsTable.tableName,
           STACK_NAME: stackName,
           PLATFORM_PUBKEY_SSM_PATH: platformPubkeySsmPath,
-          // LEGACY_SHARED_SECRET_AUTH — drop this env (and the legacy code
-          // path it gates) when no internal callers remain on the old route.
-          ENABLE_LEGACY_SHARED_SECRET: enableLegacySharedSecret
-            ? "true"
-            : "false",
         },
       },
     );
 
     integrityResultsTable.grantReadData(this.sessionGetFunction);
 
-    // SSM read for: (a) legacy integrity API key (LEGACY_SHARED_SECRET_AUTH),
-    // (b) the platform's Ed25519 pubkey for verifying merchant tokens.
+    // SSM read for the platform's Ed25519 pubkey used to verify tokens.
     this.sessionGetFunction.addToRolePolicy(
       new iam.PolicyStatement({
         actions: ["ssm:GetParameter"],
         resources: [
-          `arn:aws:ssm:${cdk.Stack.of(this).region}:${cdk.Stack.of(this).account}:parameter/${stackName}/integrity-api-key`,
           `arn:aws:ssm:${cdk.Stack.of(this).region}:${cdk.Stack.of(this).account}:parameter${platformPubkeySsmPath}`,
         ],
       }),
@@ -201,17 +189,6 @@ export class HttpApiConstruct extends Construct {
       path: "/v1/integrity-collect",
       methods: [apigatewayv2.HttpMethod.POST, apigatewayv2.HttpMethod.OPTIONS],
       integration: ingestionIntegration,
-    });
-
-    const sessionGetIntegration = new integrations.HttpLambdaIntegration(
-      "SessionGetIntegration",
-      this.sessionGetFunction,
-    );
-
-    this.api.addRoutes({
-      path: "/v1/integrity-session/{session_id}",
-      methods: [apigatewayv2.HttpMethod.GET, apigatewayv2.HttpMethod.OPTIONS],
-      integration: sessionGetIntegration,
     });
 
     this.apiEndpoint = this.api.apiEndpoint;
