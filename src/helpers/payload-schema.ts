@@ -281,19 +281,30 @@ export function getSessionId(payload: ArgusPayload): string {
 const CPI_FORMAT = /^argus_cpi_(test|live)_[A-Za-z0-9]{10,40}$/;
 
 /**
- * Resolve the cpi (public client id) for an inbound payload.
+ * Resolve the cpi (public client id) for an inbound integrity-collect POST.
  *
- * If the SDK sent a well-formed cpi, use it. Otherwise fall through to the
- * unbound partition — `argus_cpi_${env}_unbound` — so legacy callers (older
- * SDK versions, internal demo sites that haven't migrated) keep working.
- * The legacy GET route reads from this partition via the legacySessionIdIndex
- * GSI. LEGACY_UNBOUND_INGEST: drop the fallback once all callers send a real
- * cpi.
+ * Preference order:
+ *   1. `x-argus-cpi` request header (sent by the integrity SDK)
+ *   2. `payload.identifiers.cpi` (legacy / future direct callers)
+ *   3. fallback: `argus_cpi_${env}_unbound` — LEGACY_UNBOUND_INGEST.
+ *
+ * Header is preferred because the payload body is ECDH-encrypted before
+ * the iframe submits it; the SDK can't easily inject a field after the
+ * bytecode has assembled and encrypted the JSON, so cpi rides as a
+ * request header. The body field is still accepted for non-SDK callers
+ * (e.g. server-to-server tests) and during migration.
+ *
+ * Drop the fallback (and this whole legacy-unbound concept) once every
+ * caller sends a header.
  */
 export function resolveCpi(
   payload: ArgusPayload,
   env: string,
+  cpiHeader?: string | null,
 ): { cpi: string; bound: boolean } {
+  if (typeof cpiHeader === "string" && CPI_FORMAT.test(cpiHeader)) {
+    return { cpi: cpiHeader, bound: true };
+  }
   const supplied = payload.identifiers.cpi;
   if (typeof supplied === "string" && CPI_FORMAT.test(supplied)) {
     return { cpi: supplied, bound: true };
