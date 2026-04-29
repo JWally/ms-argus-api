@@ -1,13 +1,21 @@
 /**
  * @fileoverview Verifier for merchant API tokens issued by ms-argus-platform.
  *
- * Token format: `<base64url-claims>.<base64url-signature>` (Ed25519 over the
- * encoded claims). The platform signs with its private key (Secrets Manager);
- * we fetch the matching public key from SSM and cache it for 5 minutes.
+ * The merchant ships ONE credential string of the form `<keyId>.<token>`,
+ * where `<token>` is `<base64url-claims>.<base64url-signature>` (Ed25519
+ * over the encoded claims). The merchant SDK splits at the first `.` and
+ * sends two headers:
  *
- * Verification covers signature integrity and (when called with `expectedCpi`)
- * binding between the token's `cpi` claim and the path's cpi — so a token
- * minted for store-A cannot be used to read store-B's sessions.
+ *   x-api-key:     <keyId>           — matched natively by APIGW Keys
+ *   x-argus-token: <token>           — verified here in the handler
+ *
+ * Two headers because APIGW does an exact match on `x-api-key` against its
+ * key store; the keyId alone has to live there. The signed claims ride in
+ * a separate header. The verifier asserts `claims.keyId === keyIdHeader`
+ * so a stolen token can't be paired with a different gateway key.
+ *
+ * The platform signs with its private key (Secrets Manager); we fetch the
+ * matching public key from SSM and cache it for 5 minutes.
  *
  * @module helpers/token-verifier
  */
@@ -41,17 +49,16 @@ export interface VerifierOptions {
 }
 
 interface ParsedToken {
-  keyIdPrefix: string;
   encodedClaims: string;
   encodedSig: string;
   claims: VerifiedClaims;
 }
 
-function parseToken(authHeader: string): ParsedToken | null {
-  const parts = authHeader.split(".");
-  if (parts.length !== 3) return null;
-  const [keyIdPrefix, encodedClaims, encodedSig] = parts;
-  if (!keyIdPrefix || !encodedClaims || !encodedSig) return null;
+function parseToken(tokenHeader: string): ParsedToken | null {
+  const parts = tokenHeader.split(".");
+  if (parts.length !== 2) return null;
+  const [encodedClaims, encodedSig] = parts;
+  if (!encodedClaims || !encodedSig) return null;
   let claims: VerifiedClaims;
   try {
     claims = JSON.parse(base64urlDecode(encodedClaims).toString("utf8"));
@@ -59,7 +66,7 @@ function parseToken(authHeader: string): ParsedToken | null {
     return null;
   }
   if (!isClaimsShape(claims)) return null;
-  return { keyIdPrefix, encodedClaims, encodedSig, claims };
+  return { encodedClaims, encodedSig, claims };
 }
 
 function isClaimsShape(c: unknown): c is VerifiedClaims {
@@ -75,17 +82,15 @@ function isClaimsShape(c: unknown): c is VerifiedClaims {
 }
 
 export async function verifyMerchantToken(
-  authHeader: string | undefined,
+  keyIdHeader: string | undefined,
+  tokenHeader: string | undefined,
   opts: VerifierOptions,
 ): Promise<VerifiedClaims | null> {
-  if (!authHeader) return null;
-  // The merchant SDK joins the APIGW key id and the signed claims with a `.`
-  // (the `.` is invalid in APIGW key values, so it's an unambiguous separator).
-  // Layout: <keyId>.<base64-claims>.<base64-sig>
-  const parsed = parseToken(authHeader);
+  if (!keyIdHeader || !tokenHeader) return null;
+  const parsed = parseToken(tokenHeader);
   if (!parsed) return null;
+  if (parsed.claims.keyId !== keyIdHeader) return null;
   if (opts.expectedCpi && parsed.claims.cpi !== opts.expectedCpi) return null;
-  if (parsed.keyIdPrefix !== parsed.claims.keyId) return null;
 
   const pubkey = await loadPublicKey(opts.ssmPubkeyPath);
   const ok = cryptoVerify(

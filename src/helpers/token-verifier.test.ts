@@ -38,7 +38,7 @@ beforeEach(() => {
 });
 
 describe("verifyMerchantToken", () => {
-  it("verifies a well-formed token and returns the claims", async () => {
+  it("verifies when keyId header + signed token match the claims", async () => {
     mockSsmSend.mockResolvedValueOnce({ Parameter: { Value: publicPem } });
     const claims = {
       merchantId: "m1",
@@ -47,15 +47,14 @@ describe("verifyMerchantToken", () => {
       plan: "free",
       iat: 1700000000,
     };
-    const signed = makeToken(claims);
-    const credential = `${claims.keyId}.${signed}`;
-    const verified = await verifyMerchantToken(credential, {
+    const token = makeToken(claims);
+    const verified = await verifyMerchantToken(claims.keyId, token, {
       ssmPubkeyPath: SSM_PATH,
     });
     expect(verified).toEqual(claims);
   });
 
-  it("rejects when the path's expectedCpi does not match the claim", async () => {
+  it("rejects when path's expectedCpi does not match the claim", async () => {
     mockSsmSend.mockResolvedValueOnce({ Parameter: { Value: publicPem } });
     const claims = {
       merchantId: "m1",
@@ -64,16 +63,18 @@ describe("verifyMerchantToken", () => {
       plan: "free",
       iat: 1700000000,
     };
-    const credential = `${claims.keyId}.${makeToken(claims)}`;
-    const verified = await verifyMerchantToken(credential, {
-      ssmPubkeyPath: SSM_PATH,
-      expectedCpi: "argus_cpi_test_DIFFERENT_PATH_CPI",
-    });
+    const verified = await verifyMerchantToken(
+      claims.keyId,
+      makeToken(claims),
+      {
+        ssmPubkeyPath: SSM_PATH,
+        expectedCpi: "argus_cpi_test_DIFFERENT_PATH_CPI",
+      },
+    );
     expect(verified).toBeNull();
   });
 
-  it("rejects when keyId prefix does not match the keyId claim", async () => {
-    mockSsmSend.mockResolvedValueOnce({ Parameter: { Value: publicPem } });
+  it("rejects when x-api-key header does not match claims.keyId", async () => {
     const claims = {
       merchantId: "m1",
       cpi: "argus_cpi_test_xyz1234567890",
@@ -81,10 +82,11 @@ describe("verifyMerchantToken", () => {
       plan: "free",
       iat: 1700000000,
     };
-    const credential = `argus_sk_test_DIFFERENTID.${makeToken(claims)}`;
-    const verified = await verifyMerchantToken(credential, {
-      ssmPubkeyPath: SSM_PATH,
-    });
+    const verified = await verifyMerchantToken(
+      "argus_sk_test_DIFFERENTID",
+      makeToken(claims),
+      { ssmPubkeyPath: SSM_PATH },
+    );
     expect(verified).toBeNull();
   });
 
@@ -97,26 +99,29 @@ describe("verifyMerchantToken", () => {
       plan: "free",
       iat: 1700000000,
     };
-    const signed = makeToken(claims);
-    // Flip a bit in the encoded claims so signature no longer matches.
-    const [encoded, sig] = signed.split(".");
+    const token = makeToken(claims);
+    const [encoded, sig] = token.split(".");
     const tampered = `${encoded.slice(0, -1)}A.${sig}`;
-    const credential = `${claims.keyId}.${tampered}`;
-    const verified = await verifyMerchantToken(credential, {
+    const verified = await verifyMerchantToken(claims.keyId, tampered, {
       ssmPubkeyPath: SSM_PATH,
     });
     expect(verified).toBeNull();
   });
 
-  it("rejects on missing or malformed header", async () => {
+  it("rejects on missing or malformed headers", async () => {
     expect(
-      await verifyMerchantToken(undefined, { ssmPubkeyPath: SSM_PATH }),
+      await verifyMerchantToken(undefined, "a.b", { ssmPubkeyPath: SSM_PATH }),
     ).toBeNull();
     expect(
-      await verifyMerchantToken("only.two", { ssmPubkeyPath: SSM_PATH }),
+      await verifyMerchantToken("k", undefined, { ssmPubkeyPath: SSM_PATH }),
     ).toBeNull();
     expect(
-      await verifyMerchantToken("a.b.c.d", { ssmPubkeyPath: SSM_PATH }),
+      await verifyMerchantToken("k", "only-one-segment", {
+        ssmPubkeyPath: SSM_PATH,
+      }),
+    ).toBeNull();
+    expect(
+      await verifyMerchantToken("k", "a.b.c", { ssmPubkeyPath: SSM_PATH }),
     ).toBeNull();
   });
 
@@ -129,9 +134,9 @@ describe("verifyMerchantToken", () => {
       plan: "free",
       iat: 1700000000,
     };
-    const credential = `${claims.keyId}.${makeToken(claims)}`;
-    await verifyMerchantToken(credential, { ssmPubkeyPath: SSM_PATH });
-    await verifyMerchantToken(credential, { ssmPubkeyPath: SSM_PATH });
+    const token = makeToken(claims);
+    await verifyMerchantToken(claims.keyId, token, { ssmPubkeyPath: SSM_PATH });
+    await verifyMerchantToken(claims.keyId, token, { ssmPubkeyPath: SSM_PATH });
     expect(mockSsmSend).toHaveBeenCalledTimes(1);
   });
 });

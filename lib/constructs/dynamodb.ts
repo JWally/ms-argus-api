@@ -55,11 +55,15 @@ export class DynamoDbConstruct extends Construct {
         }
       : {};
 
+    // `-v2` suffix: the schema change from PK `session_id` → composite
+    // (cpi, session_id) requires CFN replacement, which custom-named
+    // resources can't do in place. The old `${stackName}-integrity-results`
+    // table is dropped on first v2 deploy.
     this.integrityResultsTable = new dynamodb.Table(
       this,
       "IntegrityResultsTable",
       {
-        tableName: `${stackName}-integrity-results`,
+        tableName: `${stackName}-integrity-results-v2`,
         partitionKey: {
           name: "cpi",
           type: dynamodb.AttributeType.STRING,

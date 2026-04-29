@@ -16,7 +16,7 @@
  * @module handlers/session-get/session-ops
  */
 
-import { APIGatewayProxyEventV2 } from "aws-lambda";
+import { APIGatewayProxyEvent, APIGatewayProxyEventV2 } from "aws-lambda";
 import { Logger } from "@aws-lambda-powertools/logger";
 import { Metrics, MetricUnit } from "@aws-lambda-powertools/metrics";
 import {
@@ -29,15 +29,14 @@ import { HttpError } from "../../helpers/http-error";
 import type { IntegrityResultsData } from "../../helpers/payload-schema";
 
 /**
- * Extracts and validates the session ID from the API Gateway event.
+ * Extracts and validates `session_id` from the path. Caller is expected to
+ * have already verified the HTTP method — this handler is mounted on
+ * GET-only routes in both the HTTP API and REST API gateways.
  */
 export function extractSessionId(
-  event: APIGatewayProxyEventV2,
+  event: APIGatewayProxyEvent | APIGatewayProxyEventV2,
   metrics: Metrics,
 ): string {
-  if (event.requestContext.http.method !== "GET") {
-    throw new HttpError(405, "Method not allowed");
-  }
   const sessionId = event.pathParameters?.session_id;
   if (!sessionId) {
     metrics.addMetric("MissingSessionId", MetricUnit.Count, 1);

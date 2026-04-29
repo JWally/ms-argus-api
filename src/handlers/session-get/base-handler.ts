@@ -19,7 +19,11 @@
  * @module handlers/session-get/base-handler
  */
 
-import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from "aws-lambda";
+import {
+  APIGatewayProxyEvent,
+  APIGatewayProxyEventV2,
+  APIGatewayProxyResultV2,
+} from "aws-lambda";
 import { Logger } from "@aws-lambda-powertools/logger";
 import { Metrics, MetricUnit } from "@aws-lambda-powertools/metrics";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
@@ -58,18 +62,48 @@ function buildIntegrityResponse(params: {
   };
 }
 
-function isMerchantRoute(event: APIGatewayProxyEventV2): boolean {
-  // REST API and HTTP API differ in event shape; routeKey is HTTP API only.
-  // Use the path the request actually arrived on as the source of truth.
-  return /\/v1\/session\/[^/]+\/[^/]+/.test(event.rawPath ?? "");
+/**
+ * The Lambda is fronted by both HTTP API (v2 event) for the legacy route
+ * and REST API (v1 event) for the merchant route. Normalize so the rest
+ * of the handler doesn't have to know which shape it received.
+ */
+type AnyApiGatewayEvent = APIGatewayProxyEventV2 | APIGatewayProxyEvent;
+
+function getMethod(event: AnyApiGatewayEvent): string {
+  // REST API (v1) — top-level httpMethod
+  const v1Method = (event as APIGatewayProxyEvent).httpMethod;
+  if (typeof v1Method === "string") return v1Method;
+  // HTTP API (v2) — nested requestContext.http.method
+  const v2Method = (event as APIGatewayProxyEventV2).requestContext?.http
+    ?.method;
+  if (typeof v2Method === "string") return v2Method;
+  return "";
+}
+
+function getPath(event: AnyApiGatewayEvent): string {
+  const v1Path = (event as APIGatewayProxyEvent).path;
+  if (typeof v1Path === "string") return v1Path;
+  const v2Path = (event as APIGatewayProxyEventV2).rawPath;
+  if (typeof v2Path === "string") return v2Path;
+  return "";
+}
+
+function isMerchantRoute(event: AnyApiGatewayEvent): boolean {
+  return /\/v1\/session\/[^/]+\/[^/]+/.test(getPath(event));
 }
 
 async function authorizeMerchantRequest(
   cpi: string,
-  event: APIGatewayProxyEventV2,
+  event: AnyApiGatewayEvent,
   deps: HandlerDeps,
 ): Promise<APIGatewayProxyResultV2 | null> {
-  const tokenHeader = event.headers["x-api-key"] ?? event.headers["X-Api-Key"];
+  // APIGW already matched x-api-key against its key store before we ran;
+  // we still read it to bind the signed token's claims.keyId to the same
+  // value (defense-in-depth against a stolen token paired with another key).
+  const keyIdHeader =
+    event.headers?.["x-api-key"] ?? event.headers?.["X-Api-Key"];
+  const tokenHeader =
+    event.headers?.["x-argus-token"] ?? event.headers?.["X-Argus-Token"];
   const ssmPubkeyPath = process.env.PLATFORM_PUBKEY_SSM_PATH;
   if (!ssmPubkeyPath) {
     deps.logger.error("PLATFORM_PUBKEY_SSM_PATH not configured");
@@ -79,7 +113,7 @@ async function authorizeMerchantRequest(
       body: JSON.stringify({ error: "Verifier misconfigured" }),
     };
   }
-  const claims = await verifyMerchantToken(tokenHeader, {
+  const claims = await verifyMerchantToken(keyIdHeader, tokenHeader, {
     ssmPubkeyPath,
     expectedCpi: cpi,
   });
@@ -96,7 +130,7 @@ async function authorizeMerchantRequest(
 }
 
 async function handleMerchantRoute(
-  event: APIGatewayProxyEventV2,
+  event: AnyApiGatewayEvent,
   deps: HandlerDeps,
 ): Promise<APIGatewayProxyResultV2> {
   const cpi = event.pathParameters?.cpi;
@@ -134,7 +168,7 @@ async function handleMerchantRoute(
  * legacySessionIdIndex GSI when ENABLE_LEGACY_SHARED_SECRET=false.
  */
 async function handleLegacyRoute(
-  event: APIGatewayProxyEventV2,
+  event: AnyApiGatewayEvent,
   deps: HandlerDeps,
 ): Promise<APIGatewayProxyResultV2> {
   if ((process.env.ENABLE_LEGACY_SHARED_SECRET ?? "true") !== "true") {
@@ -149,7 +183,7 @@ async function handleLegacyRoute(
     };
   }
 
-  const apiKey = event.headers["x-api-key"];
+  const apiKey = event.headers?.["x-api-key"];
   const valid = await validateIntegrityApiKey(apiKey);
   if (!valid) {
     deps.metrics.addMetric("ApiKeyRejected", MetricUnit.Count, 1);
@@ -179,10 +213,10 @@ async function handleLegacyRoute(
 
 export function createBaseHandler(deps: HandlerDeps) {
   return async (
-    event: APIGatewayProxyEventV2,
+    event: AnyApiGatewayEvent,
   ): Promise<APIGatewayProxyResultV2> => {
     // Short-circuit CORS preflight before auth — OPTIONS has no x-api-key.
-    if (event.requestContext.http.method === "OPTIONS") {
+    if (getMethod(event) === "OPTIONS") {
       return { statusCode: 204 };
     }
 
