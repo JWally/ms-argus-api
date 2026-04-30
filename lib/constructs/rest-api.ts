@@ -20,17 +20,26 @@ export interface RestApiConstructProps {
    * handler — no Lambda authorizer needed.
    */
   sessionGetFunction: lambda.IFunction;
-  /**
-   * Free-tier per-key throttle. Conservative defaults — bump when paid plans
-   * arrive (or split into separate usage plans per tier).
-   */
-  freeTier?: {
-    rateLimit?: number; // requests/second
-    burstLimit?: number; // bucket size
-    quotaLimit?: number; // requests per period
-    quotaPeriod?: apigateway.Period; // DAY | WEEK | MONTH
-  };
 }
+
+/**
+ * Per-tier limits. Throttle rates are per-key (not per-plan). Quotas are
+ * monthly so they line up with Stripe subscription billing periods.
+ *
+ * Why these numbers — see the pricing strategy in the platform repo:
+ *   Free    $0   / 10k req/mo   ← lead-magnet tier (10× FingerprintJS free)
+ *   Starter $99  / 200k req/mo  ← matches FP price, 10× their volume
+ *   Pro     $299 / 1M req/mo    ← serious-traffic tier
+ *
+ * Throttle rates increase with tier so paying customers see less head-of-line
+ * blocking on bursts; APIGW returns 429 above burstLimit, separate from the
+ * monthly quota 429.
+ */
+const TIER_LIMITS = {
+  free: { rateLimit: 5, burstLimit: 10, quotaLimit: 10_000 },
+  starter: { rateLimit: 20, burstLimit: 50, quotaLimit: 200_000 },
+  pro: { rateLimit: 100, burstLimit: 200, quotaLimit: 1_000_000 },
+} as const;
 
 /**
  * Public REST API for merchant-facing reads. Lives alongside the existing
@@ -46,6 +55,8 @@ export interface RestApiConstructProps {
 export class RestApiConstruct extends Construct {
   public readonly api: apigateway.RestApi;
   public readonly freeUsagePlan: apigateway.UsagePlan;
+  public readonly starterUsagePlan: apigateway.UsagePlan;
+  public readonly proUsagePlan: apigateway.UsagePlan;
   public readonly endpoint: string;
 
   constructor(scope: Construct, id: string, props: RestApiConstructProps) {
@@ -116,37 +127,38 @@ export class RestApiConstruct extends Construct {
       },
     );
 
-    // Free-tier usage plan — every issued key joins this for now. When paid
-    // tiers ship, mint additional plans (pro, enterprise) and have the
-    // platform's mintKey associate based on merchant.plan.
-    const freeTier = {
-      rateLimit: props.freeTier?.rateLimit ?? 5,
-      burstLimit: props.freeTier?.burstLimit ?? 10,
-      quotaLimit: props.freeTier?.quotaLimit ?? 10_000,
-      quotaPeriod: props.freeTier?.quotaPeriod ?? apigateway.Period.DAY,
-    };
+    // Three usage plans, one per pricing tier. Every minted key starts on
+    // free; the Stripe subscription webhook on the platform side moves the
+    // key between plans on subscription create/update/cancel events.
+    this.freeUsagePlan = this.makeUsagePlan(
+      "Free",
+      `${stackName}-free`,
+      "Free tier — lead-magnet quota for sign-up + integration",
+      TIER_LIMITS.free,
+    );
+    this.starterUsagePlan = this.makeUsagePlan(
+      "Starter",
+      `${stackName}-starter`,
+      "Starter tier — $99/mo, 200k req/mo",
+      TIER_LIMITS.starter,
+    );
+    this.proUsagePlan = this.makeUsagePlan(
+      "Pro",
+      `${stackName}-pro`,
+      "Pro tier — $299/mo, 1M req/mo",
+      TIER_LIMITS.pro,
+    );
 
-    this.freeUsagePlan = this.api.addUsagePlan("FreeUsagePlan", {
-      name: `${stackName}-free`,
-      description: "Free tier — generous limits, suitable for pilot/dev",
-      throttle: {
-        rateLimit: freeTier.rateLimit,
-        burstLimit: freeTier.burstLimit,
-      },
-      quota: {
-        limit: freeTier.quotaLimit,
-        period: freeTier.quotaPeriod,
-      },
-      apiStages: [{ api: this.api, stage: this.api.deploymentStage }],
-    });
-
-    // Export the usage plan id so ms-argus-platform's mint endpoint can
-    // associate newly minted keys at runtime.
-    new ssm.StringParameter(this, "FreeUsagePlanIdParam", {
-      parameterName: `/argus-api/${environment}/usage-plan-id-free`,
-      stringValue: this.freeUsagePlan.usagePlanId,
-      description: `Free-tier usage plan id, consumed by ms-argus-platform mint endpoint (${environment})`,
-    });
+    // Export each plan's id to SSM so ms-argus-platform can attach + move
+    // keys based on the merchant's current subscriptionPlan field.
+    this.exportUsagePlanId("Free", "free", environment, this.freeUsagePlan);
+    this.exportUsagePlanId(
+      "Starter",
+      "starter",
+      environment,
+      this.starterUsagePlan,
+    );
+    this.exportUsagePlanId("Pro", "pro", environment, this.proUsagePlan);
 
     this.endpoint = `https://${apiDomainName}`;
 
@@ -157,6 +169,48 @@ export class RestApiConstruct extends Construct {
     new cdk.CfnOutput(this, "FreeUsagePlanId", {
       value: this.freeUsagePlan.usagePlanId,
       description: "Free-tier usage plan id (also exported via SSM)",
+    });
+    new cdk.CfnOutput(this, "StarterUsagePlanId", {
+      value: this.starterUsagePlan.usagePlanId,
+      description: "Starter-tier usage plan id (also exported via SSM)",
+    });
+    new cdk.CfnOutput(this, "ProUsagePlanId", {
+      value: this.proUsagePlan.usagePlanId,
+      description: "Pro-tier usage plan id (also exported via SSM)",
+    });
+  }
+
+  private makeUsagePlan(
+    constructIdSuffix: string,
+    name: string,
+    description: string,
+    limits: { rateLimit: number; burstLimit: number; quotaLimit: number },
+  ): apigateway.UsagePlan {
+    return this.api.addUsagePlan(`${constructIdSuffix}UsagePlan`, {
+      name,
+      description,
+      throttle: {
+        rateLimit: limits.rateLimit,
+        burstLimit: limits.burstLimit,
+      },
+      quota: {
+        limit: limits.quotaLimit,
+        period: apigateway.Period.MONTH,
+      },
+      apiStages: [{ api: this.api, stage: this.api.deploymentStage }],
+    });
+  }
+
+  private exportUsagePlanId(
+    constructIdSuffix: string,
+    tierKey: string,
+    environment: string,
+    plan: apigateway.UsagePlan,
+  ): void {
+    new ssm.StringParameter(this, `${constructIdSuffix}UsagePlanIdParam`, {
+      parameterName: `/argus-api/${environment}/usage-plan-id-${tierKey}`,
+      stringValue: plan.usagePlanId,
+      description: `${tierKey}-tier usage plan id, consumed by ms-argus-platform mint endpoint (${environment})`,
     });
   }
 }
