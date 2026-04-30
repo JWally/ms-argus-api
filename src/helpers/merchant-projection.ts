@@ -161,8 +161,31 @@ export interface MerchantRequestHeaders {
 }
 
 /**
+ * Verdict bucket derived from the three threat axes. Blocks at any
+ * axis ≥ BLOCK_THRESHOLD; suspect at any axis ≥ SUSPECT_THRESHOLD.
+ * Customers route on this; the three numerical axes are for explanation.
+ */
+export type Verdict = "clean" | "suspect" | "block";
+
+const SUSPECT_THRESHOLD = 30;
+const BLOCK_THRESHOLD = 70;
+
+/**
  * The merchant-safe response shape. Returned as the top-level body of
  * `GET /v1/session/{cpi}/{session_id}` (spread, not wrapped).
+ *
+ * Three threat axes — all 0–100, all "lower is better":
+ *   - automation:        is an automation framework driving this?
+ *                        (headless markers, CDP, webdriver, framework tells)
+ *   - device_tampering:  is the device lying about itself?
+ *                        (Function.toString patches, CH-UA / JA4 / H2 vs UA
+ *                         disagreement, worker-scope divergence)
+ *   - network_tampering: is the network path being masked?
+ *                        (VPN, proxy waterfall, datacenter ASN, geo / TZ
+ *                         mismatch, WebRTC vs probe IP disagreement)
+ *
+ * Visitor-side manipulation only — third-party MITM/interception surfaces
+ * separately as a tag, not on the network_tampering axis.
  */
 export interface MerchantSafeResponse {
   session_id: string;
@@ -170,6 +193,16 @@ export interface MerchantSafeResponse {
   created_at: number | null;
   /** TTL epoch seconds (when this record will be purged). */
   ttl: number | null;
+
+  /** Lower = better. Driven by headless / CDP / framework detection. */
+  automation: number;
+  /** Lower = better. Driven by tampering evidence (lies, CH-UA / JA4 / H2
+   *  mismatch, worker divergence, locale spoofing). */
+  device_tampering: number;
+  /** Lower = better. Driven by VPN / proxy / WebRTC-probe consensus. */
+  network_tampering: number;
+  /** Routing convenience: derived from the three axes via fixed thresholds. */
+  verdict: Verdict;
 
   identification: MerchantIdentification;
 
@@ -179,38 +212,14 @@ export interface MerchantSafeResponse {
   ipLocation: MerchantIpLocation;
   ipInfo: MerchantIpInfo;
 
-  /**
-   * Probabilistic detectors. `probability` is a merchant-readable percentage
-   * (0–100), rounded to the nearest 5 to prevent fractional tuning oracles.
-   * Customers treat >= 50 as "likely"; we fire the corresponding tag at
-   * the same threshold.
-   */
-  bot: { probability: number };
-  vpn: { probability: number };
-  /**
-   * Proxy threat score in [0, 100]. 0 = clean, 100 = confirmed threat,
-   * mid = ambiguous. Derived from the proxy-detection waterfall.
-   */
-  proxy: { threat: number };
-  tampering: { probability: number };
-  /** Direct observation (client flag), not probabilistic. */
+  /** Direct observation, not probabilistic. */
   incognito: { result: boolean };
-  /**
-   * Discrete network-trust score 0.0–1.0 from WebRTC↔probe↔TLS consensus.
-   * Unique to us — FPJS doesn't publish this. Distinct from `suspectScore`
-   * (composite risk) — this is network-layer only.
-   *   1.0 = all probes + webrtc agree (or CGNAT-pattern webrtc solo)
-   *   0.5–0.8 = partial scatter within same /16
-   *   0.5 = no webrtc submitted
-   *   0.1 = any IP on a different /16 (proxy, VPN, corp gateway)
-   *   0.0 = cryptographic forgery evidence
-   */
-  networkIntegrity: { score: number };
-  /** Composite risk score [0,1] — higher = riskier. Null when no risk model
-   *  has run on this session yet (e.g. integrity-only flow without matching). */
-  suspectScore: { result: number | null };
+  /** Direct observation. Surfaces the existing devTools detector — useful
+   *  for high-value flows where dev-tools open is a step-up-auth trigger. */
+  developer_tools: { result: boolean };
 
-  /** Convenience summary of classifications. Composable with product blocks. */
+  /** Categorical labels — composable with the threat axes. Useful for
+   *  routing rules that need finer-grained context than the axis numbers. */
   tags: MerchantTag[];
 
   /** Curated request headers preserved at ingestion. Null for pre-capture records. */
@@ -353,6 +362,7 @@ interface HeadlessSignals {
   webDriverIsOn?: boolean;
   likeHeadlessRating?: number;
   stealthRating?: number;
+  likeHeadless?: { devToolsOpen?: boolean };
 }
 
 function readHeadless(
@@ -360,6 +370,11 @@ function readHeadless(
 ): HeadlessSignals | undefined {
   return (integrity.device as { headless?: HeadlessSignals } | undefined)
     ?.headless;
+}
+
+function detectDeveloperTools(input: MerchantProjectionInput): boolean {
+  if (!input.integrity) return false;
+  return readHeadless(input.integrity)?.likeHeadless?.devToolsOpen === true;
 }
 
 function detectIncognito(input: MerchantProjectionInput): boolean {
@@ -831,7 +846,13 @@ function applyWebrtcBlockedPenalty(
   return score * 0.5;
 }
 
-function computeNetworkIntegrityScore(
+/**
+ * @internal — exported only for unit tests of the network-integrity tiers.
+ * Not part of the merchant API surface; the score is folded into
+ * `network_tampering` in the projected response. Do not depend on it from
+ * other modules.
+ */
+export function computeNetworkIntegrityScore(
   input: MerchantProjectionInput,
   rawScore: number,
 ): number {
@@ -940,6 +961,36 @@ function deriveRequestHeaders(
 }
 
 /**
+ * Compose `network_tampering` from the merchant-facing network signals:
+ *   - vpn_component (MSS-derived tunnel encapsulation fingerprint)
+ *   - proxy waterfall threat (the integrated analyzer; itself already
+ *     factors WebRTC consensus / IP scatter / RTT jitter / ASN class)
+ * Max wins — any one of these saturating is enough to flag the path.
+ *
+ * networkIntegrity (the WebRTC/probe consensus scalar) is intentionally
+ * NOT layered in here: proxy_waterfall already consumes it as an input
+ * tier, so adding it directly would double-count and re-trigger on the
+ * very scenarios proxy_waterfall's damper was designed to filter.
+ */
+function networkTamperingScore(input: MerchantProjectionInput): number {
+  const vpn = probabilityFromUnit(vpnScore(input));
+  const proxyThreat =
+    input.integrity?.analysis?.proxy_waterfall?.threat_score ?? 0;
+  return Math.max(vpn, proxyThreat);
+}
+
+function deriveVerdict(
+  automation: number,
+  device_tampering: number,
+  network_tampering: number,
+): Verdict {
+  const peak = Math.max(automation, device_tampering, network_tampering);
+  if (peak >= BLOCK_THRESHOLD) return "block";
+  if (peak >= SUSPECT_THRESHOLD) return "suspect";
+  return "clean";
+}
+
+/**
  * Project the internal session / integrity record down to the merchant-
  * safe shape. Safe to call with partial inputs — missing data yields
  * conservative defaults.
@@ -954,15 +1005,29 @@ export function buildMerchantResponse(
     input,
     rawNetworkScore,
   );
-  // Risk model isn't wired to the integrity-only flow — always null until a
-  // risk service exists downstream of the integrity record.
-  const risk: number | null = null;
 
-  const probs = {
-    bot: botProbability(input),
+  // networkIntegrityScore stays computed (used by `analysis.ip.integrity`-
+  // dependent paths upstream and for any future internal consumer); it is
+  // not exposed and not summed into network_tampering — see the
+  // networkTamperingScore() docstring for the double-count rationale.
+  void networkIntegrityScore;
+
+  const automation = botProbability(input);
+  const device_tampering = tamperingProbability(input);
+  const network_tampering = networkTamperingScore(input);
+  const verdict = deriveVerdict(
+    automation,
+    device_tampering,
+    network_tampering,
+  );
+
+  // Tags still need the constituent probabilities to fire individual labels
+  // (vpn / proxy / browser_tampering / automation) at their own thresholds.
+  const tagProbs = {
+    bot: automation,
     vpn: probabilityFromUnit(vpnScore(input)),
     proxy: probabilityFromUnit(proxyScore(input)),
-    tampering: tamperingProbability(input),
+    tampering: device_tampering,
   };
 
   return {
@@ -970,21 +1035,21 @@ export function buildMerchantResponse(
     created_at: integrity?.created_at ?? null,
     ttl: (integrity as { ttl?: number } | undefined)?.ttl ?? null,
 
+    automation,
+    device_tampering,
+    network_tampering,
+    verdict,
+
     identification: deriveIdentification(input),
 
     ip: deriveIp(input),
     ipLocation: deriveIpLocation(input),
     ipInfo: deriveIpInfo(input),
 
-    bot: { probability: probs.bot },
-    vpn: { probability: probs.vpn },
-    proxy: { threat: integrity?.analysis?.proxy_waterfall?.threat_score ?? 0 },
-    tampering: { probability: probs.tampering },
     incognito: { result: detectIncognito(input) },
-    networkIntegrity: { score: networkIntegrityScore },
-    suspectScore: { result: risk },
+    developer_tools: { result: detectDeveloperTools(input) },
 
-    tags: buildTags(input, probs),
+    tags: buildTags(input, tagProbs),
 
     requestHeaders: deriveRequestHeaders(input),
   };

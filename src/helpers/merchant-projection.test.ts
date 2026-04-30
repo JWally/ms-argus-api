@@ -9,9 +9,18 @@
 import { describe, it, expect } from "vitest";
 import {
   buildMerchantResponse,
+  computeNetworkIntegrityScore,
   type MerchantProjectionInput,
 } from "./merchant-projection";
 import type { IntegrityResultsData } from "./payload-schema";
+
+/** Compute the (now-internal) network integrity score for an input — same
+ *  default-raw-score logic as buildMerchantResponse. Used by the tier tests
+ *  that previously asserted on the exposed networkIntegrity.score field. */
+function networkIntegrityScoreFor(input: MerchantProjectionInput): number {
+  const raw = input.integrity?.analysis.ip.integrity ?? 0.5;
+  return computeNetworkIntegrityScore(input, raw);
+}
 
 function baseIntegrity(
   overrides: Partial<IntegrityResultsData> = {},
@@ -71,6 +80,10 @@ describe("buildMerchantResponse", () => {
         session_id: "s-1",
         created_at: null,
         ttl: null,
+        automation: 0,
+        device_tampering: 0,
+        network_tampering: 0,
+        verdict: "clean",
         identification: {
           crypto_device_id: null,
           crypto_verified: null,
@@ -107,13 +120,8 @@ describe("buildMerchantResponse", () => {
           datacenter: { result: false },
           mobile: { result: false },
         },
-        bot: { probability: 0 },
-        vpn: { probability: 0 },
-        proxy: { threat: 0 },
-        tampering: { probability: 0 },
         incognito: { result: false },
-        networkIntegrity: { score: 0.5 },
-        suspectScore: { result: null },
+        developer_tools: { result: false },
         tags: [],
         requestHeaders: null,
       });
@@ -169,8 +177,8 @@ describe("buildMerchantResponse", () => {
         },
       });
       // 0.73 → 73% → rounds to 75, not 73
-      expect(result.vpn.probability).toBe(75);
-      expect(result.vpn.probability % 5).toBe(0);
+      expect(result.network_tampering).toBe(75);
+      expect(result.network_tampering % 5).toBe(0);
       const json = JSON.stringify(result);
       expect(json).not.toContain("0.73");
       expect(json).not.toContain("73,"); // raw 73% must not leak
@@ -200,8 +208,7 @@ describe("buildMerchantResponse", () => {
           },
         },
       });
-      expect(result.vpn.probability).toBe(85);
-      expect(result.proxy.threat).toBe(0);
+      expect(result.network_tampering).toBe(85);
       expect(result.tags).toContain("vpn");
       expect(result.tags).not.toContain("proxy");
     });
@@ -228,8 +235,9 @@ describe("buildMerchantResponse", () => {
           },
         },
       });
-      expect(result.proxy.threat).toBe(0);
-      expect(result.vpn.probability).toBe(0);
+      // proxy_waterfall.threat_score is the merchant-facing proxy score —
+      // not set in this test, so network_tampering reflects only vpn (0).
+      expect(result.network_tampering).toBe(0);
       expect(result.tags).not.toContain("proxy");
     });
 
@@ -268,7 +276,7 @@ describe("buildMerchantResponse", () => {
           device: { lies: { totalLies: 7 } },
         },
       });
-      expect(result.tampering.probability).toBe(60);
+      expect(result.device_tampering).toBe(60);
       expect(result.tags).toContain("browser_tampering");
     });
 
@@ -294,7 +302,7 @@ describe("buildMerchantResponse", () => {
           },
         },
       });
-      expect(result.tampering.probability).toBe(100);
+      expect(result.device_tampering).toBe(100);
     });
 
     it("bot probability is 100 when webdriver is on", () => {
@@ -306,7 +314,7 @@ describe("buildMerchantResponse", () => {
           device: { headless: { webDriverIsOn: true } },
         },
       });
-      expect(result.bot.probability).toBe(100);
+      expect(result.automation).toBe(100);
       expect(result.tags).toContain("automation");
     });
 
@@ -320,7 +328,7 @@ describe("buildMerchantResponse", () => {
         },
       });
       // 42 rounds to 40
-      expect(result.bot.probability).toBe(40);
+      expect(result.automation).toBe(40);
     });
 
     it("incognito.result is true when device.incognito.isPrivate is true", () => {
@@ -342,11 +350,85 @@ describe("buildMerchantResponse", () => {
         integrity: baseIntegrity(),
       });
       expect(result.tags).toEqual([]);
-      expect(result.bot.probability).toBe(0);
-      expect(result.vpn.probability).toBe(0);
-      expect(result.proxy.threat).toBe(0);
-      expect(result.tampering.probability).toBe(0);
+      expect(result.automation).toBe(0);
+      expect(result.network_tampering).toBe(0);
+      expect(result.device_tampering).toBe(0);
       expect(result.incognito.result).toBe(false);
+      expect(result.verdict).toBe("clean");
+      expect(result.developer_tools.result).toBe(false);
+    });
+  });
+
+  describe("verdict", () => {
+    it("clean when all three axes are below the suspect threshold", () => {
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: baseIntegrity(),
+      });
+      expect(result.verdict).toBe("clean");
+    });
+
+    it("suspect when any single axis is in [30, 70)", () => {
+      // 25 lies puts device_tampering at 100 — would be block. Use a
+      // ladder that produces a 60 (5 lies → tampering 60).
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: baseIntegrity({
+          device: { lies: { totalLies: 5, data: {} } },
+        }),
+      });
+      expect(result.device_tampering).toBe(60);
+      expect(result.verdict).toBe("suspect");
+    });
+
+    it("block when any axis is at or above 70", () => {
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: baseIntegrity({
+          device: { headless: { webDriverIsOn: true } },
+        }),
+      });
+      expect(result.automation).toBe(100);
+      expect(result.verdict).toBe("block");
+    });
+
+    it("block dominates: high tampering + clean automation still blocks", () => {
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: baseIntegrity({
+          device: { lies: { totalLies: 25, data: {} } },
+        }),
+      });
+      expect(result.automation).toBe(0);
+      expect(result.device_tampering).toBe(100);
+      expect(result.verdict).toBe("block");
+    });
+  });
+
+  describe("developer_tools", () => {
+    it("surfaces devToolsOpen=true from headless detection", () => {
+      const base = baseIntegrity();
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: {
+          ...base,
+          device: {
+            ...base.device,
+            headless: {
+              likeHeadless: { devToolsOpen: true },
+            },
+          } as unknown as IntegrityResultsData["device"],
+        },
+      });
+      expect(result.developer_tools.result).toBe(true);
+    });
+
+    it("defaults to false when headless block is absent", () => {
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: baseIntegrity(),
+      });
+      expect(result.developer_tools.result).toBe(false);
     });
   });
 
@@ -520,7 +602,7 @@ describe("buildMerchantResponse", () => {
             },
           },
         });
-        expect(result.tampering.probability).toBe(35);
+        expect(result.device_tampering).toBe(35);
       });
 
       it("tampering probability 45 on cross-continent accept-lang mismatch", () => {
@@ -545,7 +627,7 @@ describe("buildMerchantResponse", () => {
             },
           },
         });
-        expect(result.tampering.probability).toBe(45);
+        expect(result.device_tampering).toBe(45);
       });
 
       it("tampering probability 25 on same-continent accept-lang mismatch", () => {
@@ -570,7 +652,7 @@ describe("buildMerchantResponse", () => {
             },
           },
         });
-        expect(result.tampering.probability).toBe(25);
+        expect(result.device_tampering).toBe(25);
       });
 
       it("tampering probability 60 on intl vs navigator locale mismatch", () => {
@@ -595,7 +677,7 @@ describe("buildMerchantResponse", () => {
             },
           },
         });
-        expect(result.tampering.probability).toBe(60);
+        expect(result.device_tampering).toBe(60);
       });
 
       it("tampering probability 100 on client-hints strong mismatch (definitive)", () => {
@@ -619,7 +701,7 @@ describe("buildMerchantResponse", () => {
             },
           },
         });
-        expect(result.tampering.probability).toBe(100);
+        expect(result.device_tampering).toBe(100);
       });
 
       it("clean session → no tampering, no location_mismatch tag", () => {
@@ -627,7 +709,7 @@ describe("buildMerchantResponse", () => {
           session_id: "s",
           integrity: baseIntegrity(),
         });
-        expect(result.tampering.probability).toBe(0);
+        expect(result.device_tampering).toBe(0);
         expect(result.tags).not.toContain("location_mismatch");
       });
     });
@@ -718,8 +800,9 @@ describe("buildMerchantResponse", () => {
     });
 
     it("defaults networkIntegrity to 0.5 when no integrity data", () => {
-      const result = buildMerchantResponse({ session_id: "s" });
-      expect(result.networkIntegrity.score).toBe(0.5);
+      const input: MerchantProjectionInput = { session_id: "s" };
+      const result = buildMerchantResponse(input);
+      expect(networkIntegrityScoreFor(input)).toBe(0.5);
       expect(result.ip).toBeNull();
     });
 
@@ -990,15 +1073,14 @@ describe("buildMerchantResponse", () => {
         }),
       };
       const result = buildMerchantResponse(input);
-      expect(result.vpn.probability).toBe(0);
-      expect(result.proxy.threat).toBe(0);
+      expect(result.network_tampering).toBe(0);
       expect(result.tags).toContain("corporate_shield");
       expect(result.tags).not.toContain("vpn");
       expect(result.tags).not.toContain("proxy");
     });
 
     it("clamps networkIntegrity.score to 1.0 on corporate_proxy (probe scatter is expected)", () => {
-      const result = buildMerchantResponse({
+      const input: MerchantProjectionInput = {
         session_id: "s",
         integrity: baseIntegrity({
           analysis: {
@@ -1014,12 +1096,12 @@ describe("buildMerchantResponse", () => {
             },
           },
         }),
-      });
-      expect(result.networkIntegrity.score).toBe(1.0);
+      };
+      expect(networkIntegrityScoreFor(input)).toBe(1.0);
     });
 
     it("preserves networkIntegrity.score=0 (forgery) even on corporate_proxy", () => {
-      const result = buildMerchantResponse({
+      const input: MerchantProjectionInput = {
         session_id: "s",
         integrity: baseIntegrity({
           analysis: {
@@ -1035,8 +1117,8 @@ describe("buildMerchantResponse", () => {
             },
           },
         }),
-      });
-      expect(result.networkIntegrity.score).toBe(0);
+      };
+      expect(networkIntegrityScoreFor(input)).toBe(0);
     });
 
     it("still surfaces vpn/proxy probabilities for non-corporate ASNs", () => {
@@ -1063,8 +1145,8 @@ describe("buildMerchantResponse", () => {
         },
       };
       const result = buildMerchantResponse(input);
-      expect(result.vpn.probability).toBe(100);
-      expect(result.proxy.threat).toBe(0);
+      // vpn=100 dominates; proxy_waterfall.threat_score is 0 in this test.
+      expect(result.network_tampering).toBe(100);
     });
   });
 
@@ -1120,11 +1202,11 @@ describe("buildMerchantResponse", () => {
           },
         }),
       });
-      expect(result.tampering.probability).toBe(100);
+      expect(result.device_tampering).toBe(100);
     });
 
     it("(B) compound proxy+vpn downgrades networkIntegrity multiplicatively", () => {
-      const result = buildMerchantResponse({
+      const input: MerchantProjectionInput = {
         session_id: "s",
         integrity: baseIntegrity({
           analysis: {
@@ -1147,13 +1229,13 @@ describe("buildMerchantResponse", () => {
             },
           },
         }),
-      });
+      };
       // 0.5 * (1-0.85) * (1-0.1) = 0.5 * 0.15 * 0.9 = 0.0675
-      expect(result.networkIntegrity.score).toBeCloseTo(0.0675, 4);
+      expect(networkIntegrityScoreFor(input)).toBeCloseTo(0.0675, 4);
     });
 
     it("(C) JA4 browser mismatch @ sev>=0.9 clamps networkIntegrity to <=0.2", () => {
-      const result = buildMerchantResponse({
+      const input: MerchantProjectionInput = {
         session_id: "s",
         integrity: baseIntegrity({
           analysis: {
@@ -1176,8 +1258,8 @@ describe("buildMerchantResponse", () => {
             },
           } as unknown as IntegrityResultsData["analysis"],
         }),
-      });
-      expect(result.networkIntegrity.score).toBeLessThanOrEqual(0.2);
+      };
+      expect(networkIntegrityScoreFor(input)).toBeLessThanOrEqual(0.2);
     });
 
     it("(D) lies>=5 AND worker UA divergence → tampering.probability=100", () => {
@@ -1197,7 +1279,7 @@ describe("buildMerchantResponse", () => {
           },
         }),
       });
-      expect(result.tampering.probability).toBe(100);
+      expect(result.device_tampering).toBe(100);
     });
 
     it("(E) UA claims Chrome but Sec-CH-UA missing → tampering.probability>=60", () => {
@@ -1209,11 +1291,11 @@ describe("buildMerchantResponse", () => {
           request_headers: { headers: {}, cookie_names: [] },
         }),
       });
-      expect(result.tampering.probability).toBeGreaterThanOrEqual(60);
+      expect(result.device_tampering).toBeGreaterThanOrEqual(60);
     });
 
     it("(F) WEBRTC_BLOCKED on datacenter ASN applies extra 0.5× downgrade", () => {
-      const result = buildMerchantResponse({
+      const input: MerchantProjectionInput = {
         session_id: "s",
         integrity: baseIntegrity({
           analysis: {
@@ -1228,13 +1310,13 @@ describe("buildMerchantResponse", () => {
             },
           },
         }),
-      });
+      };
       // 0.5 * 0.5 (webrtc-blocked on non-residential penalty) = 0.25
-      expect(result.networkIntegrity.score).toBeCloseTo(0.25, 4);
+      expect(networkIntegrityScoreFor(input)).toBeCloseTo(0.25, 4);
     });
 
     it("(F-neg) WEBRTC_BLOCKED on residential ASN does NOT apply the extra downgrade", () => {
-      const result = buildMerchantResponse({
+      const input: MerchantProjectionInput = {
         session_id: "s",
         integrity: baseIntegrity({
           analysis: {
@@ -1249,8 +1331,8 @@ describe("buildMerchantResponse", () => {
             },
           },
         }),
-      });
-      expect(result.networkIntegrity.score).toBe(0.5);
+      };
+      expect(networkIntegrityScoreFor(input)).toBe(0.5);
     });
   });
 
@@ -1363,7 +1445,7 @@ describe("buildMerchantResponse", () => {
           }),
         );
         // 0.467 would → 45. Damped to 0.3 → rounds to 30.
-        expect(result.proxy.threat).toBe(0);
+        expect(result.network_tampering).toBe(0);
         expect(result.tags).not.toContain("proxy");
       });
 
@@ -1380,7 +1462,7 @@ describe("buildMerchantResponse", () => {
             asnCategory: "residential",
           }),
         );
-        expect(result.vpn.probability).toBe(70);
+        expect(result.network_tampering).toBe(70);
         expect(result.tags).toContain("vpn");
       });
 
@@ -1393,7 +1475,7 @@ describe("buildMerchantResponse", () => {
             asnCategory: "residential",
           }),
         );
-        expect(result.proxy.threat).toBe(0);
+        expect(result.network_tampering).toBe(0);
       });
 
       it("catches the AT&T jitter-spike false positive seen in archive data", () => {
@@ -1409,7 +1491,7 @@ describe("buildMerchantResponse", () => {
             rttRefreshedUs: 99987,
           }),
         );
-        expect(result.proxy.threat).toBe(0);
+        expect(result.network_tampering).toBe(0);
         expect(result.tags).not.toContain("proxy");
       });
     });
@@ -1430,7 +1512,7 @@ describe("buildMerchantResponse", () => {
             rttRefreshedUs: 18614,
           }),
         );
-        expect(result.proxy.threat).toBe(0);
+        expect(result.network_tampering).toBe(0);
         expect(result.tags).not.toContain("proxy");
       });
 
@@ -1447,7 +1529,7 @@ describe("buildMerchantResponse", () => {
             rttRefreshedUs: 35000,
           }),
         );
-        expect(result.proxy.threat).toBe(0);
+        expect(result.network_tampering).toBe(0);
         expect(result.tags).not.toContain("proxy");
       });
 
@@ -1460,7 +1542,7 @@ describe("buildMerchantResponse", () => {
             asnCategory: "residential",
           }),
         );
-        expect(result.proxy.threat).toBe(0);
+        expect(result.network_tampering).toBe(0);
         expect(result.tags).not.toContain("proxy");
       });
     });
@@ -1474,6 +1556,8 @@ describe("buildMerchantResponse", () => {
         // so WebRTC appears to match — but RTT ratio is physically impossible.
         // Use a low raw component so the ceiling FLOOR is observable:
         // damper would have pinned at 0.3; ceiling overrides to 0.95.
+        // Ceiling lifts BOTH vpn and proxy components — vpn surfaces in
+        // network_tampering (= max), even though proxy_waterfall is 0.
         const result = buildMerchantResponse(
           fusionInput({
             proxyComponent: 0.1,
@@ -1484,7 +1568,7 @@ describe("buildMerchantResponse", () => {
             rttRefreshedUs: 20000,
           }),
         );
-        expect(result.proxy.threat).toBe(0);
+        expect(result.network_tampering).toBe(95);
         expect(result.tags).not.toContain("proxy");
       });
 
@@ -1499,7 +1583,7 @@ describe("buildMerchantResponse", () => {
             rttRefreshedUs: 10000,
           }),
         );
-        expect(result.proxy.threat).toBe(0);
+        expect(result.network_tampering).toBe(95);
       });
 
       it("ratio 4.9 still falls into damper (everything sub-ceiling damps)", () => {
@@ -1513,15 +1597,17 @@ describe("buildMerchantResponse", () => {
             rttRefreshedUs: 10000,
           }),
         );
-        // ratio 4.9 — right under ceiling. WebRTC matches, so damper
-        // applies. A motivated attacker picking a proxy exit in the
-        // victim's /16 who happens to produce 4.9× (not 5×+) escapes
-        // here; that's the residual false-negative of this rule set.
-        expect(result.proxy.threat).toBe(0);
+        // ratio 4.9 — right under ceiling. WebRTC matches, damper applies
+        // (proxy → 0.3). vpn (raw 0) doesn't get lifted since ceiling
+        // doesn't fire. proxy_waterfall.threat_score is 0. So
+        // network_tampering = 0 — the residual false-negative the
+        // damper accepts on near-ceiling ratios.
+        expect(result.network_tampering).toBe(0);
       });
 
       it("ratio 90× on residential with no WebRTC → ceiling floor (not uplift)", () => {
-        // Ceiling takes precedence over uplift.
+        // Ceiling takes precedence over uplift; lifts both vpn and proxy
+        // to 0.95 → network_tampering = 95.
         const result = buildMerchantResponse(
           fusionInput({
             proxyComponent: 0.0,
@@ -1532,7 +1618,7 @@ describe("buildMerchantResponse", () => {
             rttRefreshedUs: 10000,
           }),
         );
-        expect(result.proxy.threat).toBe(0);
+        expect(result.network_tampering).toBe(95);
       });
     });
 
@@ -1551,8 +1637,8 @@ describe("buildMerchantResponse", () => {
             rttRefreshedUs: 18000,
           }),
         );
-        expect(result.proxy.threat).toBe(0);
-        expect(result.vpn.probability).toBe(0);
+        expect(result.network_tampering).toBe(0);
+        expect(result.network_tampering).toBe(0);
         expect(result.tags).toContain("corporate_shield");
         expect(result.tags).not.toContain("proxy");
       });
@@ -1568,7 +1654,7 @@ describe("buildMerchantResponse", () => {
             rttRefreshedUs: 10000,
           }),
         );
-        expect(result.proxy.threat).toBe(0);
+        expect(result.network_tampering).toBe(0);
         expect(result.tags).toContain("corporate_shield");
       });
 
@@ -1581,7 +1667,7 @@ describe("buildMerchantResponse", () => {
             asnCategory: "corporate_proxy",
           }),
         );
-        expect(result.proxy.threat).toBe(0);
+        expect(result.network_tampering).toBe(0);
       });
     });
 
@@ -1601,7 +1687,7 @@ describe("buildMerchantResponse", () => {
           }),
         );
         // Component 0.467 passes through — no uplift to 0.9.
-        expect(result.proxy.threat).toBe(0);
+        expect(result.network_tampering).toBe(0);
         expect(result.tags).not.toContain("proxy");
         expect(result.tags).toContain("cellular");
       });
@@ -1620,14 +1706,15 @@ describe("buildMerchantResponse", () => {
             rttRefreshedUs: 18614,
           }),
         );
-        expect(result.proxy.threat).toBe(0);
+        expect(result.network_tampering).toBe(0);
         expect(result.tags).not.toContain("proxy");
       });
 
       it("cellular does NOT protect against physics ceiling (ratio ≥ 5)", () => {
         // Physics ceiling runs before cellular carve-out. Cellular with a
         // 10× ratio is either a weirdly broken mobile network or a mobile-
-        // carrier-ASN proxy service — either way, flag it.
+        // carrier-ASN proxy service — either way, flag it. Ceiling lifts
+        // vpn → 0.95 → network_tampering = 95.
         const result = buildMerchantResponse(
           fusionInput({
             proxyComponent: 0.1,
@@ -1638,7 +1725,7 @@ describe("buildMerchantResponse", () => {
             rttRefreshedUs: 10000,
           }),
         );
-        expect(result.proxy.threat).toBe(0);
+        expect(result.network_tampering).toBe(95);
         expect(result.tags).not.toContain("proxy");
       });
     });
@@ -1659,7 +1746,7 @@ describe("buildMerchantResponse", () => {
             rttRefreshedUs: 18614,
           }),
         );
-        expect(result.proxy.threat).toBe(0);
+        expect(result.network_tampering).toBe(0);
         expect(result.tags).not.toContain("proxy");
         expect(result.tags).toContain("hyperscaler");
       });
@@ -1676,7 +1763,7 @@ describe("buildMerchantResponse", () => {
             rttRefreshedUs: 127000,
           }),
         );
-        expect(result.proxy.threat).toBe(0);
+        expect(result.network_tampering).toBe(0);
         expect(result.tags).not.toContain("proxy");
         expect(result.tags).toContain("hyperscaler");
       });
@@ -1698,8 +1785,8 @@ describe("buildMerchantResponse", () => {
           }),
         );
         // Raw proxy component flows through; damper is scoped out.
-        expect(result.proxy.threat).toBe(0);
-        expect(result.vpn.probability).toBe(100);
+        // vpn=100 dominates the network_tampering max.
+        expect(result.network_tampering).toBe(100);
         expect(result.tags).not.toContain("proxy");
         expect(result.tags).toContain("vpn");
         expect(result.tags).toContain("hyperscaler");
@@ -1714,7 +1801,7 @@ describe("buildMerchantResponse", () => {
             asnCategory: "vpn_proxy",
           }),
         );
-        expect(result.vpn.probability).toBe(100);
+        expect(result.network_tampering).toBe(100);
       });
     });
 
@@ -1731,7 +1818,7 @@ describe("buildMerchantResponse", () => {
             asnCategory: "residential",
           }),
         );
-        expect(result.proxy.threat).toBe(0);
+        expect(result.network_tampering).toBe(0);
         expect(result.tags).not.toContain("proxy");
       });
 
@@ -1744,7 +1831,7 @@ describe("buildMerchantResponse", () => {
             asnCategory: "residential",
           }),
         );
-        expect(result.proxy.threat).toBe(0);
+        expect(result.network_tampering).toBe(0);
       });
     });
 
@@ -1763,7 +1850,7 @@ describe("buildMerchantResponse", () => {
           }),
         );
         // Null ratio → damper still fires (ratio check is "< 2.5 OR null").
-        expect(result.proxy.threat).toBe(0);
+        expect(result.network_tampering).toBe(0);
       });
 
       it("no ceiling override possible without ratio data", () => {
@@ -1777,7 +1864,7 @@ describe("buildMerchantResponse", () => {
             sigintOverride: null,
           }),
         );
-        expect(result.proxy.threat).toBe(0);
+        expect(result.network_tampering).toBe(0);
       });
 
       it("no WebRTC + elevated + no ratio data → uplift still fires", () => {
@@ -1790,7 +1877,7 @@ describe("buildMerchantResponse", () => {
             sigintOverride: null,
           }),
         );
-        expect(result.proxy.threat).toBe(0);
+        expect(result.network_tampering).toBe(0);
       });
     });
 
@@ -1810,7 +1897,9 @@ describe("buildMerchantResponse", () => {
             rttRefreshedUs: 18614,
           }),
         );
-        expect(result.proxy.threat).toBe(0);
+        // vpnComponent 0.075 → vpn probability 10. proxy_waterfall is 0
+        // in this synthetic input. network_tampering = max(10, 0) = 10.
+        expect(result.network_tampering).toBe(10);
         expect(result.tags).not.toContain("proxy");
         expect(result.tags).toContain("hyperscaler");
       });
@@ -1826,7 +1915,7 @@ describe("buildMerchantResponse", () => {
             rttRefreshedUs: 39722,
           }),
         );
-        expect(result.proxy.threat).toBe(0);
+        expect(result.network_tampering).toBe(0);
         expect(result.tags).not.toContain("proxy");
         expect(result.tags).not.toContain("hyperscaler");
       });
@@ -1842,7 +1931,7 @@ describe("buildMerchantResponse", () => {
             rttRefreshedUs: 34559,
           }),
         );
-        expect(result.proxy.threat).toBe(0);
+        expect(result.network_tampering).toBe(0);
         expect(result.tags).not.toContain("proxy");
       });
 
@@ -1858,7 +1947,7 @@ describe("buildMerchantResponse", () => {
           }),
         );
         // This is the one the OLD scorer would false-positive on.
-        expect(result.proxy.threat).toBe(0);
+        expect(result.network_tampering).toBe(0);
         expect(result.tags).not.toContain("proxy");
       });
 
@@ -1873,7 +1962,7 @@ describe("buildMerchantResponse", () => {
             rttRefreshedUs: 127000,
           }),
         );
-        expect(result.proxy.threat).toBe(0);
+        expect(result.network_tampering).toBe(0);
         expect(result.tags).toContain("hyperscaler");
         expect(result.tags).not.toContain("proxy");
       });
