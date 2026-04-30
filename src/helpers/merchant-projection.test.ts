@@ -305,29 +305,107 @@ describe("buildMerchantResponse", () => {
       expect(result.device_tampering).toBe(100);
     });
 
-    it("bot probability is 100 when webdriver is on", () => {
+    it("automation is 100 when all 3 strict markers fire (headlessRating 100)", () => {
       const base = baseIntegrity();
       const result = buildMerchantResponse({
         session_id: "s",
         integrity: {
           ...base,
-          device: { headless: { webDriverIsOn: true } },
+          device: {
+            headless: {
+              headlessRating: 100,
+              headless: {
+                webDriverIsOn: true,
+                hasHeadlessUA: true,
+                hasHeadlessWorkerUA: true,
+              },
+            },
+          },
         },
       });
       expect(result.automation).toBe(100);
       expect(result.tags).toContain("automation");
     });
 
-    it("bot probability mirrors likeHeadlessRating (rounded to 5)", () => {
+    it("automation is 100 when 2/3 strict markers fire (headlessRating 67)", () => {
       const base = baseIntegrity();
       const result = buildMerchantResponse({
         session_id: "s",
         integrity: {
           ...base,
-          device: { headless: { likeHeadlessRating: 42 } },
+          device: {
+            headless: {
+              headlessRating: 67,
+              headless: {
+                webDriverIsOn: true,
+                hasHeadlessUA: false,
+                hasHeadlessWorkerUA: true,
+              },
+            },
+          },
+        },
+      });
+      expect(result.automation).toBe(100);
+    });
+
+    it("automation is 75 when 1/3 strict markers fire (headlessRating 33)", () => {
+      // Playwright Firefox / Webkit case — sets navigator.webdriver but
+      // doesn't change UA. One strict marker alone is still a confident
+      // automation tell; bump above the suspect threshold.
+      const base = baseIntegrity();
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: {
+          ...base,
+          device: {
+            headless: {
+              headlessRating: 33,
+              headless: {
+                webDriverIsOn: true,
+                hasHeadlessUA: false,
+                hasHeadlessWorkerUA: false,
+              },
+            },
+          },
+        },
+      });
+      expect(result.automation).toBe(75);
+    });
+
+    it("automation mirrors likeHeadlessRating when no strict markers fire", () => {
+      const base = baseIntegrity();
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: {
+          ...base,
+          device: {
+            headless: {
+              headlessRating: 0,
+              likeHeadlessRating: 42,
+            },
+          },
         },
       });
       // 42 rounds to 40
+      expect(result.automation).toBe(40);
+    });
+
+    it("automation gets +20 stealth bonus on top of weak markers", () => {
+      const base = baseIntegrity();
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: {
+          ...base,
+          device: {
+            headless: {
+              headlessRating: 0,
+              likeHeadlessRating: 18,
+              stealthRating: 38,
+            },
+          },
+        },
+      });
+      // 18 + 20 = 38, rounds to 40
       expect(result.automation).toBe(40);
     });
 
@@ -385,7 +463,16 @@ describe("buildMerchantResponse", () => {
       const result = buildMerchantResponse({
         session_id: "s",
         integrity: baseIntegrity({
-          device: { headless: { webDriverIsOn: true } },
+          device: {
+            headless: {
+              headlessRating: 100,
+              headless: {
+                webDriverIsOn: true,
+                hasHeadlessUA: true,
+                hasHeadlessWorkerUA: true,
+              },
+            },
+          },
         }),
       });
       expect(result.automation).toBe(100);

@@ -358,10 +358,22 @@ function proxyScore(input: MerchantProjectionInput): number {
   return applyWebrtcFusion(input, raw, true);
 }
 
+/**
+ * Shape of the headless block stored under `device.headless`. The strict
+ * markers (webdriver, headless UA, headless worker UA) live under the
+ * inner `.headless` field — matching the fingerprint emitter's nested
+ * naming. The `*Rating` numbers are pre-aggregated percentages.
+ */
 interface HeadlessSignals {
-  webDriverIsOn?: boolean;
+  headlessRating?: number;
   likeHeadlessRating?: number;
   stealthRating?: number;
+  /** Strict markers — any one alone is high-confidence automation. */
+  headless?: {
+    webDriverIsOn?: boolean;
+    hasHeadlessUA?: boolean;
+    hasHeadlessWorkerUA?: boolean;
+  };
   likeHeadless?: { devToolsOpen?: boolean };
 }
 
@@ -449,15 +461,30 @@ function buildTags(
   return predicates.filter(([, p]) => p(input)).map(([tag]) => tag);
 }
 
+/**
+ * Automation score. Three signal tiers, max wins:
+ *   1. STRICT markers (`headlessRating`) — webdriver / headless UA /
+ *      headless worker UA. Any one alone is a confident automation tell;
+ *      no legitimate human browser exposes these.
+ *      - 3/3 (100): full headless. → 100
+ *      - 2/3 (67):  → 100
+ *      - 1/3 (33):  → 75 (block-tier — still-strong evidence)
+ *   2. WEAK markers (`likeHeadlessRating`) — 11 environment signals
+ *      (no Chrome object, no plugins, blank UA-CH, etc). Real but
+ *      not damning on its own; the % maps directly into the score.
+ *   3. STEALTH markers (`stealthRating`) — Function.toString proxy,
+ *      bad WebGL, missing chrome runtime. +20 bonus when any fire.
+ */
 function botProbability(input: MerchantProjectionInput): number {
   const headless = readHeadless(
     input.integrity ?? ({} as IntegrityResultsData),
   );
-  if (headless?.webDriverIsOn) return 100;
-  const rating = headless?.likeHeadlessRating ?? 0;
+  const strict = headless?.headlessRating ?? 0;
+  if (strict >= 67) return 100;
+  if (strict > 0) return 75;
+  const weak = headless?.likeHeadlessRating ?? 0;
   const stealth = headless?.stealthRating ?? 0;
-  // likeHeadlessRating is already ~0..100 in practice; stealth bumps it.
-  return roundProbability(rating + (stealth > 0 ? 20 : 0));
+  return roundProbability(weak + (stealth > 0 ? 20 : 0));
 }
 
 interface Ja4UaSignalInfo {
