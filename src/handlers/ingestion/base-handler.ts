@@ -16,7 +16,11 @@ import {
 } from "@aws-sdk/client-dynamodb";
 import { marshall } from "@aws-sdk/util-dynamodb";
 import { HttpError } from "../../helpers/http-error";
-import { getSessionId, type ArgusPayload } from "../../helpers/payload-schema";
+import {
+  getSessionId,
+  resolveCpi,
+  type ArgusPayload,
+} from "../../helpers/payload-schema";
 import { redeemSigintTokens } from "../../helpers/redeem-sigint-tokens";
 import { extractFpidCookie } from "../../helpers/verify-cf-token";
 import {
@@ -92,13 +96,25 @@ export function createBaseHandler(deps: BaseHandlerDeps) {
 
     const payload = event.parsedBody as ArgusPayload;
     const sessionId = getSessionId(payload);
-    return handleIntegrity({ payload, sessionId, event, deps, start });
+    // Header is the preferred source — see resolveCpi() docstring.
+    const cpiHeader =
+      event.headers?.["x-argus-cpi"] ?? event.headers?.["X-Argus-Cpi"];
+    const cpi = resolveCpi(payload, cpiHeader);
+    if (!cpi) {
+      deps.metrics.addMetric("MissingCpi", MetricUnit.Count, 1);
+      throw new HttpError(
+        400,
+        "Missing or malformed cpi — set x-argus-cpi header or identifiers.cpi",
+      );
+    }
+    return handleIntegrity({ payload, sessionId, cpi, event, deps, start });
   };
 }
 
 interface HandleContext {
   payload: ArgusPayload;
   sessionId: string;
+  cpi: string;
   event: ExtendedEvent;
   deps: BaseHandlerDeps;
   start: number;
@@ -356,6 +372,7 @@ function buildIntegrityItem(
   const requestHeaders = captureRequestHeaders(ctx.event);
 
   return {
+    cpi: ctx.cpi,
     session_id: ctx.sessionId,
     device: raw.device ?? {},
     meta: raw.meta ?? {},
@@ -396,7 +413,10 @@ async function persistIntegrityRecord(
         new PutItemCommand({
           TableName: INTEGRITY_RESULTS_TABLE,
           Item: marshall(item, { removeUndefinedValues: true }),
-          ConditionExpression: "attribute_not_exists(session_id)",
+          // Composite key is (cpi, session_id) — uniqueness enforced on the
+          // partition key; the sort key alone wouldn't catch cross-cpi reuse
+          // (which we don't want anyway, but defense in depth).
+          ConditionExpression: "attribute_not_exists(cpi)",
         }),
       ),
       archiveToFirehose(item, {
@@ -412,6 +432,7 @@ async function persistIntegrityRecord(
     }
     ctx.deps.logger.error("Integrity DynamoDB write failed", {
       error: err,
+      cpi: ctx.cpi,
       session_id: ctx.sessionId,
     });
     ctx.deps.metrics.addMetric("IntegrityWriteFailed", MetricUnit.Count, 1);

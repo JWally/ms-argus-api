@@ -43,18 +43,26 @@ interface HttpApiConstructProps {
    * When set, the ingestion handler dual-writes to DDB and Firehose.
    */
   integrityFirehoseStreamName?: string;
+  /**
+   * SSM path of the ms-argus-platform Ed25519 public key used to verify
+   * merchant API tokens. Format: `/argus-platform/{env}/api-signing-pubkey`.
+   */
+  platformPubkeySsmPath: string;
 }
 
 /**
  * HTTP API Gateway + Lambda for the integrity collection surface:
  *
- *   POST /v1/integrity-collect             → ingestion Lambda
- *   GET  /v1/integrity-session/{session_id} → session-get Lambda
- *   GET  /health                            → ingestion Lambda (static)
+ *   POST /v1/integrity-collect → ingestion Lambda
+ *   GET  /health               → ingestion Lambda (static)
  *
- * OPTIONS preflight routes to the same Lambdas so the cors-middleware can
- * reflect Origin and emit `Access-Control-Allow-Credentials: true` (required
- * for the `_fpid` cross-subdomain cookie flow).
+ * The session-get Lambda is fronted only by the merchant REST API (see
+ * RestApiConstruct); it's referenced from this construct purely so the
+ * stack can grant table reads + SSM access in one place.
+ *
+ * OPTIONS preflight routes to the ingestion Lambda so the cors-middleware
+ * can reflect Origin and emit `Access-Control-Allow-Credentials: true`
+ * (required for the `_fpid` cross-subdomain cookie flow).
  */
 export class HttpApiConstruct extends Construct {
   public readonly api: apigatewayv2.HttpApi;
@@ -75,6 +83,7 @@ export class HttpApiConstruct extends Construct {
       config,
       ecdhKeyParamName,
       integrityFirehoseStreamName,
+      platformPubkeySsmPath,
     } = props;
 
     const logGroup = new logs.LogGroup(this, "IngestionLogGroup", {
@@ -139,18 +148,19 @@ export class HttpApiConstruct extends Construct {
           ...createPowertoolsEnv("argus-session-get", `argus-${stage}`, stage),
           INTEGRITY_RESULTS_TABLE: integrityResultsTable.tableName,
           STACK_NAME: stackName,
+          PLATFORM_PUBKEY_SSM_PATH: platformPubkeySsmPath,
         },
       },
     );
 
     integrityResultsTable.grantReadData(this.sessionGetFunction);
 
-    // SSM read for integrity API key validation.
+    // SSM read for the platform's Ed25519 pubkey used to verify tokens.
     this.sessionGetFunction.addToRolePolicy(
       new iam.PolicyStatement({
         actions: ["ssm:GetParameter"],
         resources: [
-          `arn:aws:ssm:${cdk.Stack.of(this).region}:${cdk.Stack.of(this).account}:parameter/${stackName}/integrity-api-key`,
+          `arn:aws:ssm:${cdk.Stack.of(this).region}:${cdk.Stack.of(this).account}:parameter${platformPubkeySsmPath}`,
         ],
       }),
     );
@@ -179,17 +189,6 @@ export class HttpApiConstruct extends Construct {
       path: "/v1/integrity-collect",
       methods: [apigatewayv2.HttpMethod.POST, apigatewayv2.HttpMethod.OPTIONS],
       integration: ingestionIntegration,
-    });
-
-    const sessionGetIntegration = new integrations.HttpLambdaIntegration(
-      "SessionGetIntegration",
-      this.sessionGetFunction,
-    );
-
-    this.api.addRoutes({
-      path: "/v1/integrity-session/{session_id}",
-      methods: [apigatewayv2.HttpMethod.GET, apigatewayv2.HttpMethod.OPTIONS],
-      integration: sessionGetIntegration,
     });
 
     this.apiEndpoint = this.api.apiEndpoint;

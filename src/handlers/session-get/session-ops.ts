@@ -1,11 +1,14 @@
 /**
  * @fileoverview Session retrieval operations for the session-get handler.
- * Provides session ID extraction and integrity-results fetching for the
- * GET /v1/integrity-session/{session_id} endpoint.
+ *
+ * Single read path: composite-key fetch by `(cpi, session_id)`. Used by the
+ * merchant REST API route after the inbound token has been verified to
+ * bind the same `cpi`.
+ *
  * @module handlers/session-get/session-ops
  */
 
-import { APIGatewayProxyEventV2 } from "aws-lambda";
+import { APIGatewayProxyEvent } from "aws-lambda";
 import { Logger } from "@aws-lambda-powertools/logger";
 import { Metrics, MetricUnit } from "@aws-lambda-powertools/metrics";
 import { DynamoDBClient, GetItemCommand } from "@aws-sdk/client-dynamodb";
@@ -14,15 +17,14 @@ import { HttpError } from "../../helpers/http-error";
 import type { IntegrityResultsData } from "../../helpers/payload-schema";
 
 /**
- * Extracts and validates the session ID from the API Gateway event.
+ * Extracts and validates `session_id` from the path. Caller is expected to
+ * have already verified the HTTP method — this handler is mounted on a
+ * GET-only route.
  */
 export function extractSessionId(
-  event: APIGatewayProxyEventV2,
+  event: APIGatewayProxyEvent,
   metrics: Metrics,
 ): string {
-  if (event.requestContext.http.method !== "GET") {
-    throw new HttpError(405, "Method not allowed");
-  }
   const sessionId = event.pathParameters?.session_id;
   if (!sessionId) {
     metrics.addMetric("MissingSessionId", MetricUnit.Count, 1);
@@ -35,11 +37,8 @@ export function extractSessionId(
   return sessionId;
 }
 
-/**
- * Fetches integrity check results from DynamoDB. Written by the ingestion
- * Lambda on POST /v1/integrity-collect; 1-hour TTL.
- */
-export async function fetchIntegrityResults(
+export async function fetchIntegrityResultsByComposite(
+  cpi: string,
   sessionId: string,
   deps: {
     dynamodb: DynamoDBClient;
@@ -52,7 +51,10 @@ export async function fetchIntegrityResults(
     const result = await deps.dynamodb.send(
       new GetItemCommand({
         TableName: deps.integrityResultsTable,
-        Key: { session_id: { S: sessionId } },
+        Key: {
+          cpi: { S: cpi },
+          session_id: { S: sessionId },
+        },
       }),
     );
 
@@ -67,6 +69,7 @@ export async function fetchIntegrityResults(
   } catch (error) {
     deps.logger.warn("Failed to fetch integrity results", {
       error,
+      cpi,
       session_id: sessionId,
     });
     deps.metrics.addMetric("IntegrityResultsFetchError", MetricUnit.Count, 1);

@@ -1,18 +1,29 @@
 /**
- * @fileoverview Base handler factory for session retrieval endpoint.
- * Serves only GET /v1/integrity-session/{session_id} — the merchant-safe
- * projection of a stored integrity record. The older /v1/session path
- * (regular fingerprint matching) was removed along with the matching
- * pipeline in remove-fingerprint.
+ * @fileoverview Session retrieval handler.
+ *
+ * Mounted on the merchant REST API at:
+ *   GET /v1/session/{cpi}/{session_id}
+ *
+ * Auth flow:
+ *   - APIGW already matched `x-api-key` against its native key store before
+ *     we run; we just read it back to bind the signed token to the same key.
+ *   - `x-argus-token` carries the Ed25519-signed claims minted by
+ *     ms-argus-platform — we verify the signature against the platform's
+ *     SSM-published pubkey and assert claims.cpi === path.cpi for
+ *     structural tenant isolation.
+ *
  * @module handlers/session-get/base-handler
  */
 
-import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from "aws-lambda";
+import { APIGatewayProxyEvent, APIGatewayProxyResultV2 } from "aws-lambda";
 import { Logger } from "@aws-lambda-powertools/logger";
 import { Metrics, MetricUnit } from "@aws-lambda-powertools/metrics";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import { extractSessionId, fetchIntegrityResults } from "./session-ops";
-import { validateIntegrityApiKey } from "../../helpers/integrity-api-key";
+import {
+  extractSessionId,
+  fetchIntegrityResultsByComposite,
+} from "./session-ops";
+import { verifyMerchantToken } from "../../helpers/token-verifier";
 import { buildMerchantResponse } from "../../helpers/merchant-projection";
 import type { IntegrityResultsData } from "../../helpers/payload-schema";
 
@@ -24,6 +35,7 @@ interface HandlerDeps {
 }
 
 const JSON_HEADERS = { "Content-Type": "application/json" };
+const CPI_FORMAT = /^argus_cpi_(test|live)_[A-Za-z0-9]{10,40}$/;
 
 function buildIntegrityResponse(params: {
   sessionId: string;
@@ -40,49 +52,74 @@ function buildIntegrityResponse(params: {
   };
 }
 
-async function handleIntegritySession(
-  sessionId: string,
+async function authorize(
+  cpi: string,
+  event: APIGatewayProxyEvent,
   deps: HandlerDeps,
-): Promise<APIGatewayProxyResultV2> {
-  const integrityResults = await fetchIntegrityResults(sessionId, {
-    dynamodb: deps.dynamodb,
-    integrityResultsTable: deps.integrityResultsTable,
-    logger: deps.logger,
-    metrics: deps.metrics,
-  });
-  if (!integrityResults) {
+): Promise<APIGatewayProxyResultV2 | null> {
+  const keyIdHeader =
+    event.headers?.["x-api-key"] ?? event.headers?.["X-Api-Key"];
+  const tokenHeader =
+    event.headers?.["x-argus-token"] ?? event.headers?.["X-Argus-Token"];
+  const ssmPubkeyPath = process.env.PLATFORM_PUBKEY_SSM_PATH;
+  if (!ssmPubkeyPath) {
+    deps.logger.error("PLATFORM_PUBKEY_SSM_PATH not configured");
     return {
-      statusCode: 404,
+      statusCode: 500,
       headers: JSON_HEADERS,
-      body: JSON.stringify({ error: "Session not found" }),
+      body: JSON.stringify({ error: "Verifier misconfigured" }),
     };
   }
-  deps.metrics.addMetric("IntegritySessionRetrieved", MetricUnit.Count, 1);
-  return buildIntegrityResponse({ sessionId, integrity: integrityResults });
+  const claims = await verifyMerchantToken(keyIdHeader, tokenHeader, {
+    ssmPubkeyPath,
+    expectedCpi: cpi,
+  });
+  if (!claims) {
+    deps.metrics.addMetric("MerchantTokenRejected", MetricUnit.Count, 1);
+    return {
+      statusCode: 401,
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ error: "Invalid or missing token" }),
+    };
+  }
+  deps.metrics.addMetric("MerchantTokenAccepted", MetricUnit.Count, 1);
+  return null;
 }
 
 export function createBaseHandler(deps: HandlerDeps) {
   return async (
-    event: APIGatewayProxyEventV2,
+    event: APIGatewayProxyEvent,
   ): Promise<APIGatewayProxyResultV2> => {
-    // Short-circuit CORS preflight before auth — OPTIONS has no X-Api-Key.
-    // The cors middleware attaches ACAO/ACAC headers in its `after` hook.
-    if (event.requestContext.http.method === "OPTIONS") {
+    if (event.httpMethod === "OPTIONS") {
       return { statusCode: 204 };
     }
 
-    const apiKey = event.headers["x-api-key"];
-    const valid = await validateIntegrityApiKey(apiKey);
-    if (!valid) {
-      deps.metrics.addMetric("ApiKeyRejected", MetricUnit.Count, 1);
+    const cpi = event.pathParameters?.cpi;
+    if (!cpi || !CPI_FORMAT.test(cpi)) {
+      deps.metrics.addMetric("InvalidCpi", MetricUnit.Count, 1);
       return {
-        statusCode: 401,
+        statusCode: 400,
         headers: JSON_HEADERS,
-        body: JSON.stringify({ error: "Invalid or missing API key" }),
+        body: JSON.stringify({ error: "Invalid cpi parameter" }),
       };
     }
-
     const sessionId = extractSessionId(event, deps.metrics);
-    return handleIntegritySession(sessionId, deps);
+    const denied = await authorize(cpi, event, deps);
+    if (denied) return denied;
+
+    const integrity = await fetchIntegrityResultsByComposite(
+      cpi,
+      sessionId,
+      deps,
+    );
+    if (!integrity) {
+      return {
+        statusCode: 404,
+        headers: JSON_HEADERS,
+        body: JSON.stringify({ error: "Session not found" }),
+      };
+    }
+    deps.metrics.addMetric("IntegritySessionRetrieved", MetricUnit.Count, 1);
+    return buildIntegrityResponse({ sessionId, integrity });
   };
 }

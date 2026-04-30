@@ -32,7 +32,7 @@ const CORS_CONFIG = {
   // Mirror the custom headers the argus-integrity bundle sends on POST so
   // preflight approves them. Must stay in sync with bridge.ts request.
   headers:
-    "Content-Type, Content-Encoding, X-Argus-Origin, X-Argus-Session, X-Argus-V, X-Argus-Schema-Version",
+    "Content-Type, Content-Encoding, X-Argus-Origin, X-Argus-Session, X-Argus-V, X-Argus-Schema-Version, X-Argus-Cpi",
 };
 
 const baseHandler = createBaseHandler({ logger, metrics });

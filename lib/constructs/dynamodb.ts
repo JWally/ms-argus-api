@@ -17,9 +17,12 @@ interface DynamoDbConstructProps {
 /**
  * DynamoDB tables for the integrity-only pipeline.
  *
- *  - integrityResultsTable: per-session integrity record (PK: session_id),
- *    1-hour TTL. Archive to S3 happens at write time via Firehose
- *    (ingestion handler dual-writes); no DDB stream needed.
+ *  - integrityResultsTable: per-session integrity record. Composite key
+ *    `(cpi, session_id)` so reads tied to a merchant's public client-id
+ *    are partitioned at the storage layer — cross-tenant scans cannot
+ *    succeed even on a stolen key for a different cpi. 1-hour TTL.
+ *    Archive to S3 happens at write time via Firehose (ingestion handler
+ *    dual-writes); no DDB stream needed.
  *
  * Profiles / tier1-index / tier2-buckets / session-cache / session-payload /
  * vector-results were removed along with the fingerprint matching pipeline.
@@ -46,12 +49,20 @@ export class DynamoDbConstruct extends Construct {
         }
       : {};
 
+    // `-v2` suffix: the schema change from PK `session_id` → composite
+    // (cpi, session_id) requires CFN replacement, which custom-named
+    // resources can't do in place. The old `${stackName}-integrity-results`
+    // table is dropped on first v2 deploy.
     this.integrityResultsTable = new dynamodb.Table(
       this,
       "IntegrityResultsTable",
       {
-        tableName: `${stackName}-integrity-results`,
+        tableName: `${stackName}-integrity-results-v2`,
         partitionKey: {
+          name: "cpi",
+          type: dynamodb.AttributeType.STRING,
+        },
+        sortKey: {
           name: "session_id",
           type: dynamodb.AttributeType.STRING,
         },

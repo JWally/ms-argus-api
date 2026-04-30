@@ -12,6 +12,7 @@ import { Construct } from "constructs";
 import { SecretConstruct } from "../constructs/secrets";
 import { DynamoDbConstruct } from "../constructs/dynamodb";
 import { HttpApiConstruct } from "../constructs/http-api";
+import { RestApiConstruct } from "../constructs/rest-api";
 import { IpClassBuilderConstruct } from "../constructs/ip-class-builder";
 import { IpClassDiscovererConstruct } from "../constructs/ip-class-discoverer";
 import { CloudFrontWafConstruct } from "../constructs/cloudfront";
@@ -177,6 +178,19 @@ export class ArgusApiStack extends cdk.Stack {
 
     const stageConfig = getStageConfig(stage);
 
+    // SSM path for the platform's Ed25519 pubkey used to verify merchant
+    // API tokens. Created out-of-band by ms-argus-platform's
+    // scripts/generate-signing-key.ts (CDK-managed StringParameter would
+    // overwrite the value on every deploy).
+    const platformPubkeySsmPath = sigintPlatformEnvironment
+      ? `/argus-platform/${sigintPlatformEnvironment}/api-signing-pubkey`
+      : undefined;
+    if (!platformPubkeySsmPath) {
+      throw new Error(
+        "sigintPlatformEnvironment is required so the api can locate the platform Ed25519 pubkey",
+      );
+    }
+
     const httpApi = new HttpApiConstruct(this, "HttpApi", {
       stackName,
       stage,
@@ -188,6 +202,18 @@ export class ArgusApiStack extends cdk.Stack {
       config: stageConfig,
       ecdhKeyParamName: `/${stackName}/ecdh-keypair`,
       integrityFirehoseStreamName: integrityFirehose.deliveryStreamName,
+      platformPubkeySsmPath,
+    });
+
+    // Merchant-facing REST API: native APIGW Keys + Usage Plans.
+    // Wires the same session-get Lambda; route discrimination happens
+    // inside the handler based on path shape (/v1/session/{cpi}/{sid}).
+    const restApi = new RestApiConstruct(this, "RestApi", {
+      stackName,
+      environment,
+      rootDomain,
+      hostedZone,
+      sessionGetFunction: httpApi.sessionGetFunction,
     });
 
     integrityFirehose.grantPutRecord(httpApi.ingestionFunction);
@@ -313,6 +339,11 @@ export class ArgusApiStack extends cdk.Stack {
     new cdk.CfnOutput(this, "IpClassBuilderFunctionArn", {
       value: ipClass.builderFunction.functionArn,
       description: "Weekly ASN dataset builder Lambda ARN",
+    });
+
+    new cdk.CfnOutput(this, "MerchantApiUrl", {
+      value: restApi.endpoint,
+      description: "Merchant-facing REST API (native APIGW Keys + Usage Plans)",
     });
   }
 }

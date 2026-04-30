@@ -12,6 +12,14 @@ export interface PayloadIdentifiers {
   session_id: string;
   evercookie_id?: string;
   public_key?: string;
+  /**
+   * Public client id minted by ms-argus-platform and embedded in the
+   * merchant's browser SDK. Used as the partition key on the integrity
+   * results table so cross-tenant scans are structurally impossible.
+   * Optional in this schema (it usually arrives as the `x-argus-cpi`
+   * request header), but when present it satisfies the same requirement.
+   */
+  cpi?: string;
 }
 
 export interface PayloadHashes {
@@ -268,6 +276,37 @@ export const payloadJsonSchema = {
  */
 export function getSessionId(payload: ArgusPayload): string {
   return payload.identifiers.session_id;
+}
+
+const CPI_FORMAT = /^argus_cpi_(test|live)_[A-Za-z0-9]{10,40}$/;
+
+/**
+ * Resolve the cpi (public client id) for an inbound integrity-collect POST.
+ *
+ * Preference order:
+ *   1. `x-argus-cpi` request header (sent by the integrity SDK)
+ *   2. `payload.identifiers.cpi` (server-to-server tests, future direct callers)
+ *
+ * Header is preferred because the payload body is ECDH-encrypted before
+ * the iframe submits it; the SDK can't easily inject a field after the
+ * bytecode has assembled and encrypted the JSON, so cpi rides as a
+ * request header. The body field is accepted for non-SDK callers.
+ *
+ * Returns null when neither source has a well-formed cpi. Caller is
+ * expected to surface a 400 to the client — there's no fallback bucket.
+ */
+export function resolveCpi(
+  payload: ArgusPayload,
+  cpiHeader?: string | null,
+): string | null {
+  if (typeof cpiHeader === "string" && CPI_FORMAT.test(cpiHeader)) {
+    return cpiHeader;
+  }
+  const supplied = payload.identifiers.cpi;
+  if (typeof supplied === "string" && CPI_FORMAT.test(supplied)) {
+    return supplied;
+  }
+  return null;
 }
 
 /**
