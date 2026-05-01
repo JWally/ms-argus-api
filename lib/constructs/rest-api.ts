@@ -52,6 +52,7 @@ const TIER_LIMITS = {
  * at the dot and sends two headers: `x-api-key` (gateway match) and
  * `x-argus-token` (handler verify).
  */
+// nosemgrep: no-trivial-class-wrapper -- makeUsagePlan/exportUsagePlanId shape config to collapse repeated blocks; not pure delegation
 export class RestApiConstruct extends Construct {
   public readonly api: apigateway.RestApi;
   public readonly freeUsagePlan: apigateway.UsagePlan;
