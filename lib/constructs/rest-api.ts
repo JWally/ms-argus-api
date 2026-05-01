@@ -23,22 +23,22 @@ export interface RestApiConstructProps {
 }
 
 /**
- * Per-tier limits. Throttle rates are per-key (not per-plan). Quotas are
- * monthly so they line up with Stripe subscription billing periods.
+ * Per-tier throttle limits. Subscription tier sets the per-second rate +
+ * burst ceiling on a single key — that's the MRR product. Volume comes
+ * from prepaid credits (Dynamo, decremented per session-get in the Lambda),
+ * not from the APIGW quota counter, so no `quota` field here.
  *
- * Why these numbers — see the pricing strategy in the platform repo:
- *   Free    $0   / 10k req/mo   ← lead-magnet tier (10× FingerprintJS free)
- *   Starter $99  / 200k req/mo  ← matches FP price, 10× their volume
- *   Pro     $299 / 1M req/mo    ← serious-traffic tier
+ *   Free    $0   / 5 rps  · 10 burst
+ *   Starter $99  / 20 rps · 50 burst
+ *   Pro     $299 / 100 rps · 200 burst
  *
- * Throttle rates increase with tier so paying customers see less head-of-line
- * blocking on bursts; APIGW returns 429 above burstLimit, separate from the
- * monthly quota 429.
+ * APIGW returns 429 above burstLimit. Out-of-credits returns 402 from the
+ * session-get Lambda (after the conditional decrement fails).
  */
 const TIER_LIMITS = {
-  free: { rateLimit: 5, burstLimit: 10, quotaLimit: 10_000 },
-  starter: { rateLimit: 20, burstLimit: 50, quotaLimit: 200_000 },
-  pro: { rateLimit: 100, burstLimit: 200, quotaLimit: 1_000_000 },
+  free: { rateLimit: 5, burstLimit: 10 },
+  starter: { rateLimit: 20, burstLimit: 50 },
+  pro: { rateLimit: 100, burstLimit: 200 },
 } as const;
 
 /**
@@ -133,19 +133,19 @@ export class RestApiConstruct extends Construct {
     this.freeUsagePlan = this.makeUsagePlan(
       "Free",
       `${stackName}-free`,
-      "Free tier — lead-magnet quota for sign-up + integration",
+      "Free tier — 5 rps, 10 burst",
       TIER_LIMITS.free,
     );
     this.starterUsagePlan = this.makeUsagePlan(
       "Starter",
       `${stackName}-starter`,
-      "Starter tier — $99/mo, 200k req/mo",
+      "Starter tier — $99/mo, 20 rps, 50 burst",
       TIER_LIMITS.starter,
     );
     this.proUsagePlan = this.makeUsagePlan(
       "Pro",
       `${stackName}-pro`,
-      "Pro tier — $299/mo, 1M req/mo",
+      "Pro tier — $299/mo, 100 rps, 200 burst",
       TIER_LIMITS.pro,
     );
 
@@ -184,7 +184,7 @@ export class RestApiConstruct extends Construct {
     constructIdSuffix: string,
     name: string,
     description: string,
-    limits: { rateLimit: number; burstLimit: number; quotaLimit: number },
+    limits: { rateLimit: number; burstLimit: number },
   ): apigateway.UsagePlan {
     return this.api.addUsagePlan(`${constructIdSuffix}UsagePlan`, {
       name,
@@ -192,10 +192,6 @@ export class RestApiConstruct extends Construct {
       throttle: {
         rateLimit: limits.rateLimit,
         burstLimit: limits.burstLimit,
-      },
-      quota: {
-        limit: limits.quotaLimit,
-        period: apigateway.Period.MONTH,
       },
       apiStages: [{ api: this.api, stage: this.api.deploymentStage }],
     });
