@@ -130,35 +130,33 @@ export class RestApiConstruct extends Construct {
     // Three usage plans, one per pricing tier. Every minted key starts on
     // free; the Stripe subscription webhook on the platform side moves the
     // key between plans on subscription create/update/cancel events.
-    this.freeUsagePlan = this.makeUsagePlan(
-      "Free",
-      `${stackName}-free`,
-      "Free tier — 5 rps, 10 burst",
-      TIER_LIMITS.free,
-    );
-    this.starterUsagePlan = this.makeUsagePlan(
-      "Starter",
-      `${stackName}-starter`,
-      "Starter tier — $99/mo, 20 rps, 50 burst",
-      TIER_LIMITS.starter,
-    );
-    this.proUsagePlan = this.makeUsagePlan(
-      "Pro",
-      `${stackName}-pro`,
-      "Pro tier — $299/mo, 100 rps, 200 burst",
-      TIER_LIMITS.pro,
-    );
+    this.freeUsagePlan = makeUsagePlan(this.api, "Free", {
+      name: `${stackName}-free`,
+      description: "Free tier — 5 rps, 10 burst",
+      limits: TIER_LIMITS.free,
+    });
+    this.starterUsagePlan = makeUsagePlan(this.api, "Starter", {
+      name: `${stackName}-starter`,
+      description: "Starter tier — $99/mo, 20 rps, 50 burst",
+      limits: TIER_LIMITS.starter,
+    });
+    this.proUsagePlan = makeUsagePlan(this.api, "Pro", {
+      name: `${stackName}-pro`,
+      description: "Pro tier — $299/mo, 100 rps, 200 burst",
+      limits: TIER_LIMITS.pro,
+    });
 
     // Export each plan's id to SSM so ms-argus-platform can attach + move
     // keys based on the merchant's current subscriptionPlan field.
-    this.exportUsagePlanId("Free", "free", environment, this.freeUsagePlan);
-    this.exportUsagePlanId(
+    exportUsagePlanId(this, "Free", "free", environment, this.freeUsagePlan);
+    exportUsagePlanId(
+      this,
       "Starter",
       "starter",
       environment,
       this.starterUsagePlan,
     );
-    this.exportUsagePlanId("Pro", "pro", environment, this.proUsagePlan);
+    exportUsagePlanId(this, "Pro", "pro", environment, this.proUsagePlan);
 
     this.endpoint = `https://${apiDomainName}`;
 
@@ -179,34 +177,38 @@ export class RestApiConstruct extends Construct {
       description: "Pro-tier usage plan id (also exported via SSM)",
     });
   }
+}
 
-  private makeUsagePlan(
-    constructIdSuffix: string,
-    name: string,
-    description: string,
-    limits: { rateLimit: number; burstLimit: number },
-  ): apigateway.UsagePlan {
-    return this.api.addUsagePlan(`${constructIdSuffix}UsagePlan`, {
-      name,
-      description,
-      throttle: {
-        rateLimit: limits.rateLimit,
-        burstLimit: limits.burstLimit,
-      },
-      apiStages: [{ api: this.api, stage: this.api.deploymentStage }],
-    });
-  }
+function makeUsagePlan(
+  api: apigateway.RestApi,
+  constructIdSuffix: string,
+  opts: {
+    name: string;
+    description: string;
+    limits: { rateLimit: number; burstLimit: number };
+  },
+): apigateway.UsagePlan {
+  return api.addUsagePlan(`${constructIdSuffix}UsagePlan`, {
+    name: opts.name,
+    description: opts.description,
+    throttle: {
+      rateLimit: opts.limits.rateLimit,
+      burstLimit: opts.limits.burstLimit,
+    },
+    apiStages: [{ api, stage: api.deploymentStage }],
+  });
+}
 
-  private exportUsagePlanId(
-    constructIdSuffix: string,
-    tierKey: string,
-    environment: string,
-    plan: apigateway.UsagePlan,
-  ): void {
-    new ssm.StringParameter(this, `${constructIdSuffix}UsagePlanIdParam`, {
-      parameterName: `/argus-api/${environment}/usage-plan-id-${tierKey}`,
-      stringValue: plan.usagePlanId,
-      description: `${tierKey}-tier usage plan id, consumed by ms-argus-platform mint endpoint (${environment})`,
-    });
-  }
+function exportUsagePlanId(
+  scope: Construct,
+  constructIdSuffix: string,
+  tierKey: string,
+  environment: string,
+  plan: apigateway.UsagePlan,
+): void {
+  new ssm.StringParameter(scope, `${constructIdSuffix}UsagePlanIdParam`, {
+    parameterName: `/argus-api/${environment}/usage-plan-id-${tierKey}`,
+    stringValue: plan.usagePlanId,
+    description: `${tierKey}-tier usage plan id, consumed by ms-argus-platform mint endpoint (${environment})`,
+  });
 }
