@@ -139,6 +139,12 @@ jobs:
         run: npm run build
 
       - name: CDK Synth
+        env:
+          # Synth only — no live AWS calls. Account/region are read by
+          # bin/config.ts and used purely to key the cached cdk.context.json.
+          # Account ID is already committed in cdk.context.json.
+          CDK_DEFAULT_ACCOUNT: "263318538229"
+          CDK_DEFAULT_REGION: us-east-1
         run: npm run synth
 
   cdk-diff:
