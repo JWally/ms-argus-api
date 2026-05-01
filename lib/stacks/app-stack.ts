@@ -63,12 +63,16 @@ function resolveSigintParams(
   sigintSecretArn: string | undefined;
   probeTokensTableName: string | undefined;
   probeTokensTableArn: string | undefined;
+  merchantsTableName: string | undefined;
+  merchantsTableArn: string | undefined;
 } {
   if (!sigintPlatformEnvironment) {
     return {
       sigintSecretArn: sigintAesKeySecretArn,
       probeTokensTableName: undefined,
       probeTokensTableArn: undefined,
+      merchantsTableName: undefined,
+      merchantsTableArn: undefined,
     };
   }
   const base = `/argus-platform/${sigintPlatformEnvironment}`;
@@ -84,6 +88,14 @@ function resolveSigintParams(
     probeTokensTableArn: ssm.StringParameter.valueFromLookup(
       scope,
       `${base}/probe-tokens-table-arn`,
+    ),
+    merchantsTableName: ssm.StringParameter.valueFromLookup(
+      scope,
+      `${base}/merchants-table-name`,
+    ),
+    merchantsTableArn: ssm.StringParameter.valueFromLookup(
+      scope,
+      `${base}/merchants-table-arn`,
     ),
   };
 }
@@ -105,11 +117,20 @@ export class ArgusApiStack extends cdk.Stack {
       sigintSecretArn: resolvedSigintSecretArn,
       probeTokensTableName,
       probeTokensTableArn,
+      merchantsTableName,
+      merchantsTableArn,
     } = resolveSigintParams(
       this,
       sigintPlatformEnvironment,
       sigintAesKeySecretArn,
     );
+
+    if (!merchantsTableName || !merchantsTableArn) {
+      throw new Error(
+        "merchants table SSM exports not found — ms-argus-platform must be deployed first to expose " +
+          `/argus-platform/${sigintPlatformEnvironment}/merchants-table-{name,arn}`,
+      );
+    }
 
     // =========================================================================
     // DNS & CERTIFICATES
@@ -203,6 +224,8 @@ export class ArgusApiStack extends cdk.Stack {
       ecdhKeyParamName: `/${stackName}/ecdh-keypair`,
       integrityFirehoseStreamName: integrityFirehose.deliveryStreamName,
       platformPubkeySsmPath,
+      merchantsTableName,
+      merchantsTableArn,
     });
 
     // Merchant-facing REST API: native APIGW Keys + Usage Plans.

@@ -13,14 +13,16 @@ import { createBaseHandler } from "./session-get/base-handler";
 
 interface SessionGetEnvConfig {
   INTEGRITY_RESULTS_TABLE: string;
+  MERCHANTS_TABLE_NAME: string;
   POWERTOOLS_SERVICE_NAME: string;
   POWERTOOLS_METRICS_NAMESPACE: string;
 }
 
 function getEnvConfig(): SessionGetEnvConfig {
-  validateRequiredEnvVars(["INTEGRITY_RESULTS_TABLE"]);
+  validateRequiredEnvVars(["INTEGRITY_RESULTS_TABLE", "MERCHANTS_TABLE_NAME"]);
   return {
     INTEGRITY_RESULTS_TABLE: process.env.INTEGRITY_RESULTS_TABLE as string,
+    MERCHANTS_TABLE_NAME: process.env.MERCHANTS_TABLE_NAME as string,
     POWERTOOLS_SERVICE_NAME:
       process.env.POWERTOOLS_SERVICE_NAME ?? "argus-session-get",
     POWERTOOLS_METRICS_NAMESPACE:
@@ -40,6 +42,7 @@ const dynamodb = new DynamoDBClient({});
 const baseHandler = createBaseHandler({
   dynamodb,
   integrityResultsTable: envConfig.INTEGRITY_RESULTS_TABLE,
+  merchantsTable: envConfig.MERCHANTS_TABLE_NAME,
   logger,
   metrics,
 });

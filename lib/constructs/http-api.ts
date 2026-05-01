@@ -48,6 +48,17 @@ interface HttpApiConstructProps {
    * merchant API tokens. Format: `/argus-platform/{env}/api-signing-pubkey`.
    */
   platformPubkeySsmPath: string;
+  /**
+   * Name of the platform's merchants Dynamo table — passed to the session-get
+   * Lambda as MERCHANTS_TABLE_NAME so it can atomically decrement credits per
+   * billable read.
+   */
+  merchantsTableName: string;
+  /**
+   * ARN of the platform's merchants Dynamo table. Used to scope the IAM
+   * `dynamodb:UpdateItem` grant on session-get.
+   */
+  merchantsTableArn: string;
 }
 
 /**
@@ -84,6 +95,8 @@ export class HttpApiConstruct extends Construct {
       ecdhKeyParamName,
       integrityFirehoseStreamName,
       platformPubkeySsmPath,
+      merchantsTableName,
+      merchantsTableArn,
     } = props;
 
     const logGroup = new logs.LogGroup(this, "IngestionLogGroup", {
@@ -149,6 +162,7 @@ export class HttpApiConstruct extends Construct {
           INTEGRITY_RESULTS_TABLE: integrityResultsTable.tableName,
           STACK_NAME: stackName,
           PLATFORM_PUBKEY_SSM_PATH: platformPubkeySsmPath,
+          MERCHANTS_TABLE_NAME: merchantsTableName,
         },
       },
     );
@@ -162,6 +176,16 @@ export class HttpApiConstruct extends Construct {
         resources: [
           `arn:aws:ssm:${cdk.Stack.of(this).region}:${cdk.Stack.of(this).account}:parameter${platformPubkeySsmPath}`,
         ],
+      }),
+    );
+
+    // Atomic credit decrement on the platform's merchants table — billing
+    // happens here, on each successful session-get. Conditional UpdateItem
+    // with `credits >= :one` returns 402 from the handler when it fails.
+    this.sessionGetFunction.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ["dynamodb:UpdateItem"],
+        resources: [merchantsTableArn],
       }),
     );
 

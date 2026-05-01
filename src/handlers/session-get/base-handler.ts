@@ -23,13 +23,18 @@ import {
   extractSessionId,
   fetchIntegrityResultsByComposite,
 } from "./session-ops";
-import { verifyMerchantToken } from "../../helpers/token-verifier";
+import {
+  verifyMerchantToken,
+  type VerifiedClaims,
+} from "../../helpers/token-verifier";
 import { buildMerchantResponse } from "../../helpers/merchant-projection";
+import { decrementCredit } from "../../helpers/credits";
 import type { IntegrityResultsData } from "../../helpers/payload-schema";
 
 interface HandlerDeps {
   dynamodb: DynamoDBClient;
   integrityResultsTable: string;
+  merchantsTable: string;
   logger: Logger;
   metrics: Metrics;
 }
@@ -40,6 +45,7 @@ const CPI_FORMAT = /^argus_cpi_(test|live)_[A-Za-z0-9]{10,40}$/;
 function buildIntegrityResponse(params: {
   sessionId: string;
   integrity: IntegrityResultsData;
+  creditsRemaining: number;
 }): APIGatewayProxyResultV2 {
   const merchant = buildMerchantResponse({
     session_id: params.sessionId,
@@ -48,15 +54,22 @@ function buildIntegrityResponse(params: {
   return {
     statusCode: 200,
     headers: JSON_HEADERS,
-    body: JSON.stringify(merchant),
+    body: JSON.stringify({
+      ...merchant,
+      creditsRemaining: params.creditsRemaining,
+    }),
   };
 }
+
+type AuthorizeResult =
+  | { ok: true; claims: VerifiedClaims }
+  | { ok: false; response: APIGatewayProxyResultV2 };
 
 async function authorize(
   cpi: string,
   event: APIGatewayProxyEvent,
   deps: HandlerDeps,
-): Promise<APIGatewayProxyResultV2 | null> {
+): Promise<AuthorizeResult> {
   const keyIdHeader =
     event.headers?.["x-api-key"] ?? event.headers?.["X-Api-Key"];
   const tokenHeader =
@@ -65,9 +78,12 @@ async function authorize(
   if (!ssmPubkeyPath) {
     deps.logger.error("PLATFORM_PUBKEY_SSM_PATH not configured");
     return {
-      statusCode: 500,
-      headers: JSON_HEADERS,
-      body: JSON.stringify({ error: "Verifier misconfigured" }),
+      ok: false,
+      response: {
+        statusCode: 500,
+        headers: JSON_HEADERS,
+        body: JSON.stringify({ error: "Verifier misconfigured" }),
+      },
     };
   }
   const claims = await verifyMerchantToken(keyIdHeader, tokenHeader, {
@@ -77,13 +93,48 @@ async function authorize(
   if (!claims) {
     deps.metrics.addMetric("MerchantTokenRejected", MetricUnit.Count, 1);
     return {
-      statusCode: 401,
-      headers: JSON_HEADERS,
-      body: JSON.stringify({ error: "Invalid or missing token" }),
+      ok: false,
+      response: {
+        statusCode: 401,
+        headers: JSON_HEADERS,
+        body: JSON.stringify({ error: "Invalid or missing token" }),
+      },
     };
   }
   deps.metrics.addMetric("MerchantTokenAccepted", MetricUnit.Count, 1);
-  return null;
+  return { ok: true, claims };
+}
+
+type DebitResult =
+  | { ok: true; remaining: number }
+  | { ok: false; response: APIGatewayProxyResultV2 };
+
+/**
+ * Burn one credit for this billable read. Atomic conditional decrement on
+ * the merchants table — if balance is zero, return 402 before any integrity-
+ * results work so we don't hand out data we won't be paid for.
+ */
+async function debitCreditOr402(
+  merchantId: string,
+  deps: HandlerDeps,
+): Promise<DebitResult> {
+  const debit = await decrementCredit(merchantId, {
+    ddb: deps.dynamodb,
+    table: deps.merchantsTable,
+  });
+  if (!debit.ok) {
+    deps.metrics.addMetric("InsufficientCredits", MetricUnit.Count, 1);
+    return {
+      ok: false,
+      response: {
+        statusCode: 402,
+        headers: JSON_HEADERS,
+        body: JSON.stringify({ error: "insufficient_credits" }),
+      },
+    };
+  }
+  deps.metrics.addMetric("CreditBurned", MetricUnit.Count, 1);
+  return { ok: true, remaining: debit.remaining };
 }
 
 export function createBaseHandler(deps: HandlerDeps) {
@@ -104,8 +155,11 @@ export function createBaseHandler(deps: HandlerDeps) {
       };
     }
     const sessionId = extractSessionId(event, deps.metrics);
-    const denied = await authorize(cpi, event, deps);
-    if (denied) return denied;
+    const auth = await authorize(cpi, event, deps);
+    if (!auth.ok) return auth.response;
+
+    const debit = await debitCreditOr402(auth.claims.merchantId, deps);
+    if (!debit.ok) return debit.response;
 
     const integrity = await fetchIntegrityResultsByComposite(
       cpi,
@@ -120,6 +174,10 @@ export function createBaseHandler(deps: HandlerDeps) {
       };
     }
     deps.metrics.addMetric("IntegritySessionRetrieved", MetricUnit.Count, 1);
-    return buildIntegrityResponse({ sessionId, integrity });
+    return buildIntegrityResponse({
+      sessionId,
+      integrity,
+      creditsRemaining: debit.remaining,
+    });
   };
 }
