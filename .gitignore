@@ -24,9 +24,6 @@ bin/**/*.d.ts
 .DS_Store
 Thumbs.db
 
-# CDK
-cdk.context.json
-
 # Test coverage
 coverage/
 test-results/

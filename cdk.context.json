@@ -1,0 +1,115 @@
+{
+  "availability-zones:account=263318538229:region=us-east-1": [
+    "us-east-1a",
+    "us-east-1b",
+    "us-east-1c",
+    "us-east-1d",
+    "us-east-1e",
+    "us-east-1f"
+  ],
+  "hosted-zone:account=263318538229:domainName=argus.pw:region=us-east-1": {
+    "Id": "/hostedzone/Z0810341271UXTLGDMLC6",
+    "Name": "argus.pw."
+  },
+  "cc-api-provider:account=263318538229:propertiesToReturn.0=PrefixListId:propertyMatch.PrefixListName=com.amazonaws.global.cloudfront.origin-facing:region=us-east-1:typeName=AWS$:$:EC2$:$:PrefixList": [
+    {
+      "PrefixListId": "pl-3b927c52",
+      "Identifier": "pl-3b927c52"
+    }
+  ],
+  "ssm:account=263318538229:parameterName=/argus-vector/dev-jw/vpc-id:region=us-east-1": "vpc-0c922d2a2dda036f5",
+  "vpc-provider:account=263318538229:filter.vpc-id=vpc-0c922d2a2dda036f5:region=us-east-1:returnAsymmetricSubnets=true": {
+    "vpcId": "vpc-0c922d2a2dda036f5",
+    "vpcCidrBlock": "10.0.0.0/16",
+    "ownerAccountId": "263318538229",
+    "availabilityZones": [],
+    "subnetGroups": [
+      {
+        "name": "Public",
+        "type": "Public",
+        "subnets": [
+          {
+            "subnetId": "subnet-0e2fc2779669ec509",
+            "cidr": "10.0.0.0/24",
+            "availabilityZone": "us-east-1a",
+            "routeTableId": "rtb-06735d7fc7d9f0ea6"
+          },
+          {
+            "subnetId": "subnet-0a0bd91a180f14481",
+            "cidr": "10.0.1.0/24",
+            "availabilityZone": "us-east-1b",
+            "routeTableId": "rtb-06d485ef8354aea2c"
+          }
+        ]
+      },
+      {
+        "name": "Private",
+        "type": "Private",
+        "subnets": [
+          {
+            "subnetId": "subnet-08884c14d1a0f01d2",
+            "cidr": "10.0.2.0/24",
+            "availabilityZone": "us-east-1a",
+            "routeTableId": "rtb-02f306c098a0b4de5"
+          },
+          {
+            "subnetId": "subnet-07c5340556c27a651",
+            "cidr": "10.0.3.0/24",
+            "availabilityZone": "us-east-1b",
+            "routeTableId": "rtb-07c16b9eb5438e0d2"
+          }
+        ]
+      }
+    ]
+  },
+  "ssm:account=263318538229:parameterName=/argus/dev-jw/vpc-id:region=us-east-1": "vpc-0d1b9e909139dafd0",
+  "vpc-provider:account=263318538229:filter.vpc-id=vpc-0d1b9e909139dafd0:region=us-east-1:returnAsymmetricSubnets=true": {
+    "vpcId": "vpc-0d1b9e909139dafd0",
+    "vpcCidrBlock": "10.100.0.0/16",
+    "ownerAccountId": "263318538229",
+    "availabilityZones": [],
+    "subnetGroups": [
+      {
+        "name": "Public",
+        "type": "Public",
+        "subnets": [
+          {
+            "subnetId": "subnet-0c0d79062b3d032f2",
+            "cidr": "10.100.0.0/24",
+            "availabilityZone": "us-east-1a",
+            "routeTableId": "rtb-0d202b15bc9bfdaf4"
+          },
+          {
+            "subnetId": "subnet-0ab4e7ee77635cfea",
+            "cidr": "10.100.1.0/24",
+            "availabilityZone": "us-east-1b",
+            "routeTableId": "rtb-075d4ec7919049890"
+          }
+        ]
+      },
+      {
+        "name": "Private",
+        "type": "Private",
+        "subnets": [
+          {
+            "subnetId": "subnet-0a4ad2d4fa8d7c23e",
+            "cidr": "10.100.2.0/24",
+            "availabilityZone": "us-east-1a",
+            "routeTableId": "rtb-07c960dade288af18"
+          },
+          {
+            "subnetId": "subnet-04dbeda4c07779853",
+            "cidr": "10.100.3.0/24",
+            "availabilityZone": "us-east-1b",
+            "routeTableId": "rtb-07cca3a15bbaf38b8"
+          }
+        ]
+      }
+    ]
+  },
+  "ssm:account=263318538229:parameterName=/argus-platform/dev-jw/sigint-aes-key-arn:region=us-east-1": "arn:aws:secretsmanager:us-east-1:263318538229:secret:argus/dev-jw/sigint-aes-key-nUyQb9",
+  "ssm:account=263318538229:parameterName=/argus-platform/dev-jw/probe-tokens-table-name:region=us-east-1": "ms-argus-platform-dev-jw-probe-tokens",
+  "ssm:account=263318538229:parameterName=/argus-platform/dev-jw/probe-tokens-table-arn:region=us-east-1": "arn:aws:dynamodb:us-east-1:263318538229:table/ms-argus-platform-dev-jw-probe-tokens",
+  "ssm:account=263318538229:parameterName=/argus-platform/dev-jw/merchants-table-name:region=us-east-1": "ms-argus-platform-dev-jw-merchants",
+  "ssm:account=263318538229:parameterName=/argus-platform/dev-jw/merchants-table-arn:region=us-east-1": "arn:aws:dynamodb:us-east-1:263318538229:table/ms-argus-platform-dev-jw-merchants"
+}
