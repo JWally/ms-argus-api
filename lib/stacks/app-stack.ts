@@ -174,6 +174,20 @@ export class ArgusApiStack extends cdk.Stack {
       stage,
     });
 
+    // Export integrity-results table identity for cross-stack consumers
+    // (ms-argus-platform's dashboard Lambda reads this for the recent
+    // sessions feed). Out-of-band SSM keeps the dependency loose —
+    // platform doesn't need a CFN export reference, just a parameter
+    // name it resolves at synth time.
+    new ssm.StringParameter(this, "IntegrityResultsTableNameParam", {
+      parameterName: `/argus-api/${environment}/integrity-results-table-name`,
+      stringValue: dynamodb.integrityResultsTable.tableName,
+    });
+    new ssm.StringParameter(this, "IntegrityResultsTableArnParam", {
+      parameterName: `/argus-api/${environment}/integrity-results-table-arn`,
+      stringValue: dynamodb.integrityResultsTable.tableArn,
+    });
+
     const analytics = new AnalyticsConstruct(this, "Analytics", {
       stackName,
       stage,

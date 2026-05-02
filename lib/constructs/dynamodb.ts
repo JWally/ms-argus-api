@@ -73,6 +73,25 @@ export class DynamoDbConstruct extends Construct {
       },
     );
 
+    // GSI for the dashboard's "recent sessions" feed: range query by
+    // time within a single cpi. PK=cpi keeps the partition shape
+    // consistent with the base table (one cpi = one merchant key);
+    // SK=created_at gives DESC time ordering. Reads on this GSI are
+    // bounded (≤50 rows / page) and don't compete with the base
+    // table's hot write path for capacity.
+    this.integrityResultsTable.addGlobalSecondaryIndex({
+      indexName: "cpi-createdAt-index",
+      partitionKey: {
+        name: "cpi",
+        type: dynamodb.AttributeType.STRING,
+      },
+      sortKey: {
+        name: "created_at",
+        type: dynamodb.AttributeType.NUMBER,
+      },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
     if (dbConfig.useProvisionedCapacity) {
       const maxCapacity = Math.ceil(
         dbConfig.baseReadCapacity * dbConfig.autoScaling.maxCapacityMultiplier,
