@@ -85,7 +85,16 @@ async function routeRequest(
 const ddbClient = new DynamoDBClient({});
 const INTEGRITY_RESULTS_TABLE = process.env.INTEGRITY_RESULTS_TABLE ?? "";
 const INTEGRITY_FIREHOSE_STREAM = process.env.INTEGRITY_FIREHOSE_STREAM;
-const INTEGRITY_TTL_SECONDS = 3600; // 1 hour
+// 30 days: enough retention for the dashboard's "recent sessions"
+// inspector to show meaningful history and for support to pull a
+// session up after a customer report. Override per-stage via the
+// `INTEGRITY_TTL_SECONDS` env var if storage cost becomes an issue
+// at high volume (S3+Firehose archive is the source of truth past
+// the TTL window — DDB is just the live read store).
+const DEFAULT_INTEGRITY_TTL_SECONDS = 30 * 24 * 3600;
+const INTEGRITY_TTL_SECONDS = Number(
+  process.env.INTEGRITY_TTL_SECONDS ?? DEFAULT_INTEGRITY_TTL_SECONDS,
+);
 
 export function createBaseHandler(deps: BaseHandlerDeps) {
   return async (event: ExtendedEvent): Promise<APIGatewayProxyResultV2> => {
