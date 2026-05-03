@@ -74,6 +74,7 @@ export type MerchantTag =
   | "incognito"
   | "cellular"
   | "location_mismatch"
+  | "language_mismatch"
   | "no_webrtc";
 
 export interface BrowserDetails {
@@ -429,14 +430,53 @@ function detectPrivacyRelay(input: MerchantProjectionInput): boolean {
 }
 
 /**
- * Visitor's claimed location (timezone, accept-language) contradicts
- * CloudFront-observed IP geolocation. Strongest when cross-continent
- * language mismatch; weaker for TZ-only or same-continent language.
+ * Visitor's claimed timezone contradicts CloudFront-observed IP timezone.
+ * Restricted to TZ disagreement only — accept-language vs IP country lives
+ * under the separate `language_mismatch` tag, since en-GB-on-US-IP and
+ * similar are common-enough preferences that they shouldn't share a tag
+ * with timezone manipulation.
  */
 function detectLocationMismatch(input: MerchantProjectionInput): boolean {
   if (!input.integrity) return false;
   const e = collectTamperingEvidence(input.integrity);
-  return e.tzGeoMismatch || e.langGeoCrossContinent || e.langGeoCrossCountry;
+  return e.tzGeoMismatch;
+}
+
+/**
+ * Accept-Language vs CloudFront IP country differs. Surfaced as a soft
+ * advisory tag — does *not* contribute to device_tampering. The US has
+ * Vietnamese-speaking households in Houston and British-spelling enthusiasts
+ * everywhere; an en-GB UI on a US IP is not fraud. Merchants who care can
+ * filter on this tag themselves.
+ */
+function detectLanguageMismatch(input: MerchantProjectionInput): boolean {
+  if (!input.integrity) return false;
+  const e = collectTamperingEvidence(input.integrity);
+  return e.langGeoCrossContinent || e.langGeoCrossCountry;
+}
+
+/**
+ * Mobile-browser detection (iPhone/iPad/Android). Reads main-thread UA
+ * and every captured worker-scope UA — if any one says iPhone we treat
+ * the visitor as mobile. Used to carve out signals that are reliable on
+ * desktop but legitimately absent on mobile (no plugins, no taskbar,
+ * blank UA-CH, etc).
+ */
+function isMobileBrowser(integrity: IntegrityResultsData | undefined): boolean {
+  if (!integrity) return false;
+  const headers = integrity.request_headers?.headers ?? {};
+  const candidates: string[] = [
+    integrity.user_agent ?? "",
+    headers["user-agent"] ?? "",
+  ];
+  const device = integrity.device as
+    | { workerScope?: { scopes?: Record<string, { userAgent?: unknown }> } }
+    | undefined;
+  const scopes = device?.workerScope?.scopes ?? {};
+  for (const scope of Object.values(scopes)) {
+    if (typeof scope?.userAgent === "string") candidates.push(scope.userAgent);
+  }
+  return candidates.some((ua) => /iPhone|iPad|iPod|Android|Mobile/i.test(ua));
 }
 
 type TagPredicate = [MerchantTag, (i: MerchantProjectionInput) => boolean];
@@ -456,6 +496,7 @@ function buildTags(
     ["incognito", detectIncognito],
     ["cellular", detectCellular],
     ["location_mismatch", detectLocationMismatch],
+    ["language_mismatch", detectLanguageMismatch],
     ["no_webrtc", detectNoWebrtc],
   ];
   return predicates.filter(([, p]) => p(input)).map(([tag]) => tag);
@@ -472,6 +513,11 @@ function buildTags(
  *   2. WEAK markers (`likeHeadlessRating`) — 11 environment signals
  *      (no Chrome object, no plugins, blank UA-CH, etc). Real but
  *      not damning on its own; the % maps directly into the score.
+ *      **Mobile carve-out:** these signals were calibrated for desktop
+ *      browsers. iPhone Safari has no taskbar, no plugins, and blank
+ *      UA-CH for legitimate reasons — every real iPhone visitor would
+ *      otherwise floor at automation ≈ 10. We zero out weak markers
+ *      when the UA (main or worker) shows mobile.
  *   3. STEALTH markers (`stealthRating`) — Function.toString proxy,
  *      bad WebGL, missing chrome runtime. +20 bonus when any fire.
  */
@@ -482,8 +528,10 @@ function botProbability(input: MerchantProjectionInput): number {
   const strict = headless?.headlessRating ?? 0;
   if (strict >= 67) return 100;
   if (strict > 0) return 75;
-  const weak = headless?.likeHeadlessRating ?? 0;
   const stealth = headless?.stealthRating ?? 0;
+  const weak = isMobileBrowser(input.integrity)
+    ? 0
+    : (headless?.likeHeadlessRating ?? 0);
   return roundProbability(weak + (stealth > 0 ? 20 : 0));
 }
 
@@ -672,15 +720,16 @@ function tamperingProbabilityFromEvidence(e: TamperingEvidence): number {
   // Locale-internal inconsistency (intl vs navigator, or worker vs main).
   // Real browsers don't disagree on their own locale — strong spoof tell.
   if (e.localeTamper) return 60;
-  // Cross-continent language vs IP geo — carder pattern (e.g.,
-  // accept-language: zh-CN from US residential proxy).
-  if (e.langGeoCrossContinent) return 45;
   // TZ location vs IP TZ disagreement — VPN/proxy tell, often benign for
   // travelers but still worth surfacing.
   if (e.tzGeoMismatch) return 35;
-  // Same-continent language vs country (e.g., US visitor with fr-FR UI).
-  if (e.langGeoCrossCountry) return 25;
   if (e.lies >= 1) return 25;
+  // langGeoCrossContinent / langGeoCrossCountry intentionally do NOT feed
+  // device_tampering. en-GB on a US IP and similar accept-language quirks
+  // are widespread legitimate user preferences (British-spelling fans,
+  // expat communities, multi-lingual households in major US cities). They
+  // surface as the soft `language_mismatch` tag for merchants who want
+  // to filter on them, with no score penalty.
   return 0;
 }
 
