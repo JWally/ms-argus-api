@@ -42,3 +42,7 @@ wait-cleanup.js
 .env.*.local
 ideas/
 api-docs/
+
+# Stryker mutation testing — sandbox copy of src/ + HTML report
+.stryker-tmp/
+reports/mutation/

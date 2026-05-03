@@ -1,1 +1,5 @@
 ideas/2026-01-12-critiques-1426.md
+
+# Stryker mutation testing — sandbox copies + HTML report (also gitignored)
+.stryker-tmp/
+reports/mutation/
