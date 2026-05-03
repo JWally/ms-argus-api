@@ -409,6 +409,90 @@ describe("buildMerchantResponse", () => {
       expect(result.automation).toBe(40);
     });
 
+    it("mobile carve-out: iPhone UA zeroes likeHeadlessRating contribution", () => {
+      // Real-world floor on iPhone Safari: noTaskbar, noPlugins, blank UA-CH
+      // are legitimately absent and otherwise produce likeHeadlessRating ≈ 9
+      // → rounds to automation 10 on every real iPhone visitor.
+      const base = baseIntegrity();
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: {
+          ...base,
+          user_agent:
+            "Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.5 Mobile/15E148 Safari/604.1",
+          device: {
+            headless: {
+              headlessRating: 0,
+              likeHeadlessRating: 9,
+              stealthRating: 0,
+            },
+          },
+        },
+      });
+      expect(result.automation).toBe(0);
+    });
+
+    it("mobile carve-out: strict markers still apply on iPhone", () => {
+      // Even on mobile, a webdriver-on-iPhone is automation, no carve-out.
+      const base = baseIntegrity();
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: {
+          ...base,
+          user_agent: "Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X)",
+          device: {
+            headless: {
+              headlessRating: 33,
+              likeHeadlessRating: 50,
+            },
+          },
+        },
+      });
+      expect(result.automation).toBe(75);
+    });
+
+    it("mobile carve-out: detects iPhone via worker-scope UA when main UA is missing", () => {
+      const base = baseIntegrity();
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: {
+          ...base,
+          device: {
+            headless: { headlessRating: 0, likeHeadlessRating: 18 },
+            workerScope: {
+              scopes: {
+                main: {
+                  userAgent:
+                    "Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X)",
+                },
+              },
+            },
+          },
+        },
+      });
+      expect(result.automation).toBe(0);
+    });
+
+    it("desktop UA still uses likeHeadlessRating as before", () => {
+      const base = baseIntegrity();
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: {
+          ...base,
+          user_agent:
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15",
+          device: {
+            headless: {
+              headlessRating: 0,
+              likeHeadlessRating: 42,
+            },
+          },
+        },
+      });
+      // 42 → rounds to 40 (unchanged from existing desktop behavior).
+      expect(result.automation).toBe(40);
+    });
+
     it("incognito.result is true when device.incognito.isPrivate is true", () => {
       const base = baseIntegrity();
       const result = buildMerchantResponse({
@@ -643,7 +727,7 @@ describe("buildMerchantResponse", () => {
         expect(result.tags).toContain("location_mismatch");
       });
 
-      it("emits 'location_mismatch' when ACCEPT_LANG_GEO_CROSS_CONTINENT fires", () => {
+      it("emits 'language_mismatch' (not 'location_mismatch') when ACCEPT_LANG_GEO_CROSS_CONTINENT fires", () => {
         const base = baseIntegrity();
         const result = buildMerchantResponse({
           session_id: "s",
@@ -665,7 +749,12 @@ describe("buildMerchantResponse", () => {
             },
           },
         });
-        expect(result.tags).toContain("location_mismatch");
+        // Language-vs-IP differences are widespread legitimate user
+        // preferences (en-GB on US, expat communities, Vietnamese-speaking
+        // households in Houston). They surface as a soft tag only — neither
+        // location_mismatch nor any tampering score should fire.
+        expect(result.tags).toContain("language_mismatch");
+        expect(result.tags).not.toContain("location_mismatch");
       });
 
       it("tampering probability floor 35 on TZ_GEOLOCATION_MISMATCH alone", () => {
@@ -692,7 +781,7 @@ describe("buildMerchantResponse", () => {
         expect(result.device_tampering).toBe(35);
       });
 
-      it("tampering probability 45 on cross-continent accept-lang mismatch", () => {
+      it("tampering probability stays 0 on cross-continent accept-lang mismatch (tag-only signal)", () => {
         const base = baseIntegrity();
         const result = buildMerchantResponse({
           session_id: "s",
@@ -714,10 +803,13 @@ describe("buildMerchantResponse", () => {
             },
           },
         });
-        expect(result.device_tampering).toBe(45);
+        // Cross-continent accept-language is now surfaced via the
+        // `language_mismatch` tag only — no device_tampering contribution.
+        expect(result.device_tampering).toBe(0);
+        expect(result.tags).toContain("language_mismatch");
       });
 
-      it("tampering probability 25 on same-continent accept-lang mismatch", () => {
+      it("tampering probability stays 0 on same-continent accept-lang mismatch (tag-only signal)", () => {
         const base = baseIntegrity();
         const result = buildMerchantResponse({
           session_id: "s",
@@ -739,7 +831,8 @@ describe("buildMerchantResponse", () => {
             },
           },
         });
-        expect(result.device_tampering).toBe(25);
+        expect(result.device_tampering).toBe(0);
+        expect(result.tags).toContain("language_mismatch");
       });
 
       it("tampering probability 60 on intl vs navigator locale mismatch", () => {
