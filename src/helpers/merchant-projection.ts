@@ -136,6 +136,12 @@ export interface MerchantIpInfo {
   asn: {
     number: number | null;
     organization: string | null;
+    /**
+     * Legacy 5-value categorization (datacenter / vpn_proxy / corporate_proxy
+     * / privacy_relay / mobile). Kept for backwards compatibility with
+     * pre-existing integrations. New consumers should prefer `network_class`
+     * (broader, 12-value taxonomy) and the convenience booleans below.
+     */
     category: string | null;
     /**
      * Broader consumer-network class derived from the IPtoASN+regex dataset
@@ -146,12 +152,22 @@ export interface MerchantIpInfo {
      */
     network_class: string | null;
   };
+  /** Convenience booleans for routing — all derived from `asn.network_class`. */
   datacenter: { result: boolean };
-  /**
-   * Convenience boolean: true when the ASN's network_class is mobile.
-   * Useful for stable-ID branching ("on mobile, drop IP from the hash").
-   */
+  /** True when network_class is mobile. Useful for stable-ID branching. */
   mobile: { result: boolean };
+  /** True when network_class is residential. */
+  residential: { result: boolean };
+  /** True when network_class is vpn_proxy (declared VPN provider). */
+  vpn: { result: boolean };
+  /** True when network_class is hosting_proxy (residential proxy networks
+   *  resold by Bright Data, SOAX, etc.). */
+  hosting: { result: boolean };
+  /** True when network_class is privacy_relay (Apple iCloud Private Relay). */
+  privacy_relay: { result: boolean };
+  /** True when network_class is security_filter (Cisco Umbrella, Zscaler,
+   *  Cloudflare Access — corporate cloud-egress shields). */
+  corporate_shield: { result: boolean };
 }
 
 export interface MerchantRequestHeaders {
@@ -564,6 +580,77 @@ function hasJa4UaMismatch(integrity: IntegrityResultsData): boolean {
   return readJa4UaSignals(integrity).ja4Mismatch;
 }
 
+/**
+ * Probe-side TLS-vs-UA mismatch (cipher count + GREASE presence). Distinct
+ * from JA4_UA_BROWSER_MISMATCH — that needs the JA4 cipher hash to be in
+ * the known-browser table, which fails open when a TLS-terminating proxy
+ * re-originates with a stripped cipher list (Cisco Umbrella, Zscaler,
+ * mitmproxy/Burp). The probe-side TLS_UA_MISMATCH signal is the safety
+ * net for that case — emitted by `analyzeJa4Ua` from the probe's
+ * `tls_signals.ua_mismatch` flag.
+ */
+function hasTlsUaMismatch(integrity: IntegrityResultsData): boolean {
+  const sigs = (
+    integrity.analysis as {
+      ja4_ua?: { signals?: Array<{ code: string }> };
+    }
+  ).ja4_ua?.signals;
+  return Array.isArray(sigs) && sigs.some((s) => s.code === "TLS_UA_MISMATCH");
+}
+
+/**
+ * Corporate-shield carve-out for the TLS_UA_MISMATCH signal. When a corp
+ * security gateway (Cisco Umbrella / Zscaler / Cloudflare Access) is in the
+ * path, TLS interception with a stripped cipher list is *expected behavior*,
+ * not a tampering signal. The shield is already surfaced as a tag and tells
+ * merchants why the TLS layer looks munged. Same shape as the network-axis
+ * carve-out in applyWebrtcFusion / corporate-shield zeroing.
+ */
+function isCorporateShieldedAsn(integrity: IntegrityResultsData): boolean {
+  return integrity.analysis?.ip?.asn?.category === "corporate_proxy";
+}
+
+/**
+ * Browser-engine consistency signals from `analyzeBrowserEngine`. Two
+ * tiers, both feed device_tampering:
+ *   - HARD: claimed browser_version's baseline has count=0 for an
+ *     observed value (and baseline is well-populated). Joins
+ *     isDefinitiveTampering → device_tampering = 100.
+ *   - SOFT: combined naive-Bayes log-likelihood is below threshold but
+ *     no individual field is structurally impossible. Slot at 60.
+ */
+function readBrowserEngineSignals(integrity: IntegrityResultsData): {
+  hard: boolean;
+  soft: boolean;
+} {
+  const sigs = (
+    integrity.analysis as {
+      browser_engine?: { signals?: Array<{ code: string }> };
+    }
+  ).browser_engine?.signals;
+  if (!Array.isArray(sigs)) return { hard: false, soft: false };
+  return {
+    hard: sigs.some((s) => s.code === "BROWSER_ENGINE_INCONSISTENT_HARD"),
+    soft: sigs.some((s) => s.code === "BROWSER_ENGINE_INCONSISTENT_SOFT"),
+  };
+}
+
+function readKernelOsSignals(integrity: IntegrityResultsData): {
+  hard: boolean;
+  soft: boolean;
+} {
+  const sigs = (
+    integrity.analysis as {
+      kernel_os?: { signals?: Array<{ code: string }> };
+    }
+  ).kernel_os?.signals;
+  if (!Array.isArray(sigs)) return { hard: false, soft: false };
+  return {
+    hard: sigs.some((s) => s.code === "KERNEL_OS_MISMATCH_DARWIN"),
+    soft: sigs.some((s) => s.code === "KERNEL_OS_MISMATCH_LINUX"),
+  };
+}
+
 /** Read the device.lies.data keys — each key identifies a tampered API. */
 function readLieKeys(integrity: IntegrityResultsData | undefined): string[] {
   const data = (
@@ -633,6 +720,29 @@ interface TamperingEvidence {
   chUaMismatch: boolean;
   /** Any locale-internal mismatch (Group A, sev >= 0.75). */
   localeTamper: boolean;
+  /** Probe-side TLS profile vs UA mismatch — cipher-count / GREASE delta.
+   *  Already corporate-shield-suppressed at collection time, so any value
+   *  surviving here is a real TLS interception / spoofing signal. */
+  tlsUaMismatch: boolean;
+  /** Browser-engine claim vs observed engine-invariants: at least one
+   *  field has zero prevalence in the claimed browser_version's baseline
+   *  (e.g. UA claims Safari but jsEngine=V8). Definitive tampering. */
+  browserEngineHardBreak: boolean;
+  /** Browser-engine claim vs observed: combined naive-Bayes likelihood
+   *  is low but no individual field is structurally impossible.
+   *  Outlier-but-possibly-legit; floor 60. */
+  browserEngineSoft: boolean;
+  /** Server kernel reports `tcpi_options` with no ECN bit on a UA
+   *  claiming iOS or macOS. Real Darwin negotiates ECN by default — a
+   *  WebKit JA4 + UA combination on a non-ECN socket cannot be a real
+   *  Apple device. Definitive tampering: highest-confidence device
+   *  signal because the kernel reports it about its own socket and the
+   *  client cannot lie about it from JS. */
+  kernelOsMismatchHard: boolean;
+  /** Claimed Linux/Android UA but server kernel sees ECN-on. Most Linux
+   *  installs ship with `tcp_ecn=2` (passive only), so an actively-ECN
+   *  Linux client is unusual but not structurally impossible. Floor 60. */
+  kernelOsMismatchSoft: boolean;
   /** Timezone location doesn't match IP geo (existing TZ_GEOLOCATION_MISMATCH). */
   tzGeoMismatch: boolean;
   /** Accept-Language vs CF country cross-continent mismatch (severe). */
@@ -686,6 +796,28 @@ function collectTamperingEvidence(
     (d) => /navigator|css|screen/i.test(d.field),
   ).length;
   const locale = readLocaleGeoSignals(integrity);
+  // Corporate-shield carve-outs.
+  //
+  // (a) TLS_UA_MISMATCH: TLS interception by Cisco Umbrella / Zscaler /
+  //     Cloudflare Access produces the same probe-side TLS_UA_MISMATCH as
+  //     a genuine MITM. The shield is already surfaced as its own tag.
+  //
+  // (b) TZ_GEOLOCATION_MISMATCH: corporate shields egress through PoPs in
+  //     timezones that often don't match the user's home timezone (a Chicago
+  //     employee whose corp shield egresses through Ashburn → client TZ
+  //     America/Chicago vs CF TZ America/New_York). Same shape as (a) — a
+  //     real signal in general, structurally false for shielded users. Also
+  //     drops the noisy `location_mismatch` tag for those rows since the
+  //     tag detector reads the same evidence.
+  //
+  // Both carve-outs only gate the SCORE contribution. The raw signals stay
+  // in the analyzer output (analysis.ja4_ua.signals, analysis.timezone.signals)
+  // so diagnostics are unchanged.
+  const shielded = isCorporateShieldedAsn(integrity);
+  const tlsUaMismatch = hasTlsUaMismatch(integrity) && !shielded;
+  const tzGeoMismatch = readTzGeoMismatch(integrity) && !shielded;
+  const engineSignals = readBrowserEngineSignals(integrity);
+  const kernelSignals = readKernelOsSignals(integrity);
   return {
     lies,
     divergences,
@@ -696,9 +828,14 @@ function collectTamperingEvidence(
     uaHeaderMismatch: detectUaFamilyHeaderMismatch(integrity),
     chUaMismatch: readChUaMismatch(integrity),
     localeTamper: locale.localeTamper,
-    tzGeoMismatch: readTzGeoMismatch(integrity),
+    tlsUaMismatch,
+    tzGeoMismatch,
     langGeoCrossContinent: locale.crossContinent,
     langGeoCrossCountry: locale.crossCountry,
+    browserEngineHardBreak: engineSignals.hard,
+    browserEngineSoft: engineSignals.soft,
+    kernelOsMismatchHard: kernelSignals.hard,
+    kernelOsMismatchSoft: kernelSignals.soft,
   };
 }
 
@@ -708,18 +845,50 @@ function isDefinitiveTampering(e: TamperingEvidence): boolean {
   // Client-hints vs UA disagreement (platform/mobile/brand) is proof of
   // partial spoofing — real browsers never have this split.
   if (e.chUaMismatch) return true;
+  // Browser-engine hard break: claimed UA's baseline says some observed
+  // value has 0 prevalence (e.g. Safari UA + V8 jsEngine). Structurally
+  // impossible per accumulated good traffic.
+  if (e.browserEngineHardBreak) return true;
+  // Kernel-OS hard break: server's own kernel sees a non-Darwin TCP
+  // options bitmask on a UA claiming iOS/macOS. The client cannot lie
+  // about this from JS — the bits are negotiated at SYN time. Strongest
+  // device-axis signal we have.
+  if (e.kernelOsMismatchHard) return true;
   // (D) Compound: lies + a second-order spoof-indicator
   return e.lies >= 5 && (e.uaDivergence || e.platformLie);
 }
 
+/**
+ * Tier-60 signals: each one is "credible spoof but not structurally
+ * impossible." Any one trips the floor. Listed here as an array so
+ * `tamperingProbabilityFromEvidence` stays under the cyclomatic-
+ * complexity cap.
+ *
+ * - lies/divergences: enough small lies or worker-vs-main divergences
+ * - uaHeaderMismatch: Chromium UA with sec-ch-ua header missing/wrong
+ * - localeTamper: intl APIs vs navigator vs worker disagreement
+ * - tlsUaMismatch: probe-side TLS profile lie (corp-shield carve-out
+ *   already applied upstream)
+ * - browserEngineSoft: naive-Bayes baseline below threshold but no
+ *   single field structurally impossible
+ * - kernelOsMismatchSoft: Linux UA + ECN negotiated (most distros ship
+ *   tcp_ecn=2; ops teams who flip ECN on are the carve-out)
+ */
+function hasTier60Signal(e: TamperingEvidence): boolean {
+  return (
+    e.lies >= 5 ||
+    e.divergences >= 1 ||
+    e.uaHeaderMismatch ||
+    e.localeTamper ||
+    e.tlsUaMismatch ||
+    e.browserEngineSoft ||
+    e.kernelOsMismatchSoft
+  );
+}
+
 function tamperingProbabilityFromEvidence(e: TamperingEvidence): number {
   if (isDefinitiveTampering(e)) return 100;
-  if (e.lies >= 5 || e.divergences >= 1) return 60;
-  // (E) Header/UA inconsistency on Chromium — credible spoof even without lies
-  if (e.uaHeaderMismatch) return 60;
-  // Locale-internal inconsistency (intl vs navigator, or worker vs main).
-  // Real browsers don't disagree on their own locale — strong spoof tell.
-  if (e.localeTamper) return 60;
+  if (hasTier60Signal(e)) return 60;
   // TZ location vs IP TZ disagreement — VPN/proxy tell, often benign for
   // travelers but still worth surfacing.
   if (e.tzGeoMismatch) return 35;
@@ -788,6 +957,32 @@ function deriveIpLocation(input: MerchantProjectionInput): MerchantIpLocation {
   };
 }
 
+/**
+ * All convenience-boolean flags derive from `network_class` (the broader
+ * 12-value taxonomy) so the `category` field can stay legacy without
+ * influencing routing. `datacenter` previously read from `category` —
+ * standardized here so all booleans share one source of truth.
+ */
+function deriveNetworkFlags(networkClass: string | null): {
+  datacenter: { result: boolean };
+  mobile: { result: boolean };
+  residential: { result: boolean };
+  vpn: { result: boolean };
+  hosting: { result: boolean };
+  privacy_relay: { result: boolean };
+  corporate_shield: { result: boolean };
+} {
+  return {
+    datacenter: { result: networkClass === "datacenter" },
+    mobile: { result: networkClass === "mobile" },
+    residential: { result: networkClass === "residential" },
+    vpn: { result: networkClass === "vpn_proxy" },
+    hosting: { result: networkClass === "hosting_proxy" },
+    privacy_relay: { result: networkClass === "privacy_relay" },
+    corporate_shield: { result: networkClass === "security_filter" },
+  };
+}
+
 function deriveIpInfo(input: MerchantProjectionInput): MerchantIpInfo {
   const asnFromIntegrity = input.integrity?.analysis.ip.asn;
   if (asnFromIntegrity) {
@@ -799,8 +994,7 @@ function deriveIpInfo(input: MerchantProjectionInput): MerchantIpInfo {
         category: asnFromIntegrity.category,
         network_class: networkClass,
       },
-      datacenter: { result: asnFromIntegrity.category === "datacenter" },
-      mobile: { result: networkClass === "mobile" },
+      ...deriveNetworkFlags(networkClass),
     };
   }
   const awsCf = readAwsCf(input);
@@ -811,8 +1005,7 @@ function deriveIpInfo(input: MerchantProjectionInput): MerchantIpInfo {
       category: null,
       network_class: null,
     },
-    datacenter: { result: false },
-    mobile: { result: false },
+    ...deriveNetworkFlags(null),
   };
 }
 

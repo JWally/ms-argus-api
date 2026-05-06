@@ -6,6 +6,15 @@
  * names don't pattern-match cleanly, and uploads the resulting
  * `asn-categories.json.gz` to the IP_CLASS_BUCKET.
  *
+ * Persists two parallel maps:
+ *   - `asns`:  ASN → category string (mobile / residential / datacenter / ...).
+ *             Only ASNs the regex categorizer recognized + manual overrides.
+ *   - `orgs`:  ASN → organization name (raw IPtoASN value, max-length per ASN
+ *             when the same ASN appears in multiple rows). Stored for ALL
+ *             ASNs in the dataset, not just categorized ones, so the merchant
+ *             projection can surface a human-readable network name on rows
+ *             whose ASN isn't in the small static catalog (`asn-catalog.ts`).
+ *
  * Runtime Lambdas (matching workers, ingestion handlers) consume the file
  * via S3 GetObject on cold start to map an ASN number → category bucket
  * (mobile / residential / datacenter / vpn_proxy / etc.) without a network
@@ -34,6 +43,7 @@ async function fetchAndDecompress(url: string): Promise<string> {
 interface BuildResult {
   asnsTotal: number;
   asnsClassified: number;
+  asnsWithOrg: number;
   bytesUploaded: number;
   bucket: string;
   key: string;
@@ -65,6 +75,23 @@ function buildClassificationDict(
   return asns;
 }
 
+/**
+ * Persist the org name for every ASN in the dataset (not just categorized
+ * ones). Trims whitespace and skips empty values; otherwise raw IPtoASN
+ * value. The static catalog (asn-catalog.ts) provides cleaner names for
+ * a hand-curated subset and wins at lookup time — this is the long-tail
+ * fallback so the merchant projection can show *something* for residential
+ * ISPs the static catalog doesn't list (AT&T 7018, Comcast 7922, etc.).
+ */
+function buildOrgsDict(asnToOrg: Map<number, string>): Record<string, string> {
+  const orgs: Record<string, string> = {};
+  for (const [asn, org] of asnToOrg) {
+    const trimmed = org.trim();
+    if (trimmed.length > 0) orgs[String(asn)] = trimmed;
+  }
+  return orgs;
+}
+
 export async function handler(): Promise<BuildResult> {
   const bucket = process.env.IP_CLASS_BUCKET;
   const key = process.env.IP_CLASS_KEY ?? "asn-categories.json.gz";
@@ -73,13 +100,16 @@ export async function handler(): Promise<BuildResult> {
   const tsv = await fetchAndDecompress(IPTOASN_URL);
   const asnToOrg = parseAsnTable(tsv);
   const asns = buildClassificationDict(asnToOrg);
+  const orgs = buildOrgsDict(asnToOrg);
 
   const payload = {
     generated_at: new Date().toISOString(),
     source: IPTOASN_URL,
     asns_total: asnToOrg.size,
     asns_classified: Object.keys(asns).length,
+    asns_with_org: Object.keys(orgs).length,
     asns,
+    orgs,
   };
   const gz = gzipSync(Buffer.from(JSON.stringify(payload)), { level: 9 });
 
@@ -98,6 +128,7 @@ export async function handler(): Promise<BuildResult> {
   return {
     asnsTotal: asnToOrg.size,
     asnsClassified: Object.keys(asns).length,
+    asnsWithOrg: Object.keys(orgs).length,
     bytesUploaded: gz.length,
     bucket,
     key,

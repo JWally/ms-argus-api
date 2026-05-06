@@ -153,6 +153,15 @@ function checkAcceptLangVsCountry(
   // If the header explicitly included a country, compare it directly.
   if (parsed.country) {
     if (parsed.country === cf) return null;
+    // The country subtag is a regional preference, not a geographic claim:
+    // an iPhone in the US set to en-GB (British English spelling) ships
+    // accept-language=en-GB but the user is plainly in the US. Suppress when
+    // the header's *language* is plausible for the IP country — only fire
+    // when the language itself is implausible (zh-CN from US, en-US from NG,
+    // etc.). Real geo mismatches still trip; regional-spelling preferences
+    // don't.
+    const plausibleForIp = LANG_TO_COUNTRIES[parsed.lang];
+    if (plausibleForIp?.includes(cf)) return null;
     return gradeCountryMismatch(parsed.lang, parsed.country, cf);
   }
 

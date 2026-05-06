@@ -7,6 +7,13 @@ export { analyzeIpConsistency } from "./ip-consistency";
 export type { IpConsistencyResult } from "./ip-consistency";
 export { analyzeJa4Ua } from "./ja4-ua";
 export type { Ja4UaAnalysisResult } from "./ja4-ua";
+export { analyzeKernelOs } from "./kernel-os";
+export type { KernelOsAnalysisResult } from "./kernel-os";
+export { analyzeBrowserEngine } from "./browser-engine";
+export type {
+  BrowserEngineAnalysisResult,
+  BrowserEngineSignal,
+} from "./browser-engine";
 export { analyzeLocaleGeo } from "./locale-geo";
 export type {
   LocaleGeoAnalysisResult,

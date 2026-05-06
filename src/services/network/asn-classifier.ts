@@ -28,16 +28,25 @@ interface DatasetPayload {
   source: string;
   asns_total: number;
   asns_classified: number;
+  /** Optional in older payloads — fall back to {} when absent. */
+  asns_with_org?: number;
   asns: Record<string, NetworkCategory>;
+  /** Optional in older payloads — present once ip-class-builder is updated. */
+  orgs?: Record<string, string>;
+}
+
+interface CachedDataset {
+  asns: Record<string, NetworkCategory>;
+  orgs: Record<string, string>;
 }
 
 const REFRESH_INTERVAL_MS = 24 * 60 * 60 * 1000;
-let cached: Record<string, NetworkCategory> | null = null;
+let cached: CachedDataset | null = null;
 let cachedAt = 0;
-let inflight: Promise<Record<string, NetworkCategory>> | null = null;
+let inflight: Promise<CachedDataset> | null = null;
 const s3 = new S3Client({});
 
-async function loadDataset(): Promise<Record<string, NetworkCategory>> {
+async function loadDataset(): Promise<CachedDataset> {
   const bucket = process.env.IP_CLASS_BUCKET;
   const key = process.env.IP_CLASS_KEY ?? "asn-categories.json.gz";
   if (!bucket) throw new Error("IP_CLASS_BUCKET env var is required");
@@ -46,10 +55,10 @@ async function loadDataset(): Promise<Record<string, NetworkCategory>> {
   if (!obj.Body) throw new Error(`empty body for s3://${bucket}/${key}`);
   const buf = Buffer.from(await obj.Body.transformToByteArray());
   const json = JSON.parse(gunzipSync(buf).toString("utf-8")) as DatasetPayload;
-  return json.asns;
+  return { asns: json.asns, orgs: json.orgs ?? {} };
 }
 
-async function getDataset(): Promise<Record<string, NetworkCategory>> {
+async function getDataset(): Promise<CachedDataset> {
   if (cached && Date.now() - cachedAt < REFRESH_INTERVAL_MS) return cached;
   if (inflight) return inflight;
   inflight = loadDataset().then((data) => {
@@ -70,7 +79,19 @@ async function getDataset(): Promise<Record<string, NetworkCategory>> {
  * lookup) OR if the dataset hasn't been loaded yet.
  */
 export function classifyAsnSync(asn: number): NetworkCategory {
-  return cached?.[String(asn)] ?? "unknown";
+  return cached?.asns[String(asn)] ?? "unknown";
+}
+
+/**
+ * Synchronous org-name lookup. Returns the IPtoASN-derived organization
+ * string for `asn` if the dataset has been loaded and contains it, else
+ * null. Callers should consult the static catalog (`asn-catalog.ts`) first
+ * — the catalog has hand-curated names that are typically cleaner than the
+ * raw IPtoASN values; this is the long-tail fallback for ASNs the catalog
+ * doesn't list (mainstream residential ISPs like AT&T 7018, etc.).
+ */
+export function lookupAsnOrgSync(asn: number): string | null {
+  return cached?.orgs[String(asn)] ?? null;
 }
 
 /**
@@ -98,8 +119,9 @@ export function _resetCacheForTesting(): void {
  */
 export function _seedCacheForTesting(
   dict: Record<string, NetworkCategory>,
+  orgs: Record<string, string> = {},
 ): void {
-  cached = dict;
+  cached = { asns: dict, orgs };
   cachedAt = Date.now();
   inflight = null;
 }

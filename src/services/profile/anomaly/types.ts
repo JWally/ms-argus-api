@@ -107,6 +107,23 @@ export const AnomalyCodes = {
    * auto-elevated. Moderate score so merchants can decide policy.
    */
   CATEGORY_PRIVACY_RELAY: "CATEGORY_PRIVACY_RELAY",
+  /**
+   * Server-observed `tcpi_options` contradict the claimed OS at the
+   * kernel level. Darwin (iOS/macOS) always negotiates ECN by default,
+   * so a claimed-iOS or claimed-macOS UA with no ECN bit (0x08) in the
+   * options bitmask cannot be a real Apple device. The signal is read
+   * straight from the server's own kernel — the client cannot lie about
+   * it from JS. Highest-confidence device-tamper signal.
+   */
+  KERNEL_OS_MISMATCH_DARWIN: "KERNEL_OS_MISMATCH_DARWIN",
+  /**
+   * Claimed-Linux UA with the ECN bit set in `tcpi_options`. Most Linux
+   * distros ship `net.ipv4.tcp_ecn=2` (passive only), so a Linux client
+   * actively negotiating ECN is unusual — typical of iOS/macOS spoofing
+   * Linux. Softer signal than the Darwin variant because some Linux
+   * deployments do flip ECN on intentionally.
+   */
+  KERNEL_OS_MISMATCH_LINUX: "KERNEL_OS_MISMATCH_LINUX",
 } as const;
 
 export type AnomalyCode = (typeof AnomalyCodes)[keyof typeof AnomalyCodes];

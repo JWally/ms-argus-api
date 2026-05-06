@@ -38,6 +38,8 @@ import {
   analyzeTimezone,
   analyzeIpConsistency,
   analyzeJa4Ua,
+  analyzeKernelOs,
+  analyzeBrowserEngine,
   analyzeLocaleGeo,
   analyzeClientHintsUa,
   classifyProxy,
@@ -46,6 +48,7 @@ import {
 import type { AsnCategory } from "../../analysis/ip-consistency/asn-catalog";
 import { prewarmAsnDataset } from "../../services/network/asn-classifier";
 import { prewarmAutoOverlay } from "../../services/network/auto-overlay";
+import { prewarmBrowserBaselines } from "../../services/network/browser-baselines";
 import { archiveToFirehose } from "../../helpers/firehose-archive";
 import { resolveIntegrityTtlSeconds } from "./ttl";
 
@@ -290,19 +293,14 @@ interface AnalysisInputs {
   webrtcSigintField: ReturnType<typeof buildWebrtcSigintField>;
 }
 
-function buildAnalysisBlock(inputs: AnalysisInputs) {
-  const {
-    raw,
-    hydratedPayload,
-    clientIp,
-    ua,
-    acceptLanguage,
-    requestHeaders,
-    webrtcSigint,
-    webrtcSigintField,
-  } = inputs;
-  // ip analysis runs first so its asn.category can feed the network
-  // analyzer's VPN-category override.
+/**
+ * Network-axis analyses (ip + network + proxy_waterfall). Pulled out of
+ * `buildAnalysisBlock` to keep that function under the per-function line
+ * cap. ip runs first so its asn.category can feed analyzeNetworkProbes'
+ * VPN-category override.
+ */
+function runNetworkAnalyses(inputs: AnalysisInputs) {
+  const { raw, hydratedPayload, clientIp, ua, webrtcSigint } = inputs;
   const ip = analyzeIpConsistency(
     raw.device,
     hydratedPayload.sigint,
@@ -314,7 +312,61 @@ function buildAnalysisBlock(inputs: AnalysisInputs) {
     hydratedPayload.sigint,
     ip.asn.category as AsnCategory | null,
   );
-  const proxyWaterfall = classifyProxy({
+  const proxyWaterfall = runProxyWaterfall(ip, hydratedPayload, webrtcSigint);
+  return { ip, network, proxyWaterfall };
+}
+
+function buildAnalysisBlock(inputs: AnalysisInputs) {
+  const {
+    raw,
+    hydratedPayload,
+    ua,
+    acceptLanguage,
+    requestHeaders,
+    webrtcSigintField,
+  } = inputs;
+  const { ip, network, proxyWaterfall } = runNetworkAnalyses(inputs);
+  const ja4Ua = analyzeJa4Ua(hydratedPayload.sigint, ua);
+  return {
+    network,
+    worker: analyzeWorkerScopes(raw.device),
+    timezone: analyzeTimezone(raw.device, hydratedPayload.sigint),
+    ip,
+    ja4_ua: ja4Ua,
+    kernel_os: analyzeKernelOs(hydratedPayload.sigint, ja4Ua.ua_os),
+    browser_engine: runBrowserEngineAnalysis(
+      raw.device,
+      hydratedPayload.sigint,
+      ua,
+      requestHeaders,
+    ),
+    locale_geo: analyzeLocaleGeo(
+      raw.device,
+      acceptLanguage,
+      extractCfCountry(hydratedPayload.sigint),
+    ),
+    client_hints_ua: analyzeClientHintsUa(
+      ua,
+      requestHeaders,
+      (hydratedPayload.sigint as { tcp_probe?: unknown } | undefined)
+        ?.tcp_probe,
+    ),
+    proxy_waterfall: proxyWaterfall,
+    ...(webrtcSigintField && { webrtc_sigint: webrtcSigintField }),
+  };
+}
+
+/**
+ * Compose the proxy-waterfall classifier inputs from the ip-analysis result
+ * and decoded sigint. Pulled out to keep buildAnalysisBlock under the
+ * per-function line cap.
+ */
+function runProxyWaterfall(
+  ip: ReturnType<typeof analyzeIpConsistency>,
+  hydratedPayload: ArgusPayload,
+  webrtcSigint: SigintCandidateDecodeResult,
+) {
+  return classifyProxy({
     tcpIp: ip.ips.tcp,
     webrtcIp: ip.ips.webrtc,
     // Read reason from the decoder result, not the stored field —
@@ -323,27 +375,33 @@ function buildAnalysisBlock(inputs: AnalysisInputs) {
     webrtcStatus: webrtcSigint.reason as WebrtcSigintStatus,
     rttRatio: extractRttRatio(hydratedPayload.sigint),
   });
-  const localeGeo = analyzeLocaleGeo(
-    raw.device,
-    acceptLanguage,
-    extractCfCountry(hydratedPayload.sigint),
-  );
-  const clientHintsUa = analyzeClientHintsUa(
+}
+
+function isIncognito(device: unknown): boolean {
+  if (!device || typeof device !== "object") return false;
+  const incog = (device as { incognito?: { isPrivate?: unknown } }).incognito;
+  return incog?.isPrivate === true;
+}
+
+/**
+ * Browser-engine consistency check: claimed (UA + sec-ch-ua + incognito)
+ * vs observed engine-invariant fields, scored against per-version baselines
+ * built daily by browser-baseline-builder. Cold-start safe — returns no
+ * signal when baseline is missing.
+ */
+function runBrowserEngineAnalysis(
+  device: unknown,
+  sigint: unknown,
+  ua: string,
+  requestHeaders: Record<string, string> | null,
+) {
+  return analyzeBrowserEngine({
+    device,
+    sigint,
     ua,
-    requestHeaders,
-    (hydratedPayload.sigint as { tcp_probe?: unknown } | undefined)?.tcp_probe,
-  );
-  return {
-    network,
-    worker: analyzeWorkerScopes(raw.device),
-    timezone: analyzeTimezone(raw.device, hydratedPayload.sigint),
-    ip,
-    ja4_ua: analyzeJa4Ua(hydratedPayload.sigint, ua),
-    locale_geo: localeGeo,
-    client_hints_ua: clientHintsUa,
-    proxy_waterfall: proxyWaterfall,
-    ...(webrtcSigintField ? { webrtc_sigint: webrtcSigintField } : {}),
-  };
+    secChUa: requestHeaders?.["sec-ch-ua"] ?? null,
+    incognito: isIncognito(device),
+  });
 }
 
 function extractCfCountry(sigint: unknown): string | null {
@@ -458,6 +516,9 @@ async function handleIntegrity(
     }),
     prewarmAutoOverlay().catch((err) => {
       ctx.deps.logger.warn("Auto-overlay prewarm failed", { error: err });
+    }),
+    prewarmBrowserBaselines().catch((err) => {
+      ctx.deps.logger.warn("Browser baselines prewarm failed", { error: err });
     }),
   ]);
   emitIdentityMetrics(ctx.deps, identity);

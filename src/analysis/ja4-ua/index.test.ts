@@ -165,4 +165,132 @@ describe("analyzeJa4Ua", () => {
       expect(result.signals).toHaveLength(0);
     });
   });
+
+  describe("TLS_UA_MISMATCH (probe-side cipher/GREASE check)", () => {
+    it("fires when probe reports ua_mismatch=true with hints", () => {
+      // Reproduces the Cisco Umbrella case: probe sees a stripped TLS profile
+      // (13 ciphers, no GREASE) on a Chromium-claimed UA. JA4 cipher hash is
+      // unknown (Umbrella's, not a browser's) so the family-table rule fails
+      // open — TLS_UA_MISMATCH is the safety net.
+      const sigint = {
+        h2: {
+          ja4: "t13d131000_0968ec391e9e_6d6df1345ed2",
+          tls_signals: {
+            ua_mismatch: true,
+            cipher_count: 13,
+            has_grease: false,
+            ua_hints: [
+              "chromium_ua_without_grease",
+              "chromium_ua_low_ciphers:13",
+            ],
+          },
+        },
+      };
+      const result = analyzeJa4Ua(sigint, CHROME_WIN_UA);
+      const sig = result.signals.find((s) => s.code === "TLS_UA_MISMATCH");
+      expect(sig).toBeDefined();
+      expect(sig?.severity).toBe(0.7);
+      expect(sig?.actual).toContain("chromium_ua_without_grease");
+      expect(sig?.actual).toContain("chromium_ua_low_ciphers:13");
+    });
+
+    it("falls back to tcp_probe.tls_signals when h2 has no flag", () => {
+      const sigint = {
+        h2: { ja4: "t13d131000_aaaaaaaaaaaa_bbbbbbbbbbbb" },
+        tcp_probe: {
+          tls_signals: {
+            ua_mismatch: true,
+            ua_hints: ["chromium_ua_without_grease"],
+          },
+        },
+      };
+      const result = analyzeJa4Ua(sigint, CHROME_WIN_UA);
+      expect(
+        result.signals.find((s) => s.code === "TLS_UA_MISMATCH"),
+      ).toBeDefined();
+    });
+
+    it("does NOT fire when ua_mismatch is false", () => {
+      const sigint = {
+        h2: {
+          ja4: "t13d1517h2_8daaf6152771_5151127fa428",
+          tls_signals: { ua_mismatch: false, has_grease: true },
+        },
+      };
+      const result = analyzeJa4Ua(sigint, CHROME_WIN_UA);
+      expect(
+        result.signals.find((s) => s.code === "TLS_UA_MISMATCH"),
+      ).toBeUndefined();
+    });
+
+    it("does NOT fire when tls_signals block is missing entirely", () => {
+      const result = analyzeJa4Ua(CHROME_LINUX_SIGINT, CHROME_WIN_UA);
+      expect(
+        result.signals.find((s) => s.code === "TLS_UA_MISMATCH"),
+      ).toBeUndefined();
+    });
+
+    it("suppresses on iPhone Safari when only hint is grease_without_chromium_ua (iOS 17+ ships GREASE)", () => {
+      // Real probe output from a current iPhone session: probe sees GREASE
+      // + 20 ciphers and assumes "GREASE without Chromium UA = mismatch".
+      // That heuristic predates iOS 17 / macOS 14 Safari adding GREASE
+      // support. Don't trip device_tampering on every iPhone for this.
+      const sigint = {
+        h2: {
+          ja4: "t13d2013h2_a09f3c656075_3798386c97ff",
+          tls_signals: {
+            ua_mismatch: true,
+            has_grease: true,
+            cipher_count: 20,
+            ua_hints: ["grease_without_chromium_ua"],
+          },
+        },
+      };
+      const result = analyzeJa4Ua(sigint, SAFARI_IOS_UA);
+      expect(
+        result.signals.find((s) => s.code === "TLS_UA_MISMATCH"),
+      ).toBeUndefined();
+    });
+
+    it("still fires on iPhone Safari when hints include something OTHER than the GREASE one", () => {
+      // If the probe reports additional mismatch evidence beyond the stale
+      // GREASE heuristic — e.g. an actual stripped cipher list from a
+      // mitmproxy/Burp on an iPhone — the signal must still fire.
+      const sigint = {
+        h2: {
+          ja4: "t13d131000_aaaaaaaaaaaa_bbbbbbbbbbbb",
+          tls_signals: {
+            ua_mismatch: true,
+            ua_hints: [
+              "grease_without_chromium_ua",
+              "safari_ua_low_ciphers:13",
+            ],
+          },
+        },
+      };
+      const result = analyzeJa4Ua(sigint, SAFARI_IOS_UA);
+      expect(
+        result.signals.find((s) => s.code === "TLS_UA_MISMATCH"),
+      ).toBeDefined();
+    });
+
+    it("still fires on Chromium with grease_without_chromium_ua (the carve-out is Safari-only)", () => {
+      // Sanity: the carve-out is scoped to Safari. If a Chromium UA somehow
+      // got flagged with this hint (shouldn't happen in practice, but we
+      // don't want the carve-out to over-suppress), still fire.
+      const sigint = {
+        h2: {
+          ja4: "t13d131000_aaaaaaaaaaaa_bbbbbbbbbbbb",
+          tls_signals: {
+            ua_mismatch: true,
+            ua_hints: ["grease_without_chromium_ua"],
+          },
+        },
+      };
+      const result = analyzeJa4Ua(sigint, CHROME_WIN_UA);
+      expect(
+        result.signals.find((s) => s.code === "TLS_UA_MISMATCH"),
+      ).toBeDefined();
+    });
+  });
 });

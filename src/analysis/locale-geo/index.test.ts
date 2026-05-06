@@ -241,6 +241,27 @@ describe("B1 — Accept-Language vs CF country", () => {
       r.signals.find((s) => s.code === "ACCEPT_LANG_GEO_CROSS_CONTINENT"),
     ).toBeDefined();
   });
+
+  it("regional spelling preference (en-GB on a US iPhone) → no signal", () => {
+    // Common iPhone config: user prefers British English spelling but lives
+    // in the US. The country subtag is a preference, not a geo claim.
+    const r = analyzeLocaleGeo({}, "en-GB", "US");
+    expect(r.hasLocationMismatch).toBe(false);
+  });
+
+  it("regional spelling preference (en-AU on a US user) → no signal", () => {
+    const r = analyzeLocaleGeo({}, "en-AU,en;q=0.9", "US");
+    expect(r.hasLocationMismatch).toBe(false);
+  });
+
+  it("language implausible for IP country still fires (zh-CN from US)", () => {
+    // Sanity: the suppression only applies when the language itself is
+    // plausible for the IP country. zh isn't a US language → still fires.
+    const r = analyzeLocaleGeo({}, "zh-CN", "US");
+    expect(
+      r.signals.find((s) => s.code === "ACCEPT_LANG_GEO_CROSS_CONTINENT"),
+    ).toBeDefined();
+  });
 });
 
 describe("analyzeLocaleGeo — convenience flags", () => {

@@ -119,6 +119,11 @@ describe("buildMerchantResponse", () => {
           },
           datacenter: { result: false },
           mobile: { result: false },
+          residential: { result: false },
+          vpn: { result: false },
+          hosting: { result: false },
+          privacy_relay: { result: false },
+          corporate_shield: { result: false },
         },
         incognito: { result: false },
         developer_tools: { result: false },
@@ -241,7 +246,11 @@ describe("buildMerchantResponse", () => {
       expect(result.tags).not.toContain("proxy");
     });
 
-    it("ipInfo.datacenter.result true when ASN category is datacenter", () => {
+    it("ipInfo.datacenter.result true when ASN network_class is datacenter", () => {
+      // All convenience booleans (datacenter/mobile/vpn/hosting/etc) read
+      // from `network_class`, the broader 12-value taxonomy. The legacy
+      // `category` field is exposed for backwards compat but no longer
+      // drives routing flags. Real ingestion data always sets both.
       const base = baseIntegrity();
       const result = buildMerchantResponse({
         session_id: "s",
@@ -255,6 +264,7 @@ describe("buildMerchantResponse", () => {
                 number: "AS16509",
                 category: "datacenter",
                 org: "AMAZON-02",
+                network_class: "datacenter",
               },
             },
           },
@@ -264,7 +274,69 @@ describe("buildMerchantResponse", () => {
       expect(result.ipInfo.asn.number).toBe(16509);
       expect(result.ipInfo.asn.organization).toBe("AMAZON-02");
       expect(result.ipInfo.asn.category).toBe("datacenter");
+      expect(result.ipInfo.asn.network_class).toBe("datacenter");
       expect(result.tags).toContain("hyperscaler");
+    });
+
+    it("ipInfo convenience booleans cover vpn / hosting / privacy_relay / corporate_shield / residential", () => {
+      const base = baseIntegrity();
+      const cases: Array<{ nc: string; expected: keyof typeof flags }> = [
+        { nc: "vpn_proxy", expected: "vpn" },
+        { nc: "hosting_proxy", expected: "hosting" },
+        { nc: "privacy_relay", expected: "privacy_relay" },
+        { nc: "security_filter", expected: "corporate_shield" },
+        { nc: "residential", expected: "residential" },
+        { nc: "mobile", expected: "mobile" },
+      ];
+      // Sanity placeholder so the keyof above type-checks at runtime.
+      const flags = {
+        vpn: 0,
+        hosting: 0,
+        privacy_relay: 0,
+        corporate_shield: 0,
+        residential: 0,
+        mobile: 0,
+      };
+      void flags;
+      for (const { nc, expected } of cases) {
+        const result = buildMerchantResponse({
+          session_id: "s",
+          integrity: {
+            ...base,
+            analysis: {
+              ...base.analysis,
+              ip: {
+                ...base.analysis.ip,
+                asn: {
+                  number: "AS1",
+                  category: "datacenter",
+                  org: "X",
+                  network_class: nc,
+                },
+              },
+            },
+          },
+        });
+        const info = result.ipInfo as unknown as Record<
+          string,
+          { result: boolean }
+        >;
+        expect(info[expected].result).toBe(true);
+        // All other booleans for this row should be false.
+        for (const other of [
+          "datacenter",
+          "mobile",
+          "residential",
+          "vpn",
+          "hosting",
+          "privacy_relay",
+          "corporate_shield",
+        ]) {
+          if (other !== expected) {
+            expect(info[other].result).toBe(false);
+          }
+        }
+      }
     });
 
     it("tampering probability fires on lies.totalLies >= 5", () => {
@@ -303,6 +375,123 @@ describe("buildMerchantResponse", () => {
         },
       });
       expect(result.device_tampering).toBe(100);
+    });
+
+    it("TLS_UA_MISMATCH alone bumps device_tampering to 60 on a non-shielded ASN", () => {
+      // Probe-side TLS-vs-UA mismatch. JA4 cipher hash isn't in the known-
+      // browser table (Umbrella's stripped TLS), so the family-table rule
+      // fails open — TLS_UA_MISMATCH is the safety net. Outside a corp
+      // shield context, this is a real TLS-MITM tell (mitmproxy / Burp /
+      // anti-detect tool with custom TLS).
+      const base = baseIntegrity();
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: {
+          ...base,
+          // ja4_ua isn't declared on the IntegrityResultsData schema (the
+          // ingestion handler writes it; the projector reads via cast).
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          analysis: {
+            ...base.analysis,
+            ja4_ua: {
+              signals: [
+                {
+                  code: "TLS_UA_MISMATCH",
+                  severity: 0.7,
+                  evidence: "stripped TLS",
+                },
+              ],
+            },
+          } as any,
+        },
+      });
+      expect(result.device_tampering).toBe(60);
+    });
+
+    it("TLS_UA_MISMATCH is suppressed when the ASN is corporate_proxy (shield carve-out)", () => {
+      // Cisco Umbrella / Zscaler / Cloudflare Access terminate TLS by
+      // design. The same probe-side mismatch fires, but it's expected
+      // behavior, not a tampering signal — surfaced via the corporate_shield
+      // tag instead.
+      const base = baseIntegrity();
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: {
+          ...base,
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          analysis: {
+            ...base.analysis,
+            ip: {
+              ...base.analysis.ip,
+              asn: {
+                number: "AS36692",
+                category: "corporate_proxy",
+                org: "Cisco OpenDNS / Umbrella",
+                network_class: "security_filter",
+              },
+            },
+            ja4_ua: {
+              signals: [
+                {
+                  code: "TLS_UA_MISMATCH",
+                  severity: 0.7,
+                  evidence: "stripped TLS",
+                },
+              ],
+            },
+          } as any,
+        },
+      });
+      expect(result.device_tampering).toBe(0);
+      expect(result.tags).toContain("corporate_shield");
+    });
+
+    it("BROWSER_ENGINE_INCONSISTENT_HARD pushes device_tampering to 100 (definitive)", () => {
+      const base = baseIntegrity();
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: {
+          ...base,
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          analysis: {
+            ...base.analysis,
+            browser_engine: {
+              signals: [
+                {
+                  code: "BROWSER_ENGINE_INCONSISTENT_HARD",
+                  severity: 0.95,
+                  evidence: "Safari UA + V8 jsEngine",
+                },
+              ],
+            },
+          } as any,
+        },
+      });
+      expect(result.device_tampering).toBe(100);
+    });
+
+    it("BROWSER_ENGINE_INCONSISTENT_SOFT bumps device_tampering to 60", () => {
+      const base = baseIntegrity();
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: {
+          ...base,
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          analysis: {
+            ...base.analysis,
+            browser_engine: {
+              signals: [
+                {
+                  code: "BROWSER_ENGINE_INCONSISTENT_SOFT",
+                  severity: 0.5,
+                  evidence: "low combined likelihood",
+                },
+              ],
+            },
+          } as any,
+        },
+      });
+      expect(result.device_tampering).toBe(60);
     });
 
     it("automation is 100 when all 3 strict markers fire (headlessRating 100)", () => {
@@ -779,6 +968,46 @@ describe("buildMerchantResponse", () => {
           },
         });
         expect(result.device_tampering).toBe(35);
+      });
+
+      it("TZ_GEOLOCATION_MISMATCH is suppressed when the ASN is corporate_proxy (shield carve-out)", () => {
+        // Cisco Umbrella / Zscaler / Cloudflare Access route through PoPs
+        // whose timezone often doesn't match the user's home timezone (a
+        // Chicago employee egressing through Ashburn → America/Chicago vs
+        // America/New_York). That structural false-positive shouldn't
+        // bump device_tampering OR fire the location_mismatch tag.
+        const base = baseIntegrity();
+        const result = buildMerchantResponse({
+          session_id: "s",
+          integrity: {
+            ...base,
+            analysis: {
+              ...base.analysis,
+              ip: {
+                ...base.analysis.ip,
+                asn: {
+                  number: "AS36692",
+                  category: "corporate_proxy",
+                  org: "Cisco OpenDNS / Umbrella",
+                  network_class: "security_filter",
+                },
+              },
+              timezone: {
+                ...base.analysis.timezone,
+                signals: [
+                  {
+                    code: "TZ_GEOLOCATION_MISMATCH",
+                    severity: 0.6,
+                    evidence: "client=Chicago, cloudfront=New_York",
+                  },
+                ],
+              },
+            },
+          },
+        });
+        expect(result.device_tampering).toBe(0);
+        expect(result.tags).toContain("corporate_shield");
+        expect(result.tags).not.toContain("location_mismatch");
       });
 
       it("tampering probability stays 0 on cross-continent accept-lang mismatch (tag-only signal)", () => {

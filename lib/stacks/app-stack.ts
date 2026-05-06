@@ -15,6 +15,7 @@ import { HttpApiConstruct } from "../constructs/http-api";
 import { RestApiConstruct } from "../constructs/rest-api";
 import { IpClassBuilderConstruct } from "../constructs/ip-class-builder";
 import { IpClassDiscovererConstruct } from "../constructs/ip-class-discoverer";
+import { BrowserBaselineBuilderConstruct } from "../constructs/browser-baseline-builder";
 import { CloudFrontWafConstruct } from "../constructs/cloudfront";
 import { AnalyticsConstruct } from "../constructs/analytics";
 import { IntegrityFirehoseConstruct } from "../constructs/integrity-firehose";
@@ -280,6 +281,24 @@ export class ArgusApiStack extends cdk.Stack {
     );
     ipClassDiscoverer.grantReadTo(httpApi.ingestionFunction);
     ipClassDiscoverer.grantReadTo(httpApi.sessionGetFunction);
+
+    // Browser-engine baseline aggregator: daily cron walks the integrity
+    // archive, builds per-(browser, version, incognito) histograms of
+    // engine-invariant fields, writes browser-baselines.json.gz next to
+    // the ASN dict. Runtime ingestion analyzes claimed-vs-observed engine
+    // consistency against these baselines (see analyzeBrowserEngine).
+    const browserBaselines = new BrowserBaselineBuilderConstruct(
+      this,
+      "BrowserBaselines",
+      {
+        stackName,
+        stage,
+        outputBucket: ipClass.bucket,
+        archiveBucket: analytics.integrityArchiveBucket,
+      },
+    );
+    browserBaselines.grantReadTo(httpApi.ingestionFunction);
+    browserBaselines.grantReadTo(httpApi.sessionGetFunction);
 
     // =========================================================================
     // WARMERS — Keep ingestion + session-get hot

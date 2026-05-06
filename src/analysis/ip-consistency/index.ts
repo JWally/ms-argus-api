@@ -27,6 +27,7 @@ import {
 import { lookupAsn, type AsnCategory } from "./asn-catalog";
 import {
   classifyAsnSync,
+  lookupAsnOrgSync,
   type NetworkCategory,
 } from "../../services/network/asn-classifier";
 import { lookupCidrOverlay } from "../../services/network/cidr-overlay";
@@ -208,42 +209,44 @@ function checkForgery(forgery: boolean): AnomalySignal | null {
 }
 
 /**
- * Resolve the broader `network_class` for an IP+ASN pair. Resolution order
- * (most authoritative first):
+ * Resolve the broader `network_class` for an IP+ASN pair.
  *
- *   1. Hand-curated CIDR overlay (cidr-overlay.ts) — small, manually-vetted
- *      rules for known mixed-use ASNs (AT&T 7018, T-Mobile cellular blocks,
- *      etc.). Wins because it's the most-vetted source.
- *   2. Auto-discovered overlay (auto-overlay.ts) — S3-loaded rules
- *      populated by the nightly ip-class-discoverer Lambda from RDAP
- *      lookups. Covers the long tail and international carriers without
- *      hand maintenance.
- *   3. Dynamic IPtoASN dataset (asn-classifier) — regex-on-org-name +
- *      manual overrides, ~3000 ASNs classified at ASN granularity.
- *   4. Legacy AsnCategory from the static catalog — pre-existing classifier
- *      kept for backwards compat with checkAsnCategory + vpnByCategory.
+ * Resolution priority — three tiers:
  *
- * Tries each candidate IP for the CIDR-based layers (1, 2) so that a
- * proxied session leaking an off-network IP via webrtc still classifies
- * based on the server-observed probe IPs that ARE in the overlay.
+ *   TIER 1: First non-null IP's CIDR-layer hit (hand-curated → auto-overlay).
+ *           The first IP in `ips` is the highest-priority observation
+ *           (caller passes probe IPs before client-reported IPs — see
+ *           analyzeIpConsistency). A CIDR hit on the high-priority IP is
+ *           authoritative for both physical-link facts (mobile/satellite
+ *           CIDRs) and proxy/shield identification.
+ *
+ *   TIER 2: ASN-level dictionaries (dynamic IPtoASN dict → legacy catalog).
+ *           Run when the high-priority IP had no CIDR hit. The ASN dict
+ *           knows about ~3000 ASNs at ASN granularity (Cisco Umbrella,
+ *           Cloudflare, AWS, etc.) and beats a CIDR-overlay hit on a
+ *           lower-priority IP.
+ *
+ *   TIER 3: Lower-priority IPs' CIDR hits (api/webrtc).
+ *           Last resort. Useful when the ASN is unknown but a client-side
+ *           IP happens to match a hand-curated mixed-use ASN rule.
+ *
+ * Why three tiers instead of "walk all IPs then ASN dict"?
+ *
+ *   Cisco Umbrella session with probe IPs in a not-yet-discovered PoP
+ *   (e.g., 155.190.7.96, no auto-overlay rule yet) but apiIp/webrtcIp
+ *   leaking the user's residential IP (matches AT&T 107.192.0.0/11
+ *   hand-curated → residential): if we walked all IPs through CIDR before
+ *   trying the ASN dict, the leaked residential IP wins and the session
+ *   misclassifies as residential. Three-tier resolution lets the ASN dict
+ *   (which knows 36692 → security_filter) beat the leaked residential CIDR
+ *   hit, while still preserving CIDR precedence on the authoritative
+ *   probe IP when one exists.
  */
-function classifyByHandCuratedOverlay(
-  ips: (string | null)[],
-): NetworkCategory | null {
-  for (const ip of ips) {
-    if (!ip) continue;
-    const hit = lookupCidrOverlay(ip);
-    if (hit) return hit.category;
-  }
-  return null;
-}
-
-function classifyByAutoOverlay(ips: (string | null)[]): NetworkCategory | null {
-  for (const ip of ips) {
-    if (!ip) continue;
-    const hit = lookupAutoOverlaySync(ip);
-    if (hit) return hit.category;
-  }
+function classifyIpByCidrLayers(ip: string): NetworkCategory | null {
+  const hand = lookupCidrOverlay(ip);
+  if (hand) return hand.category;
+  const auto = lookupAutoOverlaySync(ip);
+  if (auto) return auto.category;
   return null;
 }
 
@@ -260,15 +263,35 @@ function classifyByLegacyCatalog(
   return legacyCategory ?? null;
 }
 
+function firstCidrHit(ips: (string | null)[]): {
+  topPriorityHit: NetworkCategory | null;
+  fallbackHit: NetworkCategory | null;
+} {
+  let topPriorityHit: NetworkCategory | null = null;
+  let fallbackHit: NetworkCategory | null = null;
+  let isFirstNonNull = true;
+  for (const ip of ips) {
+    if (!ip) continue;
+    const hit = classifyIpByCidrLayers(ip);
+    if (hit) {
+      if (isFirstNonNull) topPriorityHit = hit;
+      else if (fallbackHit === null) fallbackHit = hit;
+    }
+    isFirstNonNull = false;
+  }
+  return { topPriorityHit, fallbackHit };
+}
+
 function deriveNetworkClass(
   asn: string | null,
   ips: (string | null)[],
   legacyCategory: AsnCategory | undefined,
 ): NetworkCategory | null {
+  const { topPriorityHit, fallbackHit } = firstCidrHit(ips);
+  if (topPriorityHit) return topPriorityHit;
   return (
-    classifyByHandCuratedOverlay(ips) ??
-    classifyByAutoOverlay(ips) ??
     classifyByDynamicDict(asn) ??
+    fallbackHit ??
     classifyByLegacyCatalog(legacyCategory)
   );
 }
@@ -440,6 +463,24 @@ function gatherIpSignals(input: IpSignalInputs): AnomalySignal[] {
   return signals;
 }
 
+/**
+ * Resolve the org name for an ASN. Static catalog wins (hand-curated, often
+ * cleaner than IPtoASN raw values like "AT&T-INTERNET4"). Dynamic dict from
+ * the ip-class-builder S3 dataset is the long-tail fallback so mainstream
+ * residential ISPs not in the static catalog (AT&T 7018, Comcast 7922, etc.)
+ * still surface a human-readable name on the merchant projection.
+ */
+function resolveAsnOrg(
+  asn: string | null,
+  catalogOrg: string | null,
+): string | null {
+  if (catalogOrg) return catalogOrg;
+  if (!asn) return null;
+  const n = Number(asn);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return lookupAsnOrgSync(n);
+}
+
 function buildAsnBlock(
   asn: string | null,
   candidateIps: (string | null)[],
@@ -448,7 +489,7 @@ function buildAsnBlock(
   return {
     number: asn,
     category: asnEntry?.category ?? (asn ? "residential" : null),
-    org: asnEntry?.org ?? null,
+    org: resolveAsnOrg(asn, asnEntry?.org ?? null),
     network_class: deriveNetworkClass(asn, candidateIps, asnEntry?.category),
   };
 }
@@ -494,7 +535,15 @@ export function analyzeIpConsistency(
   const integrity = computeIntegrityScore(probeIps, webrtcIp, forgery);
   const surfaceIp =
     integrity >= 0.5 ? pickSurfaceIp(webrtcIp, tlsIp, tcpIp, apiIp) : null;
-  const asnBlock = buildAsnBlock(asn, [webrtcIp, tlsIp, tcpIp, apiIp]);
+  // CIDR-overlay classification walks IPs in order and returns the first
+  // hit. Put server-observed probe IPs (TCP, TLS) first because those are
+  // what the upstream actually sees — when a corporate proxy / VPN sits in
+  // the path, the probes hit the proxy's egress (security_filter / vpn_proxy
+  // CIDR), but WebRTC and the API GW see the client's local IP (the
+  // residential network behind the proxy). For *classification*, the
+  // proxy-side label is the security-relevant one; for *consistency*, the
+  // mismatch itself is what the IP_PROBE_SCATTER signal handles.
+  const asnBlock = buildAsnBlock(asn, [tcpIp, tlsIp, apiIp, webrtcIp]);
   const networkId = buildNetworkId({
     asn,
     networkClass: asnBlock.network_class,
