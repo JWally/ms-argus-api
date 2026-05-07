@@ -192,14 +192,21 @@ export interface ArgusPayload {
   /** Full TLS fingerprint JSON string from VM sigint fetch */
   sigintTls?: string;
   /**
-   * Sigint-format probe token from the PAT-attestation Lambda. Same
-   * `{nonce}.{expiryMs}.{hmac}` shape as sigintTcpToken; the redemption helper
-   * fetches the underlying `{ type: "pat", attested: true, … }` fingerprint
-   * from PROBE_TOKENS_TABLE and surfaces it as `pat` below. Absence = no signal.
+   * Self-contained signed PAT attestation token from /v1/pat-attestation.
+   * Format: `<base64url-payload>.<hex-hmac>` per pat-signed-token.ts.
+   * Ingestion verifies inline (no DB) and surfaces as `pat` below.
+   * Absence = no signal.
    */
   patToken?: string;
   /** Hydrated PAT attestation, populated only after successful patToken redemption. */
   pat?: PayloadPat;
+  /**
+   * Forensic-only diagnostic from the SDK's PAT probe — JSON string of
+   * what the JS-layer `fetch()` actually saw (`{status, ok, hasToken,
+   * err?}`). NOT server-trusted; ingestion stores it as-is for debugging
+   * the cross-origin iOS URLSession ↔ WebKit JS handoff. Safe to log.
+   */
+  patDiag?: string;
 }
 
 /**
