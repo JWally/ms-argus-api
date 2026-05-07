@@ -494,6 +494,129 @@ describe("buildMerchantResponse", () => {
       expect(result.device_tampering).toBe(60);
     });
 
+    it("KERNEL_OS_MISMATCH_DARWIN pushes device_tampering to 100 (definitive)", () => {
+      const base = baseIntegrity();
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: {
+          ...base,
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          analysis: {
+            ...base.analysis,
+            kernel_os: {
+              signals: [
+                {
+                  code: "KERNEL_OS_MISMATCH_DARWIN",
+                  severity: 1,
+                  evidence: "Apple UA, no ECN",
+                },
+              ],
+            },
+          } as any,
+        },
+      });
+      expect(result.device_tampering).toBe(100);
+      expect(result.tags).toContain("browser_tampering");
+    });
+
+    it("KERNEL_OS_MISMATCH_DARWIN is suppressed when the ASN is corporate_proxy (shield carve-out)", () => {
+      // Cisco Umbrella / Zscaler / Cloudflare Access re-originate TCP from
+      // their egress, so tcpi_options reflects the proxy's stack, not the
+      // user's. ECN doesn't propagate, so every legitimate iOS/macOS user
+      // behind these proxies trips the Darwin-without-ECN heuristic.
+      // Mirror the TLS_UA_MISMATCH carve-out: scoring drops it, forensic
+      // signal stays in analysis.kernel_os.signals.
+      const base = baseIntegrity();
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: {
+          ...base,
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          analysis: {
+            ...base.analysis,
+            ip: {
+              ...base.analysis.ip,
+              asn: {
+                number: "AS36692",
+                category: "corporate_proxy",
+                org: "Cisco OpenDNS / Umbrella",
+                network_class: "security_filter",
+              },
+            },
+            kernel_os: {
+              signals: [
+                {
+                  code: "KERNEL_OS_MISMATCH_DARWIN",
+                  severity: 1,
+                  evidence: "Apple UA, no ECN",
+                },
+              ],
+            },
+          } as any,
+        },
+      });
+      expect(result.device_tampering).toBe(0);
+      expect(result.tags).not.toContain("browser_tampering");
+      expect(result.tags).toContain("corporate_shield");
+    });
+
+    it("KERNEL_OS_MISMATCH_LINUX (soft) bumps device_tampering to 60 outside a shield", () => {
+      const base = baseIntegrity();
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: {
+          ...base,
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          analysis: {
+            ...base.analysis,
+            kernel_os: {
+              signals: [
+                {
+                  code: "KERNEL_OS_MISMATCH_LINUX",
+                  severity: 0.5,
+                  evidence: "Linux UA, ECN on",
+                },
+              ],
+            },
+          } as any,
+        },
+      });
+      expect(result.device_tampering).toBe(60);
+    });
+
+    it("KERNEL_OS_MISMATCH_LINUX (soft) is also suppressed under corporate_proxy", () => {
+      const base = baseIntegrity();
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: {
+          ...base,
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          analysis: {
+            ...base.analysis,
+            ip: {
+              ...base.analysis.ip,
+              asn: {
+                number: "AS36692",
+                category: "corporate_proxy",
+                org: "Cisco OpenDNS / Umbrella",
+                network_class: "security_filter",
+              },
+            },
+            kernel_os: {
+              signals: [
+                {
+                  code: "KERNEL_OS_MISMATCH_LINUX",
+                  severity: 0.5,
+                  evidence: "Linux UA, ECN on",
+                },
+              ],
+            },
+          } as any,
+        },
+      });
+      expect(result.device_tampering).toBe(0);
+    });
+
     it("automation is 100 when all 3 strict markers fire (headlessRating 100)", () => {
       const base = baseIntegrity();
       const result = buildMerchantResponse({

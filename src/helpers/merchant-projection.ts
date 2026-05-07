@@ -834,8 +834,15 @@ function collectTamperingEvidence(
     langGeoCrossCountry: locale.crossCountry,
     browserEngineHardBreak: engineSignals.hard,
     browserEngineSoft: engineSignals.soft,
-    kernelOsMismatchHard: kernelSignals.hard,
-    kernelOsMismatchSoft: kernelSignals.soft,
+    // Corporate-shield TLS-intercepting proxies (Umbrella, Zscaler, etc.)
+    // re-originate the connection from their egress, so the socket the
+    // server kernel observes is the proxy's, not the user's. ECN almost
+    // never gets propagated through these stacks, which falsely flips
+    // the Apple-without-ECN heuristic on every legitimate iOS/macOS user
+    // behind the proxy. Suppress at scoring time only — the raw signal
+    // stays on `analysis.kernel_os.signals` for forensic review.
+    kernelOsMismatchHard: kernelSignals.hard && !shielded,
+    kernelOsMismatchSoft: kernelSignals.soft && !shielded,
   };
 }
 
