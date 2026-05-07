@@ -53,7 +53,7 @@ interface ParsedToken {
 }
 
 /** Parse a PAT type 0x0002 token. Returns null on any structural problem. */
-export function parsePatToken(tokenBytes: Buffer): ParsedToken | null {
+function parsePatToken(tokenBytes: Buffer): ParsedToken | null {
   if (tokenBytes.length <= HEADER_LEN) return null;
   return {
     tokenType: tokenBytes.readUInt16BE(0),
