@@ -10,30 +10,12 @@ import { createHmac, timingSafeEqual } from "crypto";
 import { DynamoDBClient, GetItemCommand } from "@aws-sdk/client-dynamodb";
 import { unmarshall } from "@aws-sdk/util-dynamodb";
 import type { Logger } from "@aws-lambda-powertools/logger";
-import type { ArgusPayload, PayloadPat } from "./payload-schema";
+import type { ArgusPayload } from "./payload-schema";
 import {
   verifyCfToken,
   verifyCfCookie,
   type CfTokenFields,
 } from "./verify-cf-token";
-
-/**
- * Type guard for PAT fingerprint blobs persisted by the pat-attest Lambda.
- * Loose-coupling: this is the ONLY ingestion-side knowledge of the PAT
- * fingerprint shape — keeping it inline so the field can be deleted by
- * removing the type guard plus its caller below.
- */
-function isPatFingerprint(x: unknown): x is PayloadPat & { type: "pat" } {
-  if (!x || typeof x !== "object") return false;
-  const r = x as Record<string, unknown>;
-  return (
-    r.type === "pat" &&
-    r.attested === true &&
-    typeof r.issuer === "string" &&
-    typeof r.tokenHash === "string" &&
-    typeof r.redeemedAt === "number"
-  );
-}
 
 /**
  * Check only the expiry portion of a token (fast path, no key needed).
@@ -313,10 +295,9 @@ export async function redeemSigintTokens(
     dynamo,
     logger,
   };
-  const [tcpData, h2Data, patData] = await Promise.all([
+  const [tcpData, h2Data] = await Promise.all([
     redeemToken(tcpToken, redeemCtx),
     redeemToken(h2Token, redeemCtx),
-    redeemToken(payload.patToken, redeemCtx),
   ]);
 
   if (tcpData) sigint.tcp_probe = tcpData as typeof sigint.tcp_probe;
@@ -325,21 +306,5 @@ export async function redeemSigintTokens(
   return {
     ...payload,
     sigint: Object.keys(sigint).length > 0 ? sigint : undefined,
-    pat: shapePatResult(patData),
-  };
-}
-
-/**
- * Map a redeemed probe-fingerprint blob to a PayloadPat. Returns undefined
- * for shapes that don't match (e.g. a TCP-probe fingerprint replayed in the
- * patToken field). PAT is additive-only — silent drop is correct.
- */
-function shapePatResult(data: unknown): PayloadPat | undefined {
-  if (!isPatFingerprint(data)) return undefined;
-  return {
-    attested: true,
-    issuer: data.issuer,
-    tokenHash: data.tokenHash,
-    redeemedAt: data.redeemedAt,
   };
 }

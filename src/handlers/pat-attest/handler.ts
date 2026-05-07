@@ -11,25 +11,24 @@
  *   clients that want to redeem explicitly.
  *
  * Mode 2 (Authorization: PrivateToken token=<b64url>):
- *   Verify the token. On success: mint a sigint-format probe token bound to
- *   the source IP, persist a `{ type: "pat", attested: true, … }` fingerprint
- *   to PROBE_TOKENS_TABLE, and return `{ token }`. The client forwards that
- *   token to /v1/integrity-collect; ingestion redeems it via the existing
- *   redeemSigintTokens machinery.
+ *   Verify the token. On success: HMAC-sign a self-contained attestation
+ *   blob (`{type:"pat", issuer, src_ip, iat, exp, token_hash}`) and return
+ *   it as `{ token }`. The client forwards that string in
+ *   `payload.patToken`; ingestion verifies the HMAC, freshness, and IP
+ *   binding without any DB round trip — see helpers/redeem-pat-token.ts.
  *
  * Loose-coupling guarantees:
  *   - Issuer config in one file (issuer-config.ts).
  *   - All failures null-safe — disabled or directory-down → 503 with no-store.
- *   - Zero dependencies on this Lambda from other Lambdas at runtime; only
- *     coupling is the DDB row format which redeem-sigint-tokens.ts already
- *     consumes.
+ *   - Stateless: this Lambda holds no DB grants. Only IAM is read on the
+ *     SIGINT_AES_KEY secret. Removing PAT = delete this directory + drop
+ *     the SecretsManager grant.
  */
 
 import { createHash } from "crypto";
 import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from "aws-lambda";
 import { Logger } from "@aws-lambda-powertools/logger";
 import { Metrics, MetricUnit } from "@aws-lambda-powertools/metrics";
-import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import {
   SecretsManagerClient,
   GetSecretValueCommand,
@@ -38,14 +37,13 @@ import {
 import { encodeTokenChallenge } from "./challenge";
 import { ISSUER_CONFIG } from "./issuer-config";
 import { getActiveTokenKey } from "./issuer-directory";
-import { mintProbeToken, type PatFingerprint } from "./envelope";
+import { signPatAttestation } from "../../helpers/pat-signed-token";
 import { testPageResponse } from "./test-page";
 import { verifyPatToken } from "./verify";
 
 const SERVICE = "pat-attest";
 const logger = new Logger({ serviceName: SERVICE });
 const metrics = new Metrics({ namespace: "Argus/PAT", serviceName: SERVICE });
-const dynamo = new DynamoDBClient({});
 const secretsClient = new SecretsManagerClient({});
 
 let cachedAesKeyHex: string | null = null;
@@ -164,7 +162,6 @@ function rejectInvalidToken(reason: string): APIGatewayProxyResultV2 {
 async function buildRedemptionResponse(
   tokenBytes: Buffer,
   clientIp: string,
-  tableName: string,
 ): Promise<APIGatewayProxyResultV2 | null> {
   const key = await getActiveTokenKey(logger);
   if (!key) return null;
@@ -176,24 +173,20 @@ async function buildRedemptionResponse(
   const aesKey = await getSigintAesKeyHex();
   if (!aesKey) return null;
 
-  const fingerprint: PatFingerprint = {
-    type: "pat",
+  const tokenHash = createHash("sha256").update(tokenBytes).digest("hex");
+  const signed = signPatAttestation({
     issuer: ISSUER_CONFIG.host,
-    attested: true,
-    tokenHash: createHash("sha256").update(tokenBytes).digest("hex"),
-    redeemedAt: Date.now(),
-  };
-
-  const probeToken = await mintProbeToken({
-    fingerprint,
-    clientIp,
+    srcIp: clientIp,
+    tokenHash,
     sigintAesKeyHex: aesKey,
-    tableName,
-    dynamo,
-    logger,
   });
 
   metrics.addMetric("VerifySucceeded", MetricUnit.Count, 1);
+  logger.info("PAT attestation signed", {
+    issuer: ISSUER_CONFIG.host,
+    srcIp: clientIp,
+    tokenHashPrefix: tokenHash.slice(0, 16),
+  });
 
   return {
     statusCode: 200,
@@ -201,10 +194,7 @@ async function buildRedemptionResponse(
       "Content-Type": "application/json",
       "Cache-Control": "no-store",
     },
-    body: JSON.stringify({
-      token: probeToken.token,
-      expiryMs: probeToken.expiryMs,
-    }),
+    body: JSON.stringify({ token: signed }),
   };
 }
 
@@ -220,19 +210,13 @@ export const baseHandler = async (
     return unavailable();
   }
 
-  const tableName = process.env.PROBE_TOKENS_TABLE_NAME;
-  if (!tableName) {
-    logger.error("PROBE_TOKENS_TABLE_NAME not configured");
-    return unavailable();
-  }
-
   const authHeader = getHeader(event, "authorization");
   const tokenBytes = parseAuthorizationToken(authHeader);
 
   let response: APIGatewayProxyResultV2 | null;
   if (tokenBytes) {
     const clientIp = event.requestContext.http.sourceIp;
-    response = await buildRedemptionResponse(tokenBytes, clientIp, tableName);
+    response = await buildRedemptionResponse(tokenBytes, clientIp);
   } else {
     response = await buildChallengeResponse();
   }

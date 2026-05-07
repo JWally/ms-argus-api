@@ -217,12 +217,11 @@ export class HttpApiConstruct extends Construct {
     });
 
     // PAT (Apple Private Access Tokens) attestation route. Optional — only
-    // mounted when both PROBE_TOKENS_TABLE and SIGINT_AES_KEY secret are
-    // wired through, since the PAT Lambda mints sigint-format tokens that
-    // require both. Loose-coupling intent: the entire PAT subsystem is
-    // controlled by these two props; remove them and the Lambda + route
-    // simply don't deploy.
-    if (probeTokensTableName && sigintAesKeySecretArn) {
+    // mounted when SIGINT_AES_KEY is wired through. The Lambda is
+    // STATELESS: it HMAC-signs a self-contained attestation blob with the
+    // shared key and returns it; ingestion verifies inline without any
+    // DB lookup. No DynamoDB grant needed.
+    if (sigintAesKeySecretArn) {
       const patLogGroup = new logs.LogGroup(this, "PatAttestLogGroup", {
         logGroupName: `/aws/lambda/${stackName}-pat-attest`,
         retention: logs.RetentionDays.ONE_MONTH,
@@ -242,7 +241,6 @@ export class HttpApiConstruct extends Construct {
           logGroup: patLogGroup,
           environment: {
             ...createPowertoolsEnv("argus-pat-attest", `argus-${stage}`, stage),
-            PROBE_TOKENS_TABLE_NAME: probeTokensTableName,
             SIGINT_AES_KEY_SECRET_ARN: sigintAesKeySecretArn,
           },
         },
@@ -254,15 +252,6 @@ export class HttpApiConstruct extends Construct {
           resources: [sigintAesKeySecretArn],
         }),
       );
-
-      if (props.probeTokensTableArn) {
-        patAttestFunction.addToRolePolicy(
-          new iam.PolicyStatement({
-            actions: ["dynamodb:PutItem"],
-            resources: [props.probeTokensTableArn],
-          }),
-        );
-      }
 
       const patIntegration = new integrations.HttpLambdaIntegration(
         "PatAttestIntegration",

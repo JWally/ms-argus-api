@@ -22,6 +22,7 @@ import {
   type ArgusPayload,
 } from "../../helpers/payload-schema";
 import { redeemSigintTokens } from "../../helpers/redeem-sigint-tokens";
+import { redeemPatToken } from "../../helpers/redeem-pat-token";
 import { extractFpidCookie } from "../../helpers/verify-cf-token";
 import {
   buildWebrtcSigintField,
@@ -145,7 +146,15 @@ async function hydrateSigint(
       fpidCookie: extractFpidCookie(event.cookies),
     });
     deps.metrics.addMetric("IntegritySigintRedeemed", MetricUnit.Count, 1);
-    return hydrated;
+    // PAT redemption is independent of sigint probe redemption — its token
+    // is self-contained (HMAC-signed at /v1/pat-attestation, verified inline
+    // here), so it shares the AES key but no DB infra. Failure modes drop
+    // the field silently inside redeemPatToken.
+    return redeemPatToken(hydrated, {
+      expectedSrcIp: event.requestContext.http.sourceIp,
+      sigintAesKeyHex: sigintAesKey,
+      logger: deps.logger,
+    });
   } catch (err) {
     deps.logger.warn("Sigint token redemption failed", { error: err });
     return payload;
