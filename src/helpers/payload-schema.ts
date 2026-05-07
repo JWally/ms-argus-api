@@ -151,6 +151,25 @@ export interface PayloadSigint {
   errors?: unknown[];
 }
 
+/**
+ * Hydrated PAT (Apple Private Access Token) attestation result.
+ *
+ * Loose-coupling contract: this field is OPTIONAL everywhere it appears.
+ * Readers must use `payload.pat?.attested` and treat absence as "no signal".
+ * The PAT subsystem can be removed by deleting this type, the patToken
+ * field below, and the pat-attest handler dir — nothing else depends on it.
+ */
+export interface PayloadPat {
+  /** Always true if present; we don't persist false-attested results. */
+  attested: true;
+  /** Issuer hostname that signed the underlying token. */
+  issuer: string;
+  /** SHA-256 hex of the original PAT bytes (NOT the token; preserves unlinkability). */
+  tokenHash: string;
+  /** Epoch ms when the PAT Lambda verified the token. */
+  redeemedAt: number;
+}
+
 export interface ArgusPayload {
   identifiers: PayloadIdentifiers;
   hashes: PayloadHashes;
@@ -172,6 +191,15 @@ export interface ArgusPayload {
   sigintH2Token?: string;
   /** Full TLS fingerprint JSON string from VM sigint fetch */
   sigintTls?: string;
+  /**
+   * Sigint-format probe token from the PAT-attestation Lambda. Same
+   * `{nonce}.{expiryMs}.{hmac}` shape as sigintTcpToken; the redemption helper
+   * fetches the underlying `{ type: "pat", attested: true, … }` fingerprint
+   * from PROBE_TOKENS_TABLE and surfaces it as `pat` below. Absence = no signal.
+   */
+  patToken?: string;
+  /** Hydrated PAT attestation, populated only after successful patToken redemption. */
+  pat?: PayloadPat;
 }
 
 /**

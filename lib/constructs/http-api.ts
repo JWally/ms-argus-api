@@ -79,6 +79,7 @@ export class HttpApiConstruct extends Construct {
   public readonly api: apigatewayv2.HttpApi;
   public readonly ingestionFunction: lambda.Function;
   public readonly sessionGetFunction: lambda.Function;
+  public readonly patAttestFunction?: lambda.Function;
   public readonly apiEndpoint: string;
 
   constructor(scope: Construct, id: string, props: HttpApiConstructProps) {
@@ -214,6 +215,69 @@ export class HttpApiConstruct extends Construct {
       methods: [apigatewayv2.HttpMethod.POST, apigatewayv2.HttpMethod.OPTIONS],
       integration: ingestionIntegration,
     });
+
+    // PAT (Apple Private Access Tokens) attestation route. Optional — only
+    // mounted when both PROBE_TOKENS_TABLE and SIGINT_AES_KEY secret are
+    // wired through, since the PAT Lambda mints sigint-format tokens that
+    // require both. Loose-coupling intent: the entire PAT subsystem is
+    // controlled by these two props; remove them and the Lambda + route
+    // simply don't deploy.
+    if (probeTokensTableName && sigintAesKeySecretArn) {
+      const patLogGroup = new logs.LogGroup(this, "PatAttestLogGroup", {
+        logGroupName: `/aws/lambda/${stackName}-pat-attest`,
+        retention: logs.RetentionDays.ONE_MONTH,
+        removalPolicy: RemovalPolicy.DESTROY,
+      });
+
+      const patAttestFunction = new lambdaNode.NodejsFunction(
+        this,
+        "PatAttestFunction",
+        {
+          ...createBaseLambdaConfig(),
+          functionName: `${stackName}-pat-attest`,
+          handler: "handler",
+          entry: path.join(__dirname, "../../src/handlers/pat-attest.ts"),
+          memorySize: 256,
+          timeout: Duration.seconds(5),
+          logGroup: patLogGroup,
+          environment: {
+            ...createPowertoolsEnv("argus-pat-attest", `argus-${stage}`, stage),
+            PROBE_TOKENS_TABLE_NAME: probeTokensTableName,
+            SIGINT_AES_KEY_SECRET_ARN: sigintAesKeySecretArn,
+          },
+        },
+      );
+
+      patAttestFunction.addToRolePolicy(
+        new iam.PolicyStatement({
+          actions: ["secretsmanager:GetSecretValue"],
+          resources: [sigintAesKeySecretArn],
+        }),
+      );
+
+      if (props.probeTokensTableArn) {
+        patAttestFunction.addToRolePolicy(
+          new iam.PolicyStatement({
+            actions: ["dynamodb:PutItem"],
+            resources: [props.probeTokensTableArn],
+          }),
+        );
+      }
+
+      const patIntegration = new integrations.HttpLambdaIntegration(
+        "PatAttestIntegration",
+        patAttestFunction,
+      );
+
+      this.api.addRoutes({
+        path: "/v1/pat-attestation",
+        methods: [apigatewayv2.HttpMethod.GET, apigatewayv2.HttpMethod.OPTIONS],
+        integration: patIntegration,
+      });
+
+      (this as { patAttestFunction?: lambda.Function }).patAttestFunction =
+        patAttestFunction;
+    }
 
     this.apiEndpoint = this.api.apiEndpoint;
 
