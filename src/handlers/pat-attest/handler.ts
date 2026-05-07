@@ -2,12 +2,13 @@
  * Lambda entry point for /v1/pat-attestation.
  *
  * Mode 1 (no Authorization header):
- *   200 + WWW-Authenticate: PrivateToken challenge=…, token-key=…, max-age=…
- *   The 200 (rather than 401) lets cross-origin fetch read the response body
- *   from JS. The OS-level URLSession on iOS Safari ignores the status and
- *   acts on the WWW-Authenticate header alone — RFC 9577 §3 doesn't mandate
- *   any specific status, only the header. JSON body mirrors the same
- *   challenge for clients that want to redeem explicitly.
+ *   401 + WWW-Authenticate: PrivateToken challenge=…, token-key=…, max-age=…
+ *   401 is required: iOS URLSession only invokes the PAT handler on a 401
+ *   response (standard HTTP auth flow per RFC 9577 §3). 200 with the
+ *   WWW-Authenticate header — verified empirically against the live
+ *   Fastly demo at https://patdemo-o.edgecompute.app/ — does not fire the
+ *   OS handler. The JSON body still carries the challenge for non-iOS
+ *   clients that want to redeem explicitly.
  *
  * Mode 2 (Authorization: PrivateToken token=<b64url>):
  *   Verify the token. On success: mint a sigint-format probe token bound to
@@ -132,7 +133,7 @@ async function buildChallengeResponse(): Promise<APIGatewayProxyResultV2 | null>
   metrics.addMetric("ChallengeIssued", MetricUnit.Count, 1);
 
   return {
-    statusCode: 200,
+    statusCode: 401,
     headers: {
       "Content-Type": "application/json",
       "WWW-Authenticate": wwwAuth,
