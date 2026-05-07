@@ -38,6 +38,7 @@ import { encodeTokenChallenge } from "./challenge";
 import { ISSUER_CONFIG } from "./issuer-config";
 import { getActiveTokenKey } from "./issuer-directory";
 import { mintProbeToken, type PatFingerprint } from "./envelope";
+import { testPageResponse } from "./test-page";
 import { verifyPatToken } from "./verify";
 
 const SERVICE = "pat-attest";
@@ -209,6 +210,10 @@ async function buildRedemptionResponse(
 export const baseHandler = async (
   event: APIGatewayProxyEventV2,
 ): Promise<APIGatewayProxyResultV2> => {
+  if (event.requestContext.http.path === "/v1/pat-test") {
+    return testPageResponse();
+  }
+
   if (ISSUER_CONFIG.disabled) {
     metrics.addMetric("Disabled", MetricUnit.Count, 1);
     return unavailable();

@@ -275,6 +275,14 @@ export class HttpApiConstruct extends Construct {
         integration: patIntegration,
       });
 
+      // Transient first-party HTML test page (same Lambda; deleted with
+      // test-page.ts when smoke test is done).
+      this.api.addRoutes({
+        path: "/v1/pat-test",
+        methods: [apigatewayv2.HttpMethod.GET],
+        integration: patIntegration,
+      });
+
       (this as { patAttestFunction?: lambda.Function }).patAttestFunction =
         patAttestFunction;
     }
