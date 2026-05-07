@@ -37,7 +37,10 @@ import {
 import { encodeTokenChallenge } from "./challenge";
 import { ISSUER_CONFIG } from "./issuer-config";
 import { getActiveTokenKey } from "./issuer-directory";
-import { signPatAttestation } from "../../helpers/pat-signed-token";
+import {
+  signPatAttestation,
+  CLIENT_REFRESH_SECONDS,
+} from "../../helpers/pat-signed-token";
 import { testPageResponse } from "./test-page";
 import { verifyPatToken } from "./verify";
 
@@ -188,13 +191,20 @@ async function buildRedemptionResponse(
     tokenHashPrefix: tokenHash.slice(0, 16),
   });
 
+  // `exp` here is the CLIENT refresh-trigger (45s), not the server-
+  // enforced hard-expiry (60s — baked into the signed token itself and
+  // checked by verifyPatAttestation). The SDK uses this to decide when
+  // to invalidate its sessionStorage cache and fetch fresh.
   return {
     statusCode: 200,
     headers: {
       "Content-Type": "application/json",
       "Cache-Control": "no-store",
     },
-    body: JSON.stringify({ token: signed }),
+    body: JSON.stringify({
+      token: signed,
+      exp: Math.floor(Date.now() / 1000) + CLIENT_REFRESH_SECONDS,
+    }),
   };
 }
 

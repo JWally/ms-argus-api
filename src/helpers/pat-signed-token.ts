@@ -23,8 +23,16 @@ import { createHmac, timingSafeEqual } from "crypto";
 const VERSION = 1;
 const TYPE = "pat" as const;
 
-/** Default freshness window from issue to expiry. */
+/** Default freshness window from issue to expiry — server-side enforced
+ *  (verifyPatAttestation rejects past this). Security boundary. */
 export const DEFAULT_TTL_MS = 60_000;
+
+/** When the SDK should consider a cached token stale and fetch a new
+ *  one. Strictly less than DEFAULT_TTL_MS — leaves headroom for clock
+ *  skew + network RTT + iOS PAT cooldown (~30s observed). Not enforced
+ *  server-side; just surfaced to the client so it can manage its
+ *  sessionStorage cache. */
+export const CLIENT_REFRESH_SECONDS = 45;
 
 /** Inputs the PAT Lambda has after a successful PAT verify. */
 export interface SignPatInput {
