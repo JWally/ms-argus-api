@@ -617,6 +617,103 @@ describe("buildMerchantResponse", () => {
       expect(result.device_tampering).toBe(0);
     });
 
+    it("apple_attested tag fires when payload.pat.attested is true", () => {
+      const base = baseIntegrity();
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: {
+          ...base,
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          pat: {
+            attested: true,
+            issuer: "demo-issuer.private-access-tokens.fastly.com",
+            tokenHash: "abc",
+            redeemedAt: 1_700_000_000_000,
+          } as any,
+        },
+      });
+      expect(result.tags).toContain("apple_attested");
+      expect(result.tags).not.toContain("apple_attestation_missing");
+      // Score-neutral — positive tag must not move device_tampering.
+      expect(result.device_tampering).toBe(0);
+    });
+
+    it("apple_attestation_missing fires on iPhone Safari UA without pat", () => {
+      const base = baseIntegrity();
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: {
+          ...base,
+          user_agent:
+            "Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.5 Mobile/15E148 Safari/604.1",
+        },
+      });
+      expect(result.tags).toContain("apple_attestation_missing");
+      expect(result.tags).not.toContain("apple_attested");
+      // Score-neutral — observational only.
+      expect(result.device_tampering).toBe(0);
+    });
+
+    it("apple_attestation_missing fires on macOS Safari UA without pat", () => {
+      const base = baseIntegrity();
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: {
+          ...base,
+          user_agent:
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.4 Safari/605.1.15",
+        },
+      });
+      expect(result.tags).toContain("apple_attestation_missing");
+    });
+
+    it("apple_attestation_missing does NOT fire on Chrome/Mac UA (Chromium ≠ Safari)", () => {
+      const base = baseIntegrity();
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: {
+          ...base,
+          user_agent:
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36",
+        },
+      });
+      expect(result.tags).not.toContain("apple_attestation_missing");
+    });
+
+    it("apple_attestation_missing does NOT fire on Firefox/Mac UA", () => {
+      const base = baseIntegrity();
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: {
+          ...base,
+          user_agent:
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:150.0) Gecko/20100101 Firefox/150.0",
+        },
+      });
+      expect(result.tags).not.toContain("apple_attestation_missing");
+    });
+
+    it("apple_attested AND apple_attestation_missing are mutually exclusive", () => {
+      const base = baseIntegrity();
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: {
+          ...base,
+          user_agent:
+            "Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.5 Mobile/15E148 Safari/604.1",
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          pat: {
+            attested: true,
+            issuer: "demo-issuer.private-access-tokens.fastly.com",
+            tokenHash: "abc",
+            redeemedAt: 1_700_000_000_000,
+          } as any,
+        },
+      });
+      expect(result.tags).toContain("apple_attested");
+      expect(result.tags).not.toContain("apple_attestation_missing");
+    });
+
     it("automation is 100 when all 3 strict markers fire (headlessRating 100)", () => {
       const base = baseIntegrity();
       const result = buildMerchantResponse({

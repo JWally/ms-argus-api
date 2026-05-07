@@ -75,7 +75,13 @@ export type MerchantTag =
   | "cellular"
   | "location_mismatch"
   | "language_mismatch"
-  | "no_webrtc";
+  | "no_webrtc"
+  // Apple Private Access Token outcomes. Tag-only at the moment — neither
+  // moves device_tampering. apple_attestation_missing is observational
+  // only; we'll decide whether/how to penalize after collecting real-world
+  // data on its prevalence vs. confirmed-tampered traffic.
+  | "apple_attested"
+  | "apple_attestation_missing";
 
 export interface BrowserDetails {
   browserName: string | null;
@@ -478,12 +484,14 @@ function detectLanguageMismatch(input: MerchantProjectionInput): boolean {
  * desktop but legitimately absent on mobile (no plugins, no taskbar,
  * blank UA-CH, etc).
  */
+const UA_HEADER_KEY = "user-agent";
+
 function isMobileBrowser(integrity: IntegrityResultsData | undefined): boolean {
   if (!integrity) return false;
   const headers = integrity.request_headers?.headers ?? {};
   const candidates: string[] = [
     integrity.user_agent ?? "",
-    headers["user-agent"] ?? "",
+    headers[UA_HEADER_KEY] ?? "",
   ];
   const device = integrity.device as
     | { workerScope?: { scopes?: Record<string, { userAgent?: unknown }> } }
@@ -493,6 +501,32 @@ function isMobileBrowser(integrity: IntegrityResultsData | undefined): boolean {
     if (typeof scope?.userAgent === "string") candidates.push(scope.userAgent);
   }
   return candidates.some((ua) => /iPhone|iPad|iPod|Android|Mobile/i.test(ua));
+}
+
+/**
+ * Heuristic: does the visitor's UA claim an Apple platform (iOS Safari or
+ * macOS Safari)? Used to gate the apple_attestation_missing tag — we only
+ * surface "no attestation" as informational on UAs that *should* be able
+ * to produce one. Excludes Chrome/Firefox/Edge on Mac (those don't
+ * trigger PAT regardless of OS) by requiring AppleWebKit + Safari without
+ * the Chrom* / Firefox / Edg fingerprints.
+ */
+function isAppleClaimedUA(
+  integrity: IntegrityResultsData | undefined,
+): boolean {
+  if (!integrity) return false;
+  const headers = integrity.request_headers?.headers ?? {};
+  const ua = integrity.user_agent ?? headers[UA_HEADER_KEY] ?? "";
+  if (!ua) return false;
+  if (!/AppleWebKit\/[\d.]+/.test(ua)) return false;
+  if (!/Safari\/[\d.]+/.test(ua)) return false;
+  // Exclude Chromium-stack browsers (Chrome / Edge / Opera all carry
+  // AppleWebKit + Safari tokens for legacy reasons).
+  if (/Chrom(e|ium)\/|Edg(e|A|iOS)?\/|OPR\//.test(ua)) return false;
+  // Firefox iOS uses a different UA format (FxiOS), but include it as
+  // Apple-claimed since it runs on top of WKWebView and the OS handles
+  // PAT for it the same way.
+  return /iPhone|iPad|iPod|Macintosh/.test(ua);
 }
 
 type TagPredicate = [MerchantTag, (i: MerchantProjectionInput) => boolean];
@@ -514,6 +548,16 @@ function buildTags(
     ["location_mismatch", detectLocationMismatch],
     ["language_mismatch", detectLanguageMismatch],
     ["no_webrtc", detectNoWebrtc],
+    // Positive trust signal — successful PAT round-trip end-to-end.
+    ["apple_attested", (i) => i.integrity?.pat?.attested === true],
+    // Observational only — Apple-claimed UA without an attestation. No
+    // shield carve-out by design (PAT is L7 and most enterprise proxies
+    // bypass Apple services); the data will tell us whether one's needed.
+    [
+      "apple_attestation_missing",
+      (i) =>
+        isAppleClaimedUA(i.integrity) && !(i.integrity?.pat?.attested === true),
+    ],
   ];
   return predicates.filter(([, p]) => p(input)).map(([tag]) => tag);
 }

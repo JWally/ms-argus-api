@@ -488,6 +488,14 @@ export interface IntegrityResultsData {
   device: Record<string, unknown>;
   meta: Record<string, unknown>;
   sigint: Record<string, string>;
+  /** Hydrated PAT attestation, persisted from the redeemed payload.pat
+   *  field. Absent on non-Apple traffic / failed attestation / legacy
+   *  records pre-migration. Read-only from the merchant projection. */
+  pat?: PayloadPat;
+  /** SDK-side observation of what the JS-layer fetch() saw on the PAT
+   *  probe (`{status, ok, hasToken, err?}` JSON-encoded). Forensic only,
+   *  never returned to merchants. */
+  patDiag?: string;
   /**
    * Device-identity verification outcome. Present when the client sent a
    * `device_identity` block in the payload (pubkey + sig over xor'd h2-token).
