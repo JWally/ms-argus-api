@@ -419,6 +419,22 @@ function extractCfCountry(sigint: unknown): string | null {
   return typeof c === "string" && c.length > 0 ? c : null;
 }
 
+/**
+ * Pull the PAT-related fields off the hydrated payload for persistence.
+ * patToken is intentionally NOT persisted (sensitive even though
+ * HMAC-signed). patDiag is forensic-only — JS-side observation of what
+ * `fetch()` actually saw, used to debug the cross-origin OS handoff.
+ */
+function buildPatFields(hydratedPayload: ArgusPayload): {
+  pat?: ArgusPayload["pat"];
+  patDiag?: string;
+} {
+  const out: { pat?: ArgusPayload["pat"]; patDiag?: string } = {};
+  if (hydratedPayload.pat) out.pat = hydratedPayload.pat;
+  if (hydratedPayload.patDiag) out.patDiag = hydratedPayload.patDiag;
+  return out;
+}
+
 function buildIntegrityItem(
   ctx: HandleContext,
   hydratedPayload: ArgusPayload,
@@ -446,6 +462,7 @@ function buildIntegrityItem(
     meta: raw.meta ?? {},
     sigint: hydratedPayload.sigint ?? sigintSummary(ctx.payload),
     ...(identification ? { identification } : {}),
+    ...buildPatFields(hydratedPayload),
     analysis: buildAnalysisBlock({
       raw,
       hydratedPayload,
