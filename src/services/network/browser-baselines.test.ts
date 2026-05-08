@@ -23,7 +23,7 @@ function gzippedJson(payload: unknown): Buffer {
  */
 function s3Body(buf: Buffer) {
   return {
-    transformToByteArray: async () => new Uint8Array(buf),
+    transformToByteArray: () => Promise.resolve(new Uint8Array(buf)),
     // The S3 SDK types want a Readable here; the runtime never reads it.
     // Cast at the call site keeps the test focused.
   } as unknown as Readable;

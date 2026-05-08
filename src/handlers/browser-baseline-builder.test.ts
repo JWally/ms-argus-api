@@ -87,7 +87,7 @@ function gzippedBatch(sessions: Record<string, unknown>[]): Buffer {
 
 function s3Body(buf: Buffer) {
   return {
-    transformToByteArray: async () => new Uint8Array(buf),
+    transformToByteArray: () => Promise.resolve(new Uint8Array(buf)),
   } as any;
 }
 
