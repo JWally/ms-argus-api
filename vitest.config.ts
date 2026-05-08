@@ -4,7 +4,7 @@ export default defineConfig({
   test: {
     globals: false,
     environment: "node",
-    include: ["src/**/*.test.ts", "lib/**/*.test.ts", "tests/**/*.test.ts"],
+    include: ["src/**/*.test.ts", "lib/**/*.test.ts"],
     exclude: ["node_modules", "dist", "cdk.out", "cmd"],
     server: {
       deps: {

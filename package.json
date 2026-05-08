@@ -218,7 +218,6 @@
     ],
     "ignore": [
       "**/*.test.ts",
-      "tests/**",
       "scripts/**",
       "cmd/**"
     ],
@@ -240,8 +239,7 @@
       "dist",
       "cdk.out",
       "coverage",
-      "**/*.test.ts",
-      "tests/**"
+      "**/*.test.ts"
     ],
     "absolute": true,
     "format": [
