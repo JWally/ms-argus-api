@@ -11,14 +11,13 @@ import { Construct } from "constructs";
 
 import { SecretConstruct } from "../constructs/secrets";
 import { DynamoDbConstruct } from "../constructs/dynamodb";
-import { HttpApiConstruct } from "../constructs/http-api";
-import { RestApiConstruct } from "../constructs/rest-api";
-import { IpClassBuilderConstruct } from "../constructs/ip-class-builder";
-import { IpClassDiscovererConstruct } from "../constructs/ip-class-discoverer";
-import { BrowserBaselineBuilderConstruct } from "../constructs/browser-baseline-builder";
-import { CloudFrontWafConstruct } from "../constructs/cloudfront";
 import { AnalyticsConstruct } from "../constructs/analytics";
 import { IntegrityFirehoseConstruct } from "../constructs/integrity-firehose";
+import { IpClassBuilderConstruct } from "../constructs/ip-class-builder";
+import { LambdasConstruct } from "../constructs/lambdas";
+import { HttpApiConstruct } from "../constructs/http-api";
+import { RestApiConstruct } from "../constructs/rest-api";
+import { CloudFrontWafConstruct } from "../constructs/cloudfront";
 import { getStageConfig } from "../config";
 
 interface ArgusApiStackProps extends cdk.StackProps {
@@ -31,42 +30,48 @@ interface ArgusApiStackProps extends cdk.StackProps {
   /**
    * Optional: Secrets Manager ARN for the AES-256 key used to decrypt encrypted
    * probe responses from ms-argus-sigint. Managed in ms-argus-platform.
-   * The key is injected via CloudFormation dynamic reference — never in the template.
    * Prefer sigintPlatformEnvironment for automatic SSM lookup.
    */
   sigintAesKeySecretArn?: string;
   /**
    * ms-argus-platform environment name (e.g. "dev-jw") to auto-lookup the
-   * sigint AES key ARN from SSM at synth time (cached in cdk.context.json).
-   * Takes precedence over sigintAesKeySecretArn.
-   * SSM path: /argus-platform/{sigintPlatformEnvironment}/sigint-aes-key-arn
+   * sigint AES key ARN, probe-tokens table, and merchants table from SSM
+   * at synth time (cached in cdk.context.json).
+   * SSM path base: /argus-platform/{sigintPlatformEnvironment}
    */
   sigintPlatformEnvironment?: string;
 }
 
 /**
- * Argus API Stack — integrity-only architecture.
+ * Argus API Stack — thin composition.
  *
- * Browser → CloudFront → HTTP API → Lambda (ingestion) → DynamoDB
- *                                                    → EventBridge warmup
- * Simplified from the earlier V5 architecture: the /v1/collect fingerprint
- * pipeline (matching-worker, profile-updater, vector-worker, and their
- * SQS queues + DDB tables) was removed. Identity now comes from the
- * integrity record alone — crypto_device_id (ECDSA pubkey hash) and
- * tpc_id (CF-stamped third-party cookie) — which is strictly better for
- * authenticated browsers than the probabilistic hash matching it replaced.
+ * Each AWS resource type has a single owner construct:
+ *   - Tables → DynamoDbConstruct
+ *   - Buckets → AnalyticsConstruct (3) + IpClassBuilderConstruct (1)
+ *   - Secrets → SecretConstruct
+ *   - Firehose → IntegrityFirehoseConstruct + AnalyticsConstruct
+ *   - Lambdas → LambdasConstruct (all 6, with their cron rules + IAM grants)
+ *   - APIs   → HttpApiConstruct + RestApiConstruct (Lambdas come in as props)
+ *   - CDN    → CloudFrontWafConstruct
+ *
+ * Stack composition order: secrets/tables/buckets/firehose first (no
+ * Lambda dependencies); then Lambdas; then the APIs that wire them; then
+ * the CDN at the edge.
  */
-function resolveSigintParams(
-  scope: cdk.Stack,
-  sigintPlatformEnvironment: string | undefined,
-  sigintAesKeySecretArn: string | undefined,
-): {
+
+interface ResolvedSigintParams {
   sigintSecretArn: string | undefined;
   probeTokensTableName: string | undefined;
   probeTokensTableArn: string | undefined;
   merchantsTableName: string | undefined;
   merchantsTableArn: string | undefined;
-} {
+}
+
+function resolveSigintParams(
+  scope: cdk.Stack,
+  sigintPlatformEnvironment: string | undefined,
+  sigintAesKeySecretArn: string | undefined,
+): ResolvedSigintParams {
   if (!sigintPlatformEnvironment) {
     return {
       sigintSecretArn: sigintAesKeySecretArn,
@@ -114,72 +119,59 @@ export class ArgusApiStack extends cdk.Stack {
       sigintPlatformEnvironment,
     } = props;
 
-    const {
-      sigintSecretArn: resolvedSigintSecretArn,
-      probeTokensTableName,
-      probeTokensTableArn,
-      merchantsTableName,
-      merchantsTableArn,
-    } = resolveSigintParams(
+    const sigint = resolveSigintParams(
       this,
       sigintPlatformEnvironment,
       sigintAesKeySecretArn,
     );
-
-    if (!merchantsTableName || !merchantsTableArn) {
+    if (!sigint.merchantsTableName || !sigint.merchantsTableArn) {
       throw new Error(
         "merchants table SSM exports not found — ms-argus-platform must be deployed first to expose " +
           `/argus-platform/${sigintPlatformEnvironment}/merchants-table-{name,arn}`,
       );
     }
 
-    // =========================================================================
-    // DNS & CERTIFICATES
-    // =========================================================================
+    const platformPubkeySsmPath = sigintPlatformEnvironment
+      ? `/argus-platform/${sigintPlatformEnvironment}/api-signing-pubkey`
+      : undefined;
+    if (!platformPubkeySsmPath) {
+      throw new Error(
+        "sigintPlatformEnvironment is required so the api can locate the platform Ed25519 pubkey",
+      );
+    }
 
+    // ── DNS + cert ────────────────────────────────────────────────────
     const hostedZone = route53.HostedZone.fromLookup(this, "HostedZone", {
       domainName: rootDomain,
     });
-
     const apiSubdomain = stage === "prod" ? "api" : `api-${environment}`;
     const apiDomainName = `${apiSubdomain}.${rootDomain}`;
-
     const certificate = new acm.Certificate(this, "Certificate", {
       domainName: apiDomainName,
       validation: acm.CertificateValidation.fromDns(hostedZone),
     });
 
-    // =========================================================================
-    // SHARED RESOURCES
-    // =========================================================================
-
+    // ── Shared resources ──────────────────────────────────────────────
     const _secrets = new SecretConstruct(this, "Secrets", {
       environment,
       stackName,
       stage,
       projectName: id,
     });
-
     const alarmsTopic = new sns.Topic(this, "AlarmsTopic", {
       displayName: `${stackName}-Alarms`,
       topicName: `${stackName}-AlarmsTopic-${region}`,
     });
 
-    // =========================================================================
-    // DATA LAYER
-    // =========================================================================
-
+    // ── Data layer ────────────────────────────────────────────────────
     const dynamodb = new DynamoDbConstruct(this, "DynamoDB", {
       stackName,
       alarmsTopic,
       stage,
     });
 
-    // Export integrity-results table identity for cross-stack consumers
-    // (ms-argus-platform's dashboard Lambda reads this for the recent
-    // sessions feed). Out-of-band SSM keeps the dependency loose —
-    // platform doesn't need a CFN export reference, just a parameter
-    // name it resolves at synth time.
+    // Cross-stack export: ms-argus-platform's dashboard Lambda reads
+    // these to enumerate recent sessions across CPIs.
     new ssm.StringParameter(this, "IntegrityResultsTableNameParam", {
       parameterName: `/argus-api/${environment}/integrity-results-table-name`,
       stringValue: dynamodb.integrityResultsTable.tableName,
@@ -194,10 +186,6 @@ export class ArgusApiStack extends cdk.Stack {
       stage,
     });
 
-    // Batched NDJSON archive: ingestion Lambda PutRecords directly to
-    // Firehose, which writes gzipped batches into the integrity-archive
-    // bucket under `firehose/year=.../...gz`. Replaced the earlier
-    // DDB-stream → integrity-archiver Lambda → per-session-JSON path.
     const integrityFirehose = new IntegrityFirehoseConstruct(
       this,
       "IntegrityFirehose",
@@ -208,102 +196,57 @@ export class ArgusApiStack extends cdk.Stack {
       },
     );
 
-    // =========================================================================
-    // COMPUTE LAYER
-    // =========================================================================
+    const ipClass = new IpClassBuilderConstruct(this, "IpClass", {
+      stackName,
+      stage,
+    });
 
+    // ── Compute layer ─────────────────────────────────────────────────
     const stageConfig = getStageConfig(stage);
 
-    // SSM path for the platform's Ed25519 pubkey used to verify merchant
-    // API tokens. Created out-of-band by ms-argus-platform's
-    // scripts/generate-signing-key.ts (CDK-managed StringParameter would
-    // overwrite the value on every deploy).
-    const platformPubkeySsmPath = sigintPlatformEnvironment
-      ? `/argus-platform/${sigintPlatformEnvironment}/api-signing-pubkey`
-      : undefined;
-    if (!platformPubkeySsmPath) {
-      throw new Error(
-        "sigintPlatformEnvironment is required so the api can locate the platform Ed25519 pubkey",
-      );
-    }
-
-    const httpApi = new HttpApiConstruct(this, "HttpApi", {
+    const lambdas = new LambdasConstruct(this, "Lambdas", {
       stackName,
       stage,
       integrityResultsTable: dynamodb.integrityResultsTable,
-      probeTokensTableName,
-      probeTokensTableArn,
-      sigintAesKeySecretArn: resolvedSigintSecretArn,
-      alarmsTopic,
-      config: stageConfig,
+      archiveBucket: analytics.integrityArchiveBucket,
+      ipClassBucket: ipClass.bucket,
+      probeTokensTableName: sigint.probeTokensTableName,
+      probeTokensTableArn: sigint.probeTokensTableArn,
+      merchantsTableName: sigint.merchantsTableName,
+      merchantsTableArn: sigint.merchantsTableArn,
+      sigintAesKeySecretArn: sigint.sigintSecretArn,
       ecdhKeyParamName: `/${stackName}/ecdh-keypair`,
-      integrityFirehoseStreamName: integrityFirehose.deliveryStreamName,
       platformPubkeySsmPath,
-      merchantsTableName,
-      merchantsTableArn,
+      integrityFirehoseStreamName: integrityFirehose.deliveryStreamName,
+      config: stageConfig,
     });
 
-    // Merchant-facing REST API: native APIGW Keys + Usage Plans.
-    // Wires the same session-get Lambda; route discrimination happens
-    // inside the handler based on path shape (/v1/session/{cpi}/{sid}).
+    // Bucket reads + env-var injection for the API Lambdas. The cron
+    // Lambdas already have direct grants applied inside LambdasConstruct.
+    ipClass.grantReadTo(lambdas.ingestion);
+    ipClass.grantReadTo(lambdas.sessionGet);
+
+    integrityFirehose.grantPutRecord(lambdas.ingestion);
+
+    // ── API layer ─────────────────────────────────────────────────────
+    const httpApi = new HttpApiConstruct(this, "HttpApi", {
+      stackName,
+      alarmsTopic,
+      config: stageConfig,
+      ingestionFunction: lambdas.ingestion,
+      sessionGetFunction: lambdas.sessionGet,
+      patAttestFunction: lambdas.patAttest,
+    });
+
     const restApi = new RestApiConstruct(this, "RestApi", {
       stackName,
       environment,
       rootDomain,
       hostedZone,
-      sessionGetFunction: httpApi.sessionGetFunction,
+      sessionGetFunction: lambdas.sessionGet,
     });
 
-    integrityFirehose.grantPutRecord(httpApi.ingestionFunction);
-
-    // ASN→category dataset: weekly cron pulls IPtoASN, regex-categorizes,
-    // uploads to S3. Read on cold start via services/network/asn-classifier.ts.
-    const ipClass = new IpClassBuilderConstruct(this, "IpClass", {
-      stackName,
-      stage,
-    });
-    ipClass.grantReadTo(httpApi.ingestionFunction);
-    ipClass.grantReadTo(httpApi.sessionGetFunction);
-
-    // Auto-overlay discoverer: nightly cron walks recent unmapped IPs,
-    // RDAPs them, populates auto-overlay.json.gz alongside the ASN dict.
-    // Runtime classifier consults the overlay between hand-curated CIDR
-    // rules and the IPtoASN dict (see analyzeIpConsistency precedence).
-    const ipClassDiscoverer = new IpClassDiscovererConstruct(
-      this,
-      "IpClassDiscoverer",
-      {
-        stackName,
-        stage,
-        overlayBucket: ipClass.bucket,
-        archiveBucket: analytics.integrityArchiveBucket,
-      },
-    );
-    ipClassDiscoverer.grantReadTo(httpApi.ingestionFunction);
-    ipClassDiscoverer.grantReadTo(httpApi.sessionGetFunction);
-
-    // Browser-engine baseline aggregator: daily cron walks the integrity
-    // archive, builds per-(browser, version, incognito) histograms of
-    // engine-invariant fields, writes browser-baselines.json.gz next to
-    // the ASN dict. Runtime ingestion analyzes claimed-vs-observed engine
-    // consistency against these baselines (see analyzeBrowserEngine).
-    const browserBaselines = new BrowserBaselineBuilderConstruct(
-      this,
-      "BrowserBaselines",
-      {
-        stackName,
-        stage,
-        outputBucket: ipClass.bucket,
-        archiveBucket: analytics.integrityArchiveBucket,
-      },
-    );
-    browserBaselines.grantReadTo(httpApi.ingestionFunction);
-    browserBaselines.grantReadTo(httpApi.sessionGetFunction);
-
-    // =========================================================================
-    // WARMERS — Keep ingestion + session-get hot
-    // =========================================================================
-
+    // ── Warmers (1-min ping to keep the two API Lambdas hot) ──────────
     const warmupPayload = events.RuleTargetInput.fromObject({
       warmup: true,
       source: "warmup-rule",
@@ -315,9 +258,7 @@ export class ArgusApiStack extends cdk.Stack {
       description: "Keep integrity ingestion Lambda warm",
       schedule: events.Schedule.rate(cdk.Duration.minutes(1)),
       targets: [
-        new targets.LambdaFunction(httpApi.ingestionFunction, {
-          event: warmupPayload,
-        }),
+        new targets.LambdaFunction(lambdas.ingestion, { event: warmupPayload }),
       ],
     });
 
@@ -326,17 +267,13 @@ export class ArgusApiStack extends cdk.Stack {
       description: "Keep session-get Lambda warm",
       schedule: events.Schedule.rate(cdk.Duration.minutes(1)),
       targets: [
-        new targets.LambdaFunction(httpApi.sessionGetFunction, {
+        new targets.LambdaFunction(lambdas.sessionGet, {
           event: warmupPayload,
         }),
       ],
     });
 
-    // =========================================================================
-    // EDGE LAYER
-    // =========================================================================
-
-    const config = getStageConfig(stage);
+    // ── Edge layer ────────────────────────────────────────────────────
     const cdn = new CloudFrontWafConstruct(this, "CDN", {
       environment,
       stackName,
@@ -345,58 +282,46 @@ export class ArgusApiStack extends cdk.Stack {
       apiSubdomain,
       hostedZone,
       certificate,
-      stageConfig: config,
+      stageConfig,
     });
 
-    // =========================================================================
-    // OUTPUTS
-    // =========================================================================
-
+    // ── Outputs ───────────────────────────────────────────────────────
     new cdk.CfnOutput(this, "AlarmsTopicArn", {
       value: alarmsTopic.topicArn,
       description: "ARN of the SNS topic for CloudWatch Alarms",
     });
-
     new cdk.CfnOutput(this, "ApiEndpoint", {
       value: `https://${apiDomainName}`,
       description: "API endpoint (CloudFront + custom domain)",
     });
-
     new cdk.CfnOutput(this, "CloudFrontDomain", {
       value: cdn.distribution.distributionDomainName,
       description: "CloudFront distribution domain",
     });
-
     new cdk.CfnOutput(this, "HttpApiEndpoint", {
       value: httpApi.apiEndpoint,
       description: "HTTP API Gateway endpoint (direct)",
     });
-
     new cdk.CfnOutput(this, "IngestionFunctionArn", {
-      value: httpApi.ingestionFunction.functionArn,
+      value: lambdas.ingestion.functionArn,
       description: "Ingestion Lambda ARN",
     });
-
     new cdk.CfnOutput(this, "SessionGetFunctionArn", {
-      value: httpApi.sessionGetFunction.functionArn,
+      value: lambdas.sessionGet.functionArn,
       description: "Session retrieval Lambda ARN",
     });
-
     new cdk.CfnOutput(this, "IntegrityArchiveBucketName", {
       value: analytics.integrityArchiveBucket.bucketName,
       description: "S3 bucket for integrity result archives",
     });
-
     new cdk.CfnOutput(this, "IpClassBucketName", {
       value: ipClass.bucket.bucketName,
       description: "S3 bucket for ASN→category dataset",
     });
-
     new cdk.CfnOutput(this, "IpClassBuilderFunctionArn", {
-      value: ipClass.builderFunction.functionArn,
+      value: lambdas.ipClassBuilder.functionArn,
       description: "Weekly ASN dataset builder Lambda ARN",
     });
-
     new cdk.CfnOutput(this, "MerchantApiUrl", {
       value: restApi.endpoint,
       description: "Merchant-facing REST API (native APIGW Keys + Usage Plans)",
