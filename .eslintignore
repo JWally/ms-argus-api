@@ -1,6 +1,0 @@
-# Build outputs
-dist/
-cdk.out/
-
-# Utility scripts (not part of main codebase)
-scripts/

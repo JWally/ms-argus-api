@@ -69,5 +69,185 @@
     "aws-cdk-lib": "2.190.0",
     "constructs": "^10.4.2",
     "lru-cache": "^11.0.2"
+  },
+  "eslintConfig": {
+    "root": true,
+    "env": {
+      "node": true,
+      "es2020": true
+    },
+    "parser": "@typescript-eslint/parser",
+    "parserOptions": {
+      "ecmaVersion": 2020,
+      "sourceType": "module",
+      "project": "./tsconfig.json"
+    },
+    "plugins": [
+      "@typescript-eslint",
+      "promise",
+      "sonarjs",
+      "unicorn",
+      "import"
+    ],
+    "extends": [
+      "eslint:recommended",
+      "plugin:@typescript-eslint/recommended",
+      "plugin:promise/recommended",
+      "plugin:sonarjs/recommended",
+      "prettier"
+    ],
+    "rules": {
+      "@typescript-eslint/no-unused-vars": [
+        "error",
+        {
+          "argsIgnorePattern": "^_",
+          "varsIgnorePattern": "^_"
+        }
+      ],
+      "@typescript-eslint/explicit-function-return-type": "off",
+      "@typescript-eslint/no-explicit-any": "warn",
+      "@typescript-eslint/no-non-null-assertion": "warn",
+      "no-console": "warn",
+      "prefer-const": "error",
+      "no-var": "error",
+      "complexity": [
+        "error",
+        10
+      ],
+      "max-depth": [
+        "error",
+        3
+      ],
+      "max-lines-per-function": [
+        "error",
+        {
+          "max": 50,
+          "skipBlankLines": true,
+          "skipComments": true
+        }
+      ],
+      "max-params": [
+        "error",
+        4
+      ],
+      "max-nested-callbacks": [
+        "error",
+        2
+      ],
+      "sonarjs/cognitive-complexity": [
+        "error",
+        10
+      ],
+      "unicorn/no-static-only-class": "error",
+      "unicorn/no-useless-undefined": "error",
+      "unicorn/no-unnecessary-await": "error",
+      "unicorn/no-useless-spread": "error",
+      "unicorn/no-useless-promise-resolve-reject": "error",
+      "unicorn/no-empty-file": "error",
+      "unicorn/no-useless-fallback-in-spread": "error",
+      "unicorn/no-lonely-if": "error",
+      "unicorn/no-array-for-each": "warn",
+      "unicorn/prefer-array-some": "error",
+      "unicorn/no-array-push-push": "error",
+      "no-restricted-syntax": [
+        "warn",
+        {
+          "selector": "MethodDefinition[kind='method'] > FunctionExpression > BlockStatement[body.length=1] > ReturnStatement > CallExpression",
+          "message": "Potential Middle Man: method forwards to another function. Consider exposing the dependency directly."
+        }
+      ],
+      "import/no-cycle": [
+        "warn",
+        {
+          "maxDepth": 3
+        }
+      ]
+    },
+    "overrides": [
+      {
+        "files": [
+          "**/*.test.ts"
+        ],
+        "rules": {
+          "@typescript-eslint/no-non-null-assertion": "off",
+          "@typescript-eslint/no-explicit-any": "off",
+          "max-lines-per-function": "off",
+          "max-nested-callbacks": "off",
+          "sonarjs/no-duplicate-string": "off",
+          "unicorn/no-useless-undefined": "off"
+        }
+      },
+      {
+        "files": [
+          "lib/**/*.ts"
+        ],
+        "rules": {
+          "max-lines-per-function": "off",
+          "max-params": [
+            "error",
+            6
+          ]
+        }
+      }
+    ],
+    "ignorePatterns": [
+      "node_modules/",
+      "cdk.out/",
+      "dist/",
+      "*.js",
+      "*.d.ts",
+      "cmd/",
+      "coverage/",
+      "scripts/",
+      "vitest.config.ts"
+    ]
+  },
+  "knip": {
+    "entry": [
+      "src/handlers/*.ts",
+      "src/services/*/index.ts",
+      "src/helpers/*.ts",
+      "src/types/*.ts",
+      "bin/*.ts",
+      "lib/**/*.ts"
+    ],
+    "project": [
+      "src/**/*.ts",
+      "lib/**/*.ts",
+      "bin/**/*.ts"
+    ],
+    "ignore": [
+      "**/*.test.ts",
+      "tests/**",
+      "scripts/**",
+      "cmd/**"
+    ],
+    "ignoreDependencies": [
+      "ts-node"
+    ],
+    "exclude": [
+      "types",
+      "nsTypes"
+    ]
+  },
+  "jscpd": {
+    "threshold": 5,
+    "reporters": [
+      "console"
+    ],
+    "ignore": [
+      "node_modules",
+      "dist",
+      "cdk.out",
+      "coverage",
+      "**/*.test.ts",
+      "tests/**"
+    ],
+    "absolute": true,
+    "format": [
+      "typescript"
+    ],
+    "minLines": 5,
+    "minTokens": 50
   }
 }
