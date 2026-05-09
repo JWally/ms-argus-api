@@ -584,6 +584,106 @@ describe("buildMerchantResponse", () => {
       expect(result.device_tampering).toBe(60);
     });
 
+    it("KERNEL_OS_MISMATCH_DARWIN is suppressed on Apple Private Relay when JA4+H2+UA all confirm Safari", () => {
+      // Modeled on a real iCloud Private Relay session from a verified iPhone:
+      // Cloudflare AS13335 egress (network_class=cdn, category=privacy_relay),
+      // ja4_browser_family=safari, h2_browser_family=safari, ua_os=iOS. The
+      // relay terminates the iPhone's TCP at a Linux-side Cloudflare egress, so
+      // tcpi_options=7 (no ECN) trips KERNEL_OS_MISMATCH_DARWIN — but the
+      // three-fingerprint convergence proves it's actually Safari on Apple,
+      // and the kernel signature is the relay's, not the client's.
+      const base = baseIntegrity();
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: {
+          ...base,
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          analysis: {
+            ...base.analysis,
+            ip: {
+              ...base.analysis.ip,
+              asn: {
+                number: "13335",
+                category: "privacy_relay",
+                org: "Cloudflare",
+                network_class: "cdn",
+              },
+            },
+            ja4_ua: {
+              ja4_browser_family: "safari",
+              h2_browser_family: "safari",
+              ua_browser_family: "safari",
+              ua_os: "iOS",
+              signals: [],
+            },
+            kernel_os: {
+              signals: [
+                {
+                  code: "KERNEL_OS_MISMATCH_DARWIN",
+                  severity: 0.85,
+                  evidence:
+                    "ua_os=iOS, tcpi_options=7 (no ECN — Linux-typical)",
+                },
+              ],
+            },
+          } as any,
+        },
+      });
+      expect(result.device_tampering).toBe(0);
+      expect(result.tags).not.toContain("browser_tampering");
+      expect(result.tags).toContain("privacy_relay");
+    });
+
+    it("KERNEL_OS_MISMATCH_DARWIN still fires on privacy_relay if JA4 doesn't confirm Safari", () => {
+      // The threat model the verified-Safari gate is designed to stop: an
+      // attacker spinning up a Cloudflare Worker (egress IP lands on AS13335
+      // that the classifier may incidentally tag as privacy_relay), proxying
+      // a Linux/Python client through it, and claiming iOS in the UA. JA4
+      // would still report the actual TLS stack (chrome / unknown / etc),
+      // not safari. Without all three fingerprints aligned, we don't grant
+      // the carve-out.
+      const base = baseIntegrity();
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: {
+          ...base,
+          user_agent:
+            "Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15",
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          analysis: {
+            ...base.analysis,
+            ip: {
+              ...base.analysis.ip,
+              asn: {
+                number: "13335",
+                category: "privacy_relay",
+                org: "Cloudflare",
+                network_class: "cdn",
+              },
+            },
+            ja4_ua: {
+              ja4_browser_family: "chrome",
+              h2_browser_family: "chrome",
+              ua_browser_family: "safari",
+              ua_os: "iOS",
+              signals: [],
+            },
+            kernel_os: {
+              signals: [
+                {
+                  code: "KERNEL_OS_MISMATCH_DARWIN",
+                  severity: 0.85,
+                  evidence:
+                    "ua_os=iOS, tcpi_options=7 (no ECN — Linux-typical)",
+                },
+              ],
+            },
+          } as any,
+        },
+      });
+      expect(result.device_tampering).toBe(100);
+    });
+
     it("KERNEL_OS_MISMATCH_LINUX (soft) is also suppressed under corporate_proxy", () => {
       const base = baseIntegrity();
       const result = buildMerchantResponse({
