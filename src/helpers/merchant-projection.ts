@@ -655,6 +655,57 @@ function isCorporateShieldedAsn(integrity: IntegrityResultsData): boolean {
 }
 
 /**
+ * Apple Private Relay / Cloudflare WARP carve-out for the kernel-OS-mismatch
+ * signal. Privacy-relay terminates the client's TCP at a Linux egress box
+ * (Cloudflare/Akamai), so the kernel observes Linux-typical TCP options
+ * even when the actual client is iOS/macOS — same architectural shape as the
+ * corporate-shield case.
+ *
+ * BUT: unlike corporate-shield ASNs (Cisco Umbrella / Zscaler), where ASN
+ * ownership is essentially 1:1 with proxy infrastructure, CDN ASNs like
+ * Cloudflare AS13335 and Akamai AS16625 host millions of unrelated tenants
+ * (Workers, Pages, R2, third-party CDN customers). Granting a kernel-OS-
+ * mismatch carve-out on `category=privacy_relay` alone would let an attacker
+ * spin up a Cloudflare Worker, proxy traffic through it claiming iOS UA,
+ * and bypass the device-tampering check.
+ *
+ * To close that gap we require three independent fingerprints to converge
+ * before treating the relay path as legitimate Apple traffic:
+ *   1. JA4 family is safari (TLS ClientHello matches Safari's BoringSSL stack —
+ *      extension order, GREASE positions, cipher list)
+ *   2. H2 family is safari (HTTP/2 SETTINGS + frame ordering matches Safari)
+ *   3. UA OS is iOS or macOS
+ *
+ * Defeating all three requires literally running Safari on a real Apple
+ * device — a Linux/Python script behind a Cloudflare Worker fails JA4 + H2
+ * immediately. Sophisticated attackers running Safari on real iPhones can
+ * still clear this gate, but at that point the cost-per-session is high
+ * enough that the kernel-OS axis stops being the right detection layer.
+ *
+ * Like the corporate-shield carve-out, this only suppresses the SCORE
+ * contribution. The raw KERNEL_OS_MISMATCH_DARWIN signal stays on
+ * `analysis.kernel_os.signals` for forensic review.
+ */
+function isVerifiedAppleRelay(integrity: IntegrityResultsData): boolean {
+  if (integrity.analysis?.ip?.asn?.category !== "privacy_relay") return false;
+  const ja4Ua = (
+    integrity.analysis as {
+      ja4_ua?: {
+        ja4_browser_family?: string | null;
+        h2_browser_family?: string | null;
+        ua_os?: string | null;
+      };
+    }
+  ).ja4_ua;
+  if (!ja4Ua) return false;
+  return (
+    ja4Ua.ja4_browser_family === "safari" &&
+    ja4Ua.h2_browser_family === "safari" &&
+    (ja4Ua.ua_os === "iOS" || ja4Ua.ua_os === "macOS")
+  );
+}
+
+/**
  * Browser-engine consistency signals from `analyzeBrowserEngine`. Two
  * tiers, both feed device_tampering:
  *   - HARD: claimed browser_version's baseline has count=0 for an
@@ -858,6 +909,12 @@ function collectTamperingEvidence(
   // in the analyzer output (analysis.ja4_ua.signals, analysis.timezone.signals)
   // so diagnostics are unchanged.
   const shielded = isCorporateShieldedAsn(integrity);
+  // Privacy-relay carve-out for the kernel-OS axis only — see
+  // isVerifiedAppleRelay for why this is gated on JA4+H2+UA convergence
+  // rather than the asn.category alone (which is true for any Cloudflare
+  // Worker / Akamai tenant traffic that the classifier may incidentally
+  // tag as privacy_relay).
+  const appleRelay = isVerifiedAppleRelay(integrity);
   const tlsUaMismatch = hasTlsUaMismatch(integrity) && !shielded;
   const tzGeoMismatch = readTzGeoMismatch(integrity) && !shielded;
   const engineSignals = readBrowserEngineSignals(integrity);
@@ -885,8 +942,8 @@ function collectTamperingEvidence(
     // the Apple-without-ECN heuristic on every legitimate iOS/macOS user
     // behind the proxy. Suppress at scoring time only — the raw signal
     // stays on `analysis.kernel_os.signals` for forensic review.
-    kernelOsMismatchHard: kernelSignals.hard && !shielded,
-    kernelOsMismatchSoft: kernelSignals.soft && !shielded,
+    kernelOsMismatchHard: kernelSignals.hard && !shielded && !appleRelay,
+    kernelOsMismatchSoft: kernelSignals.soft && !shielded && !appleRelay,
   };
 }
 
