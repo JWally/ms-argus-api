@@ -7,7 +7,15 @@
  *
  * Browser family detection is reliable from either signal alone.
  * Safari cipher hashes additionally distinguish iOS vs macOS.
+ *
+ * `TLS_UA_MISMATCH` (cipher count + GREASE consistency) is computed in
+ * `./tls-rules.ts` from the raw `cipher_count` / `has_grease` fields the
+ * h2-probe emits — the probe's own `ua_mismatch` / `ua_hints` verdict is
+ * ignored on the way through and only kept around for forensic display.
  */
+
+import { parseChUaBrands } from "../client-hints-ua";
+import { evaluateTlsUaConsistency, type TlsUaBrowserFamily } from "./tls-rules";
 
 // -- Reference tables (proven from observed traffic) --
 
@@ -130,24 +138,24 @@ function extractSigintSignals(sigint: Record<string, unknown>): {
 }
 
 /**
- * Probe-side TLS-vs-UA mismatch. Captured by the TCP/H2 probe servers
- * based on cipher count + GREASE presence vs what the UA-claimed browser
- * family should send (e.g. Chrome ships ~17 ciphers + GREASE; if a
- * Chromium UA shows up with 13 ciphers and no GREASE, ua_mismatch=true
- * with hints like `chromium_ua_without_grease`, `chromium_ua_low_ciphers:N`).
+ * Probe-side TLS-vs-UA mismatch evidence. The h2-probe emits its own
+ * `ua_mismatch` verdict + `ua_hints`, but the analyzer ignores both and
+ * recomputes the decision from the raw `cipher_count` / `has_grease`
+ * fields via `tls-rules.ts`. This keeps threshold tuning and per-fork
+ * carve-outs (Brave, Tor, etc.) in the API tier where they're editable
+ * without an EC2 ASG instance refresh.
  *
  * Distinct from `JA4_UA_BROWSER_MISMATCH` — that fires only when the JA4
  * cipher hash is in the known-browser table AND identifies a different
  * family than the UA. When a TLS-terminating proxy (Cisco Umbrella,
  * Zscaler, mitmproxy/Burp) re-originates with a stripped cipher list,
  * the resulting JA4 hash is in nobody's known-browser table, so the
- * family-table rule fails open. The probe-side ua_mismatch flag is
- * the safety net that catches this case — and it was previously
- * captured by the probe but never read by the analyzer.
+ * family-table rule fails open. The cipher-count / GREASE rules are
+ * the safety net that catches this case.
  */
-interface TlsMismatchEvidence {
-  mismatch: boolean;
-  hints: string[];
+interface TlsRawSignals {
+  cipherCount: number | null;
+  hasGREASE: boolean | null;
   source: "h2" | "tcp" | null;
 }
 
@@ -156,47 +164,34 @@ function readTlsSignalsBlock(parent: unknown): Record<string, unknown> | null {
   return isObj(parent.tls_signals) ? parent.tls_signals : null;
 }
 
-function tlsSignalsHints(ts: Record<string, unknown>): string[] {
-  if (!Array.isArray(ts.ua_hints)) return [];
-  return ts.ua_hints.filter((h): h is string => typeof h === "string");
+function readNumber(v: unknown): number | null {
+  return typeof v === "number" && Number.isFinite(v) ? v : null;
 }
 
-function extractTlsUaMismatch(
-  sigint: Record<string, unknown>,
-): TlsMismatchEvidence {
-  // Prefer h2 probe's view (more recent connection); fall back to tcp probe.
+function readBool(v: unknown): boolean | null {
+  return typeof v === "boolean" ? v : null;
+}
+
+/**
+ * Pull the raw TLS fields from sigint. Prefer h2-probe (more recent
+ * connection, also the only probe that captures all of cipher_count /
+ * has_grease — tcp-probe fills in if h2 is absent).
+ */
+function extractTlsRawSignals(sigint: Record<string, unknown>): TlsRawSignals {
   const sources: Array<["h2" | "tcp", unknown]> = [
     ["h2", sigint.h2],
     ["tcp", sigint.tcp_probe],
   ];
   for (const [source, parent] of sources) {
     const ts = readTlsSignalsBlock(parent);
-    if (ts && ts.ua_mismatch === true) {
-      return { mismatch: true, hints: tlsSignalsHints(ts), source };
+    if (!ts) continue;
+    const cipherCount = readNumber(ts.cipher_count);
+    const hasGREASE = readBool(ts.has_grease);
+    if (cipherCount !== null || hasGREASE !== null) {
+      return { cipherCount, hasGREASE, source };
     }
   }
-  return { mismatch: false, hints: [], source: null };
-}
-
-/**
- * Hints the probe emits that are NO LONGER reliable indicators of mismatch
- * for a given UA family. The probe server's heuristics predate certain
- * browser TLS evolution; the analyzer overrides here until the probe is
- * updated.
- *
- * - `grease_without_chromium_ua`: probe assumes only Chromium sends TLS
- *   GREASE. Apple added GREASE to iOS Safari in iOS 17 (2023) and macOS
- *   Safari around the same time. So GREASE on a Safari UA is now expected,
- *   not suspicious. Without this carve-out, every modern iPhone session
- *   trips device_tampering=60 from a single stale heuristic.
- */
-function isHintBenignForUa(hint: string, uaBrowser: string | null): boolean {
-  return hint === "grease_without_chromium_ua" && uaBrowser === "safari";
-}
-
-function allHintsBenign(hints: string[], uaBrowser: string | null): boolean {
-  if (hints.length === 0) return false;
-  return hints.every((h) => isHintBenignForUa(h, uaBrowser));
+  return { cipherCount: null, hasGREASE: null, source: null };
 }
 
 /** Resolve browser families from JA4 cipher hash and H2 pseudo-header order. */
@@ -268,21 +263,36 @@ function checkSafariOsMismatch(r: ResolvedSignals): Ja4UaSignal | null {
  * Severity is moderate (0.7) — strong evidence of TLS interception or
  * spoofing, but commonly benign on corporate-shielded networks. The
  * projector applies a corporate_shield carve-out when scoring.
+ *
+ * Decision is computed in `tls-rules.ts` from the raw probe fields plus
+ * the `sec-ch-ua` brand list (so Brave et al. can be carved out).
  */
 function checkTlsUaMismatch(
-  evidence: TlsMismatchEvidence,
+  raw: TlsRawSignals,
   uaBrowser: string | null,
+  brands: readonly string[],
 ): Ja4UaSignal | null {
-  if (!evidence.mismatch) return null;
-  // Suppress when every reported hint is a stale-heuristic false positive
-  // for this UA family (see isHintBenignForUa for examples).
-  if (allHintsBenign(evidence.hints, uaBrowser)) return null;
-  const hintStr = evidence.hints.length > 0 ? evidence.hints.join(", ") : "—";
+  // Only chromium / firefox / safari are valid inputs to the rule module;
+  // any other UA family parses as null and the rules treat it as unknown.
+  const ruleBrowser: TlsUaBrowserFamily =
+    uaBrowser === "chromium" ||
+    uaBrowser === "firefox" ||
+    uaBrowser === "safari"
+      ? uaBrowser
+      : null;
+  const { hints } = evaluateTlsUaConsistency({
+    cipherCount: raw.cipherCount,
+    hasGREASE: raw.hasGREASE,
+    uaBrowser: ruleBrowser,
+    brands,
+  });
+  if (hints.length === 0) return null;
+  const sourceLabel = raw.source ?? "probe";
   return {
     code: "TLS_UA_MISMATCH",
     severity: 0.7,
     expected: `${uaBrowser ?? "browser"} TLS profile (cipher count + GREASE)`,
-    actual: `probe (${evidence.source}) saw stripped TLS — ${hintStr}`,
+    actual: `probe (${sourceLabel}) saw stripped TLS — ${hints.join(", ")}`,
   };
 }
 
@@ -298,9 +308,11 @@ const RULES = [
 export function analyzeJa4Ua(
   sigint: unknown,
   userAgent: string,
+  secChUa: string | null = null,
 ): Ja4UaAnalysisResult {
   const uaBrowser = uaFamily(userAgent);
   const uaOsValue = uaOs(userAgent);
+  const brands = parseChUaBrands(secChUa);
 
   if (!isObj(sigint)) {
     return {
@@ -327,8 +339,9 @@ export function analyzeJa4Ua(
     (s): s is Ja4UaSignal => s !== null,
   );
   const tlsUaSignal = checkTlsUaMismatch(
-    extractTlsUaMismatch(sigint),
+    extractTlsRawSignals(sigint),
     uaBrowser,
+    brands,
   );
   if (tlsUaSignal) signals.push(tlsUaSignal);
 

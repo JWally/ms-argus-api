@@ -335,7 +335,11 @@ function buildAnalysisBlock(inputs: AnalysisInputs) {
     webrtcSigintField,
   } = inputs;
   const { ip, network, proxyWaterfall } = runNetworkAnalyses(inputs);
-  const ja4Ua = analyzeJa4Ua(hydratedPayload.sigint, ua);
+  const ja4Ua = analyzeJa4Ua(
+    hydratedPayload.sigint,
+    ua,
+    requestHeaders?.["sec-ch-ua"] ?? null,
+  );
   return {
     network,
     worker: analyzeWorkerScopes(raw.device),
