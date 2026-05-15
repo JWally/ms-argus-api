@@ -625,13 +625,14 @@ function hasJa4UaMismatch(integrity: IntegrityResultsData): boolean {
 }
 
 /**
- * Probe-side TLS-vs-UA mismatch (cipher count + GREASE presence). Distinct
- * from JA4_UA_BROWSER_MISMATCH — that needs the JA4 cipher hash to be in
- * the known-browser table, which fails open when a TLS-terminating proxy
+ * TLS-vs-UA mismatch (cipher count + GREASE presence). Distinct from
+ * JA4_UA_BROWSER_MISMATCH — that needs the JA4 cipher hash to be in the
+ * known-browser table, which fails open when a TLS-terminating proxy
  * re-originates with a stripped cipher list (Cisco Umbrella, Zscaler,
- * mitmproxy/Burp). The probe-side TLS_UA_MISMATCH signal is the safety
- * net for that case — emitted by `analyzeJa4Ua` from the probe's
- * `tls_signals.ua_mismatch` flag.
+ * mitmproxy/Burp). TLS_UA_MISMATCH is the safety net for that case —
+ * emitted by `analyzeJa4Ua` from the rules in
+ * `analysis/ja4-ua/tls-rules.ts` over the raw `cipher_count` / `has_grease`
+ * fields the h2-probe captures.
  */
 function hasTlsUaMismatch(integrity: IntegrityResultsData): boolean {
   const sigs = (
