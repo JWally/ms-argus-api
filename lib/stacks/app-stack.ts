@@ -65,6 +65,8 @@ interface ResolvedSigintParams {
   probeTokensTableArn: string | undefined;
   merchantsTableName: string | undefined;
   merchantsTableArn: string | undefined;
+  merchantKeysTableName: string | undefined;
+  merchantKeysTableArn: string | undefined;
 }
 
 function resolveSigintParams(
@@ -79,6 +81,8 @@ function resolveSigintParams(
       probeTokensTableArn: undefined,
       merchantsTableName: undefined,
       merchantsTableArn: undefined,
+      merchantKeysTableName: undefined,
+      merchantKeysTableArn: undefined,
     };
   }
   const base = `/argus-platform/${sigintPlatformEnvironment}`;
@@ -102,6 +106,14 @@ function resolveSigintParams(
     merchantsTableArn: ssm.StringParameter.valueFromLookup(
       scope,
       `${base}/merchants-table-arn`,
+    ),
+    merchantKeysTableName: ssm.StringParameter.valueFromLookup(
+      scope,
+      `${base}/merchant-keys-table-name`,
+    ),
+    merchantKeysTableArn: ssm.StringParameter.valueFromLookup(
+      scope,
+      `${base}/merchant-keys-table-arn`,
     ),
   };
 }
@@ -214,6 +226,8 @@ export class ArgusApiStack extends cdk.Stack {
       probeTokensTableArn: sigint.probeTokensTableArn,
       merchantsTableName: sigint.merchantsTableName,
       merchantsTableArn: sigint.merchantsTableArn,
+      merchantKeysTableName: sigint.merchantKeysTableName,
+      merchantKeysTableArn: sigint.merchantKeysTableArn,
       sigintAesKeySecretArn: sigint.sigintSecretArn,
       ecdhKeyParamName: `/${stackName}/ecdh-keypair`,
       platformPubkeySsmPath,

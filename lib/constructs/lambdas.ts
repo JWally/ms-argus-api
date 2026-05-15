@@ -56,6 +56,14 @@ interface LambdasConstructProps {
   merchantsTableName: string;
   /** Merchants table ARN — for session-get `dynamodb:UpdateItem` grant. */
   merchantsTableArn: string;
+  /**
+   * Merchant-keys table NAME — for ingestion `MERCHANT_KEYS_TABLE` env var.
+   * The ingestion handler resolves cpi → merchantId via this table's
+   * `cpi-index` GSI to stamp `merchant_id` on each row.
+   */
+  merchantKeysTableName?: string;
+  /** Merchant-keys table ARN — for ingestion `dynamodb:Query` grant on the cpi-index. */
+  merchantKeysTableArn?: string;
   /** SIGINT AES key Secrets Manager ARN. Mounted as env var on ingestion + read at runtime by pat-attest via SecretsManager API. */
   sigintAesKeySecretArn?: string;
   /** SSM SecureString param name holding the ECDH keypair (ingestion ECDH-decrypt). */
@@ -155,6 +163,9 @@ export class LambdasConstruct extends Construct {
         }),
         ...(props.probeTokensTableName && {
           PROBE_TOKENS_TABLE_NAME: props.probeTokensTableName,
+        }),
+        ...(props.merchantKeysTableName && {
+          MERCHANT_KEYS_TABLE: props.merchantKeysTableName,
         }),
         ...(props.integrityFirehoseStreamName && {
           INTEGRITY_FIREHOSE_STREAM: props.integrityFirehoseStreamName,
@@ -443,6 +454,21 @@ export class LambdasConstruct extends Construct {
           actions: ["ssm:GetParameter"],
           resources: [
             `arn:aws:ssm:${cdk.Stack.of(this).region}:${cdk.Stack.of(this).account}:parameter${props.ecdhKeyParamName}`,
+          ],
+        }),
+      );
+    }
+
+    // Cross-stack: Query the platform's merchant-keys cpi-index to resolve
+    // cpi → merchantId on the ingest path. Cached in Lambda memory, so
+    // this grant is exercised only on first request per cpi per container.
+    if (props.merchantKeysTableArn) {
+      this.ingestion.addToRolePolicy(
+        new iam.PolicyStatement({
+          actions: ["dynamodb:Query"],
+          resources: [
+            props.merchantKeysTableArn,
+            `${props.merchantKeysTableArn}/index/*`,
           ],
         }),
       );
