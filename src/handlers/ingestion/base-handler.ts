@@ -23,6 +23,7 @@ import {
 } from "../../helpers/payload-schema";
 import { redeemSigintTokens } from "../../helpers/redeem-sigint-tokens";
 import { redeemPatToken } from "../../helpers/redeem-pat-token";
+import { CpiMerchantResolver } from "../../helpers/cpi-merchant-resolver";
 import { extractFpidCookie } from "../../helpers/verify-cf-token";
 import {
   buildWebrtcSigintField,
@@ -91,6 +92,21 @@ const ddbClient = new DynamoDBClient({});
 const INTEGRITY_RESULTS_TABLE = process.env.INTEGRITY_RESULTS_TABLE ?? "";
 const INTEGRITY_FIREHOSE_STREAM = process.env.INTEGRITY_FIREHOSE_STREAM;
 const INTEGRITY_TTL_SECONDS = resolveIntegrityTtlSeconds(process.env);
+
+// cpi → merchantId resolver. Lambda-scope so the cache lives across requests
+// for the container's lifetime; the mapping is immutable per-cpi, so once
+// resolved a cpi never needs another lookup. Absent env var (local dev /
+// stages without the cross-stack wiring) → resolver is null and rows are
+// written without `merchant_id`. Those rows won't surface in the dashboard's
+// merchant-keyed listing, which is the correct fail-open behavior.
+const MERCHANT_KEYS_TABLE = process.env.MERCHANT_KEYS_TABLE;
+const cpiMerchantResolver = MERCHANT_KEYS_TABLE
+  ? new CpiMerchantResolver({
+      ddb: ddbClient,
+      table: MERCHANT_KEYS_TABLE,
+      indexName: process.env.MERCHANT_KEYS_CPI_INDEX,
+    })
+  : null;
 
 export function createBaseHandler(deps: BaseHandlerDeps) {
   return async (event: ExtendedEvent): Promise<APIGatewayProxyResultV2> => {
@@ -443,6 +459,7 @@ function buildIntegrityItem(
   ctx: HandleContext,
   hydratedPayload: ArgusPayload,
   identity: IdentityOutcome,
+  merchantId: string | null,
 ) {
   const now = Date.now();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -462,6 +479,12 @@ function buildIntegrityItem(
   return {
     cpi: ctx.cpi,
     session_id: ctx.sessionId,
+    // Sparse GSI key: omitted when the resolver couldn't map cpi → merchantId
+    // (unknown cpi, MERCHANT_KEYS_TABLE unset, etc.). DDB excludes rows
+    // without the key from the merchantId-createdAt-index, which is the
+    // correct behavior — we don't pollute someone else's merchant listing
+    // with an unowned row.
+    ...(merchantId ? { merchant_id: merchantId } : {}),
     device: raw.device ?? {},
     meta: raw.meta ?? {},
     sigint: hydratedPayload.sigint ?? sigintSummary(ctx.payload),
@@ -529,6 +552,29 @@ async function persistIntegrityRecord(
   }
 }
 
+/**
+ * Resolve merchantId for the row via the cpi-keyed resolver cache. Never
+ * throws — a failed lookup yields null and the row is written without the
+ * GSI key (sparse). Cache hit is free; cache miss is one Query on the
+ * platform's merchant-keys cpi-index.
+ */
+async function resolveMerchantId(ctx: HandleContext): Promise<string | null> {
+  if (!cpiMerchantResolver) return null;
+  try {
+    return await cpiMerchantResolver.resolve(ctx.cpi);
+  } catch (err) {
+    ctx.deps.logger.warn(
+      "cpi → merchantId lookup failed; writing row without merchant_id",
+      {
+        cpi: ctx.cpi,
+        error: (err as Error).message,
+      },
+    );
+    ctx.deps.metrics.addMetric("MerchantIdResolveFailed", MetricUnit.Count, 1);
+    return null;
+  }
+}
+
 async function handleIntegrity(
   ctx: HandleContext,
 ): Promise<APIGatewayProxyResultV2> {
@@ -539,8 +585,9 @@ async function handleIntegrity(
   // Run identity verification and ASN-dataset prewarm in parallel — the
   // dataset is needed by analyzeIpConsistency below; on cold start it costs
   // ~50–100 ms (one S3 GET), warm calls are no-ops.
-  const [identity] = await Promise.all([
+  const [identity, merchantId] = await Promise.all([
     verifyDeviceIdentity(ctx.payload),
+    resolveMerchantId(ctx),
     prewarmAsnDataset().catch((err) => {
       ctx.deps.logger.warn("ASN dataset prewarm failed", { error: err });
     }),
@@ -552,7 +599,7 @@ async function handleIntegrity(
     }),
   ]);
   emitIdentityMetrics(ctx.deps, identity);
-  const item = buildIntegrityItem(ctx, hydratedPayload, identity);
+  const item = buildIntegrityItem(ctx, hydratedPayload, identity, merchantId);
 
   await persistIntegrityRecord(ctx, item);
 

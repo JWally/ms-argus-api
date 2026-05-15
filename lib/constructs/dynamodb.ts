@@ -73,16 +73,34 @@ export class DynamoDbConstruct extends Construct {
       },
     );
 
-    // GSI for the dashboard's "recent sessions" feed: range query by
-    // time within a single cpi. PK=cpi keeps the partition shape
-    // consistent with the base table (one cpi = one merchant key);
-    // SK=created_at gives DESC time ordering. Reads on this GSI are
-    // bounded (≤50 rows / page) and don't compete with the base
-    // table's hot write path for capacity.
+    // GSI for forensic per-cpi queries (single key's sessions over time).
+    // Retained because the bounded shape is still useful for support /
+    // debugging, but the dashboard "recent sessions" view has moved to
+    // merchantId-createdAt-index (below) — fanning out one Query per cpi
+    // doesn't scale with merchant key count.
     this.integrityResultsTable.addGlobalSecondaryIndex({
       indexName: "cpi-createdAt-index",
       partitionKey: {
         name: "cpi",
+        type: dynamodb.AttributeType.STRING,
+      },
+      sortKey: {
+        name: "created_at",
+        type: dynamodb.AttributeType.NUMBER,
+      },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
+    // GSI for the dashboard's "recent sessions" feed: one Query per page
+    // across all of a merchant's cpis. Populated by the ingestion handler
+    // via a cached cpi → merchantId lookup against the platform's
+    // merchant-keys table. Sparse: rows written before merchant_id was
+    // stamped (or with an unresolved cpi) are excluded from this GSI.
+    // Backfill of historical rows is a separate operational task.
+    this.integrityResultsTable.addGlobalSecondaryIndex({
+      indexName: "merchantId-createdAt-index",
+      partitionKey: {
+        name: "merchant_id",
         type: dynamodb.AttributeType.STRING,
       },
       sortKey: {
