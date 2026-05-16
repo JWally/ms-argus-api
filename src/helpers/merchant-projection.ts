@@ -888,8 +888,18 @@ function collectTamperingEvidence(
   const lies =
     (integrity.device as { lies?: { totalLies?: number } } | undefined)?.lies
       ?.totalLies ?? 0;
+  // Worker-scope divergences emitted by analysis/worker/index.ts. The
+  // analyzer's COMPARE_FIELDS list is `userAgent`, `platform`,
+  // `hardwareConcurrency`, `deviceMemory`, `languages`, `webglRenderer`,
+  // `webglVendor`, `webgl2Renderer`, `webgl2Vendor`, `appVersion`,
+  // `product`, `onLine` — every one of these is structurally constant
+  // across realms in real browsers EXCEPT `onLine`, which can flip if
+  // the network state changes between scope captures. Exclude `onLine`
+  // and count everything else: each remaining divergence is conclusive
+  // evidence of automation tooling overriding navigator on the main
+  // realm without propagating to workers.
   const divergences = (integrity.analysis.worker.divergences ?? []).filter(
-    (d) => /navigator|css|screen/i.test(d.field),
+    (d) => d.field !== "onLine",
   ).length;
   const locale = readLocaleGeoSignals(integrity);
   // Corporate-shield carve-outs.
@@ -949,7 +959,18 @@ function collectTamperingEvidence(
 }
 
 function isDefinitiveTampering(e: TamperingEvidence): boolean {
-  if (e.lies >= 20 || e.ja4Mismatch || e.divergences >= 3) return true;
+  if (e.lies >= 20 || e.ja4Mismatch) return true;
+  // Worker-scope divergence on ANY of the structurally-constant navigator
+  // fields (see `collectTamperingEvidence` for the list) is conclusive on
+  // its own. Real browsers propagate navigator state from the parent realm
+  // to dedicated/shared workers identically — no browser has ever shipped
+  // otherwise, and no privacy mode / extension produces this split. The
+  // only mechanism that does is automation tooling (Playwright/Puppeteer/
+  // Selenium) overriding the UA on the main thread without propagating to
+  // workers. `uaDivergence` is the userAgent-specific narrow check; the
+  // count covers the other COMPARE_FIELDS (platform, hardwareConcurrency,
+  // webgl renderer/vendor, languages, appVersion, etc.).
+  if (e.divergences >= 1 || e.uaDivergence || e.platformLie) return true;
   if (e.webrtcApiTampered) return true;
   // Client-hints vs UA disagreement (platform/mobile/brand) is proof of
   // partial spoofing — real browsers never have this split.
@@ -962,9 +983,7 @@ function isDefinitiveTampering(e: TamperingEvidence): boolean {
   // options bitmask on a UA claiming iOS/macOS. The client cannot lie
   // about this from JS — the bits are negotiated at SYN time. Strongest
   // device-axis signal we have.
-  if (e.kernelOsMismatchHard) return true;
-  // (D) Compound: lies + a second-order spoof-indicator
-  return e.lies >= 5 && (e.uaDivergence || e.platformLie);
+  return e.kernelOsMismatchHard;
 }
 
 /**
@@ -973,7 +992,7 @@ function isDefinitiveTampering(e: TamperingEvidence): boolean {
  * `tamperingProbabilityFromEvidence` stays under the cyclomatic-
  * complexity cap.
  *
- * - lies/divergences: enough small lies or worker-vs-main divergences
+ * - lies: enough small lies
  * - uaHeaderMismatch: Chromium UA with sec-ch-ua header missing/wrong
  * - localeTamper: intl APIs vs navigator vs worker disagreement
  * - tlsUaMismatch: probe-side TLS profile lie (corp-shield carve-out
@@ -982,11 +1001,14 @@ function isDefinitiveTampering(e: TamperingEvidence): boolean {
  *   single field structurally impossible
  * - kernelOsMismatchSoft: Linux UA + ECN negotiated (most distros ship
  *   tcp_ecn=2; ops teams who flip ECN on are the carve-out)
+ *
+ * Worker divergences are NOT in this tier — they're handled by
+ * `isDefinitiveTampering` directly (any divergence on a structurally-
+ * constant COMPARE_FIELD is 100, not 60).
  */
 function hasTier60Signal(e: TamperingEvidence): boolean {
   return (
     e.lies >= 5 ||
-    e.divergences >= 1 ||
     e.uaHeaderMismatch ||
     e.localeTamper ||
     e.tlsUaMismatch ||

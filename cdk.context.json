@@ -111,5 +111,7 @@
   "ssm:account=263318538229:parameterName=/argus-platform/dev-jw/probe-tokens-table-name:region=us-east-1": "ms-argus-platform-dev-jw-probe-tokens",
   "ssm:account=263318538229:parameterName=/argus-platform/dev-jw/probe-tokens-table-arn:region=us-east-1": "arn:aws:dynamodb:us-east-1:263318538229:table/ms-argus-platform-dev-jw-probe-tokens",
   "ssm:account=263318538229:parameterName=/argus-platform/dev-jw/merchants-table-name:region=us-east-1": "ms-argus-platform-dev-jw-merchants",
-  "ssm:account=263318538229:parameterName=/argus-platform/dev-jw/merchants-table-arn:region=us-east-1": "arn:aws:dynamodb:us-east-1:263318538229:table/ms-argus-platform-dev-jw-merchants"
+  "ssm:account=263318538229:parameterName=/argus-platform/dev-jw/merchants-table-arn:region=us-east-1": "arn:aws:dynamodb:us-east-1:263318538229:table/ms-argus-platform-dev-jw-merchants",
+  "ssm:account=263318538229:parameterName=/argus-platform/dev-jw/merchant-keys-table-name:region=us-east-1": "ms-argus-platform-dev-jw-merchant-keys",
+  "ssm:account=263318538229:parameterName=/argus-platform/dev-jw/merchant-keys-table-arn:region=us-east-1": "arn:aws:dynamodb:us-east-1:263318538229:table/ms-argus-platform-dev-jw-merchant-keys"
 }

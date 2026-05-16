@@ -2011,6 +2011,86 @@ describe("buildMerchantResponse", () => {
       expect(result.device_tampering).toBe(100);
     });
 
+    it("(D.1) worker UA divergence ALONE (no lies) → tampering.probability=100", () => {
+      // Regression: pre-2026-05-16 the only path to 100 via worker
+      // divergence was a compound `lies >= 5 && (uaDivergence || platformLie)`,
+      // and the `divergences` field counter was filtered through a regex
+      // (/navigator|css|screen/) that never matched the analyzer's actual
+      // emitted field names (userAgent, platform, etc.). A real Playwright
+      // session (f7066aba-bdd8-4756-bec8-0760b02ed135) with 0 lies but a
+      // genuine worker.userAgent divergence scored device_tampering=0.
+      // Now any single COMPARE_FIELDS divergence is definitive on its own.
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: baseIntegrity({
+          device: { lies: { totalLies: 0, data: {} } },
+          analysis: {
+            ...baseIntegrity().analysis,
+            worker: {
+              lied: true,
+              divergences: [
+                { field: "userAgent", main: "A", web: "A", shared: "B" },
+              ],
+              signals: [],
+            },
+          },
+        }),
+      });
+      expect(result.device_tampering).toBe(100);
+    });
+
+    it("(D.2) worker platform divergence ALONE → tampering.probability=100", () => {
+      // Sibling coverage: the COMPARE_FIELDS that aren't userAgent (so
+      // uaDivergence is false) must still count via the divergences
+      // counter. Pre-fix this was masked by both the broken regex and
+      // the lies-gate compound.
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: baseIntegrity({
+          device: { lies: { totalLies: 0, data: {} } },
+          analysis: {
+            ...baseIntegrity().analysis,
+            worker: {
+              lied: true,
+              divergences: [
+                {
+                  field: "webglRenderer",
+                  main: "Apple M1",
+                  web: "Mesa Intel",
+                  shared: undefined,
+                },
+              ],
+              signals: [],
+            },
+          },
+        }),
+      });
+      expect(result.device_tampering).toBe(100);
+    });
+
+    it("(D.3) worker.divergences containing only `onLine` does NOT trigger tampering", () => {
+      // `onLine` is the one COMPARE_FIELDS entry that can legitimately
+      // differ between scopes (network state can flip between captures).
+      // Excluded from the divergence count by collectTamperingEvidence.
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: baseIntegrity({
+          device: { lies: { totalLies: 0, data: {} } },
+          analysis: {
+            ...baseIntegrity().analysis,
+            worker: {
+              lied: true,
+              divergences: [
+                { field: "onLine", main: true, web: false, shared: true },
+              ],
+              signals: [],
+            },
+          },
+        }),
+      });
+      expect(result.device_tampering).toBeLessThan(100);
+    });
+
     it("(E) UA claims Chrome but Sec-CH-UA missing → tampering.probability>=60", () => {
       const result = buildMerchantResponse({
         session_id: "s",
