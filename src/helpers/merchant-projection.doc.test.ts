@@ -373,16 +373,28 @@ describe("§3 — automation axis", () => {
 // Stage 1 — DEFINITIVE TAMPERING → 100. Any of these alone:
 //   - lies.totalLies ≥ 20            (massive API patching)
 //   - JA4_UA_BROWSER_MISMATCH        (TLS family ≠ UA-claimed family)
-//   - worker.divergences ≥ 3         (3+ navigator/css/screen field
-//                                     splits between main and worker)
+//   - worker.divergences ≥ 1         (ANY split on the worker analyzer's
+//                                     COMPARE_FIELDS — userAgent, platform,
+//                                     hardwareConcurrency, deviceMemory,
+//                                     languages, webglRenderer/Vendor,
+//                                     webgl2Renderer/Vendor, appVersion,
+//                                     product — except `onLine` which can
+//                                     flip naturally with network state.
+//                                     Real browsers propagate navigator
+//                                     state identically; the only mechanism
+//                                     producing a split is automation
+//                                     overriding the main realm without
+//                                     touching worker contexts.)
+//   - uaDivergence                   (worker userAgent ≠ main; subset of
+//                                     divergences but checked explicitly)
+//   - platformLie                    (Navigator.platform getter patched)
 //   - WebRTC API tampered            (RTCPeerConnection patched)
 //   - chUaMismatch                   (sec-ch-ua platform/mobile ≠ UA)
 //   - browserEngineHardBreak         (claimed browser_version's baseline
 //                                     has count=0 for an observed value)
-//   - lies ≥ 5 AND (uaDivergence OR platformLie)  (compound)
 //
 // Stage 2 — GRADED LADDER (first matching tier wins):
-//   60: lies ≥ 5  OR  worker.divergences ≥ 1
+//   60: lies ≥ 5
 //   60: uaHeaderMismatch          (Chromium UA + no sec-ch-ua header)
 //   60: localeTamper              (intl ≠ navigator OR worker ≠ main locale)
 //   60: tlsUaMismatch             (probe sees stripped TLS — corp-shield
