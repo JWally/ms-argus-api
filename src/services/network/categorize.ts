@@ -201,6 +201,27 @@ const RULES: CategoryRule[] = [
   { pattern: /\bALIBABA\b|\bALICLOUD\b|\bALIYUN\b/i, category: "datacenter" },
   { pattern: /\bTENCENT\b/i, category: "datacenter" },
 
+  // ─── Datacenter REITs / colocation operators
+  // These don't ship their own hyperscaler product line — they lease cage/
+  // rack space to others (BrowserStack, SaaS startups, niche hosts). RDAP
+  // names typically include the operator brand plus a facility code
+  // (e.g. "QTS-SUW1-ATL1", "EQUINIX-IX-LON5").
+  { pattern: /\bQTS\b|\bQUALITY-?TECH\b/i, category: "datacenter" },
+  { pattern: /\bEQUINIX\b/i, category: "datacenter" },
+  { pattern: /\bCORESITE\b|\bCORE-?SITE\b/i, category: "datacenter" },
+  { pattern: /\bCYXTERA\b/i, category: "datacenter" },
+  { pattern: /\bCOLOGIX\b/i, category: "datacenter" },
+  { pattern: /\bDIGITAL-?REALTY\b|\bDLR-?DC\b/i, category: "datacenter" },
+  { pattern: /\bTELEHOUSE\b/i, category: "datacenter" },
+  { pattern: /\bINTERXION\b/i, category: "datacenter" },
+  { pattern: /\bIRON-?MOUNTAIN\b/i, category: "datacenter" },
+  // Cloud-device farms (BrowserStack, Sauce Labs, LambdaTest). Real iOS/
+  // Android hardware but the egress is colocation-grade, not consumer
+  // residential — merchants can treat as datacenter for risk purposes.
+  { pattern: /\bBROWSERSTACK\b/i, category: "datacenter" },
+  { pattern: /\bSAUCELABS\b|\bSAUCE-?LABS\b/i, category: "datacenter" },
+  { pattern: /\bLAMBDATEST\b/i, category: "datacenter" },
+
   // ─── VPN backbone / proxy infrastructure
   { pattern: /\bM247\b/i, category: "vpn_proxy" },
   { pattern: /\bLEASEWEB\b/i, category: "vpn_proxy" },

@@ -8,7 +8,11 @@ import warmup from "@middy/warmup";
 import { onWarmup } from "../helpers/middy-helpers";
 import { corsMiddleware } from "../helpers/cors-middleware";
 import { jsonErrorHandler } from "../helpers/error-middleware";
-import { binaryGzipBodyParser, jsonBodyParser } from "./ingestion/middleware";
+import {
+  binaryGzipBodyParser,
+  jsonBodyParser,
+  sigintTokenValidator,
+} from "./ingestion/middleware";
 import { createBaseHandler } from "./ingestion/base-handler";
 
 const logger = new Logger({
@@ -52,5 +56,6 @@ export const handler = middy(baseHandler)
     ),
   )
   .use(jsonBodyParser(metrics))
+  .use(sigintTokenValidator(metrics))
   .use(corsMiddleware(CORS_CONFIG))
   .use(jsonErrorHandler({ logger, exposeErrors: "all" }));

@@ -16,6 +16,8 @@ import {
   decryptIntegrityPayloadV2,
 } from "../../helpers/ecdh-decrypt";
 
+const INTEGRITY_COLLECT_PATH = "/v1/integrity-collect";
+
 /**
  * Middy middleware that handles binary gzip-encoded payloads.
  *
@@ -82,7 +84,7 @@ async function handleEcdhPayload(
     throw new HttpError(503, "Encrypted ingestion not configured");
   }
 
-  const isIntegrity = event.rawPath === "/v1/integrity-collect";
+  const isIntegrity = event.rawPath === INTEGRITY_COLLECT_PATH;
   let parsed: unknown | null;
 
   if (isIntegrity) {
@@ -171,7 +173,7 @@ export const jsonBodyParser = (
 
     if (
       event.rawPath !== "/v1/collect" &&
-      event.rawPath !== "/v1/integrity-collect"
+      event.rawPath !== INTEGRITY_COLLECT_PATH
     ) {
       return;
     }
@@ -183,5 +185,110 @@ export const jsonBodyParser = (
       metrics.addMetric("InvalidJson", MetricUnit.Count, 1);
       throw new HttpError(400, "Invalid JSON payload");
     }
+  },
+});
+
+/**
+ * Middy middleware that enforces real SDK probe evidence on /v1/integrity-collect.
+ *
+ * Hard-requires all three sigint probe tokens — any missing → HTTP 400.
+ * The SDK ships a token for each probe even when the underlying probe
+ * couldn't run (e.g., H2 token still emitted when client is stuck on
+ * HTTP/1.1; the token carries that state). So a real SDK execution always
+ * produces all three; absence on the wire is determinative evidence of
+ * SDK bypass.
+ *
+ *  - **TCP probe** (`sigintTcpToken` | inline `sigint.tcp_probe.token`):
+ *    carries `rcv_rtt/rtt` and `snd_mss` — the signals `proxy_waterfall`
+ *    rule 7 uses to catch userspace HTTP CONNECT proxies.
+ *  - **CF probe** (`sigintTls` JSON, populates `sigint.aws_cf`):
+ *    carries the ASN classification CloudFront resolved (residential /
+ *    datacenter / proxy-provider / hosting).
+ *  - **H2 probe** (`sigintH2Token` | inline `sigint.h2.token`):
+ *    carries H2-side JA4 and overlapping TLS info — `JA4_UA_BROWSER_MISMATCH`
+ *    and `H2_UA_BROWSER_MISMATCH` analyzer signals.
+ *
+ * STUN/`sigintCandidates` are intentionally NOT required — the analyzer has
+ * documented contingencies for missing WebRTC data (the `no_webrtc` tag,
+ * `proxy_waterfall` silent-webrtc branch with `rttRatio=null` falling to
+ * rule 8). WebRTC does what it does.
+ *
+ * Per-probe absence metrics (`SigintTcpProbeAbsent`, `SigintCfProbeAbsent`,
+ * `SigintH2ProbeAbsent`) are emitted on every rejection so post-deploy
+ * dashboards can see which probe(s) are tripping rejections — useful for
+ * spotting real-traffic regressions (e.g., a probe endpoint outage).
+ *
+ * Skips non-POST and non-/v1/integrity-collect requests. Runs after
+ * `jsonBodyParser` (needs `event.parsedBody`).
+ */
+function hasInlineProbeToken(probe: unknown): boolean {
+  if (probe === null || typeof probe !== "object") return false;
+  const token = (probe as Record<string, unknown>).token;
+  // Match extractInlineToken in redeem-sigint-tokens.ts: token must be a
+  // string AND the envelope must not be the `{v, data}` encrypted-blob shape.
+  return (
+    typeof token === "string" &&
+    token.length > 0 &&
+    !("v" in (probe as Record<string, unknown>))
+  );
+}
+
+function nonEmptyString(v: unknown): boolean {
+  return typeof v === "string" && v.length > 0;
+}
+
+interface ProbePresence {
+  tcp: boolean;
+  cf: boolean;
+  h2: boolean;
+}
+
+function checkProbePresence(payload: unknown): ProbePresence {
+  if (payload === null || typeof payload !== "object") {
+    return { tcp: false, cf: false, h2: false };
+  }
+  const p = payload as Record<string, unknown>;
+  const sigint = p.sigint as Record<string, unknown> | undefined;
+  return {
+    tcp:
+      nonEmptyString(p.sigintTcpToken) ||
+      (sigint ? hasInlineProbeToken(sigint.tcp_probe) : false),
+    cf: nonEmptyString(p.sigintTls),
+    h2:
+      nonEmptyString(p.sigintH2Token) ||
+      (sigint ? hasInlineProbeToken(sigint.h2) : false),
+  };
+}
+
+export const sigintTokenValidator = (
+  metrics: Metrics,
+): middy.MiddlewareObj<APIGatewayProxyEventV2> => ({
+  before: async (request) => {
+    const { event } = request;
+    if (event.requestContext.http.method !== "POST") return;
+    if (event.rawPath !== INTEGRITY_COLLECT_PATH) return;
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const parsed = (event as any).parsedBody;
+    const present = checkProbePresence(parsed);
+
+    const missing: string[] = [];
+    if (!present.tcp) {
+      missing.push("sigintTcpToken");
+      metrics.addMetric("SigintTcpProbeAbsent", MetricUnit.Count, 1);
+    }
+    if (!present.cf) {
+      missing.push("sigintTls");
+      metrics.addMetric("SigintCfProbeAbsent", MetricUnit.Count, 1);
+    }
+    if (!present.h2) {
+      missing.push("sigintH2Token");
+      metrics.addMetric("SigintH2ProbeAbsent", MetricUnit.Count, 1);
+    }
+    if (missing.length === 0) return;
+    throw new HttpError(
+      400,
+      `Missing required sigint probe evidence: ${missing.join(", ")}`,
+    );
   },
 });

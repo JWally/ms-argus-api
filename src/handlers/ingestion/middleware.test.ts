@@ -14,7 +14,7 @@ vi.mock("../../helpers/ecdh-decrypt", () => ({
 
 import { getEcdhKeys } from "../../helpers/get-ecdh-keys";
 import { decryptArgusPayload } from "../../helpers/ecdh-decrypt";
-import { binaryGzipBodyParser } from "./middleware";
+import { binaryGzipBodyParser, sigintTokenValidator } from "./middleware";
 import { Metrics } from "@aws-lambda-powertools/metrics";
 
 const mockMetrics = {
@@ -111,5 +111,154 @@ describe("binaryGzipBodyParser — ECDH path", () => {
       expect.any(String),
       1,
     );
+  });
+});
+
+describe("sigintTokenValidator", () => {
+  function makeIntegrityRequest(parsedBody: unknown) {
+    return {
+      event: {
+        headers: {},
+        body: JSON.stringify(parsedBody ?? {}),
+        isBase64Encoded: false,
+        requestContext: { http: { method: "POST" } },
+        rawPath: "/v1/integrity-collect",
+        parsedBody,
+      },
+    } as any;
+  }
+
+  beforeEach(() => {
+    vi.mocked(mockMetrics.addMetric).mockReset();
+  });
+
+  it("skips non-POST", async () => {
+    const mw = sigintTokenValidator(mockMetrics);
+    const req = makeIntegrityRequest({});
+    req.event.requestContext.http.method = "OPTIONS";
+    await mw.before!(req);
+    expect(mockMetrics.addMetric).not.toHaveBeenCalled();
+  });
+
+  it("skips non-integrity-collect paths", async () => {
+    const mw = sigintTokenValidator(mockMetrics);
+    const req = makeIntegrityRequest({});
+    req.event.rawPath = "/v1/collect";
+    await mw.before!(req);
+    expect(mockMetrics.addMetric).not.toHaveBeenCalled();
+  });
+
+  it("throws 400 when no tokens, emits per-probe absence metrics", async () => {
+    const mw = sigintTokenValidator(mockMetrics);
+    const req = makeIntegrityRequest({ identifiers: { cpi: "x" } });
+    await expect(mw.before!(req)).rejects.toMatchObject({
+      statusCode: 400,
+      message: expect.stringContaining("sigintTcpToken"),
+    });
+    expect(mockMetrics.addMetric).toHaveBeenCalledWith(
+      "SigintTcpProbeAbsent",
+      expect.any(String),
+      1,
+    );
+    expect(mockMetrics.addMetric).toHaveBeenCalledWith(
+      "SigintCfProbeAbsent",
+      expect.any(String),
+      1,
+    );
+    expect(mockMetrics.addMetric).toHaveBeenCalledWith(
+      "SigintH2ProbeAbsent",
+      expect.any(String),
+      1,
+    );
+  });
+
+  it("throws 400 when only TCP probe present (CF + H2 still required)", async () => {
+    const mw = sigintTokenValidator(mockMetrics);
+    const req = makeIntegrityRequest({ sigintTcpToken: "nonce.expiry.sig" });
+    await expect(mw.before!(req)).rejects.toMatchObject({
+      statusCode: 400,
+      message: expect.stringContaining("sigintTls"),
+    });
+  });
+
+  it("throws 400 when only CF probe present (TCP + H2 still required)", async () => {
+    const mw = sigintTokenValidator(mockMetrics);
+    const req = makeIntegrityRequest({ sigintTls: '{"ip":"1.2.3.4"}' });
+    await expect(mw.before!(req)).rejects.toMatchObject({
+      statusCode: 400,
+      message: expect.stringContaining("sigintTcpToken"),
+    });
+  });
+
+  it("throws 400 when H2 probe is absent", async () => {
+    const mw = sigintTokenValidator(mockMetrics);
+    const req = makeIntegrityRequest({
+      sigintTcpToken: "nonce.expiry.sig",
+      sigintTls: '{"ip":"1.2.3.4"}',
+      // no sigintH2Token
+    });
+    await expect(mw.before!(req)).rejects.toMatchObject({
+      statusCode: 400,
+      message: expect.stringContaining("sigintH2Token"),
+    });
+    expect(mockMetrics.addMetric).toHaveBeenCalledWith(
+      "SigintH2ProbeAbsent",
+      expect.any(String),
+      1,
+    );
+    expect(mockMetrics.addMetric).not.toHaveBeenCalledWith(
+      "SigintTcpProbeAbsent",
+      expect.any(String),
+      expect.any(Number),
+    );
+  });
+
+  it("allows through when all three probes present", async () => {
+    const mw = sigintTokenValidator(mockMetrics);
+    const req = makeIntegrityRequest({
+      sigintTcpToken: "nonce.expiry.sig",
+      sigintTls: '{"ip":"1.2.3.4"}',
+      sigintH2Token: "nonce.expiry.sig",
+    });
+    await expect(mw.before!(req)).resolves.toBeUndefined();
+    expect(mockMetrics.addMetric).not.toHaveBeenCalled();
+  });
+
+  it("accepts inline sigint.tcp_probe.token + sigint.h2.token as evidence", async () => {
+    const mw = sigintTokenValidator(mockMetrics);
+    const req = makeIntegrityRequest({
+      sigintTls: '{"ip":"1.2.3.4"}',
+      sigint: {
+        tcp_probe: { token: "nonce.expiry.sig" },
+        h2: { token: "nonce.expiry.sig" },
+      },
+    });
+    await expect(mw.before!(req)).resolves.toBeUndefined();
+  });
+
+  it("rejects inline encrypted-blob shape as TCP evidence (matches extractInlineToken)", async () => {
+    const mw = sigintTokenValidator(mockMetrics);
+    // { v, data } envelope is the encrypted-blob shape — extractInlineToken
+    // excludes it; we must too, otherwise an attacker could submit a fake
+    // encrypted blob to pass the check without owning a real token.
+    const req = makeIntegrityRequest({
+      sigintTls: '{"ip":"1.2.3.4"}',
+      sigintH2Token: "nonce.expiry.sig",
+      sigint: { tcp_probe: { v: 1, data: "garbage", token: "looks-real" } },
+    });
+    await expect(mw.before!(req)).rejects.toMatchObject({
+      statusCode: 400,
+      message: expect.stringContaining("sigintTcpToken"),
+    });
+  });
+
+  it("rejects empty-string tokens", async () => {
+    const mw = sigintTokenValidator(mockMetrics);
+    const req = makeIntegrityRequest({
+      sigintTls: "",
+      sigintTcpToken: "",
+      sigintH2Token: "",
+    });
+    await expect(mw.before!(req)).rejects.toMatchObject({ statusCode: 400 });
   });
 });

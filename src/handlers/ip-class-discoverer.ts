@@ -289,9 +289,16 @@ function buildDirectRules(
   category: NetworkCategory | null,
   now: string,
 ): OverlayRule[] {
+  // Skip when the categorizer can't decide. Previously fell back to
+  // "residential" which manufactured a trust signal for any datacenter
+  // operator absent from the regex allowlist (QTS, Equinix, CoreSite,
+  // BrowserStack, …) — wrong direction for fraud detection. The runtime
+  // classifier falls through to the ASN dict / catalog when no overlay
+  // rule matches, so dropping unclassified rules is the correct semantic.
+  if (!category) return [];
   return info.cidrs.map((cidr) => ({
     cidr,
-    category: category ?? "residential",
+    category,
     name: info.name,
     source: "rdap_ip" as const,
     discovered_at: now,
@@ -312,7 +319,13 @@ async function buildReverseSearchRules(
   const networks = await rdapNameSearch(simple);
   const rules: OverlayRule[] = [];
   for (const n of networks) {
-    const cat = categorize(n.name) ?? fallback ?? "residential";
+    // Same fail-closed posture as buildDirectRules — only emit a rule when
+    // we know the category. `fallback` is the seed-IP's category (often
+    // also null when the seed wasn't matchable); when it IS known, we
+    // propagate it to siblings discovered via name-search since they share
+    // the same operator.
+    const cat = categorize(n.name) ?? fallback;
+    if (!cat) continue;
     for (const cidr of n.cidrs) {
       rules.push({
         cidr,

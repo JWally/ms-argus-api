@@ -71,6 +71,21 @@ describe("categorize — datacenter / proxy / cdn", () => {
     ["HIVELOCITY-INC", "hosting_proxy"],
     ["AS-SPRIO", "hosting_proxy"],
     ["BLAZINGSEO-US-19", "hosting_proxy"],
+    // Datacenter REITs / colocation operators
+    ["QTS-SUW1-ATL1", "datacenter"],
+    ["QTS-209-10-139-0-24", "datacenter"],
+    ["EQUINIX-IX-LON5", "datacenter"],
+    ["CORESITE-LA1", "datacenter"],
+    ["CYXTERA-COMM", "datacenter"],
+    ["COLOGIX-MTL3", "datacenter"],
+    ["DIGITAL-REALTY-DAL", "datacenter"],
+    ["TELEHOUSE-NORTH", "datacenter"],
+    ["INTERXION-AMS9", "datacenter"],
+    ["IRON-MOUNTAIN-DC", "datacenter"],
+    // Cloud device farms
+    ["BROWSERSTACK-SY4", "datacenter"],
+    ["SAUCELABS-NET", "datacenter"],
+    ["LAMBDATEST-CLOUD", "datacenter"],
   ])("%s → %s", (org, expected) => {
     expect(categorize(org)).toBe(expected);
   });
