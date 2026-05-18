@@ -23,6 +23,15 @@ import type { NetworkCategory as BaseNetworkCategory } from "./categorize";
  */
 export type NetworkCategory = BaseNetworkCategory | "unknown";
 
+/** PeeringDB-derived metadata persisted alongside the ASN dict. Operator-
+ *  self-declared and may be absent — present-but-empty `info_type` is normal.
+ *  Useful as a soft signal (IX count → proxy/transit footprint) and a sanity
+ *  check on the regex categorizer (info_type vs category disagreement). */
+export interface AsnPdbInfo {
+  info_type: string;
+  ix_count: number;
+}
+
 interface DatasetPayload {
   generated_at: string;
   source: string;
@@ -33,11 +42,14 @@ interface DatasetPayload {
   asns: Record<string, NetworkCategory>;
   /** Optional in older payloads — present once ip-class-builder is updated. */
   orgs?: Record<string, string>;
+  /** Optional in older payloads — absent until PeeringDB join shipped. */
+  pdb_types?: Record<string, AsnPdbInfo>;
 }
 
 interface CachedDataset {
   asns: Record<string, NetworkCategory>;
   orgs: Record<string, string>;
+  pdbTypes: Record<string, AsnPdbInfo>;
 }
 
 const REFRESH_INTERVAL_MS = 24 * 60 * 60 * 1000;
@@ -55,7 +67,11 @@ async function loadDataset(): Promise<CachedDataset> {
   if (!obj.Body) throw new Error(`empty body for s3://${bucket}/${key}`);
   const buf = Buffer.from(await obj.Body.transformToByteArray());
   const json = JSON.parse(gunzipSync(buf).toString("utf-8")) as DatasetPayload;
-  return { asns: json.asns, orgs: json.orgs ?? {} };
+  return {
+    asns: json.asns,
+    orgs: json.orgs ?? {},
+    pdbTypes: json.pdb_types ?? {},
+  };
 }
 
 async function getDataset(): Promise<CachedDataset> {
@@ -95,6 +111,19 @@ export function lookupAsnOrgSync(asn: number): string | null {
 }
 
 /**
+ * Synchronous PeeringDB metadata lookup. Returns `{info_type, ix_count}` for
+ * ASNs the weekly builder joined against PeeringDB, else null. `info_type`
+ * may be empty even on a hit (operator registered but didn't declare type);
+ * use `ix_count` as the secondary signal. Useful for downstream cross-checks
+ * (e.g., regex category vs declared type) and proxy-footprint heuristics
+ * (operators present at many IXes look more like transit than residential).
+ * Does not feed classification today — additive metadata only.
+ */
+export function lookupAsnPdbSync(asn: number): AsnPdbInfo | null {
+  return cached?.pdbTypes[String(asn)] ?? null;
+}
+
+/**
  * Trigger a dataset load if not already cached. Call once per request before
  * any `classifyAsnSync` invocations to guarantee the lookup table is in
  * memory. After the first cold-start fetch (~50–100 ms), subsequent calls
@@ -120,8 +149,9 @@ export function _resetCacheForTesting(): void {
 export function _seedCacheForTesting(
   dict: Record<string, NetworkCategory>,
   orgs: Record<string, string> = {},
+  pdbTypes: Record<string, AsnPdbInfo> = {},
 ): void {
-  cached = { asns: dict, orgs };
+  cached = { asns: dict, orgs, pdbTypes };
   cachedAt = Date.now();
   inflight = null;
 }
