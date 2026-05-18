@@ -10,7 +10,7 @@ function jsonResponse(body: unknown, ok = true, status = 200) {
     ok,
     status,
     statusText: ok ? "OK" : "ERR",
-    json: async () => body,
+    json: () => Promise.resolve(body),
   };
 }
 
@@ -154,9 +154,7 @@ describe("fetchPeeringDbTypes — failure tolerance", () => {
         ok: true,
         status: 200,
         statusText: "OK",
-        json: async () => {
-          throw new Error("invalid json");
-        },
+        json: () => Promise.reject(new Error("invalid json")),
       }),
     );
     const map = await fetchPeeringDbTypes();
