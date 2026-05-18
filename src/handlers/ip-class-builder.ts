@@ -29,7 +29,11 @@
  * Cadence: weekly EventBridge schedule + on-deploy custom-resource invoke
  * so the bucket is seeded the first time the stack is created.
  */
-import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
+import {
+  S3Client,
+  PutObjectCommand,
+  GetObjectCommand,
+} from "@aws-sdk/client-s3";
 import { gunzipSync, gzipSync } from "node:zlib";
 import { ASN_OVERRIDES } from "../services/network/asn-overrides";
 import { categorize } from "../services/network/categorize";
@@ -55,6 +59,7 @@ interface BuildResult {
   asnsClassified: number;
   asnsWithOrg: number;
   asnsWithPdb: number;
+  pdbCarriedForward: boolean;
   pdbMismatches: number;
   bytesUploaded: number;
   bucket: string;
@@ -93,14 +98,44 @@ function expectedPdbFamily(category: string): string[] | null {
   }
 }
 
-function buildPdbTypesDict(
-  pdb: Map<number, PdbInfo>,
-): Record<string, { info_type: string; ix_count: number }> {
-  const out: Record<string, { info_type: string; ix_count: number }> = {};
+function buildPdbTypesDict(pdb: Map<number, PdbInfo>): Record<string, PdbInfo> {
+  const out: Record<string, PdbInfo> = {};
   for (const [asn, info] of pdb) {
     out[String(asn)] = info;
   }
   return out;
+}
+
+/**
+ * Read the existing asn-categories.json.gz from S3 (if any) and return its
+ * pdb_types map. Used as a fallback when PeeringDB's bulk endpoint fails or
+ * throttles: rather than zeroing out the runtime's known org names, we
+ * carry forward the previous run's PeeringDB data. The runtime degrades
+ * gracefully on transient PeeringDB outages instead of losing all enriched
+ * org-name coverage.
+ *
+ * Returns an empty record when no prior file exists (first deploy) or on
+ * any read/parse error — the build still ships a valid file with the rest
+ * of the dataset.
+ */
+async function loadExistingPdbTypes(
+  s3: S3Client,
+  bucket: string,
+  key: string,
+): Promise<Record<string, PdbInfo>> {
+  try {
+    const obj = await s3.send(
+      new GetObjectCommand({ Bucket: bucket, Key: key }),
+    );
+    if (!obj.Body) return {};
+    const buf = Buffer.from(await obj.Body.transformToByteArray());
+    const json = JSON.parse(gunzipSync(buf).toString("utf-8")) as {
+      pdb_types?: Record<string, PdbInfo>;
+    };
+    return json.pdb_types ?? {};
+  } catch {
+    return {};
+  }
 }
 
 function countMismatches(
@@ -167,11 +202,16 @@ interface BuiltDataset {
   asnToOrg: Map<number, string>;
   asns: Record<string, string>;
   orgs: Record<string, string>;
-  pdb_types: Record<string, { info_type: string; ix_count: number }>;
+  pdb_types: Record<string, PdbInfo>;
   pdbMismatches: number;
+  pdbCarriedForward: boolean;
 }
 
-async function buildDataset(): Promise<BuiltDataset> {
+async function buildDataset(
+  s3: S3Client,
+  bucket: string,
+  key: string,
+): Promise<BuiltDataset> {
   // Kick off both fetches in parallel — they're independent. PeeringDB is
   // the slower of the two; running them concurrently shaves ~3s.
   const [tsv, pdbTypes] = await Promise.all([
@@ -181,8 +221,28 @@ async function buildDataset(): Promise<BuiltDataset> {
   const asnToOrg = parseAsnTable(tsv);
   const asns = buildClassificationDict(asnToOrg);
   const orgs = buildOrgsDict(asnToOrg);
-  const pdb_types = buildPdbTypesDict(pdbTypes);
+  let pdb_types = buildPdbTypesDict(pdbTypes);
   const pdbMismatches = countMismatches(asns, pdbTypes);
+
+  // Carry forward the previous pdb_types when PeeringDB returned nothing
+  // (rate-limit / fetch error). Better to keep yesterday's org-name
+  // coverage than to wipe ~26k entries on a transient throttle.
+  let pdbCarriedForward = false;
+  if (Object.keys(pdb_types).length === 0) {
+    const existing = await loadExistingPdbTypes(s3, bucket, key);
+    if (Object.keys(existing).length > 0) {
+      pdb_types = existing;
+      pdbCarriedForward = true;
+      console.warn(
+        JSON.stringify({
+          msg: "pdb_carry_forward",
+          count: Object.keys(existing).length,
+          note: "PeeringDB fetch returned empty; preserved prior run's pdb_types",
+        }),
+      );
+    }
+  }
+
   if (pdbMismatches > 0) {
     console.log(
       JSON.stringify({
@@ -192,10 +252,11 @@ async function buildDataset(): Promise<BuiltDataset> {
       }),
     );
   }
-  return { asnToOrg, asns, orgs, pdb_types, pdbMismatches };
+  return { asnToOrg, asns, orgs, pdb_types, pdbMismatches, pdbCarriedForward };
 }
 
 async function uploadPayload(
+  s3: S3Client,
   bucket: string,
   key: string,
   d: BuiltDataset,
@@ -208,12 +269,12 @@ async function uploadPayload(
     asns_with_org: Object.keys(d.orgs).length,
     asns_with_pdb: Object.keys(d.pdb_types).length,
     pdb_mismatches: d.pdbMismatches,
+    pdb_carried_forward: d.pdbCarriedForward,
     asns: d.asns,
     orgs: d.orgs,
     pdb_types: d.pdb_types,
   };
   const gz = gzipSync(Buffer.from(JSON.stringify(payload)), { level: 9 });
-  const s3 = new S3Client({});
   await s3.send(
     new PutObjectCommand({
       Bucket: bucket,
@@ -232,14 +293,16 @@ export async function handler(): Promise<BuildResult> {
   const key = process.env.IP_CLASS_KEY ?? "asn-categories.json.gz";
   if (!bucket) throw new Error("IP_CLASS_BUCKET env var is required");
 
-  const d = await buildDataset();
-  const bytesUploaded = await uploadPayload(bucket, key, d);
+  const s3 = new S3Client({});
+  const d = await buildDataset(s3, bucket, key);
+  const bytesUploaded = await uploadPayload(s3, bucket, key, d);
 
   return {
     asnsTotal: d.asnToOrg.size,
     asnsClassified: Object.keys(d.asns).length,
     asnsWithOrg: Object.keys(d.orgs).length,
     asnsWithPdb: Object.keys(d.pdb_types).length,
+    pdbCarriedForward: d.pdbCarriedForward,
     pdbMismatches: d.pdbMismatches,
     bytesUploaded,
     bucket,
