@@ -24,6 +24,11 @@ const TIMEOUT_MS = 90_000;
 const UA = "ms-argus-api ip-class-builder";
 
 export interface PdbInfo {
+  /** Operator-self-declared display name, with the trailing " - <asn>"
+   *  suffix that PeeringDB sometimes appends stripped off. Examples:
+   *  "AT&T US - 7018" → "AT&T US", "Comcast" → "Comcast", "M247 Global"
+   *  → "M247 Global". Empty string when PeeringDB returned no name. */
+  name: string;
   /** Operator-self-declared network type. Empty string is normal for ASNs
    *  that have a PeeringDB record but haven't filled in the type field. */
   info_type: string;
@@ -33,8 +38,17 @@ export interface PdbInfo {
 
 interface PdbApiEntry {
   asn?: unknown;
+  name?: unknown;
   info_type?: unknown;
   ix_count?: unknown;
+}
+
+/** PeeringDB names commonly end with " - <asn>" (e.g. "AT&T US - 7018").
+ *  Strip that suffix only — conservative anchor on the exact ASN keeps us
+ *  from accidentally chopping legitimate trailing numbers in other names. */
+function stripAsnSuffix(name: string, asn: number): string {
+  const suffix = ` - ${asn}`;
+  return name.endsWith(suffix) ? name.slice(0, -suffix.length).trim() : name;
 }
 
 interface PdbApiResponse {
@@ -61,11 +75,13 @@ function parseEntries(entries: PdbApiEntry[]): Map<number, PdbInfo> {
     if (asn === null) continue;
     const info_type = coerceString(e.info_type);
     const ix_count = coerceCount(e.ix_count);
-    // Skip entries that carry no useful signal (no type AND no IX presence).
-    // Most empty entries are stub records for ASNs that registered an account
-    // but never filled in metadata.
-    if (info_type === "" && ix_count === 0) continue;
-    out.set(asn, { info_type, ix_count });
+    const rawName = coerceString(e.name);
+    const name = rawName ? stripAsnSuffix(rawName, asn) : "";
+    // Skip entries that carry no useful signal (no name AND no type AND no
+    // IX presence). Most empty entries are stub records for ASNs that
+    // registered an account but never filled in metadata.
+    if (name === "" && info_type === "" && ix_count === 0) continue;
+    out.set(asn, { name, info_type, ix_count });
   }
   return out;
 }

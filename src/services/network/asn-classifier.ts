@@ -24,9 +24,12 @@ import type { NetworkCategory as BaseNetworkCategory } from "./categorize";
 export type NetworkCategory = BaseNetworkCategory | "unknown";
 
 /** PeeringDB-derived metadata persisted alongside the ASN dict by
- *  ip-class-builder. Operator-self-declared; `info_type` may be empty
- *  string on entries where the operator never filled the field in. */
+ *  ip-class-builder. Operator-self-declared. `name`, `info_type`, or
+ *  `ix_count` may be empty / zero on entries where the operator
+ *  registered an account but didn't fill those fields in — at least
+ *  one is non-empty by builder construction (else the entry is dropped). */
 export interface AsnPdbInfo {
+  name: string;
   info_type: string;
   ix_count: number;
 }

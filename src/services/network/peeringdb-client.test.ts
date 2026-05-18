@@ -27,29 +27,46 @@ describe("fetchPeeringDbTypes — parsing", () => {
       Promise.resolve(
         jsonResponse({
           data: [
-            { asn: 7018, info_type: "NSP", ix_count: 0 },
-            { asn: 9009, info_type: "Network Services", ix_count: 47 },
+            {
+              asn: 7018,
+              name: "AT&T US - 7018",
+              info_type: "NSP",
+              ix_count: 0,
+            },
+            {
+              asn: 9009,
+              name: "M247 Global",
+              info_type: "Network Services",
+              ix_count: 47,
+            },
           ],
         }),
       ),
     );
     const map = await fetchPeeringDbTypes();
     expect(map.size).toBe(2);
-    expect(map.get(7018)).toEqual({ info_type: "NSP", ix_count: 0 });
+    // Trailing " - <asn>" suffix is stripped from the display name.
+    expect(map.get(7018)).toEqual({
+      name: "AT&T US",
+      info_type: "NSP",
+      ix_count: 0,
+    });
     expect(map.get(9009)).toEqual({
+      name: "M247 Global",
       info_type: "Network Services",
       ix_count: 47,
     });
   });
 
-  it("skips empty stub records (no type and no IX presence)", async () => {
+  it("skips empty stub records (no name AND no type AND no IX presence)", async () => {
     mockFetch(() =>
       Promise.resolve(
         jsonResponse({
           data: [
-            { asn: 1111, info_type: "", ix_count: 0 },
-            { asn: 2222, info_type: "NSP", ix_count: 0 },
-            { asn: 3333, info_type: "", ix_count: 5 },
+            { asn: 1111, name: "", info_type: "", ix_count: 0 },
+            { asn: 2222, name: "", info_type: "NSP", ix_count: 0 },
+            { asn: 3333, name: "", info_type: "", ix_count: 5 },
+            { asn: 4444, name: "NameOnly", info_type: "", ix_count: 0 },
           ],
         }),
       ),
@@ -58,6 +75,22 @@ describe("fetchPeeringDbTypes — parsing", () => {
     expect(map.has(1111)).toBe(false);
     expect(map.has(2222)).toBe(true);
     expect(map.has(3333)).toBe(true);
+    expect(map.has(4444)).toBe(true);
+  });
+
+  it("does not strip a trailing dash-number sequence that isn't the ASN", async () => {
+    mockFetch(() =>
+      Promise.resolve(
+        jsonResponse({
+          data: [
+            // Suffix " - 9999" doesn't match ASN 7018, so it stays.
+            { asn: 7018, name: "Foo - 9999", info_type: "NSP", ix_count: 0 },
+          ],
+        }),
+      ),
+    );
+    const map = await fetchPeeringDbTypes();
+    expect(map.get(7018)?.name).toBe("Foo - 9999");
   });
 
   it("rejects entries with non-numeric or zero ASN", async () => {

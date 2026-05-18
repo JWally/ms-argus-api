@@ -546,11 +546,15 @@ function gatherIpSignals(input: IpSignalInputs): AnomalySignal[] {
 }
 
 /**
- * Resolve the org name for an ASN. Static catalog wins (hand-curated, often
- * cleaner than IPtoASN raw values like "AT&T-INTERNET4"). Dynamic dict from
- * the ip-class-builder S3 dataset is the long-tail fallback so mainstream
- * residential ISPs not in the static catalog (AT&T 7018, Comcast 7922, etc.)
- * still surface a human-readable name on the merchant projection.
+ * Resolve the org name for an ASN. Preference ladder:
+ *
+ *   1. Static catalog hand-curated name — cleanest, but only ~100 ASNs.
+ *   2. PeeringDB display name (post-strip) — covers ~26k ASNs with names
+ *      operators chose for themselves. Strictly better than the raw
+ *      BGP-derived IPtoASN name for human display: AS7018 reports
+ *      "AT&T US" here vs "ATT-INTERNET4" in IPtoASN.
+ *   3. IPtoASN raw — last-resort fallback for ASNs PeeringDB doesn't list
+ *      (long-tail regional carriers, freshly-allocated ASNs).
  */
 function resolveAsnOrg(
   asn: string | null,
@@ -560,6 +564,8 @@ function resolveAsnOrg(
   if (!asn) return null;
   const n = Number(asn);
   if (!Number.isFinite(n) || n <= 0) return null;
+  const pdb = lookupAsnPdbSync(n);
+  if (pdb?.name) return pdb.name;
   return lookupAsnOrgSync(n);
 }
 

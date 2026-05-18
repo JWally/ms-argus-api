@@ -305,7 +305,7 @@ describe("asn.metadata enrichment", () => {
     _seedCacheForTesting(
       { "9009": "vpn_proxy" },
       { "9009": "M247 Ltd" },
-      { "9009": { info_type: "NSP", ix_count: 59 } },
+      { "9009": { name: "M247 Global", info_type: "NSP", ix_count: 59 } },
     );
     const r = analyze({
       cfIp: "5.62.0.1",
@@ -320,7 +320,7 @@ describe("asn.metadata enrichment", () => {
     _seedCacheForTesting(
       { "7018": "residential" as NetworkCategory },
       {},
-      { "7018": { info_type: "", ix_count: 0 } },
+      { "7018": { name: "", info_type: "", ix_count: 0 } },
     );
     const r = analyze({
       cfIp: "107.210.133.127",
@@ -341,6 +341,41 @@ describe("asn.metadata enrichment", () => {
       asn: "99999999",
     });
     expect(r.asn.metadata).toBeNull();
+  });
+
+  it("PeeringDB display name wins over raw IPtoASN org", () => {
+    // AS7018 is not in the static catalog. Without PeeringDB, asn.org would
+    // be the raw IPtoASN value "ATT-INTERNET4" — ugly. With PeeringDB,
+    // operator-declared "AT&T US" surfaces instead.
+    _seedCacheForTesting(
+      { "7018": "residential" as NetworkCategory },
+      { "7018": "ATT-INTERNET4" },
+      { "7018": { name: "AT&T US", info_type: "NSP", ix_count: 0 } },
+    );
+    const r = analyze({
+      cfIp: "107.210.133.127",
+      tcpIp: "107.210.133.127",
+      webrtcIp: "107.210.133.127",
+      asn: "7018",
+    });
+    expect(r.asn.org).toBe("AT&T US");
+  });
+
+  it("falls back to IPtoASN org when PeeringDB has no name", () => {
+    _seedCacheForTesting(
+      { "99999": "residential" as NetworkCategory },
+      { "99999": "RAW-NAME-ONLY" },
+      // PeeringDB record exists but `name` is empty — info_type makes it
+      // survive the builder's drop-empty filter.
+      { "99999": { name: "", info_type: "NSP", ix_count: 0 } },
+    );
+    const r = analyze({
+      cfIp: "203.0.113.50",
+      tcpIp: "203.0.113.50",
+      webrtcIp: "203.0.113.50",
+      asn: "99999",
+    });
+    expect(r.asn.org).toBe("RAW-NAME-ONLY");
   });
 });
 
