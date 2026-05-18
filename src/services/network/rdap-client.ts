@@ -24,7 +24,9 @@ export interface RdapIpInfo {
   name: string;
   /** CIDRs covering this IP (usually one, sometimes two for combined ranges) */
   cidrs: string[];
-  /** Legal entity org name (vCard fn) — useful when `name` is a numeric handle */
+  /** Legal entity org name (vCard fn) — useful when `name` is a numeric handle.
+   *  Kept as-is for backward compat with the categorize() call chain; equals
+   *  `customerOrg ?? parentOrg` in practice. */
   org: string;
   /** Nameserver hostnames — sometimes the only branding signal (e.g. LACNIC BR) */
   nameservers: string[];
@@ -32,6 +34,15 @@ export interface RdapIpInfo {
   country: string | null;
   /** Which RIR served the response (after redirects) */
   rir: string;
+  /** ARIN customer-handle registrant ("BrowserStack"). Null when the block
+   *  is operator-owned with no sub-allocated tenant. Detected by entity
+   *  handle matching /^C\d+$/. */
+  customerOrg: string | null;
+  /** Top-level non-customer registrant ("Quality Technology Services").
+   *  Equal to `org` when there's no customer sub-allocation. */
+  parentOrg: string | null;
+  /** Parent allocation CIDR from links[rel=up], e.g. "209.208.128.0/17". */
+  parentCidr: string | null;
 }
 
 export interface RdapNetworkRef {
@@ -78,6 +89,7 @@ function isError(d: unknown): d is { _error: string } {
 }
 
 interface RdapEntity {
+  handle?: string;
   roles?: string[];
   vcardArray?: [string, unknown[]];
 }
@@ -93,14 +105,41 @@ function vcardFn(entity: RdapEntity): string | null {
   return fn ? (fn[3] as string) : null;
 }
 
-function extractEntityOrg(entities: RdapEntity[] | undefined): string {
-  if (!Array.isArray(entities)) return "";
-  for (const e of entities) {
-    if (!Array.isArray(e?.roles) || !e.roles.includes("registrant")) continue;
-    const fn = vcardFn(e);
-    if (fn) return fn;
+/** ARIN customer-record handles look like `C12345678`. Other registrants
+ *  (orgs, networks) use varied patterns — `QTS-9`, `ATT`, `RIPE-NCC`, etc. */
+const CUSTOMER_HANDLE_RE = /^C\d+$/;
+
+interface RegistrantSplit {
+  customerOrg: string | null;
+  parentOrg: string | null;
+}
+
+function isCustomerHandle(entity: RdapEntity): boolean {
+  return (
+    typeof entity.handle === "string" && CUSTOMER_HANDLE_RE.test(entity.handle)
+  );
+}
+
+function registrantFn(entity: RdapEntity): string | null {
+  if (!Array.isArray(entity?.roles) || !entity.roles.includes("registrant")) {
+    return null;
   }
-  return "";
+  return vcardFn(entity);
+}
+
+function extractRegistrants(
+  entities: RdapEntity[] | undefined,
+): RegistrantSplit {
+  if (!Array.isArray(entities)) return { customerOrg: null, parentOrg: null };
+  let customerOrg: string | null = null;
+  let parentOrg: string | null = null;
+  for (const e of entities) {
+    const fn = registrantFn(e);
+    if (!fn) continue;
+    if (isCustomerHandle(e)) customerOrg ??= fn;
+    else parentOrg ??= fn;
+  }
+  return { customerOrg, parentOrg };
 }
 
 interface NicbrReverseDelegation {
@@ -165,6 +204,20 @@ function detectRirFromLinks(d: Record<string, unknown>): string {
   return self?.href ? detectRir(self.href) : "arin";
 }
 
+/** Pull the parent allocation CIDR from `links[rel=up].href`. ARIN's up-link
+ *  href ends in `/ip/<network>/<prefix>` — e.g.
+ *  `https://rdap.arin.net/registry/ip/209.208.128.0/17`. We extract just
+ *  the `<network>/<prefix>` portion. Returns null when absent or malformed. */
+const PARENT_CIDR_RE = /\/ip\/(\d+\.\d+\.\d+\.\d+\/\d+)(?:$|[/?#])/;
+function extractParentCidr(d: Record<string, unknown>): string | null {
+  const links = d.links as { href?: string; rel?: string }[] | undefined;
+  if (!Array.isArray(links)) return null;
+  const up = links.find((l) => l?.rel === "up");
+  if (!up?.href) return null;
+  const m = PARENT_CIDR_RE.exec(up.href);
+  return m ? m[1] : null;
+}
+
 /**
  * IP-lookup. Hits ARIN's bootstrap server which auto-redirects to the
  * correct RIR for the IP's region. Returns null on 404 / fetch failure.
@@ -177,13 +230,23 @@ export async function rdapIpLookup(ip: string): Promise<RdapIpInfo | null> {
   // Some RIRs return only startAddress/endAddress; skip those entirely
   // since the discoverer needs a valid CIDR to write a rule.
   if (cidrs.length === 0) return null;
+  const { customerOrg, parentOrg } = extractRegistrants(
+    obj.entities as RdapEntity[] | undefined,
+  );
   return {
     name: typeof obj.name === "string" ? obj.name : "",
     cidrs,
-    org: extractEntityOrg(obj.entities as RdapEntity[] | undefined),
+    // Preserve old semantics: `org` = first registrant in document order
+    // (parent in nearly all cases, since ARIN lists the operator first).
+    // Categorization continues to run against name + org + nameservers;
+    // the discoverer feeds `customerOrg` in as an extra candidate.
+    org: parentOrg ?? customerOrg ?? "",
     nameservers: extractNameservers(obj),
     country: typeof obj.country === "string" ? obj.country : null,
     rir: detectRirFromLinks(obj),
+    customerOrg,
+    parentOrg,
+    parentCidr: extractParentCidr(obj),
   };
 }
 

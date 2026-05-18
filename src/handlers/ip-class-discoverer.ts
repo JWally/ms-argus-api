@@ -41,6 +41,15 @@ interface OverlayRule {
   name: string;
   source: "rdap_ip" | "rdap_search";
   discovered_at: string;
+  /** ARIN customer-handle registrant ("BrowserStack"), when the allocation
+   *  has a sub-allocated tenant distinct from the operator. Omitted when
+   *  the rule came from a name-search (sibling discovery) or when RDAP
+   *  returned no customer entity. */
+  customer_org?: string;
+  /** Top-level non-customer registrant ("Quality Technology Services"). */
+  parent_org?: string;
+  /** Parent allocation CIDR from RDAP `links[rel=up]`. */
+  parent_cidr?: string;
 }
 
 interface OverlayFileShape {
@@ -281,7 +290,11 @@ function sleep(ms: number): Promise<void> {
 }
 
 function categorizeRdapInfo(info: RdapIpInfo): NetworkCategory | null {
-  return categorize(info.name, info.org, ...info.nameservers);
+  // customerOrg comes first so sub-allocations to known operators
+  // (BrowserStack inside a generic QTS allocation, etc.) classify by the
+  // tenant rather than getting whatever the parent allocation's regex hit
+  // would be.
+  return categorize(info.customerOrg, info.name, info.org, ...info.nameservers);
 }
 
 function buildDirectRules(
@@ -302,6 +315,9 @@ function buildDirectRules(
     name: info.name,
     source: "rdap_ip" as const,
     discovered_at: now,
+    ...(info.customerOrg ? { customer_org: info.customerOrg } : {}),
+    ...(info.parentOrg ? { parent_org: info.parentOrg } : {}),
+    ...(info.parentCidr ? { parent_cidr: info.parentCidr } : {}),
   }));
 }
 

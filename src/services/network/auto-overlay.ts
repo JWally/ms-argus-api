@@ -29,6 +29,18 @@ interface OverlayEntryWire {
   name: string;
   source?: string;
   discovered_at?: string;
+  /** New fields added 2026-05 — optional so existing S3 files (pre-enrichment)
+   *  still deserialize. The discoverer backfills these on next nightly walk. */
+  customer_org?: string;
+  parent_org?: string;
+  parent_cidr?: string;
+}
+
+interface OverlayMeta {
+  name: string;
+  customerOrg?: string;
+  parentOrg?: string;
+  parentCidr?: string;
 }
 
 interface OverlayFileShape {
@@ -38,14 +50,12 @@ interface OverlayFileShape {
 }
 
 const REFRESH_INTERVAL_MS = 24 * 60 * 60 * 1000;
-let cached: readonly CompiledRange<{ name: string }>[] | null = null;
+let cached: readonly CompiledRange<OverlayMeta>[] | null = null;
 let cachedAt = 0;
-let inflight: Promise<readonly CompiledRange<{ name: string }>[]> | null = null;
+let inflight: Promise<readonly CompiledRange<OverlayMeta>[]> | null = null;
 const s3 = new S3Client({});
 
-async function loadOverlay(): Promise<
-  readonly CompiledRange<{ name: string }>[]
-> {
+async function loadOverlay(): Promise<readonly CompiledRange<OverlayMeta>[]> {
   const bucket = process.env.IP_CLASS_BUCKET;
   const key = process.env.IP_CLASS_AUTO_OVERLAY_KEY ?? "auto-overlay.json.gz";
   if (!bucket) throw new Error("IP_CLASS_BUCKET env var is required");
@@ -63,7 +73,12 @@ async function loadOverlay(): Promise<
       parsed.rules.map((r) => ({
         cidr: r.cidr,
         category: r.category,
-        meta: { name: r.name },
+        meta: {
+          name: r.name,
+          ...(r.customer_org ? { customerOrg: r.customer_org } : {}),
+          ...(r.parent_org ? { parentOrg: r.parent_org } : {}),
+          ...(r.parent_cidr ? { parentCidr: r.parent_cidr } : {}),
+        },
       })),
     );
   } catch {
@@ -73,9 +88,7 @@ async function loadOverlay(): Promise<
   }
 }
 
-async function getOverlay(): Promise<
-  readonly CompiledRange<{ name: string }>[]
-> {
+async function getOverlay(): Promise<readonly CompiledRange<OverlayMeta>[]> {
   if (cached && Date.now() - cachedAt < REFRESH_INTERVAL_MS) return cached;
   if (inflight) return inflight;
   inflight = loadOverlay().then((data) => {
@@ -93,15 +106,23 @@ async function getOverlay(): Promise<
  * Returns null when the IP isn't in any auto-discovered rule (caller
  * should fall through to the ASN dict / legacy catalog).
  */
-export function lookupAutoOverlaySync(
-  ip: string,
-): { category: NetworkCategory; name: string } | null {
+export function lookupAutoOverlaySync(ip: string): {
+  category: NetworkCategory;
+  name: string;
+  customerOrg?: string;
+  parentOrg?: string;
+  parentCidr?: string;
+} | null {
   if (!cached) return null;
   const hit = lookupInRanges(cached, ip);
   if (!hit) return null;
+  const meta = hit.meta as OverlayMeta | undefined;
   return {
     category: hit.category,
-    name: (hit.meta as { name: string } | undefined)?.name ?? "",
+    name: meta?.name ?? "",
+    ...(meta?.customerOrg ? { customerOrg: meta.customerOrg } : {}),
+    ...(meta?.parentOrg ? { parentOrg: meta.parentOrg } : {}),
+    ...(meta?.parentCidr ? { parentCidr: meta.parentCidr } : {}),
   };
 }
 
@@ -119,13 +140,25 @@ export function _resetAutoOverlayForTesting(): void {
 
 /** Test/debug: seed the in-memory overlay from a list of raw rules. */
 export function _seedAutoOverlayForTesting(
-  rules: { cidr: string; category: NetworkCategory; name: string }[],
+  rules: {
+    cidr: string;
+    category: NetworkCategory;
+    name: string;
+    customerOrg?: string;
+    parentOrg?: string;
+    parentCidr?: string;
+  }[],
 ): void {
   cached = compileCidrList(
     rules.map((r) => ({
       cidr: r.cidr,
       category: r.category,
-      meta: { name: r.name },
+      meta: {
+        name: r.name,
+        ...(r.customerOrg ? { customerOrg: r.customerOrg } : {}),
+        ...(r.parentOrg ? { parentOrg: r.parentOrg } : {}),
+        ...(r.parentCidr ? { parentCidr: r.parentCidr } : {}),
+      },
     })),
   );
   cachedAt = Date.now();
