@@ -983,6 +983,125 @@ describe("buildMerchantResponse", () => {
       expect(result.automation).toBe(0);
     });
 
+    it("CDP timing: heavy_over_tiny ratio above 1.5 → automation 75", () => {
+      // Empirical Playwright Chrome 148: ratio 2.11. Real Chrome: 0.79.
+      const base = baseIntegrity();
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: {
+          ...base,
+          device: {
+            headless: {
+              headlessRating: 0,
+              cdp: {
+                consoleTiming: {
+                  log_tiny_us: 30,
+                  log_heavy_us: 63,
+                  dir_heavy_us: 54,
+                  heavy_over_tiny: 2.11,
+                },
+              },
+            },
+          },
+        },
+      });
+      expect(result.automation).toBe(75);
+    });
+
+    it("CDP timing: log_heavy_us above 25 → automation 75 even with ratio near 1", () => {
+      // Edge case: muted ratio (busy CPU during bench) but absolute
+      // heavy-object time still implausibly slow for a real user.
+      const base = baseIntegrity();
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: {
+          ...base,
+          device: {
+            headless: {
+              headlessRating: 0,
+              cdp: {
+                consoleTiming: {
+                  log_tiny_us: 28,
+                  log_heavy_us: 35,
+                  dir_heavy_us: 32,
+                  heavy_over_tiny: 1.25,
+                },
+              },
+            },
+          },
+        },
+      });
+      expect(result.automation).toBe(75);
+    });
+
+    it("CDP timing: real-Chrome ratio (0.79) does not flag", () => {
+      const base = baseIntegrity();
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: {
+          ...base,
+          device: {
+            headless: {
+              headlessRating: 0,
+              cdp: {
+                consoleTiming: {
+                  log_tiny_us: 9.4,
+                  log_heavy_us: 7.4,
+                  dir_heavy_us: 7.5,
+                  heavy_over_tiny: 0.79,
+                },
+              },
+            },
+          },
+        },
+      });
+      expect(result.automation).toBe(0);
+    });
+
+    it("CDP timing: headless=new ratio (1.22) does not flag", () => {
+      // Legitimate --headless=new Chrome (no CDP attached) sits comfortably
+      // below the threshold even though the ratio is slightly above 1.
+      const base = baseIntegrity();
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: {
+          ...base,
+          device: {
+            headless: {
+              headlessRating: 0,
+              cdp: {
+                consoleTiming: {
+                  log_tiny_us: 6.3,
+                  log_heavy_us: 7.7,
+                  dir_heavy_us: 10.3,
+                  heavy_over_tiny: 1.22,
+                },
+              },
+            },
+          },
+        },
+      });
+      expect(result.automation).toBe(0);
+    });
+
+    it("CDP timing: absent block does not raise automation", () => {
+      // Non-Blink (Firefox/WebKit) — SDK omits consoleTiming entirely.
+      const base = baseIntegrity();
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: {
+          ...base,
+          device: {
+            headless: {
+              headlessRating: 0,
+              cdp: {},
+            },
+          },
+        },
+      });
+      expect(result.automation).toBe(0);
+    });
+
     it("desktop UA still uses likeHeadlessRating as before", () => {
       const base = baseIntegrity();
       const result = buildMerchantResponse({
