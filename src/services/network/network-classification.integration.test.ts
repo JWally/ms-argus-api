@@ -274,6 +274,77 @@ describe("Evidence priority — dataset > CIDR overlay > legacy catalog", () => 
 });
 
 // ────────────────────────────────────────────────────────────────────────
+//  Metadata enrichment — registrant + PeeringDB surfaces on asn block
+// ────────────────────────────────────────────────────────────────────────
+
+describe("asn.metadata enrichment", () => {
+  it("propagates customer_org/parent_org from auto-overlay onto the result", () => {
+    _seedAutoOverlayForTesting([
+      {
+        cidr: "209.208.245.0/24",
+        category: "datacenter",
+        name: "QTS-209-208-245-0-24",
+        customerOrg: "BrowserStack",
+        parentOrg: "Quality Technology Services",
+      },
+    ]);
+    const r = analyze({
+      cfIp: "209.208.245.102",
+      tcpIp: "209.208.245.102",
+      webrtcIp: "209.208.245.102",
+      asn: "20141",
+    });
+    expect(r.asn.network_class).toBe("datacenter");
+    expect(r.asn.metadata).toEqual({
+      customer_org: "BrowserStack",
+      parent_org: "Quality Technology Services",
+    });
+  });
+
+  it("merges PeeringDB info_type + ix_count into metadata when both layers hit", () => {
+    _seedCacheForTesting(
+      { "9009": "vpn_proxy" },
+      { "9009": "M247 Ltd" },
+      { "9009": { info_type: "NSP", ix_count: 59 } },
+    );
+    const r = analyze({
+      cfIp: "5.62.0.1",
+      tcpIp: "5.62.0.1",
+      webrtcIp: "5.62.0.1",
+      asn: "9009",
+    });
+    expect(r.asn.metadata).toEqual({ pdb_type: "NSP", ix_count: 59 });
+  });
+
+  it("skips empty pdb fields (info_type='' AND ix_count=0)", () => {
+    _seedCacheForTesting(
+      { "7018": "residential" as NetworkCategory },
+      {},
+      { "7018": { info_type: "", ix_count: 0 } },
+    );
+    const r = analyze({
+      cfIp: "107.210.133.127",
+      tcpIp: "107.210.133.127",
+      webrtcIp: "107.210.133.127",
+      asn: "7018",
+    });
+    // 7018 falls in the hand-curated AT&T overlay (no registrant fields
+    // there by design) and the PDB hit is fully empty, so metadata is null.
+    expect(r.asn.metadata).toBeNull();
+  });
+
+  it("returns null metadata when nothing is enriched", () => {
+    const r = analyze({
+      cfIp: "1.2.3.4",
+      tcpIp: "1.2.3.4",
+      webrtcIp: "1.2.3.4",
+      asn: "99999999",
+    });
+    expect(r.asn.metadata).toBeNull();
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────────
 //  WebRTC-split signal × network_class — they should AGREE on cellular
 // ────────────────────────────────────────────────────────────────────────
 

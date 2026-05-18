@@ -28,6 +28,8 @@ import { lookupAsn, type AsnCategory } from "./asn-catalog";
 import {
   classifyAsnSync,
   lookupAsnOrgSync,
+  lookupAsnPdbSync,
+  type AsnPdbInfo,
   type NetworkCategory,
 } from "../../services/network/asn-classifier";
 import { lookupCidrOverlay } from "../../services/network/cidr-overlay";
@@ -43,6 +45,29 @@ function isObj(v: unknown): v is Record<string, unknown> {
 
 function str(v: unknown): string | null {
   return typeof v === "string" && v.length > 0 ? v : null;
+}
+
+/**
+ * Optional enrichment surfaced alongside the ASN block. None of these fields
+ * feed risk scoring today — they're context for merchant dashboards and
+ * investigation tooling. Drawn from two passive sources:
+ *
+ *   - Auto-discovered CIDR overlay (RDAP-walked nightly): `parent_org` is the
+ *     allocation operator (e.g. "Quality Technology Services"); `customer_org`
+ *     is the sub-allocated tenant ("BrowserStack") when ARIN records one.
+ *   - PeeringDB join (weekly bulk pull): `pdb_type` is operator-self-declared
+ *     ("NSP" / "Cable/DSL/ISP" / "Enterprise" / etc.); `ix_count` is the
+ *     number of IXes the operator self-reports being present at.
+ *
+ * Coverage is intentionally sparse — only sessions on IPs the discoverer has
+ * walked carry `parent_org`/`customer_org`; only ASNs with PeeringDB records
+ * carry `pdb_type`/`ix_count`. Missing fields are omitted, not null-stamped.
+ */
+export interface AsnMetadata {
+  parent_org?: string;
+  customer_org?: string;
+  pdb_type?: string;
+  ix_count?: number;
 }
 
 /** MAC-verified WebRTC evidence fed in from the sigint-v6-decode path. */
@@ -72,6 +97,16 @@ export interface IpConsistencyResult {
      * ASNs like AT&T 7018. Null when the ASN isn't in the dataset.
      */
     network_class: NetworkCategory | null;
+    /**
+     * Optional enrichment surfaced from the auto-discovered CIDR overlay
+     * (parent/customer operators on sub-allocated blocks like BrowserStack
+     * inside QTS) and the PeeringDB join (operator-self-declared type +
+     * IX presence count). Present only when at least one field is known —
+     * sessions on un-enriched ASNs see `metadata: null` rather than an
+     * object full of nulls. Stability caveat: PeeringDB values are
+     * operator-self-declared and may change between weekly rebuilds.
+     */
+    metadata: AsnMetadata | null;
   };
   /**
    * Network-derived stable user ID. Backup identifier when crypto_device_id
@@ -296,6 +331,53 @@ function deriveNetworkClass(
   );
 }
 
+interface RegistrantMeta {
+  customer_org?: string;
+  parent_org?: string;
+}
+
+function registrantFromAutoOverlay(ip: string): RegistrantMeta | null {
+  const hit = lookupAutoOverlaySync(ip);
+  if (!hit?.customerOrg && !hit?.parentOrg) return null;
+  const meta: RegistrantMeta = {};
+  if (hit.customerOrg) meta.customer_org = hit.customerOrg;
+  if (hit.parentOrg) meta.parent_org = hit.parentOrg;
+  return meta;
+}
+
+/** Look up auto-overlay metadata for the first IP that has any. Hand-curated
+ *  overlay (cidr-overlay.ts) deliberately doesn't carry registrant fields —
+ *  only the auto-discovered overlay does, so we skip the hand layer here. */
+function firstAutoOverlayMetadata(
+  ips: (string | null)[],
+): RegistrantMeta | null {
+  for (const ip of ips) {
+    if (!ip) continue;
+    const meta = registrantFromAutoOverlay(ip);
+    if (meta) return meta;
+  }
+  return null;
+}
+
+function lookupPdbForAsn(asn: string | null): AsnPdbInfo | null {
+  const n = asn ? Number(asn) : NaN;
+  return Number.isFinite(n) ? lookupAsnPdbSync(n) : null;
+}
+
+function deriveAsnMetadata(
+  asn: string | null,
+  ips: (string | null)[],
+): AsnMetadata | null {
+  const cidrMeta = firstAutoOverlayMetadata(ips);
+  const pdb = lookupPdbForAsn(asn);
+  const meta: AsnMetadata = cidrMeta ? { ...cidrMeta } : {};
+  if (pdb?.info_type) meta.pdb_type = pdb.info_type;
+  if (pdb && pdb.ix_count > 0) meta.ix_count = pdb.ix_count;
+  // Bail out when nothing concrete survived (e.g. PDB hit had empty type
+  // and zero ix_count). Keeps the merchant-facing shape clean.
+  return Object.keys(meta).length > 0 ? meta : null;
+}
+
 function checkAsnCategory(asn: string | null): AnomalySignal | null {
   const entry = lookupAsn(asn);
   if (!entry) return null;
@@ -491,6 +573,7 @@ function buildAsnBlock(
     category: asnEntry?.category ?? (asn ? "residential" : null),
     org: resolveAsnOrg(asn, asnEntry?.org ?? null),
     network_class: deriveNetworkClass(asn, candidateIps, asnEntry?.category),
+    metadata: deriveAsnMetadata(asn, candidateIps),
   };
 }
 

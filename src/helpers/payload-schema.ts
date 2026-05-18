@@ -553,6 +553,16 @@ export interface IntegrityResultsData {
         org: string | null;
         /** Broader consumer-network classification from IPtoASN dataset. */
         network_class?: string | null;
+        /** Optional registrant + PeeringDB enrichment. See
+         *  src/analysis/ip-consistency/index.ts (AsnMetadata) for field
+         *  semantics. Null when no enrichment is available for this
+         *  session's IP / ASN combination. */
+        metadata?: {
+          parent_org?: string;
+          customer_org?: string;
+          pdb_type?: string;
+          ix_count?: number;
+        } | null;
       };
       /**
        * Network-derived stable user ID. Computed during ingestion by

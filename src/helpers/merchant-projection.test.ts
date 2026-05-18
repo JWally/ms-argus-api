@@ -116,6 +116,7 @@ describe("buildMerchantResponse", () => {
             organization: null,
             category: null,
             network_class: null,
+            metadata: null,
           },
           datacenter: { result: false },
           mobile: { result: false },

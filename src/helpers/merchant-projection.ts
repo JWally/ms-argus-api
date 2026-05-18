@@ -157,6 +157,20 @@ export interface MerchantIpInfo {
      * ASNs (notably AT&T 7018). Null when the ASN isn't in the dataset.
      */
     network_class: string | null;
+    /**
+     * Optional enrichment from the RDAP auto-overlay (registrant operator +
+     * sub-allocated customer when ARIN records one) and PeeringDB (operator-
+     * self-declared type + IX presence count). Coverage is sparse: present
+     * only when at least one field is known for this session's IP/ASN.
+     * PeeringDB values are operator-self-declared and may shift between
+     * weekly rebuilds — treat as a hint, not a contract.
+     */
+    metadata: {
+      parent_org?: string;
+      customer_org?: string;
+      pdb_type?: string;
+      ix_count?: number;
+    } | null;
   };
   /** Convenience booleans for routing — all derived from `asn.network_class`. */
   datacenter: { result: boolean };
@@ -1124,6 +1138,7 @@ function deriveIpInfo(input: MerchantProjectionInput): MerchantIpInfo {
         organization: asnFromIntegrity.org,
         category: asnFromIntegrity.category,
         network_class: networkClass,
+        metadata: asnFromIntegrity.metadata ?? null,
       },
       ...deriveNetworkFlags(networkClass),
     };
@@ -1135,6 +1150,7 @@ function deriveIpInfo(input: MerchantProjectionInput): MerchantIpInfo {
       organization: null,
       category: null,
       network_class: null,
+      metadata: null,
     },
     ...deriveNetworkFlags(null),
   };
