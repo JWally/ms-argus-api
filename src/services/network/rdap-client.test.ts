@@ -79,7 +79,7 @@ function mockFetchOnce(body: unknown): void {
     vi.fn().mockResolvedValue({
       ok: true,
       status: 200,
-      json: async () => body,
+      json: () => Promise.resolve(body),
     }),
   );
 }

@@ -412,6 +412,23 @@ interface HeadlessSignals {
     hasHeadlessWorkerUA?: boolean;
   };
   likeHeadless?: { devToolsOpen?: boolean };
+  /**
+   * CDP attach detector via console-serialization timing. When a CDP
+   * client (Playwright, Puppeteer, patchright, etc.) has issued
+   * Runtime.enable, Chrome serializes every console.* arg over the wire;
+   * cost scales with structural complexity. Without CDP, console output
+   * is dropped at near-zero cost regardless. The SDK runs a ratio bench
+   * inside a hidden srcdoc iframe; see headless/getConsoleTiming.ts.
+   * Absent on non-Blink (Firefox/WebKit use different debug protocols).
+   */
+  cdp?: {
+    consoleTiming?: {
+      log_tiny_us?: number;
+      log_heavy_us?: number;
+      dir_heavy_us?: number;
+      heavy_over_tiny?: number;
+    };
+  };
 }
 
 function readHeadless(
@@ -577,14 +594,46 @@ function buildTags(
 }
 
 /**
- * Automation score. Three signal tiers, max wins:
+ * CDP attach detector via console-serialization timing.
+ *
+ * The SDK (headless/getConsoleTiming.ts) benches console.log('a') vs
+ * console.log(heavyObject) inside a pristine iframe. Under CDP (every
+ * Playwright/Puppeteer/Selenium-CDP/patchright client) the heavy call
+ * takes ≳2× longer because Chrome serializes the object to push over
+ * the inspector wire. Without CDP, both calls are dropped at the same
+ * near-zero cost. The ratio self-normalizes for hardware speed.
+ *
+ * Initial calibration (Chrome 148 / Linux desktop):
+ *   - Playwright CDP attached: ratio 2.11, log_heavy_us 63
+ *   - Plain Chrome:            ratio 0.79, log_heavy_us 7
+ *   - --headless=new (no CDP): ratio 1.22, log_heavy_us 8
+ *
+ * Thresholds chosen for wide margin from initial measurements. Tune
+ * from real-user telemetry on the `device.headless.cdp.consoleTiming`
+ * field before locking in further.
+ */
+function hasCdpTimingSignal(headless: HeadlessSignals | undefined): boolean {
+  const t = headless?.cdp?.consoleTiming;
+  if (!t) return false;
+  const ratio = t.heavy_over_tiny ?? 0;
+  const heavy = t.log_heavy_us ?? 0;
+  return ratio > 1.5 || heavy > 25;
+}
+
+/**
+ * Automation score. Tiered checks, max wins:
  *   1. STRICT markers (`headlessRating`) — webdriver / headless UA /
  *      headless worker UA. Any one alone is a confident automation tell;
  *      no legitimate human browser exposes these.
  *      - 3/3 (100): full headless. → 100
  *      - 2/3 (67):  → 100
  *      - 1/3 (33):  → 75 (block-tier — still-strong evidence)
- *   2. WEAK markers (`likeHeadlessRating`) — 11 environment signals
+ *   2. CDP TIMING — console-serialization overhead test. Catches
+ *      Playwright/Puppeteer/patchright/selenium-CDP regardless of how
+ *      thoroughly static residue has been scrubbed, because Chrome's
+ *      inspector serialization can't be hidden by JS-level patches.
+ *      → 75 (block-tier). See hasCdpTimingSignal.
+ *   3. WEAK markers (`likeHeadlessRating`) — 11 environment signals
  *      (no Chrome object, no plugins, blank UA-CH, etc). Real but
  *      not damning on its own; the % maps directly into the score.
  *      **Mobile carve-out:** these signals were calibrated for desktop
@@ -592,7 +641,7 @@ function buildTags(
  *      UA-CH for legitimate reasons — every real iPhone visitor would
  *      otherwise floor at automation ≈ 10. We zero out weak markers
  *      when the UA (main or worker) shows mobile.
- *   3. STEALTH markers (`stealthRating`) — Function.toString proxy,
+ *   4. STEALTH markers (`stealthRating`) — Function.toString proxy,
  *      bad WebGL, missing chrome runtime. +20 bonus when any fire.
  */
 function botProbability(input: MerchantProjectionInput): number {
@@ -602,6 +651,7 @@ function botProbability(input: MerchantProjectionInput): number {
   const strict = headless?.headlessRating ?? 0;
   if (strict >= 67) return 100;
   if (strict > 0) return 75;
+  if (hasCdpTimingSignal(headless)) return 75;
   const stealth = headless?.stealthRating ?? 0;
   const weak = isMobileBrowser(input.integrity)
     ? 0
