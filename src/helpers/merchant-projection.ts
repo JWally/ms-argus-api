@@ -427,6 +427,21 @@ interface HeadlessSignals {
       log_heavy_us?: number;
       dir_heavy_us?: number;
       heavy_over_tiny?: number;
+      /**
+       * `Performance.prototype.now` toStrings as `[native code]` in the
+       * bench iframe. False = timing-oracle tampering. The lie scanner
+       * can't reach Performance (not in `API_SEARCH_TARGETS`), so this
+       * is verified inline by the detector. Defeats the v4 bypass that
+       * patches `perf.now` to drive bench numbers.
+       */
+      perf_now_native?: boolean;
+      /**
+       * `Date.now` toStrings as `[native code]`. Date.now is a static
+       * method on the Date constructor and is structurally unreachable
+       * by the prototype-walking lie scanner — this is the only place
+       * it's verified.
+       */
+      date_now_native?: boolean;
     };
     /** ChromeDriver `cdc_`-prefixed globals on document. */
     cdcGlobals?: boolean;
@@ -627,6 +642,13 @@ function buildTags(
 function hasCdpTimingSignal(headless: HeadlessSignals | undefined): boolean {
   const t = headless?.cdp?.consoleTiming;
   if (!t) return false;
+  // Timing-oracle tampering. The bench is meaningless if `Performance.now`
+  // or `Date.now` have been replaced — an attacker who patches either can
+  // drive both buckets to any value, defeating the ratio/heavy gates
+  // without ever touching `console.log` (and so without tripping the lie
+  // scanner). `false` here means the SDK saw a non-native toString shape
+  // in the bench iframe; missing-field tolerates older SDK builds.
+  if (t.perf_now_native === false || t.date_now_native === false) return true;
   const ratio = t.heavy_over_tiny ?? 0;
   const heavy = t.log_heavy_us ?? 0;
   return ratio > 1.5 || heavy > 25;
