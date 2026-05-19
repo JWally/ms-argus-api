@@ -442,6 +442,10 @@ interface HeadlessSignals {
        * it's verified.
        */
       date_now_native?: boolean;
+      /** `console.log` is native in the bench iframe. */
+      con_log_native?: boolean;
+      /** `console.dir` is native in the bench iframe. */
+      con_dir_native?: boolean;
     };
     /** ChromeDriver `cdc_`-prefixed globals on document. */
     cdcGlobals?: boolean;
@@ -455,6 +459,14 @@ interface HeadlessSignals {
     automationGlobals?: string[];
     /** Native APIs whose toString disagrees across realms — addInitScript patches. */
     crossRealmTampered?: string[];
+    /**
+     * `Object.getOwnPropertyNames` is native. False = the enumeration
+     * primitive that `cdcGlobals` / `pwBindings` / `clientLitter` /
+     * `automationGlobals` all rely on has been replaced (likely
+     * filter-stub), so their negative results cannot be trusted.
+     * Treat as hard-residue evidence in itself.
+     */
+    ownPropsNative?: boolean;
   };
 }
 
@@ -642,13 +654,18 @@ function buildTags(
 function hasCdpTimingSignal(headless: HeadlessSignals | undefined): boolean {
   const t = headless?.cdp?.consoleTiming;
   if (!t) return false;
-  // Timing-oracle tampering. The bench is meaningless if `Performance.now`
-  // or `Date.now` have been replaced — an attacker who patches either can
-  // drive both buckets to any value, defeating the ratio/heavy gates
-  // without ever touching `console.log` (and so without tripping the lie
-  // scanner). `false` here means the SDK saw a non-native toString shape
-  // in the bench iframe; missing-field tolerates older SDK builds.
-  if (t.perf_now_native === false || t.date_now_native === false) return true;
+  // Bench-dependency tampering. The bench is meaningless if any of the
+  // four natives it depends on (`Performance.now`, `Date.now`,
+  // `console.log`, `console.dir`) have been replaced. Each false flag
+  // is reported by the SDK at the bench's own use-site. Missing-field
+  // tolerates older SDK builds.
+  if (
+    t.perf_now_native === false ||
+    t.date_now_native === false ||
+    t.con_log_native === false ||
+    t.con_dir_native === false
+  )
+    return true;
   const ratio = t.heavy_over_tiny ?? 0;
   const heavy = t.log_heavy_us ?? 0;
   return ratio > 1.5 || heavy > 25;
@@ -678,7 +695,14 @@ function hasHardCdpResidue(headless: HeadlessSignals | undefined): boolean {
     cdp.cdcGlobals === true ||
     cdp.pwBindings === true ||
     (cdp.automationGlobals?.length ?? 0) > 0 ||
-    (cdp.clientLitter?.length ?? 0) > 0
+    (cdp.clientLitter?.length ?? 0) > 0 ||
+    // `Object.getOwnPropertyNames` is the enumeration primitive the four
+    // checks above all depend on. A filtered replacement (e.g. `function
+    // getOwnPropertyNames(obj) { return native(obj).filter(k => !/^__pw_/
+    // .test(k)); }`) blinds all four signals at once — they return clean
+    // state because the keys were filtered out before iteration. False
+    // here flags the "blinded oracle" condition directly.
+    cdp.ownPropsNative === false
   );
 }
 
