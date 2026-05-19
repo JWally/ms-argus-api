@@ -428,6 +428,18 @@ interface HeadlessSignals {
       dir_heavy_us?: number;
       heavy_over_tiny?: number;
     };
+    /** ChromeDriver `cdc_`-prefixed globals on document. */
+    cdcGlobals?: boolean;
+    /** Playwright `__pw_*` bindings on window. */
+    pwBindings?: boolean;
+    /** navigator.webdriver differs between main frame and a phantom iframe. */
+    phantomMismatch?: boolean;
+    /** Bot-injected globals matching known patterns (max 5). */
+    clientLitter?: string[];
+    /** Known automation framework globals (playwright, puppeteer, _phantom…). */
+    automationGlobals?: string[];
+    /** Native APIs whose toString disagrees across realms — addInitScript patches. */
+    crossRealmTampered?: string[];
   };
 }
 
@@ -621,6 +633,62 @@ function hasCdpTimingSignal(headless: HeadlessSignals | undefined): boolean {
 }
 
 /**
+ * Hard CDP residue: globals or bindings that no legitimate browser
+ * exposes. These are collected by the SDK's `detectCdp()` (headless/
+ * index.ts) but until now were not consumed by `botProbability`.
+ *
+ * - `cdcGlobals`        — `$cdc_*` keys on `document` (ChromeDriver / Selenium).
+ * - `pwBindings`        — `__pw_*` keys on `window` (Playwright IPC).
+ * - `automationGlobals` — `window.__playwright`, `window.__puppeteer`,
+ *                         `_phantom`, `callPhantom`, `__selenium_unwrapped`,
+ *                         `__webdriver_evaluate`, etc.
+ * - `clientLitter`      — bespoke bot scaffolding keys matching the
+ *                         BOT_LITTER_RE pattern (cdc_, puppeteer_, scrape_,
+ *                         __solver, __captcha, etc.).
+ *
+ * Real Chrome with extensions does not produce any of these. Every fire
+ * is high-confidence automation evidence.
+ */
+function hasHardCdpResidue(headless: HeadlessSignals | undefined): boolean {
+  const cdp = headless?.cdp;
+  if (!cdp) return false;
+  return (
+    cdp.cdcGlobals === true ||
+    cdp.pwBindings === true ||
+    (cdp.automationGlobals?.length ?? 0) > 0 ||
+    (cdp.clientLitter?.length ?? 0) > 0
+  );
+}
+
+/**
+ * Soft CDP residue: behavioral divergence that bot stealth tools cause.
+ *
+ * - `phantomMismatch`    — `navigator.webdriver` differs between the
+ *                          main frame and a nested phantom iframe. Indicates
+ *                          per-frame webdriver patching (some stealth
+ *                          plugins miss nested realms).
+ * - `crossRealmTampered` — for a fixed list of native APIs (Element.
+ *                          getBoundingClientRect, HTMLCanvasElement.
+ *                          getContext/toDataURL, Performance.now,
+ *                          Date.getTimezoneOffset, Navigator.toString),
+ *                          the SDK compares Function.prototype.toString
+ *                          across a fresh realm. A divergence means the
+ *                          attacker patched in the parent realm only —
+ *                          the classic `addInitScript` footprint.
+ *
+ * Both can sporadically fire on unusual but legitimate setups (some
+ * privacy-hardened browsers re-implement Performance.now via JS), so
+ * keep these at the 75 tier rather than 100.
+ */
+function hasSoftCdpResidue(headless: HeadlessSignals | undefined): boolean {
+  const cdp = headless?.cdp;
+  if (!cdp) return false;
+  return (
+    cdp.phantomMismatch === true || (cdp.crossRealmTampered?.length ?? 0) > 0
+  );
+}
+
+/**
  * Automation score. Tiered checks, max wins:
  *   1. STRICT markers (`headlessRating`) — webdriver / headless UA /
  *      headless worker UA. Any one alone is a confident automation tell;
@@ -633,6 +701,13 @@ function hasCdpTimingSignal(headless: HeadlessSignals | undefined): boolean {
  *      thoroughly static residue has been scrubbed, because Chrome's
  *      inspector serialization can't be hidden by JS-level patches.
  *      → 75 (block-tier). See hasCdpTimingSignal.
+ *   2b. HARD CDP RESIDUE — `$cdc_*` / `__pw_*` / known automation globals
+ *       / bot litter scaffolding. These don't appear in real browsers,
+ *       extensions included. → 100 (full-block tier). See hasHardCdpResidue.
+ *   2c. SOFT CDP RESIDUE — phantom-iframe webdriver mismatch or cross-
+ *       realm toString divergence on Element/Canvas/Performance/Date/
+ *       Navigator. Detects per-frame init-script patching footprint.
+ *       → 75 (block-tier). See hasSoftCdpResidue.
  *   3. WEAK markers (`likeHeadlessRating`) — 11 environment signals
  *      (no Chrome object, no plugins, blank UA-CH, etc). Real but
  *      not damning on its own; the % maps directly into the score.
@@ -644,6 +719,19 @@ function hasCdpTimingSignal(headless: HeadlessSignals | undefined): boolean {
  *   4. STEALTH markers (`stealthRating`) — Function.toString proxy,
  *      bad WebGL, missing chrome runtime. +20 bonus when any fire.
  */
+/**
+ * CDP-residue score (the 2x/2b/2c tiers in the botProbability docstring).
+ * Returns 0 if no residue, 75 for the soft/timing tier, 100 for the hard
+ * tier. Extracted to keep `botProbability` under the cyclomatic-complexity
+ * cap.
+ */
+function cdpAutomationScore(headless: HeadlessSignals | undefined): number {
+  if (hasHardCdpResidue(headless)) return 100;
+  if (hasCdpTimingSignal(headless)) return 75;
+  if (hasSoftCdpResidue(headless)) return 75;
+  return 0;
+}
+
 function botProbability(input: MerchantProjectionInput): number {
   const headless = readHeadless(
     input.integrity ?? ({} as IntegrityResultsData),
@@ -651,7 +739,8 @@ function botProbability(input: MerchantProjectionInput): number {
   const strict = headless?.headlessRating ?? 0;
   if (strict >= 67) return 100;
   if (strict > 0) return 75;
-  if (hasCdpTimingSignal(headless)) return 75;
+  const cdpScore = cdpAutomationScore(headless);
+  if (cdpScore > 0) return cdpScore;
   const stealth = headless?.stealthRating ?? 0;
   const weak = isMobileBrowser(input.integrity)
     ? 0
