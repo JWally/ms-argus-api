@@ -428,6 +428,13 @@ interface HeadlessSignals {
       dir_heavy_us?: number;
       heavy_over_tiny?: number;
       /**
+       * `log_heavy` loop measured with `document.timeline.currentTime`
+       * instead of `performance.now`. A cross-clock that lives on a
+       * completely different prototype chain — disagreement with
+       * `log_heavy_us` means one of the two clocks has been replaced.
+       */
+      tl_heavy_us?: number;
+      /**
        * `Performance.prototype.now` toStrings as `[native code]` in the
        * bench iframe. False = timing-oracle tampering. The lie scanner
        * can't reach Performance (not in `API_SEARCH_TARGETS`), so this
@@ -651,6 +658,25 @@ function buildTags(
  * from real-user telemetry on the `device.headless.cdp.consoleTiming`
  * field before locking in further.
  */
+/**
+ * Any of the four use-site native checks reporting false means the
+ * bench depended on a primitive that's been replaced. Extracted to
+ * keep `hasCdpTimingSignal` under the cyclomatic-complexity cap.
+ */
+function hasBenchDependencyTamper(t: {
+  perf_now_native?: boolean;
+  date_now_native?: boolean;
+  con_log_native?: boolean;
+  con_dir_native?: boolean;
+}): boolean {
+  return (
+    t.perf_now_native === false ||
+    t.date_now_native === false ||
+    t.con_log_native === false ||
+    t.con_dir_native === false
+  );
+}
+
 function hasCdpTimingSignal(headless: HeadlessSignals | undefined): boolean {
   const t = headless?.cdp?.consoleTiming;
   if (!t) return false;
@@ -659,15 +685,22 @@ function hasCdpTimingSignal(headless: HeadlessSignals | undefined): boolean {
   // `console.log`, `console.dir`) have been replaced. Each false flag
   // is reported by the SDK at the bench's own use-site. Missing-field
   // tolerates older SDK builds.
-  if (
-    t.perf_now_native === false ||
-    t.date_now_native === false ||
-    t.con_log_native === false ||
-    t.con_dir_native === false
-  )
-    return true;
-  const ratio = t.heavy_over_tiny ?? 0;
+  if (hasBenchDependencyTamper(t)) return true;
+  // Cross-clock divergence. `tl_heavy_us` is the same heavy loop measured
+  // with `document.timeline.currentTime`. Both clocks read real wall time
+  // independently, so they should agree within a few microseconds per call
+  // (3ms total over N=1000) on real browsers. An attacker who only patches
+  // `Performance.prototype.now` (every red-team round through v6) leaves
+  // the timeline clock alone — the deltas diverge wildly because the
+  // counter Proxy returns ~1µs while real wall time is ~7µs (no CDP) or
+  // ~63µs (CDP). Tolerance: 3µs/call ≈ 3ms total over the loop, well above
+  // engine timer noise but well below the smallest signal we care about.
   const heavy = t.log_heavy_us ?? 0;
+  const tlHeavy = t.tl_heavy_us;
+  if (typeof tlHeavy === "number" && Math.abs(tlHeavy - heavy) > 3) {
+    return true;
+  }
+  const ratio = t.heavy_over_tiny ?? 0;
   return ratio > 1.5 || heavy > 25;
 }
 
