@@ -233,6 +233,49 @@ describe("CH_UA_BRAND_MISMATCH", () => {
       r.signals.find((s) => s.code === "CH_UA_BRAND_MISMATCH"),
     ).toBeUndefined();
   });
+
+  // Modern Chromium-based Edge ships UA with the bare `Edg/` token (no
+  // suffix). The original UA-family regex required `Edge|EdgA|EdgiOS`
+  // and missed bare `Edg/`, classifying every real Edge desktop visitor
+  // as `chromium` family — which then mismatched the `edge` brand
+  // family and fired CH_UA_BRAND_MISMATCH on all of them.
+  // Confirmed live 2026-05-19 from session 83eaba12 (Linux Edge 148).
+  it("real Linux Edge desktop (Edg/) + Edge brands → no mismatch", () => {
+    const r = analyzeClientHintsUa(
+      "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36 Edg/148.0.0.0",
+      {
+        "sec-ch-ua": '"Microsoft Edge";v="148"',
+        "sec-ch-ua-platform": '"Linux"',
+        "sec-ch-ua-mobile": "?0",
+      },
+      null,
+    );
+    expect(
+      r.signals.find((s) => s.code === "CH_UA_BRAND_MISMATCH"),
+    ).toBeUndefined();
+  });
+
+  it("Windows Edge desktop (Edg/) + 3-brand Sec-CH-UA → no mismatch", () => {
+    const r = analyzeClientHintsUa(
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36 Edg/148.0.0.0",
+      { "sec-ch-ua": EDGE_BRANDS },
+      null,
+    );
+    expect(
+      r.signals.find((s) => s.code === "CH_UA_BRAND_MISMATCH"),
+    ).toBeUndefined();
+  });
+
+  it("Edge mobile (EdgA/) + Edge brand → no mismatch (regression-guard)", () => {
+    const r = analyzeClientHintsUa(
+      "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Mobile Safari/537.36 EdgA/148.0.0.0",
+      { "sec-ch-ua": EDGE_BRANDS },
+      null,
+    );
+    expect(
+      r.signals.find((s) => s.code === "CH_UA_BRAND_MISMATCH"),
+    ).toBeUndefined();
+  });
 });
 
 describe("CH_DOUBLE_CAPTURE_MISMATCH", () => {

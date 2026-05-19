@@ -106,7 +106,18 @@ function mobileFromUa(ua: string | null): boolean | null {
 
 function familyFromUa(ua: string | null): BrowserFamily {
   if (!ua) return "other";
-  if (/Edg(e|A|iOS)\//.test(ua)) return "edge";
+  // Edge UA tokens across platforms:
+  //   `Edge/`   — legacy EdgeHTML (pre-Chromium)
+  //   `Edg/`    — Chromium-based Edge desktop (Windows / macOS / Linux) ← was missing
+  //   `EdgA/`   — Edge on Android
+  //   `EdgiOS/` — Edge on iOS
+  // Without the trailing-suffix group being optional, modern desktop Edge
+  // (overwhelmingly the most common form in 2026) fell through to the
+  // Chrome\/\d check below and was classified as `chromium`. The brand
+  // parser correctly returned `edge` from "Microsoft Edge", which then
+  // mismatched the UA family and fired CH_UA_BRAND_MISMATCH on every real
+  // Edge desktop visitor.
+  if (/Edg(e|A|iOS)?\//.test(ua)) return "edge";
   if (/Chrome\/\d/.test(ua)) return "chromium";
   return "other";
 }
