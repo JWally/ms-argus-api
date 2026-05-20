@@ -1343,6 +1343,101 @@ describe("buildMerchantResponse", () => {
       expect(result.automation).toBe(75);
     });
 
+    it("worker bench: console_lies > 0 → automation 100 (hard residue tier)", () => {
+      // The in-worker v3-closure scan caught a wrapped console.* method.
+      // Workers have no legitimate console wrappers — anything > 0 here
+      // is attacker source injected via wrapped Worker / Blob /
+      // URL.createObjectURL. Hard residue, full-block tier.
+      const base = baseIntegrity();
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: {
+          ...base,
+          device: {
+            headless: {
+              headlessRating: 0,
+              cdp: {
+                consoleTimingWorker: {
+                  log_tiny_us: 10,
+                  log_heavy_us: 11,
+                  dir_heavy_us: 10,
+                  heavy_over_tiny: 1.1,
+                  perf_now_native: true,
+                  date_now_native: true,
+                  con_log_native: true,
+                  con_dir_native: true,
+                  console_lies: 1,
+                },
+              },
+            },
+          },
+        },
+      });
+      expect(result.automation).toBe(100);
+    });
+
+    it("worker bench: console_lies === 0 → no automation from this rule", () => {
+      // Clean worker realm — every probed console method is native.
+      // No automation contribution from this signal.
+      const base = baseIntegrity();
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: {
+          ...base,
+          device: {
+            headless: {
+              headlessRating: 0,
+              cdp: {
+                consoleTimingWorker: {
+                  log_tiny_us: 9,
+                  log_heavy_us: 8,
+                  dir_heavy_us: 9,
+                  heavy_over_tiny: 0.89,
+                  perf_now_native: true,
+                  date_now_native: true,
+                  con_log_native: true,
+                  con_dir_native: true,
+                  console_lies: 0,
+                },
+              },
+            },
+          },
+        },
+      });
+      expect(result.automation).toBe(0);
+    });
+
+    it("worker bench: console_lies absent (older SDK) does not trip", () => {
+      // Backward-compat: clients on the previous worker-bench build
+      // omit console_lies entirely. Treat as "no probe ran" — must
+      // not false-positive on missing field.
+      const base = baseIntegrity();
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: {
+          ...base,
+          device: {
+            headless: {
+              headlessRating: 0,
+              cdp: {
+                consoleTimingWorker: {
+                  log_tiny_us: 9,
+                  log_heavy_us: 8,
+                  dir_heavy_us: 9,
+                  heavy_over_tiny: 0.89,
+                  perf_now_native: true,
+                  date_now_native: true,
+                  con_log_native: true,
+                  con_dir_native: true,
+                },
+              },
+            },
+          },
+        },
+      });
+      expect(result.automation).toBe(0);
+    });
+
     it("desktop UA still uses likeHeadlessRating as before", () => {
       const base = baseIntegrity();
       const result = buildMerchantResponse({

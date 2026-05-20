@@ -439,6 +439,26 @@ interface ConsoleTimingFields {
   con_log_native?: boolean;
   /** `console.dir` is native in the bench realm. */
   con_dir_native?: boolean;
+  /**
+   * Count of `console.*` methods (log/warn/error/info/debug/dir)
+   * detected as wrapped/patched in the bench realm. Only the worker
+   * bench (`consoleTimingWorker`) populates this; the iframe bench
+   * sits in the main thread where extensions and CriOS's Google-iOS
+   * analytics shim legitimately wrap console, so the probe lives in
+   * the worker realm where no such legitimate wrappers exist.
+   *
+   * Detection is the v3-closure scan, moved out of the SDK's main-
+   * thread lie scanner. Probes each method for native toString shape,
+   * absence of an own `prototype` property, and non-constructability.
+   * Each method that fails any probe counts as 1 lie (dedupe vs. the
+   * old scanner's 11-checks-per-method explosion that broke CriOS).
+   *
+   * Anything > 0 in the worker realm is direct evidence of attacker-
+   * injected source — via wrapped `Worker` / `Blob` /
+   * `URL.createObjectURL`. Tier: automation 100. This isn't "looks
+   * like CDP," it's "attacker demonstrably reached the worker realm."
+   */
+  console_lies?: number;
 }
 
 /**
@@ -784,8 +804,14 @@ function hasBenchDisagreement(headless: HeadlessSignals | undefined): boolean {
 /**
  * Hard CDP residue: globals or bindings that no legitimate browser
  * exposes. These are collected by the SDK's `detectCdp()` (headless/
- * index.ts) but until now were not consumed by `botProbability`.
+ * index.ts).
  *
+ * - `consoleTimingWorker.console_lies` — `console.*` patches detected
+ *                         inside the bench's worker realm. Worker
+ *                         realms have no legitimate wrappers (extensions
+ *                         don't reach them, app shims don't either), so
+ *                         any count > 0 is attacker source injected via
+ *                         wrapped `Worker` / `Blob` / `URL.createObjectURL`.
  * - `cdcGlobals`        — `$cdc_*` keys on `document` (ChromeDriver / Selenium).
  * - `pwBindings`        — `__pw_*` keys on `window` (Playwright IPC).
  * - `automationGlobals` — `window.__playwright`, `window.__puppeteer`,
@@ -801,6 +827,15 @@ function hasBenchDisagreement(headless: HeadlessSignals | undefined): boolean {
 function hasHardCdpResidue(headless: HeadlessSignals | undefined): boolean {
   const cdp = headless?.cdp;
   if (!cdp) return false;
+  // Console patches inside the worker realm. The SDK's v3 closure check
+  // moved here from the main-thread lie scanner (which false-positived
+  // on CriOS's Google-iOS analytics shim). Worker realms have no
+  // legitimate `console.*` wrappers — extensions can't reach them,
+  // app shims don't either. Anything detected here is attacker source
+  // injected via wrapped `Worker` / `Blob` / `URL.createObjectURL`.
+  // Worth full-block tier on its own.
+  const workerConsoleLies = cdp.consoleTimingWorker?.console_lies ?? 0;
+  if (workerConsoleLies > 0) return true;
   return (
     cdp.cdcGlobals === true ||
     cdp.pwBindings === true ||
