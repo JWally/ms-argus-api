@@ -858,10 +858,42 @@ describe("buildMerchantResponse", () => {
       expect(result.automation).toBe(100);
     });
 
-    it("automation is 75 when 1/3 strict markers fire (headlessRating 33)", () => {
+    it("strict + CDP MAX-compose: PW-FF with webdriver=true AND iframe-crypto-stuck → 100", () => {
+      // Regression test for the short-circuit-was-inverted bug. Pre-fix:
+      // strict>0 returned 75 immediately and never reached cdpAutomationScore,
+      // so PW-FF (webdriver=true + Marionette-orphaned iframe crypto) scored
+      // 75 while Camoufox (webdriver hidden + same iframe crypto issue)
+      // fell through to cdpAutomationScore and scored 100. Inverted from
+      // intent. Post-fix both score 100 via max() composition.
+      const base = baseIntegrity();
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: {
+          ...base,
+          device: {
+            headless: {
+              headlessRating: 33,
+              headless: { webDriverIsOn: true },
+            },
+            status: {
+              iframeCrypto: {
+                iframe_created: true,
+                responsive: false,
+                elapsed_ms: null,
+              },
+            },
+          } as IntegrityResultsData["device"],
+        },
+      });
+      expect(result.automation).toBe(100);
+    });
+
+    it("automation is 100 when any single strict marker fires (webdriver alone)", () => {
       // Playwright Firefox / Webkit case — sets navigator.webdriver but
-      // doesn't change UA. One strict marker alone is still a confident
-      // automation tell; bump above the suspect threshold.
+      // doesn't change UA. A single strict marker is on its own
+      // conclusive automation evidence; no legitimate human browser
+      // exposes any of webDriverIsOn / hasHeadlessUA / hasHeadlessWorkerUA.
+      // The previous 1/3 → 75 ladder underweighted webdriver=true.
       const base = baseIntegrity();
       const result = buildMerchantResponse({
         session_id: "s",
@@ -879,7 +911,7 @@ describe("buildMerchantResponse", () => {
           },
         },
       });
-      expect(result.automation).toBe(75);
+      expect(result.automation).toBe(100);
     });
 
     it("automation mirrors likeHeadlessRating when no strict markers fire", () => {
@@ -958,7 +990,7 @@ describe("buildMerchantResponse", () => {
           },
         },
       });
-      expect(result.automation).toBe(75);
+      expect(result.automation).toBe(100);
     });
 
     it("mobile carve-out: detects iPhone via worker-scope UA when main UA is missing", () => {
@@ -1095,6 +1127,342 @@ describe("buildMerchantResponse", () => {
             headless: {
               headlessRating: 0,
               cdp: {},
+            },
+          },
+        },
+      });
+      expect(result.automation).toBe(0);
+    });
+
+    it("worker bench: trips on its own when iframe bench was stubbed", () => {
+      // page.route rewrote the iframe bench to return clean numbers, but
+      // can't intercept the worker's blob URL. Worker still measures
+      // real CDP overhead → automation must fire on the worker alone.
+      const base = baseIntegrity();
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: {
+          ...base,
+          device: {
+            headless: {
+              headlessRating: 0,
+              cdp: {
+                consoleTiming: {
+                  log_tiny_us: 10.2,
+                  log_heavy_us: 11.0,
+                  dir_heavy_us: 10.7,
+                  heavy_over_tiny: 1.08,
+                  perf_now_native: true,
+                  date_now_native: true,
+                  con_log_native: true,
+                  con_dir_native: true,
+                },
+                consoleTimingWorker: {
+                  log_tiny_us: 30,
+                  log_heavy_us: 63,
+                  dir_heavy_us: 54,
+                  heavy_over_tiny: 2.11,
+                },
+              },
+            },
+          },
+        },
+      });
+      expect(result.automation).toBe(75);
+    });
+
+    it("worker bench: clean numbers on both → no automation", () => {
+      // Real Chrome, no CDP. Both benches measure ratio ≈ 1 and agree.
+      const base = baseIntegrity();
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: {
+          ...base,
+          device: {
+            headless: {
+              headlessRating: 0,
+              cdp: {
+                consoleTiming: {
+                  log_tiny_us: 9.4,
+                  log_heavy_us: 7.4,
+                  dir_heavy_us: 7.5,
+                  heavy_over_tiny: 0.79,
+                },
+                consoleTimingWorker: {
+                  log_tiny_us: 8.8,
+                  log_heavy_us: 8.1,
+                  dir_heavy_us: 8.2,
+                  heavy_over_tiny: 0.92,
+                },
+              },
+            },
+          },
+        },
+      });
+      expect(result.automation).toBe(0);
+    });
+
+    it("worker bench: both trip → automation 75", () => {
+      // Vanilla Playwright Chrome with no attacker patches — both benches
+      // see the same CDP overhead and both trip. Sanity check that
+      // hasCdpTimingSignal still wins at 75 when both fire (i.e., we
+      // don't double-count up to 100).
+      const base = baseIntegrity();
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: {
+          ...base,
+          device: {
+            headless: {
+              headlessRating: 0,
+              cdp: {
+                consoleTiming: {
+                  log_tiny_us: 30,
+                  log_heavy_us: 63,
+                  dir_heavy_us: 54,
+                  heavy_over_tiny: 2.11,
+                },
+                consoleTimingWorker: {
+                  log_tiny_us: 28,
+                  log_heavy_us: 60,
+                  dir_heavy_us: 52,
+                  heavy_over_tiny: 2.14,
+                },
+              },
+            },
+          },
+        },
+      });
+      expect(result.automation).toBe(75);
+    });
+
+    it("worker bench: disagreement > 0.5 → automation 75 (stub-one attack)", () => {
+      // Attacker stubbed the worker bench (rare — would require wrapping
+      // Worker / URL.createObjectURL), leaving the iframe bench intact.
+      // Iframe sees real CDP ratio 2.1, worker reports 1.05. Gap = 1.05.
+      // Neither bench may trip on its own depending on which side was
+      // stubbed; the disagreement itself is the tell.
+      const base = baseIntegrity();
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: {
+          ...base,
+          device: {
+            headless: {
+              headlessRating: 0,
+              cdp: {
+                consoleTiming: {
+                  log_tiny_us: 30,
+                  log_heavy_us: 63,
+                  dir_heavy_us: 54,
+                  heavy_over_tiny: 2.1,
+                  perf_now_native: true,
+                  date_now_native: true,
+                  con_log_native: true,
+                  con_dir_native: true,
+                },
+                consoleTimingWorker: {
+                  log_tiny_us: 10,
+                  log_heavy_us: 11,
+                  dir_heavy_us: 11,
+                  heavy_over_tiny: 1.05,
+                  perf_now_native: true,
+                  date_now_native: true,
+                  con_log_native: true,
+                  con_dir_native: true,
+                },
+              },
+            },
+          },
+        },
+      });
+      expect(result.automation).toBe(75);
+    });
+
+    it("worker bench: small disagreement within tolerance → no automation", () => {
+      // Real-world inter-bench jitter. Different thread schedulers, cold-
+      // cache behavior, and timer coarsening can produce gaps up to ~0.3.
+      // Tolerance is 0.5, so 0.29 should NOT trip.
+      const base = baseIntegrity();
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: {
+          ...base,
+          device: {
+            headless: {
+              headlessRating: 0,
+              cdp: {
+                consoleTiming: {
+                  log_tiny_us: 8.5,
+                  log_heavy_us: 8.8,
+                  dir_heavy_us: 8.6,
+                  heavy_over_tiny: 1.03,
+                },
+                consoleTimingWorker: {
+                  log_tiny_us: 9.0,
+                  log_heavy_us: 11.9,
+                  dir_heavy_us: 10.2,
+                  heavy_over_tiny: 1.32,
+                },
+              },
+            },
+          },
+        },
+      });
+      expect(result.automation).toBe(0);
+    });
+
+    it("worker bench: missing heavy_over_tiny disables disagreement check", () => {
+      // Defensive: if either side is malformed or older-SDK omits the
+      // ratio field, the disagreement detector must not produce a false
+      // positive on the missing-value comparison.
+      const base = baseIntegrity();
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: {
+          ...base,
+          device: {
+            headless: {
+              headlessRating: 0,
+              cdp: {
+                consoleTiming: {
+                  log_tiny_us: 9,
+                  log_heavy_us: 8,
+                  dir_heavy_us: 9,
+                  heavy_over_tiny: 0.89,
+                },
+                consoleTimingWorker: {
+                  // ratio absent — partial payload
+                  log_tiny_us: 9,
+                  log_heavy_us: 8,
+                },
+              },
+            },
+          },
+        },
+      });
+      expect(result.automation).toBe(0);
+    });
+
+    it("worker bench: dependency tamper trips even with clean numbers", () => {
+      // con_log_native:false in the worker realm means the attacker patched
+      // console.log inside the worker (more advanced attack). Numbers
+      // look clean but the bench primitive is compromised.
+      const base = baseIntegrity();
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: {
+          ...base,
+          device: {
+            headless: {
+              headlessRating: 0,
+              cdp: {
+                consoleTimingWorker: {
+                  log_tiny_us: 10,
+                  log_heavy_us: 11,
+                  dir_heavy_us: 10,
+                  heavy_over_tiny: 1.1,
+                  perf_now_native: true,
+                  date_now_native: true,
+                  con_log_native: false,
+                  con_dir_native: true,
+                },
+              },
+            },
+          },
+        },
+      });
+      expect(result.automation).toBe(75);
+    });
+
+    it("worker bench: console_lies > 0 → automation 100 (hard residue tier)", () => {
+      // The in-worker v3-closure scan caught a wrapped console.* method.
+      // Workers have no legitimate console wrappers — anything > 0 here
+      // is attacker source injected via wrapped Worker / Blob /
+      // URL.createObjectURL. Hard residue, full-block tier.
+      const base = baseIntegrity();
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: {
+          ...base,
+          device: {
+            headless: {
+              headlessRating: 0,
+              cdp: {
+                consoleTimingWorker: {
+                  log_tiny_us: 10,
+                  log_heavy_us: 11,
+                  dir_heavy_us: 10,
+                  heavy_over_tiny: 1.1,
+                  perf_now_native: true,
+                  date_now_native: true,
+                  con_log_native: true,
+                  con_dir_native: true,
+                  console_lies: 1,
+                },
+              },
+            },
+          },
+        },
+      });
+      expect(result.automation).toBe(100);
+    });
+
+    it("worker bench: console_lies === 0 → no automation from this rule", () => {
+      // Clean worker realm — every probed console method is native.
+      // No automation contribution from this signal.
+      const base = baseIntegrity();
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: {
+          ...base,
+          device: {
+            headless: {
+              headlessRating: 0,
+              cdp: {
+                consoleTimingWorker: {
+                  log_tiny_us: 9,
+                  log_heavy_us: 8,
+                  dir_heavy_us: 9,
+                  heavy_over_tiny: 0.89,
+                  perf_now_native: true,
+                  date_now_native: true,
+                  con_log_native: true,
+                  con_dir_native: true,
+                  console_lies: 0,
+                },
+              },
+            },
+          },
+        },
+      });
+      expect(result.automation).toBe(0);
+    });
+
+    it("worker bench: console_lies absent (older SDK) does not trip", () => {
+      // Backward-compat: clients on the previous worker-bench build
+      // omit console_lies entirely. Treat as "no probe ran" — must
+      // not false-positive on missing field.
+      const base = baseIntegrity();
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: {
+          ...base,
+          device: {
+            headless: {
+              headlessRating: 0,
+              cdp: {
+                consoleTimingWorker: {
+                  log_tiny_us: 9,
+                  log_heavy_us: 8,
+                  dir_heavy_us: 9,
+                  heavy_over_tiny: 0.89,
+                  perf_now_native: true,
+                  date_now_native: true,
+                  con_log_native: true,
+                  con_dir_native: true,
+                },
+              },
             },
           },
         },

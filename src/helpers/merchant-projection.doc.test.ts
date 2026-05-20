@@ -281,7 +281,13 @@ describe("§3 — automation axis", () => {
     expect(project(cleanSession()).automation).toBe(0);
   });
 
-  it("STRICT 1/3: webDriverIsOn=true → automation 75 (BLOCK)", () => {
+  it("STRICT 1/3: webDriverIsOn=true → automation 100 (BLOCK)", () => {
+    // Any single strict marker is conclusive — no legitimate browser exposes
+    // navigator.webdriver=true / HeadlessChrome UA / headless worker UA.
+    // Previously this was 75 under a 1/3-of-3 ladder; the ladder is wrong
+    // for `headless` markers (each is individually definitive) and was
+    // letting webdriver-on-display PW-FF score lower than webdriver-hidden
+    // Camoufox via short-circuit ordering. Bumped to 100.
     const base = cleanSession();
     const r = project({
       ...base,
@@ -292,8 +298,8 @@ describe("§3 — automation axis", () => {
         },
       },
     });
-    expect(r.automation).toBe(75);
-    expect(r.verdict).toBe("block"); // 75 ≥ 70
+    expect(r.automation).toBe(100);
+    expect(r.verdict).toBe("block");
   });
 
   it("STRICT 2/3+: → automation 100 (BLOCK)", () => {
@@ -1084,7 +1090,7 @@ describe("§9 — end-to-end realistic scenarios", () => {
       }),
     );
     expect(r.verdict).toBe("block");
-    expect(r.automation).toBe(75); // strict 1/3 marker
+    expect(r.automation).toBe(100); // any strict marker → 100
     expect(r.network_tampering).toBe(100); // datacenter
   });
 
