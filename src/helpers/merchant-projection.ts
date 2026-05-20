@@ -396,6 +396,52 @@ function proxyScore(input: MerchantProjectionInput): number {
 }
 
 /**
+ * One bench's output. The iframe bench (`consoleTiming`) and the worker
+ * bench (`consoleTimingWorker`) share this shape — the same fields,
+ * computed in different realms, submitted side-by-side.
+ */
+interface ConsoleTimingFields {
+  log_tiny_us?: number;
+  log_heavy_us?: number;
+  dir_heavy_us?: number;
+  heavy_over_tiny?: number;
+  /**
+   * `log_heavy` loop measured with a second clock (Date.now in the
+   * current SDK, originally `document.timeline.currentTime`). Lives on
+   * a completely different prototype chain from Performance.now —
+   * disagreement with `log_heavy_us` means one of the two clocks has
+   * been replaced.
+   */
+  tl_heavy_us?: number;
+  /**
+   * Hardware anchor: µs/iter of a Math-only loop (Math.sqrt + Math.sin)
+   * over 5000 iterations. CDP does not intercept Math intrinsics, so
+   * this reflects pure V8/CPU throughput — a value the attacker can't
+   * predict from the timing fields alone. Both bench paths emit it,
+   * and on the same device they should agree closely.
+   */
+  math_loop_us?: number;
+  /**
+   * `Performance.prototype.now` toStrings as `[native code]` in the
+   * bench realm. False = timing-oracle tampering. The lie scanner
+   * can't reach Performance (not in `API_SEARCH_TARGETS`), so this is
+   * verified inline by the detector.
+   */
+  perf_now_native?: boolean;
+  /**
+   * `Date.now` toStrings as `[native code]`. Date.now is a static
+   * method on the Date constructor and is structurally unreachable
+   * by the prototype-walking lie scanner — this is the only place
+   * it's verified.
+   */
+  date_now_native?: boolean;
+  /** `console.log` is native in the bench realm. */
+  con_log_native?: boolean;
+  /** `console.dir` is native in the bench realm. */
+  con_dir_native?: boolean;
+}
+
+/**
  * Shape of the headless block stored under `device.headless`. The strict
  * markers (webdriver, headless UA, headless worker UA) live under the
  * inner `.headless` field — matching the fingerprint emitter's nested
@@ -422,38 +468,19 @@ interface HeadlessSignals {
    * Absent on non-Blink (Firefox/WebKit use different debug protocols).
    */
   cdp?: {
-    consoleTiming?: {
-      log_tiny_us?: number;
-      log_heavy_us?: number;
-      dir_heavy_us?: number;
-      heavy_over_tiny?: number;
-      /**
-       * `log_heavy` loop measured with `document.timeline.currentTime`
-       * instead of `performance.now`. A cross-clock that lives on a
-       * completely different prototype chain — disagreement with
-       * `log_heavy_us` means one of the two clocks has been replaced.
-       */
-      tl_heavy_us?: number;
-      /**
-       * `Performance.prototype.now` toStrings as `[native code]` in the
-       * bench iframe. False = timing-oracle tampering. The lie scanner
-       * can't reach Performance (not in `API_SEARCH_TARGETS`), so this
-       * is verified inline by the detector. Defeats the v4 bypass that
-       * patches `perf.now` to drive bench numbers.
-       */
-      perf_now_native?: boolean;
-      /**
-       * `Date.now` toStrings as `[native code]`. Date.now is a static
-       * method on the Date constructor and is structurally unreachable
-       * by the prototype-walking lie scanner — this is the only place
-       * it's verified.
-       */
-      date_now_native?: boolean;
-      /** `console.log` is native in the bench iframe. */
-      con_log_native?: boolean;
-      /** `console.dir` is native in the bench iframe. */
-      con_dir_native?: boolean;
-    };
+    consoleTiming?: ConsoleTimingFields;
+    /**
+     * Same bench shape as `consoleTiming` but run in a dedicated Worker
+     * spawned via `URL.createObjectURL(blob)`. The worker realm is
+     * unreachable by main-thread Proxy patches, and `blob:` URLs cannot
+     * be intercepted by `page.route` (browser-internal scheme), so this
+     * resists both the function-replacement and bundle-rewrite attacks
+     * that the iframe bench is susceptible to. Cross-checked against
+     * `consoleTiming`: a stub-the-function attack on either path leaves
+     * the other intact, and the disagreement is the tell. Absent when:
+     * non-Blink, CSP blocks blob workers, or worker timed out.
+     */
+    consoleTimingWorker?: ConsoleTimingFields;
     /** ChromeDriver `cdc_`-prefixed globals on document. */
     cdcGlobals?: boolean;
     /** Playwright `__pw_*` bindings on window. */
@@ -663,12 +690,7 @@ function buildTags(
  * bench depended on a primitive that's been replaced. Extracted to
  * keep `hasCdpTimingSignal` under the cyclomatic-complexity cap.
  */
-function hasBenchDependencyTamper(t: {
-  perf_now_native?: boolean;
-  date_now_native?: boolean;
-  con_log_native?: boolean;
-  con_dir_native?: boolean;
-}): boolean {
+function hasBenchDependencyTamper(t: ConsoleTimingFields): boolean {
   return (
     t.perf_now_native === false ||
     t.date_now_native === false ||
@@ -677,24 +699,25 @@ function hasBenchDependencyTamper(t: {
   );
 }
 
-function hasCdpTimingSignal(headless: HeadlessSignals | undefined): boolean {
-  const t = headless?.cdp?.consoleTiming;
-  if (!t) return false;
-  // Bench-dependency tampering. The bench is meaningless if any of the
-  // four natives it depends on (`Performance.now`, `Date.now`,
-  // `console.log`, `console.dir`) have been replaced. Each false flag
-  // is reported by the SDK at the bench's own use-site. Missing-field
-  // tolerates older SDK builds.
+/**
+ * Per-bench trip test. Same thresholds applied to either the iframe
+ * bench or the worker bench output. Extracted so `hasCdpTimingSignal`
+ * can call it once per available bench path.
+ *
+ *   - Bench-dependency tampering: any of the four use-site native
+ *     checks reporting false means the bench primitive (Performance.now,
+ *     Date.now, console.log, console.dir) was replaced.
+ *   - Cross-clock divergence: `tl_heavy_us` is the heavy loop measured
+ *     with a second clock (Date.now). Both clocks read wall time
+ *     independently, so they should agree within ~3µs/call. An attacker
+ *     who only patches `Performance.prototype.now` leaves the second
+ *     clock untouched and the deltas diverge.
+ *   - Ratio / absolute thresholds: `heavy_over_tiny > 1.5` OR
+ *     `log_heavy_us > 25`. Real-Chrome empirical baseline 0.79 / 7,
+ *     Playwright CDP 2.11 / 63.
+ */
+function benchTrips(t: ConsoleTimingFields): boolean {
   if (hasBenchDependencyTamper(t)) return true;
-  // Cross-clock divergence. `tl_heavy_us` is the same heavy loop measured
-  // with `document.timeline.currentTime`. Both clocks read real wall time
-  // independently, so they should agree within a few microseconds per call
-  // (3ms total over N=1000) on real browsers. An attacker who only patches
-  // `Performance.prototype.now` (every red-team round through v6) leaves
-  // the timeline clock alone — the deltas diverge wildly because the
-  // counter Proxy returns ~1µs while real wall time is ~7µs (no CDP) or
-  // ~63µs (CDP). Tolerance: 3µs/call ≈ 3ms total over the loop, well above
-  // engine timer noise but well below the smallest signal we care about.
   const heavy = t.log_heavy_us ?? 0;
   const tlHeavy = t.tl_heavy_us;
   if (typeof tlHeavy === "number" && Math.abs(tlHeavy - heavy) > 3) {
@@ -702,6 +725,60 @@ function hasCdpTimingSignal(headless: HeadlessSignals | undefined): boolean {
   }
   const ratio = t.heavy_over_tiny ?? 0;
   return ratio > 1.5 || heavy > 25;
+}
+
+/**
+ * CDP timing signal. True if either bench (iframe or worker) trips its
+ * own thresholds. The two paths are independently susceptible:
+ *
+ *   - The iframe bench runs on the main thread and can be defeated by
+ *     a `page.route` rewrite of the integrity bundle or by main-thread
+ *     Proxy patches on console/Performance/Element prototypes.
+ *   - The worker bench runs in a Worker realm spawned via blob URL.
+ *     `page.route` cannot intercept `blob:` (browser-internal), and
+ *     main-thread Proxy patches don't reach the worker realm. To stub
+ *     the worker, the attacker has to wrap the `Worker` constructor or
+ *     `URL.createObjectURL` (both more elaborate than a regex rewrite).
+ *
+ * Either path tripping → automation. See `hasBenchDisagreement` for
+ * the cross-check that catches stub-one-leave-the-other attacks.
+ */
+function hasCdpTimingSignal(headless: HeadlessSignals | undefined): boolean {
+  const iframe = headless?.cdp?.consoleTiming;
+  const worker = headless?.cdp?.consoleTimingWorker;
+  return (!!iframe && benchTrips(iframe)) || (!!worker && benchTrips(worker));
+}
+
+/**
+ * Cross-bench disagreement detector.
+ *
+ * The iframe and worker benches measure the same thing (console-log
+ * serialization cost) on the same device. They will produce slightly
+ * different numbers — different realms, different thread schedulers,
+ * different cold-cache behavior — but the *qualitative* answer should
+ * agree: either both see CDP serialization overhead, or neither does.
+ *
+ * A `heavy_over_tiny` gap > 0.5 is the signature of a one-sided stub:
+ * the attacker rewrote one bench function to return clean numbers
+ * (~1.0) but didn't reach the other path, which still measures the
+ * real ~2.0 ratio under CDP.
+ *
+ * Tolerance picked above hardware/jitter variance (empirically <0.3
+ * between iframe and worker on real Chrome) and well below the gap
+ * between a stub (~1.0) and a real CDP measurement (~2.0+).
+ *
+ * Only fires when both benches are present — if a merchant's CSP
+ * blocks blob workers and only the iframe ships, we don't have
+ * anything to disagree against.
+ */
+function hasBenchDisagreement(headless: HeadlessSignals | undefined): boolean {
+  const iframe = headless?.cdp?.consoleTiming;
+  const worker = headless?.cdp?.consoleTimingWorker;
+  if (!iframe || !worker) return false;
+  const a = iframe.heavy_over_tiny;
+  const b = worker.heavy_over_tiny;
+  if (typeof a !== "number" || typeof b !== "number") return false;
+  return Math.abs(a - b) > 0.5;
 }
 
 /**
@@ -821,7 +898,14 @@ function hasIframeCryptoStuck(
  *      Playwright/Puppeteer/patchright/selenium-CDP regardless of how
  *      thoroughly static residue has been scrubbed, because Chrome's
  *      inspector serialization can't be hidden by JS-level patches.
- *      → 75 (block-tier). See hasCdpTimingSignal.
+ *      Two independent benches run per session (iframe on main thread,
+ *      Worker on its own thread) and the check trips if either crosses
+ *      the threshold. → 75 (block-tier). See hasCdpTimingSignal.
+ *   2a. BENCH DISAGREEMENT — both benches present and their
+ *       `heavy_over_tiny` differs by more than 0.5. Signature of a
+ *       stub-one-leave-the-other attack (e.g. `page.route` rewriting
+ *       the iframe bundle while the blob-URL worker survives intact).
+ *       → 75. See hasBenchDisagreement.
  *   2b. HARD CDP RESIDUE — `$cdc_*` / `__pw_*` / known automation globals
  *       / bot litter scaffolding. These don't appear in real browsers,
  *       extensions included. → 100 (full-block tier). See hasHardCdpResidue.
@@ -856,6 +940,11 @@ function cdpAutomationScore(
   if (hasIframeCryptoStuck(input.integrity)) return 100;
   if (hasHardCdpResidue(headless)) return 100;
   if (hasCdpTimingSignal(headless)) return 75;
+  // Iframe vs. worker bench disagreement: one was stubbed, the other
+  // measures real CDP overhead. Direct evidence of bundle-rewrite or
+  // function-replacement tampering — fire even when neither bench trips
+  // on its own, because the "clean" side is the stub.
+  if (hasBenchDisagreement(headless)) return 75;
   if (hasSoftCdpResidue(headless)) return 75;
   return 0;
 }
