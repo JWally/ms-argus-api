@@ -922,13 +922,14 @@ function hasIframeCryptoStuck(
 }
 
 /**
- * Automation score. Tiered checks, max wins:
+ * Automation score. Tiered checks, MAX WINS (composes, doesn't short-circuit):
  *   1. STRICT markers (`headlessRating`) — webdriver / headless UA /
- *      headless worker UA. Any one alone is a confident automation tell;
- *      no legitimate human browser exposes these.
- *      - 3/3 (100): full headless. → 100
- *      - 2/3 (67):  → 100
- *      - 1/3 (33):  → 75 (block-tier — still-strong evidence)
+ *      headless worker UA. Each is unambiguous on its own — no legitimate
+ *      human browser exposes any of them. Any single marker → 100.
+ *      (The previous 1/3 → 75 tier was wrong on this point: a "1-of-N
+ *      weak" ladder belongs on `likeHeadless` where the constituent
+ *      signals are individually soft. The three `headless` markers were
+ *      picked precisely because each is by itself definitive.)
  *   2. CDP TIMING — console-serialization overhead test. Catches
  *      Playwright/Puppeteer/patchright/selenium-CDP regardless of how
  *      thoroughly static residue has been scrubbed, because Chrome's
@@ -988,11 +989,22 @@ function botProbability(input: MerchantProjectionInput): number {
   const headless = readHeadless(
     input.integrity ?? ({} as IntegrityResultsData),
   );
+  // Strict and CDP tiers MAX-COMPOSE rather than short-circuit. The prior
+  // shape returned the first non-zero of the two, which inverted scoring
+  // in cases like PW-FF (webdriver=true AND iframe-crypto-stuck): the
+  // strict check fired first at the old 1/3 → 75 tier and the function
+  // returned, never reaching cdpAutomationScore where iframe-crypto-stuck
+  // would have promoted to 100. Camoufox (which spoofs webdriver→false)
+  // bypassed the strict check, fell through to CDP, and ended up
+  // scoring HIGHER than the less-stealthy PW-FF. Inverted from intent.
   const strict = headless?.headlessRating ?? 0;
-  if (strict >= 67) return 100;
-  if (strict > 0) return 75;
+  // Any single strict marker is on its own conclusive evidence of
+  // automation — see docstring. The old 33/67/100 ladder collapses
+  // to a binary 0/100.
+  const strictScore = strict > 0 ? 100 : 0;
   const cdpScore = cdpAutomationScore(input, headless);
-  if (cdpScore > 0) return cdpScore;
+  const hardScore = Math.max(strictScore, cdpScore);
+  if (hardScore > 0) return hardScore;
   const stealth = headless?.stealthRating ?? 0;
   const weak = isMobileBrowser(input.integrity)
     ? 0

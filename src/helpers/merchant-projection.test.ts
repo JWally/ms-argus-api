@@ -858,10 +858,42 @@ describe("buildMerchantResponse", () => {
       expect(result.automation).toBe(100);
     });
 
-    it("automation is 75 when 1/3 strict markers fire (headlessRating 33)", () => {
+    it("strict + CDP MAX-compose: PW-FF with webdriver=true AND iframe-crypto-stuck → 100", () => {
+      // Regression test for the short-circuit-was-inverted bug. Pre-fix:
+      // strict>0 returned 75 immediately and never reached cdpAutomationScore,
+      // so PW-FF (webdriver=true + Marionette-orphaned iframe crypto) scored
+      // 75 while Camoufox (webdriver hidden + same iframe crypto issue)
+      // fell through to cdpAutomationScore and scored 100. Inverted from
+      // intent. Post-fix both score 100 via max() composition.
+      const base = baseIntegrity();
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: {
+          ...base,
+          device: {
+            headless: {
+              headlessRating: 33,
+              headless: { webDriverIsOn: true },
+            },
+            status: {
+              iframeCrypto: {
+                iframe_created: true,
+                responsive: false,
+                elapsed_ms: null,
+              },
+            },
+          } as IntegrityResultsData["device"],
+        },
+      });
+      expect(result.automation).toBe(100);
+    });
+
+    it("automation is 100 when any single strict marker fires (webdriver alone)", () => {
       // Playwright Firefox / Webkit case — sets navigator.webdriver but
-      // doesn't change UA. One strict marker alone is still a confident
-      // automation tell; bump above the suspect threshold.
+      // doesn't change UA. A single strict marker is on its own
+      // conclusive automation evidence; no legitimate human browser
+      // exposes any of webDriverIsOn / hasHeadlessUA / hasHeadlessWorkerUA.
+      // The previous 1/3 → 75 ladder underweighted webdriver=true.
       const base = baseIntegrity();
       const result = buildMerchantResponse({
         session_id: "s",
@@ -879,7 +911,7 @@ describe("buildMerchantResponse", () => {
           },
         },
       });
-      expect(result.automation).toBe(75);
+      expect(result.automation).toBe(100);
     });
 
     it("automation mirrors likeHeadlessRating when no strict markers fire", () => {
@@ -958,7 +990,7 @@ describe("buildMerchantResponse", () => {
           },
         },
       });
-      expect(result.automation).toBe(75);
+      expect(result.automation).toBe(100);
     });
 
     it("mobile carve-out: detects iPhone via worker-scope UA when main UA is missing", () => {
