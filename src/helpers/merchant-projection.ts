@@ -768,6 +768,48 @@ function hasSoftCdpResidue(headless: HeadlessSignals | undefined): boolean {
 }
 
 /**
+ * Iframe-crypto liveness probe failure.
+ *
+ * The SDK constructs a double-nested hidden iframe and times
+ * `subtle.generateKey({ECDH, P-256}, false, ['deriveBits'])` inside it
+ * against a 1s timeout (see `ms-argus-web-integrity/src/status/
+ * iframe-crypto-probe.ts`). Real browsers resolve in <100ms.
+ * Marionette-augmented runtimes (Playwright Firefox; Camoufox even
+ * with full UA spoofing) leave the iframe's WebCrypto thread orphaned
+ * and the Promise never resolves — the probe reports
+ * `responsive: false`.
+ *
+ * `iframe_created: false` (vs `responsive: false`) is a separate
+ * environmental case — privacy sandbox, CSP restrictions, etc. We
+ * only fire on `iframe_created: true && responsive: false`, the
+ * specific signature of "the iframe was constructable but WebCrypto
+ * never resolved inside it." This is exactly the Marionette pattern.
+ *
+ * Confidence tier: full automation 100 + tampering 50. Camoufox's
+ * entire purpose is detection evasion — its presence is itself a
+ * tampering signal, not just an automation signal.
+ */
+function hasIframeCryptoStuck(
+  integrity: IntegrityResultsData | undefined,
+): boolean {
+  const ic = (
+    integrity?.device as
+      | {
+          status?: {
+            iframeCrypto?: {
+              responsive?: boolean;
+              elapsed_ms?: number | null;
+              iframe_created?: boolean;
+            };
+          };
+        }
+      | undefined
+  )?.status?.iframeCrypto;
+  if (!ic) return false;
+  return ic.iframe_created === true && ic.responsive === false;
+}
+
+/**
  * Automation score. Tiered checks, max wins:
  *   1. STRICT markers (`headlessRating`) — webdriver / headless UA /
  *      headless worker UA. Any one alone is a confident automation tell;
@@ -799,12 +841,19 @@ function hasSoftCdpResidue(headless: HeadlessSignals | undefined): boolean {
  *      bad WebGL, missing chrome runtime. +20 bonus when any fire.
  */
 /**
- * CDP-residue score (the 2x/2b/2c tiers in the botProbability docstring).
- * Returns 0 if no residue, 75 for the soft/timing tier, 100 for the hard
- * tier. Extracted to keep `botProbability` under the cyclomatic-complexity
- * cap.
+ * CDP-residue + iframe-crypto-liveness score (the 2x/2b/2c tiers in the
+ * botProbability docstring). Returns 0 if no residue, 75 for soft/timing
+ * tier, 100 for the hard tier. Extracted to keep `botProbability` under
+ * the cyclomatic-complexity cap.
  */
-function cdpAutomationScore(headless: HeadlessSignals | undefined): number {
+function cdpAutomationScore(
+  input: MerchantProjectionInput,
+  headless: HeadlessSignals | undefined,
+): number {
+  // Marionette-augmented runtimes (PW-FF, Camoufox, etc.) hang the
+  // nested iframe's WebCrypto generateKey. No legitimate browser does
+  // this. Full automation tier.
+  if (hasIframeCryptoStuck(input.integrity)) return 100;
   if (hasHardCdpResidue(headless)) return 100;
   if (hasCdpTimingSignal(headless)) return 75;
   if (hasSoftCdpResidue(headless)) return 75;
@@ -818,7 +867,7 @@ function botProbability(input: MerchantProjectionInput): number {
   const strict = headless?.headlessRating ?? 0;
   if (strict >= 67) return 100;
   if (strict > 0) return 75;
-  const cdpScore = cdpAutomationScore(headless);
+  const cdpScore = cdpAutomationScore(input, headless);
   if (cdpScore > 0) return cdpScore;
   const stealth = headless?.stealthRating ?? 0;
   const weak = isMobileBrowser(input.integrity)
@@ -1077,6 +1126,12 @@ interface TamperingEvidence {
   langGeoCrossContinent: boolean;
   /** Accept-Language vs CF country same-continent mismatch (mild). */
   langGeoCrossCountry: boolean;
+  /** Iframe-crypto liveness probe reported the nested iframe was constructable
+   *  but `subtle.generateKey({ECDH, P-256})` never resolved within 1s. The
+   *  Marionette / Camoufox signature — no legitimate browser does this. Used
+   *  to boost tampering alongside the automation=100 signal already wired
+   *  in `botProbability`. */
+  iframeCryptoStuck: boolean;
 }
 
 function readChUaMismatch(integrity: IntegrityResultsData): boolean {
@@ -1187,6 +1242,7 @@ function collectTamperingEvidence(
     // stays on `analysis.kernel_os.signals` for forensic review.
     kernelOsMismatchHard: kernelSignals.hard && !shielded && !appleRelay,
     kernelOsMismatchSoft: kernelSignals.soft && !shielded && !appleRelay,
+    iframeCryptoStuck: hasIframeCryptoStuck(integrity),
   };
 }
 
@@ -1252,6 +1308,14 @@ function hasTier60Signal(e: TamperingEvidence): boolean {
 function tamperingProbabilityFromEvidence(e: TamperingEvidence): number {
   if (isDefinitiveTampering(e)) return 100;
   if (hasTier60Signal(e)) return 60;
+  // Iframe-crypto liveness probe failed: the nested iframe was constructable
+  // but `subtle.generateKey({ECDH,P-256})` never resolved within 1s. The
+  // Marionette / Camoufox signature. Camoufox's whole purpose is detection
+  // evasion — its presence implies tampering even when the spoofed UA and
+  // fingerprint values pass every other check. Tier 50: more confident than
+  // tzGeoMismatch (35, often benign for travelers), less than tier60Signal
+  // signals which include cipher-level evidence.
+  if (e.iframeCryptoStuck) return 50;
   // TZ location vs IP TZ disagreement — VPN/proxy tell, often benign for
   // travelers but still worth surfacing.
   if (e.tzGeoMismatch) return 35;
