@@ -3265,4 +3265,151 @@ describe("buildMerchantResponse", () => {
       });
     });
   });
+
+  describe("brave_ios carve-out", () => {
+    // Real session that prompted this carve-out:
+    // cpi=argus_cpi_test_UEeqk7Bk7uetxKKDxNmIdB,
+    // session_id=01d32684-d8ad-44d5-a120-6ff2ad735102.
+    // Brave Shields wrap audio + plugin APIs; the lies-scanner saw 53
+    // lies concentrated in:
+    //   AnalyserNode.{getFloat,getByte}{Frequency,TimeDomain}Data, ×4
+    //   AudioBuffer.getChannelData,
+    //   PluginArray.item / namedItem,
+    //   Navigator.plugins / hardwareConcurrency
+    // Without the carve-out, lies >= 20 trips definitive tampering and
+    // a legitimate Brave-on-iOS user gets device_tampering = 100.
+    function braveIosLiesData(): Record<string, string[]> {
+      const seven = [
+        "failed toString",
+        'failed "prototype" in function',
+        "failed descriptor",
+        "failed own property",
+        "failed descriptor keys",
+        "failed own property names",
+        "failed own keys names",
+      ];
+      return {
+        "AnalyserNode.getFloatFrequencyData": [...seven],
+        "AnalyserNode.getByteFrequencyData": [...seven],
+        "AnalyserNode.getFloatTimeDomainData": [...seven],
+        "AnalyserNode.getByteTimeDomainData": [...seven],
+        "AudioBuffer.getChannelData": [...seven],
+        "PluginArray.item": [
+          "failed call interface error",
+          "failed apply interface error",
+          "failed new instance error",
+          ...seven,
+        ],
+        "PluginArray.namedItem": [...seven],
+        "Navigator.plugins": ["invalid mimetype"],
+        "Navigator.hardwareConcurrency": ["failed undefined properties"],
+      };
+    }
+    function withBraveIosFixture(extra: Partial<IntegrityResultsData> = {}) {
+      const base = baseIntegrity();
+      return {
+        ...base,
+        device: {
+          ...base.device,
+          lies: {
+            data: braveIosLiesData(),
+            totalLies: 53,
+          },
+        },
+        analysis: {
+          ...base.analysis,
+          ja4_ua: {
+            ja4_browser_family: "safari",
+            ua_browser_family: "safari",
+            ua_os: "iOS",
+            h2_browser_family: "safari",
+            signals: [],
+          },
+          ...((extra.analysis ?? {}) as object),
+        },
+        ...extra,
+      };
+    }
+
+    it("does NOT flag device_tampering on Brave-iOS audio + plugin lie cluster", () => {
+      const integrity = withBraveIosFixture();
+      const result = buildMerchantResponse({ session_id: "s", integrity });
+      expect(result.device_tampering).toBe(0);
+      expect(result.tags).not.toContain("browser_tampering");
+    });
+
+    it("emits the `brave_ios` tag when the carve-out fires", () => {
+      const integrity = withBraveIosFixture();
+      const result = buildMerchantResponse({ session_id: "s", integrity });
+      expect(result.tags).toContain("brave_ios");
+    });
+
+    it("still penalizes other tampering signals even when brave_ios fires", () => {
+      // Worker divergence is structural — no privacy browser produces
+      // this. Brave-iOS carve-out must NOT zero this out.
+      const integrity = withBraveIosFixture();
+      integrity.analysis = {
+        ...integrity.analysis,
+        worker: {
+          lied: true,
+          divergences: [
+            { field: "userAgent", reason: "mismatch" } as unknown as never,
+          ],
+          signals: [],
+        } as unknown as (typeof integrity.analysis)["worker"],
+      };
+      const result = buildMerchantResponse({ session_id: "s", integrity });
+      expect(result.device_tampering).toBe(100);
+      expect(result.tags).toContain("brave_ios");
+      expect(result.tags).toContain("browser_tampering");
+    });
+
+    it("does NOT fire on plain iOS Safari with no lies (real iPhone user)", () => {
+      const base = baseIntegrity();
+      const integrity = {
+        ...base,
+        analysis: {
+          ...base.analysis,
+          ja4_ua: {
+            ja4_browser_family: "safari",
+            ua_browser_family: "safari",
+            ua_os: "iOS",
+            h2_browser_family: "safari",
+            signals: [],
+          },
+        },
+      } as IntegrityResultsData;
+      const result = buildMerchantResponse({ session_id: "s", integrity });
+      expect(result.tags).not.toContain("brave_ios");
+    });
+
+    it("does NOT fire on desktop Safari with the same lie pattern (wrong UA)", () => {
+      const integrity = withBraveIosFixture();
+      // Flip just the OS to macOS while keeping all other Brave-iOS-shaped
+      // analysis intact. ja4_ua is index-accessed as an unknown field; cast
+      // through `unknown` to mutate the ua_os string in-place.
+      (
+        integrity.analysis as unknown as {
+          ja4_ua: { ua_os: string };
+        }
+      ).ja4_ua.ua_os = "macOS";
+      const result = buildMerchantResponse({ session_id: "s", integrity });
+      expect(result.tags).not.toContain("brave_ios");
+      // Lies survive, so this DOES trip device_tampering — which is the
+      // right call: real desktop Safari doesn't wrap audio APIs.
+      expect(result.device_tampering).toBe(100);
+    });
+
+    it("does NOT fire when only audio lies present (partial signature)", () => {
+      const integrity = withBraveIosFixture();
+      const data = (
+        integrity.device as { lies?: { data?: Record<string, string[]> } }
+      ).lies!.data!;
+      delete data["PluginArray.item"];
+      delete data["PluginArray.namedItem"];
+      delete data["Navigator.plugins"];
+      const result = buildMerchantResponse({ session_id: "s", integrity });
+      expect(result.tags).not.toContain("brave_ios");
+    });
+  });
 });
