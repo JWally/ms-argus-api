@@ -81,7 +81,16 @@ export type MerchantTag =
   // only; we'll decide whether/how to penalize after collecting real-world
   // data on its prevalence vs. confirmed-tampered traffic.
   | "apple_attested"
-  | "apple_attestation_missing";
+  | "apple_attestation_missing"
+  // Positive privacy-browser identification — these are emitted when we
+  // recognize the browser by its known fingerprinting-protection
+  // signature (audio API wraps, plugin spoofing, etc.). Mutually
+  // exclusive with `browser_tampering`: when one of these tags is set
+  // we deliberately attribute the underlying lies to the browser
+  // rather than counting them toward `device_tampering`. Merchants
+  // can filter on these for analytics / policy (some merchants
+  // welcome privacy browsers, some don't).
+  | "brave_ios";
 
 export interface BrowserDetails {
   browserName: string | null;
@@ -303,6 +312,17 @@ const CEILING_UPLIFT_FLOOR = 0.95;
 /** Ceiling applied when WebRTC is present and matches probes — caps proxy
  *  component at "suspect, not damning" for plausibly-legit ratios. */
 const WEBRTC_MATCH_DAMPER_CAP = 0.3;
+
+/** Console-bench noise floor in microseconds. Below this, `log_heavy_us`
+ *  measurements are dominated by thread-scheduling jitter and clock
+ *  resolution rather than CDP serialization cost. Real-Brave telemetry
+ *  (May 2026, 10 same-machine submissions) showed worker `heavy_over_tiny`
+ *  randomly walking 0.81–2.00 at heavy=4–9µs. The CDP signal we're after
+ *  lives at heavy≈63µs (Playwright CDP baseline) — ratios on sub-floor
+ *  measurements can't discriminate stub-vs-real. Used by `benchTrips`
+ *  to gate the ratio check and by `hasBenchDisagreement` to skip the
+ *  cross-bench compare when both sides are noise. */
+const BENCH_NOISE_FLOOR_US = 10;
 
 /** Unclamped rcv_rtt_refreshed/rtt_refreshed ratio from the TCP probe. Null
  *  when data is missing (legacy records, probe failure). */
@@ -682,6 +702,14 @@ function buildTags(
       (i) =>
         isAppleClaimedUA(i.integrity) && !(i.integrity?.pat?.attested === true),
     ],
+    // Privacy-browser positive identification. See `detectBraveIos` for
+    // the signature. When this fires the underlying lies are attributed
+    // to the browser and do NOT contribute to device_tampering (handled
+    // upstream in `collectTamperingEvidence`).
+    [
+      "brave_ios",
+      (i) => (i.integrity ? detectBraveIos(i.integrity).matched : false),
+    ],
   ];
   return predicates.filter(([, p]) => p(input)).map(([tag]) => tag);
 }
@@ -732,9 +760,14 @@ function hasBenchDependencyTamper(t: ConsoleTimingFields): boolean {
  *     independently, so they should agree within ~3µs/call. An attacker
  *     who only patches `Performance.prototype.now` leaves the second
  *     clock untouched and the deltas diverge.
- *   - Ratio / absolute thresholds: `heavy_over_tiny > 1.5` OR
- *     `log_heavy_us > 25`. Real-Chrome empirical baseline 0.79 / 7,
- *     Playwright CDP 2.11 / 63.
+ *   - Ratio / absolute thresholds: `heavy_over_tiny > 1.5` (only when
+ *     `log_heavy_us` is above the BENCH_NOISE_FLOOR; below that the
+ *     ratio is dividing two sub-floor measurements and means nothing —
+ *     real-Brave/Chrome telemetry sees worker ratios randomly walking
+ *     0.8–2.0 at heavy=4–9µs from thread-scheduling jitter alone) OR
+ *     `log_heavy_us > 25` (absolute). Real-Chrome baseline 0.79 / 7,
+ *     Playwright CDP 2.11 / 63. The CDP signal lives at heavy≈63µs;
+ *     anything under 10µs can't discriminate stub-vs-real.
  */
 function benchTrips(t: ConsoleTimingFields): boolean {
   if (hasBenchDependencyTamper(t)) return true;
@@ -744,7 +777,7 @@ function benchTrips(t: ConsoleTimingFields): boolean {
     return true;
   }
   const ratio = t.heavy_over_tiny ?? 0;
-  return ratio > 1.5 || heavy > 25;
+  return (ratio > 1.5 && heavy > BENCH_NOISE_FLOOR_US) || heavy > 25;
 }
 
 /**
@@ -795,6 +828,25 @@ function hasBenchDisagreement(headless: HeadlessSignals | undefined): boolean {
   const iframe = headless?.cdp?.consoleTiming;
   const worker = headless?.cdp?.consoleTimingWorker;
   if (!iframe || !worker) return false;
+  // Magnitude floor: BOTH sides must be above the CDP detection floor for
+  // a ratio disagreement to be meaningful. If either side is sub-floor,
+  // its ratio is noise dividing noise (real-Brave telemetry: worker ratios
+  // randomly walking 0.81–2.00 at heavy=4–9µs from thread-scheduling
+  // jitter alone), and comparing a noise ratio against a real ratio
+  // produces false-positive deltas with no attack signal underneath.
+  //
+  // What we lose: nothing. The attack model — stub one bench to ratio ~1
+  // while leaving the other unstubbed and seeing real CDP — requires the
+  // unstubbed side to actually show CDP overhead (heavy ≥ 25µs). That
+  // case is already caught by `benchTrips` per-bench on the unstubbed
+  // side, regardless of disagreement. This detector's marginal coverage
+  // is for attacks where BOTH sides are above the noise floor but ratios
+  // diverge — that case is preserved.
+  const aHeavy = iframe.log_heavy_us ?? 0;
+  const bHeavy = worker.log_heavy_us ?? 0;
+  if (aHeavy < BENCH_NOISE_FLOOR_US || bHeavy < BENCH_NOISE_FLOOR_US) {
+    return false;
+  }
   const a = iframe.heavy_over_tiny;
   const b = worker.heavy_over_tiny;
   if (typeof a !== "number" || typeof b !== "number") return false;
@@ -1305,12 +1357,140 @@ function readTzGeoMismatch(integrity: IntegrityResultsData): boolean {
   return (tz?.signals ?? []).some((s) => s.code === "TZ_GEOLOCATION_MISMATCH");
 }
 
+/**
+ * Brave on iOS positive-identification signature.
+ *
+ * Background: Apple requires all iOS browsers to use WebKit, so "Brave for
+ * iOS" is structurally Safari with Brave's privacy shields layered over the
+ * top via content-blocker rules + JS shims. The user-visible Brave logo
+ * does not show up in UA, sec-ch-ua, JA4, h2, or kernel-OS signals —
+ * every network/protocol surface looks identical to plain iOS Safari.
+ *
+ * Brave does, however, leave one unambiguous fingerprint: its Shields
+ * wrap a specific set of fingerprinting-related APIs to add noise or
+ * return sanitized values:
+ *   - `AnalyserNode.{getFloatFrequencyData, getByteFrequencyData,
+ *      getFloatTimeDomainData, getByteTimeDomainData}` — audio noise
+ *      injection (defeats audio fingerprinting)
+ *   - `AudioBuffer.getChannelData` — same
+ *   - `PluginArray.{item, namedItem}` + `Navigator.plugins` — sanitized
+ *      empty plugin list (defeats plugin enumeration)
+ *   - `Navigator.hardwareConcurrency` — quantized to coarse buckets
+ *
+ * Real Safari does none of these. The lies-scanner's seven structural
+ * checks (toString shape, descriptor presence, own-property keys, etc.)
+ * fire on every one of these wrapped APIs, producing ~35-50 "lies"
+ * concentrated in this exact key set. Without a carve-out this trips
+ * `isDefinitiveTampering` (lies >= 20) and the user gets
+ * `device_tampering = 100` for using a privacy browser correctly.
+ *
+ * This detector matches when:
+ *   - UA family is Safari AND UA OS is iOS, AND
+ *   - At least 4 of the 5 Brave-Shields audio APIs are in the lies
+ *     dictionary (the audio bundle is what Brave reliably wraps), AND
+ *   - At least 1 of the Brave-Shields plugin APIs is in the lies
+ *     dictionary (covers Brave's plugin sanitization)
+ *
+ * The intersection requirement defeats a bot that wraps audio APIs
+ * alone or plugins alone — Brave reliably hits both surfaces because
+ * each defends a different fingerprinting class.
+ *
+ * Returns the set of attributable lies + the matched flag. Callers
+ * subtract `attributedLies` from `totalLies` before the
+ * `lies >= 20 = definitive tampering` rule. Brave's lies still appear
+ * in the raw `device.lies.data` for diagnostics; only the score is
+ * carved out.
+ */
+const BRAVE_IOS_AUDIO_KEYS = [
+  "AnalyserNode.getFloatFrequencyData",
+  "AnalyserNode.getByteFrequencyData",
+  "AnalyserNode.getFloatTimeDomainData",
+  "AnalyserNode.getByteTimeDomainData",
+  "AudioBuffer.getChannelData",
+] as const;
+
+const BRAVE_IOS_PLUGIN_KEYS = [
+  "PluginArray.item",
+  "PluginArray.namedItem",
+  "Navigator.plugins",
+] as const;
+
+const BRAVE_IOS_NAV_KEYS = ["Navigator.hardwareConcurrency"] as const;
+
+const BRAVE_IOS_ALL_KEYS: ReadonlySet<string> = new Set<string>([
+  ...BRAVE_IOS_AUDIO_KEYS,
+  ...BRAVE_IOS_PLUGIN_KEYS,
+  ...BRAVE_IOS_NAV_KEYS,
+]);
+
+interface BraveIosDetection {
+  matched: boolean;
+  attributedLies: number;
+}
+
+function detectBraveIos(integrity: IntegrityResultsData): BraveIosDetection {
+  const ja4 = (
+    integrity.analysis as {
+      ja4_ua?: { ua_browser_family?: string; ua_os?: string };
+    }
+  ).ja4_ua;
+  // Brave-iOS requires the underlying UA to claim Safari on iOS. We use
+  // `ja4_ua.ua_*` (the parsed UA values the JA4 analyzer already
+  // produced) rather than re-parsing the UA here. A spoofed UA pretending
+  // to be iOS Safari would also fail browser-engine baseline, JA4, and
+  // kernel-OS checks downstream — those signals still fire even when
+  // this carve-out matches.
+  if (ja4?.ua_browser_family !== "safari" || ja4?.ua_os !== "iOS") {
+    return { matched: false, attributedLies: 0 };
+  }
+
+  const liesData =
+    (
+      integrity.device as
+        | { lies?: { data?: Record<string, string[]> } }
+        | undefined
+    )?.lies?.data ?? {};
+
+  const audioHits = BRAVE_IOS_AUDIO_KEYS.filter(
+    (k) => liesData[k] !== undefined,
+  ).length;
+  const pluginHits = BRAVE_IOS_PLUGIN_KEYS.filter(
+    (k) => liesData[k] !== undefined,
+  ).length;
+
+  // Conservative threshold: Brave Shields reliably wraps the entire
+  // audio cluster (all 5 methods) and the plugin cluster (both
+  // PluginArray methods + Navigator.plugins). Require ≥4 audio AND
+  // ≥1 plugin to avoid attributing a partial-audio-spoof bot to
+  // Brave. Bots that mimic Brave's full pattern aren't penalized via
+  // lies — but they remain visible to every other detector
+  // (worker divergence, kernel-OS, JA4 fork-of-Safari, etc.).
+  if (audioHits < 4 || pluginHits < 1) {
+    return { matched: false, attributedLies: 0 };
+  }
+
+  let attributedLies = 0;
+  for (const [key, lies] of Object.entries(liesData)) {
+    if (BRAVE_IOS_ALL_KEYS.has(key) && Array.isArray(lies)) {
+      attributedLies += lies.length;
+    }
+  }
+  return { matched: true, attributedLies };
+}
+
 function collectTamperingEvidence(
   integrity: IntegrityResultsData,
 ): TamperingEvidence {
-  const lies =
+  const rawLies =
     (integrity.device as { lies?: { totalLies?: number } } | undefined)?.lies
       ?.totalLies ?? 0;
+  // Brave-iOS positive-identification carve-out. Brave's Shields wrap
+  // audio + plugin APIs to defeat fingerprinting; the wraps trip ~50
+  // structural lies that would otherwise tip definitive tampering.
+  // We attribute those lies to the browser, not the device. See
+  // `detectBraveIos` for the signature + the rationale.
+  const braveIos = detectBraveIos(integrity);
+  const lies = Math.max(0, rawLies - braveIos.attributedLies);
   // Worker-scope divergences emitted by analysis/worker/index.ts. The
   // analyzer's COMPARE_FIELDS list is `userAgent`, `platform`,
   // `hardwareConcurrency`, `deviceMemory`, `languages`, `webglRenderer`,
