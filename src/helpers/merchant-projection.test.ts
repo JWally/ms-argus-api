@@ -1470,6 +1470,180 @@ describe("buildMerchantResponse", () => {
       expect(result.automation).toBe(0);
     });
 
+    // Regression fixtures captured 2026-05-24 from real Brave / Linux desktop,
+    // same hardware, same network, 10 same-day submissions to arcades.click/
+    // bot-buster. Pre-fix (no magnitude floor) 4 of 10 false-blocked at
+    // automation=75: two via worker `heavy_over_tiny > 1.5` per-bench, two via
+    // `hasBenchDisagreement` |Δratio|>0.5. Cause: sub-10µs measurements
+    // dominated by thread-scheduling jitter, not CDP serialization. Real CDP
+    // lives at heavy≈63µs, so ratios on sub-floor measurements have no
+    // discriminative value. See BENCH_NOISE_FLOOR_US in merchant-projection.ts.
+    describe("real-Brave sub-floor regressions (2026-05-24)", () => {
+      const braveSubFloor = (
+        i: { tiny: number; heavy: number; dir: number; ratio: number },
+        w: { tiny: number; heavy: number; dir: number; ratio: number },
+      ) =>
+        buildMerchantResponse({
+          session_id: "s",
+          integrity: {
+            ...baseIntegrity(),
+            device: {
+              headless: {
+                headlessRating: 0,
+                likeHeadlessRating: 0,
+                stealthRating: 0,
+                cdp: {
+                  consoleTiming: {
+                    log_tiny_us: i.tiny,
+                    log_heavy_us: i.heavy,
+                    dir_heavy_us: i.dir,
+                    heavy_over_tiny: i.ratio,
+                    perf_now_native: true,
+                    date_now_native: true,
+                    con_log_native: true,
+                    con_dir_native: true,
+                  },
+                  consoleTimingWorker: {
+                    log_tiny_us: w.tiny,
+                    log_heavy_us: w.heavy,
+                    dir_heavy_us: w.dir,
+                    heavy_over_tiny: w.ratio,
+                    perf_now_native: true,
+                    date_now_native: true,
+                    con_log_native: true,
+                    con_dir_native: true,
+                    console_lies: 0,
+                  },
+                },
+              },
+            },
+          },
+        });
+
+      // sid 540e48a5: worker ratio 2.00 + |Δ|=1.05 (both pre-fix trips)
+      it("540e48a5: worker ratio 2.00 at heavy=6.6µs is noise → 0", () => {
+        const r = braveSubFloor(
+          { tiny: 8.7, heavy: 8.3, dir: 8.7, ratio: 0.95 },
+          { tiny: 3.3, heavy: 6.6, dir: 8.3, ratio: 2.0 },
+        );
+        expect(r.automation).toBe(0);
+      });
+
+      // sid 84375938: worker ratio 1.65 + |Δ|=0.53 (both pre-fix trips)
+      it("84375938: worker ratio 1.65 at heavy=4.3µs is noise → 0", () => {
+        const r = braveSubFloor(
+          { tiny: 7.6, heavy: 8.5, dir: 9.1, ratio: 1.12 },
+          { tiny: 2.6, heavy: 4.3, dir: 4.6, ratio: 1.65 },
+        );
+        expect(r.automation).toBe(0);
+      });
+
+      // sid 37a57315: cross-bench |Δ|=0.56 only
+      it("37a57315: |Δratio|=0.56 with both heavies <10µs → 0", () => {
+        const r = braveSubFloor(
+          { tiny: 9.0, heavy: 8.5, dir: 14.1, ratio: 0.94 },
+          { tiny: 2.8, heavy: 4.2, dir: 4.3, ratio: 1.5 },
+        );
+        expect(r.automation).toBe(0);
+      });
+
+      // sid 149ca86f: cross-bench |Δ|=0.63 only (iframe-higher direction)
+      it("149ca86f: |Δratio|=0.63 inverted (iframe>worker) → 0", () => {
+        const r = braveSubFloor(
+          { tiny: 7.9, heavy: 11.4, dir: 13.1, ratio: 1.44 },
+          { tiny: 5.2, heavy: 4.2, dir: 5.6, ratio: 0.81 },
+        );
+        // iframe heavy=11.4 is just above floor but ratio 1.44 < 1.5, so
+        // per-bench safe; worker is sub-floor; disagreement skips because
+        // worker is sub-floor (matches the floor's intent).
+        expect(r.automation).toBe(0);
+      });
+
+      // Negative control: the 6 sessions that scored 0 pre-fix must also
+      // still score 0 post-fix. Just spot-check the two with the noisiest
+      // worker ratios (these were the closest to wrongly tripping).
+      it("c7b20755 (cleanest of the 6): ratios stable, → 0", () => {
+        const r = braveSubFloor(
+          { tiny: 9.1, heavy: 8.9, dir: 9.3, ratio: 0.98 },
+          { tiny: 2.9, heavy: 4.0, dir: 4.2, ratio: 1.38 },
+        );
+        expect(r.automation).toBe(0);
+      });
+
+      it("3f649664 (|Δ|=0.46 near miss): does not regress → 0", () => {
+        const r = braveSubFloor(
+          { tiny: 9.8, heavy: 8.9, dir: 10.3, ratio: 0.91 },
+          { tiny: 3.0, heavy: 4.1, dir: 4.6, ratio: 1.37 },
+        );
+        expect(r.automation).toBe(0);
+      });
+    });
+
+    // Critical: the magnitude floor must NOT blind us to real CDP. The
+    // SDK calibration baseline (Playwright Chromium with CDP attached)
+    // sits at heavy=63µs / ratio=2.11 — well above the 10µs floor. These
+    // tests lock that in so we'd catch a future tweak that accidentally
+    // raises the floor above the CDP signal.
+    describe("magnitude floor preserves real CDP detection", () => {
+      it("Playwright CDP iframe (heavy=63, ratio=2.11) → 75", () => {
+        const result = buildMerchantResponse({
+          session_id: "s",
+          integrity: {
+            ...baseIntegrity(),
+            device: {
+              headless: {
+                headlessRating: 0,
+                cdp: {
+                  consoleTiming: {
+                    log_tiny_us: 30,
+                    log_heavy_us: 63,
+                    dir_heavy_us: 54,
+                    heavy_over_tiny: 2.11,
+                  },
+                },
+              },
+            },
+          },
+        });
+        expect(result.automation).toBe(75);
+      });
+
+      it("stubbed iframe (ratio 1.0 / heavy 8) + real-CDP worker (ratio 2.1 / heavy 63) → 75 via per-bench", () => {
+        // The attack model hasBenchDisagreement was designed for: one
+        // bench stubbed near-baseline, the other untouched and showing
+        // CDP. Per-bench fires on the worker (heavy>25). Disagreement
+        // does NOT fire under the new OR-floor rule (iframe is sub-floor)
+        // because the unstubbed side is already caught by per-bench at
+        // heavy=63 — the disagreement check is redundant for this case.
+        const result = buildMerchantResponse({
+          session_id: "s",
+          integrity: {
+            ...baseIntegrity(),
+            device: {
+              headless: {
+                headlessRating: 0,
+                cdp: {
+                  consoleTiming: {
+                    log_tiny_us: 9,
+                    log_heavy_us: 8,
+                    dir_heavy_us: 8,
+                    heavy_over_tiny: 1.0,
+                  },
+                  consoleTimingWorker: {
+                    log_tiny_us: 30,
+                    log_heavy_us: 63,
+                    dir_heavy_us: 54,
+                    heavy_over_tiny: 2.1,
+                  },
+                },
+              },
+            },
+          },
+        });
+        expect(result.automation).toBe(75);
+      });
+    });
+
     it("desktop UA still uses likeHeadlessRating as before", () => {
       const base = baseIntegrity();
       const result = buildMerchantResponse({

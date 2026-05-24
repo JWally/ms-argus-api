@@ -313,6 +313,17 @@ const CEILING_UPLIFT_FLOOR = 0.95;
  *  component at "suspect, not damning" for plausibly-legit ratios. */
 const WEBRTC_MATCH_DAMPER_CAP = 0.3;
 
+/** Console-bench noise floor in microseconds. Below this, `log_heavy_us`
+ *  measurements are dominated by thread-scheduling jitter and clock
+ *  resolution rather than CDP serialization cost. Real-Brave telemetry
+ *  (May 2026, 10 same-machine submissions) showed worker `heavy_over_tiny`
+ *  randomly walking 0.81–2.00 at heavy=4–9µs. The CDP signal we're after
+ *  lives at heavy≈63µs (Playwright CDP baseline) — ratios on sub-floor
+ *  measurements can't discriminate stub-vs-real. Used by `benchTrips`
+ *  to gate the ratio check and by `hasBenchDisagreement` to skip the
+ *  cross-bench compare when both sides are noise. */
+const BENCH_NOISE_FLOOR_US = 10;
+
 /** Unclamped rcv_rtt_refreshed/rtt_refreshed ratio from the TCP probe. Null
  *  when data is missing (legacy records, probe failure). */
 function readRttRatio(input: MerchantProjectionInput): number | null {
@@ -749,9 +760,14 @@ function hasBenchDependencyTamper(t: ConsoleTimingFields): boolean {
  *     independently, so they should agree within ~3µs/call. An attacker
  *     who only patches `Performance.prototype.now` leaves the second
  *     clock untouched and the deltas diverge.
- *   - Ratio / absolute thresholds: `heavy_over_tiny > 1.5` OR
- *     `log_heavy_us > 25`. Real-Chrome empirical baseline 0.79 / 7,
- *     Playwright CDP 2.11 / 63.
+ *   - Ratio / absolute thresholds: `heavy_over_tiny > 1.5` (only when
+ *     `log_heavy_us` is above the BENCH_NOISE_FLOOR; below that the
+ *     ratio is dividing two sub-floor measurements and means nothing —
+ *     real-Brave/Chrome telemetry sees worker ratios randomly walking
+ *     0.8–2.0 at heavy=4–9µs from thread-scheduling jitter alone) OR
+ *     `log_heavy_us > 25` (absolute). Real-Chrome baseline 0.79 / 7,
+ *     Playwright CDP 2.11 / 63. The CDP signal lives at heavy≈63µs;
+ *     anything under 10µs can't discriminate stub-vs-real.
  */
 function benchTrips(t: ConsoleTimingFields): boolean {
   if (hasBenchDependencyTamper(t)) return true;
@@ -761,7 +777,7 @@ function benchTrips(t: ConsoleTimingFields): boolean {
     return true;
   }
   const ratio = t.heavy_over_tiny ?? 0;
-  return ratio > 1.5 || heavy > 25;
+  return (ratio > 1.5 && heavy > BENCH_NOISE_FLOOR_US) || heavy > 25;
 }
 
 /**
@@ -812,6 +828,25 @@ function hasBenchDisagreement(headless: HeadlessSignals | undefined): boolean {
   const iframe = headless?.cdp?.consoleTiming;
   const worker = headless?.cdp?.consoleTimingWorker;
   if (!iframe || !worker) return false;
+  // Magnitude floor: BOTH sides must be above the CDP detection floor for
+  // a ratio disagreement to be meaningful. If either side is sub-floor,
+  // its ratio is noise dividing noise (real-Brave telemetry: worker ratios
+  // randomly walking 0.81–2.00 at heavy=4–9µs from thread-scheduling
+  // jitter alone), and comparing a noise ratio against a real ratio
+  // produces false-positive deltas with no attack signal underneath.
+  //
+  // What we lose: nothing. The attack model — stub one bench to ratio ~1
+  // while leaving the other unstubbed and seeing real CDP — requires the
+  // unstubbed side to actually show CDP overhead (heavy ≥ 25µs). That
+  // case is already caught by `benchTrips` per-bench on the unstubbed
+  // side, regardless of disagreement. This detector's marginal coverage
+  // is for attacks where BOTH sides are above the noise floor but ratios
+  // diverge — that case is preserved.
+  const aHeavy = iframe.log_heavy_us ?? 0;
+  const bHeavy = worker.log_heavy_us ?? 0;
+  if (aHeavy < BENCH_NOISE_FLOOR_US || bHeavy < BENCH_NOISE_FLOOR_US) {
+    return false;
+  }
   const a = iframe.heavy_over_tiny;
   const b = worker.heavy_over_tiny;
   if (typeof a !== "number" || typeof b !== "number") return false;
