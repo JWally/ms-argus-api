@@ -3086,6 +3086,78 @@ describe("buildMerchantResponse", () => {
       expect(result.device_tampering).toBeGreaterThanOrEqual(60);
     });
 
+    it("(E.1) workerOracleMissing=main_only → tampering.probability>=60", () => {
+      // ARGUS_URGENT_FIXES #2: a submission with no worker scopes (or only
+      // main) withholds the cross-thread oracle that catches single-realm
+      // patching. Without other signals, this lifts device_tampering to the
+      // tier-60 ("credible spoof") floor.
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: baseIntegrity({
+          analysis: {
+            ...baseIntegrity().analysis,
+            worker: {
+              lied: true,
+              divergences: [],
+              signals: [
+                {
+                  code: "WORKER_ORACLE_MAIN_ONLY",
+                  severity: 0.6,
+                  evidence: "no dedicated/shared worker scopes shipped",
+                },
+              ],
+            },
+          },
+        }),
+      });
+      expect(result.device_tampering).toBeGreaterThanOrEqual(60);
+    });
+
+    it("(E.2) workerOracleMissing=no_shared → tampering.probability>=25", () => {
+      // Modest penalty: main + dedicated worker shipped, shared absent. Could
+      // be honest older Safari (pre-iOS-16) or an attacker who patched two
+      // realms but not three. Tier 25 reflects the ambiguity.
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: baseIntegrity({
+          analysis: {
+            ...baseIntegrity().analysis,
+            worker: {
+              lied: true,
+              divergences: [],
+              signals: [
+                {
+                  code: "WORKER_ORACLE_NO_SHARED",
+                  severity: 0.25,
+                  evidence:
+                    "main+web scopes present; shared worker scope absent",
+                },
+              ],
+            },
+          },
+        }),
+      });
+      expect(result.device_tampering).toBeGreaterThanOrEqual(25);
+      // Should NOT be tier-60: alone, no_shared is only a minor tell.
+      expect(result.device_tampering).toBeLessThan(60);
+    });
+
+    it("(E.3) workerOracleMissing=false (all three scopes) → no extra penalty", () => {
+      // Control case: complete oracle, no divergences, no other signals.
+      // device_tampering should be 0 from this axis (other axes may still
+      // contribute, but the worker oracle adds nothing).
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: baseIntegrity({
+          analysis: {
+            ...baseIntegrity().analysis,
+            worker: { lied: false, divergences: [], signals: [] },
+          },
+        }),
+      });
+      expect(result.device_tampering).toBe(0);
+    });
+
     it("(F) WEBRTC_BLOCKED on datacenter ASN applies extra 0.5× downgrade", () => {
       const input: MerchantProjectionInput = {
         session_id: "s",

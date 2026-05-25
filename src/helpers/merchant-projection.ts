@@ -1452,6 +1452,15 @@ interface TamperingEvidence {
    *  to boost tampering alongside the automation=100 signal already wired
    *  in `botProbability`. */
   iframeCryptoStuck: boolean;
+  /** Worker-scope cross-check oracle availability. Set by the worker
+   *  analyzer when the client shipped fewer than all three scopes:
+   *    - "main_only": zero worker scopes (or no workerScope object at all)
+   *    - "no_shared": main + dedicated worker present, shared absent
+   *    - false: all three scopes present (no oracle missing)
+   *  See ARGUS_URGENT_FIXES #2. "main_only" feeds tier-60 (credible
+   *  spoof — they withheld the oracle deliberately); "no_shared" feeds
+   *  tier-25 (modest tell, partially compatible with older iOS Safari). */
+  workerOracleMissing: "main_only" | "no_shared" | false;
 }
 
 function readChUaMismatch(integrity: IntegrityResultsData): boolean {
@@ -1691,7 +1700,28 @@ function collectTamperingEvidence(
     kernelOsMismatchHard: kernelSignals.hard && !shielded && !appleRelay,
     kernelOsMismatchSoft: kernelSignals.soft && !shielded && !appleRelay,
     iframeCryptoStuck: hasIframeCryptoStuck(integrity),
+    workerOracleMissing: readWorkerOracleMissing(integrity),
   };
+}
+
+/**
+ * Read the WORKER_ORACLE_* signal (if any) emitted by analysis/worker.
+ * Returns "main_only" when no worker scopes were shipped, "no_shared" when
+ * the dedicated worker is present but the shared worker is absent, and
+ * false when all three scopes are present (oracle is complete; existing
+ * `divergences` count handles the comparison).
+ *
+ * See ARGUS_URGENT_FIXES #2 / `analyzeWorkerScopes` for the rationale.
+ */
+function readWorkerOracleMissing(
+  integrity: IntegrityResultsData,
+): "main_only" | "no_shared" | false {
+  const sigs = integrity.analysis.worker.signals ?? [];
+  if (sigs.some((s) => s.code === "WORKER_ORACLE_MAIN_ONLY"))
+    return "main_only";
+  if (sigs.some((s) => s.code === "WORKER_ORACLE_NO_SHARED"))
+    return "no_shared";
+  return false;
 }
 
 function isDefinitiveTampering(e: TamperingEvidence): boolean {
@@ -1749,7 +1779,15 @@ function hasTier60Signal(e: TamperingEvidence): boolean {
     e.localeTamper ||
     e.tlsUaMismatch ||
     e.browserEngineSoft ||
-    e.kernelOsMismatchSoft
+    e.kernelOsMismatchSoft ||
+    // Worker-scope cross-check oracle entirely missing. A real browser
+    // running our SDK ships all three scopes; shipping only main is a
+    // credible spoof — they withheld the cross-thread oracle that would
+    // otherwise have caught a single-realm patch. iOS Safari pre-16
+    // lacks SharedWorker but still produces a dedicated worker, so the
+    // "main only" case isn't an honest-browser carve-out. See
+    // ARGUS_URGENT_FIXES #2.
+    e.workerOracleMissing === "main_only"
   );
 }
 
@@ -1767,7 +1805,11 @@ function tamperingProbabilityFromEvidence(e: TamperingEvidence): number {
   // TZ location vs IP TZ disagreement — VPN/proxy tell, often benign for
   // travelers but still worth surfacing.
   if (e.tzGeoMismatch) return 35;
-  if (e.lies >= 1) return 25;
+  // Tier 25: minor tells. A submission with main + dedicated worker but no
+  // shared worker is consistent with iOS Safari pre-16 (legit) or with an
+  // attacker who didn't bother spinning up SharedWorker (suspicious but
+  // not damning). Tier 25 reflects the ambiguity. See ARGUS_URGENT_FIXES #2.
+  if (e.lies >= 1 || e.workerOracleMissing === "no_shared") return 25;
   // langGeoCrossContinent / langGeoCrossCountry intentionally do NOT feed
   // device_tampering. en-GB on a US IP and similar accept-language quirks
   // are widespread legitimate user preferences (British-spelling fans,
