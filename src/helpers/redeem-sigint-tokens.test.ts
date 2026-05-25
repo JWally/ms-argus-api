@@ -1,6 +1,9 @@
 import { describe, it, expect, vi } from "vitest";
 import type { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import { redeemSigintTokens } from "./redeem-sigint-tokens";
+import {
+  redeemSigintTokens,
+  isAwsCfAuthenticallyHydrated,
+} from "./redeem-sigint-tokens";
 import { sipHash24 } from "./verify-cf-token";
 import type { ArgusPayload } from "./payload-schema";
 
@@ -200,5 +203,93 @@ describe("redeemSigintTokens (applyTlsJson cookie flags)", () => {
 
     const result = await redeemSigintTokens(payload, ctx());
     expect(result.sigint?.aws_cf).toBeUndefined();
+  });
+});
+
+describe("isAwsCfAuthenticallyHydrated", () => {
+  // Layer-2 gate consults this helper to decide whether aws_cf counts as
+  // "a probe hydrated". A forged sigintTls produces an aws_cf record with
+  // tampered=true; the original `!!sigint?.aws_cf` truthiness check let
+  // that record satisfy the gate and the analyzer scored SAFE via the
+  // proxy_waterfall rule-8 clean fallback. See bots/inline-probe-bypass.mjs
+  // in ms-argus-attack-bots for the PoC.
+
+  it("returns false when aws_cf is absent", () => {
+    expect(isAwsCfAuthenticallyHydrated(undefined)).toBe(false);
+    expect(isAwsCfAuthenticallyHydrated({})).toBe(false);
+  });
+
+  it("returns false when tampered=true (forged SipHash sig)", () => {
+    expect(
+      isAwsCfAuthenticallyHydrated({
+        aws_cf: { tampered: true, expired: false },
+      }),
+    ).toBe(false);
+  });
+
+  it("returns false when expired=true (ts outside ±90s)", () => {
+    expect(
+      isAwsCfAuthenticallyHydrated({
+        aws_cf: { tampered: false, expired: true },
+      }),
+    ).toBe(false);
+  });
+
+  it("returns false when flags are missing (fail-closed default)", () => {
+    // verifyCfToken defaults both to true when it can't verify; if either
+    // flag is anything other than an explicit `false` we treat aws_cf as
+    // not authentically hydrated.
+    expect(isAwsCfAuthenticallyHydrated({ aws_cf: {} })).toBe(false);
+    expect(isAwsCfAuthenticallyHydrated({ aws_cf: { tampered: false } })).toBe(
+      false,
+    );
+    expect(isAwsCfAuthenticallyHydrated({ aws_cf: { expired: false } })).toBe(
+      false,
+    );
+  });
+
+  it("returns true when both flags are explicitly false", () => {
+    expect(
+      isAwsCfAuthenticallyHydrated({
+        aws_cf: { tampered: false, expired: false },
+      }),
+    ).toBe(true);
+  });
+
+  it("end-to-end: forged sigintTls hydrates aws_cf but is NOT authentic", async () => {
+    // Concrete reproduction of the residual bypass. A real CF probe
+    // hydration round-trip through redeemSigintTokens leaves aws_cf
+    // stamped tampered=true; isAwsCfAuthenticallyHydrated returns false
+    // and Layer-2 will reject.
+    const now = Math.floor(Date.now() / 1000);
+    const forged = {
+      ...makeTlsPayload(now),
+      sig: "deadbeefdeadbeef", // overwrite the real sig
+    };
+    const payload: ArgusPayload = {
+      identifiers: { session_id: "s_forged" },
+      sigintTls: JSON.stringify(forged),
+    } as ArgusPayload;
+
+    const result = await redeemSigintTokens(payload, ctx());
+    // aws_cf IS hydrated (applyTlsJson runs unconditionally)
+    expect(result.sigint?.aws_cf).toBeDefined();
+    expect((result.sigint?.aws_cf as Record<string, unknown>).tampered).toBe(
+      true,
+    );
+    // …but the Layer-2 helper says it doesn't count
+    expect(isAwsCfAuthenticallyHydrated(result.sigint)).toBe(false);
+  });
+
+  it("end-to-end: valid sigintTls IS authentic", async () => {
+    const now = Math.floor(Date.now() / 1000);
+    const valid = makeTlsPayload(now);
+    const payload: ArgusPayload = {
+      identifiers: { session_id: "s_valid" },
+      sigintTls: JSON.stringify(valid),
+    } as ArgusPayload;
+
+    const result = await redeemSigintTokens(payload, ctx());
+    expect(isAwsCfAuthenticallyHydrated(result.sigint)).toBe(true);
   });
 });

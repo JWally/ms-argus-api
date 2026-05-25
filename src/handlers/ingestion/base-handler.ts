@@ -21,7 +21,10 @@ import {
   resolveCpi,
   type ArgusPayload,
 } from "../../helpers/payload-schema";
-import { redeemSigintTokens } from "../../helpers/redeem-sigint-tokens";
+import {
+  redeemSigintTokens,
+  isAwsCfAuthenticallyHydrated,
+} from "../../helpers/redeem-sigint-tokens";
 import { redeemPatToken } from "../../helpers/redeem-pat-token";
 import { CpiMerchantResolver } from "../../helpers/cpi-merchant-resolver";
 import { extractFpidCookie } from "../../helpers/verify-cf-token";
@@ -182,10 +185,20 @@ async function hydrateSigint(
   // every authoritative field was either absent, forged, replayed, or
   // mismatched-IP. A real SDK execution always redeems all three. Reject
   // here rather than write a row that will analyze as clean-by-omission.
+  //
+  // aws_cf is special: applyTlsJson writes it for any parseable sigintTls
+  // (stamping tampered/expired flags when the SipHash sig fails). A bare
+  // `!!sigint?.aws_cf` therefore accepts a record the server already
+  // flagged as forged — fully-junk sigintTcp/H2 tokens + a forged
+  // sigintTls would pass this gate and analyze SAFE via the
+  // proxy_waterfall rule-8 (ratio:null) clean fallback. Consult the
+  // flags via isAwsCfAuthenticallyHydrated so only a verified CF probe
+  // counts. tcp_probe / h2 are set ONLY after HMAC verification in
+  // redeem-sigint-tokens, so truthiness is sufficient there.
   const anyHydrated =
     !!hydrated.sigint?.tcp_probe ||
     !!hydrated.sigint?.h2 ||
-    !!hydrated.sigint?.aws_cf;
+    isAwsCfAuthenticallyHydrated(hydrated.sigint);
   if (!anyHydrated) {
     deps.metrics.addMetric("SigintRedeemAllFailed", MetricUnit.Count, 1);
     throw new HttpError(400, "sigint probe redemption failed");

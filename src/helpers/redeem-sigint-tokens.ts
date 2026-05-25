@@ -357,3 +357,28 @@ export async function redeemSigintTokens(
     sigint: Object.keys(sigint).length > 0 ? sigint : undefined,
   };
 }
+
+/**
+ * Does this aws_cf record represent a real CF-probe attestation, or only a
+ * forged/expired blob that `applyTlsJson` parsed and flagged?
+ *
+ * The CF probe writes `tampered=false, expired=false` only when the SipHash
+ * sig over `id|issuedAt|ip|asn|ts` matches and `ts` is inside the ±90s
+ * freshness window. A forged `sigintTls` string (anything else parseable)
+ * still produces an `aws_cf` object — but with `tampered=true` and/or
+ * `expired=true`.
+ *
+ * Layer 2 in `base-handler.hydrateSigint` uses this to count hydrated
+ * probes. A `!!sigint?.aws_cf` truthiness check is NOT enough: it accepts
+ * a record the server itself just flagged as forged, and the analyzer
+ * then falls through to a clean verdict on the absent tcp/h2 evidence.
+ */
+export function isAwsCfAuthenticallyHydrated(
+  sigint: ArgusPayload["sigint"],
+): boolean {
+  const cf = sigint?.aws_cf;
+  if (!cf) return false;
+  // verifyCfToken defaults both flags to true (fail-closed) when it can't
+  // verify; treat anything other than an explicit `false` as untrusted.
+  return cf.tampered === false && cf.expired === false;
+}
