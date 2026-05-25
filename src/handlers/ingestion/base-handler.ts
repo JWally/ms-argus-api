@@ -25,6 +25,7 @@ import {
   redeemSigintTokens,
   isAwsCfAuthenticallyHydrated,
 } from "../../helpers/redeem-sigint-tokens";
+import { claimStunNonce } from "../../helpers/stun-nonce-tracker";
 import { redeemPatToken } from "../../helpers/redeem-pat-token";
 import { CpiMerchantResolver } from "../../helpers/cpi-merchant-resolver";
 import { extractFpidCookie } from "../../helpers/verify-cf-token";
@@ -493,6 +494,40 @@ function buildPatFields(hydratedPayload: ArgusPayload): {
   return out;
 }
 
+/**
+ * Single-use enforcement for STUN attestation candidates. The sigint
+ * STUN server's HMAC binds (clientIPv4, epoch, nonce) — not session_id —
+ * so a captured candidate is replayable across sessions for the 300s
+ * freshness window unless the API enforces consume-on-use. See
+ * stun-nonce-tracker for the (deliberate) multi-container caveat.
+ *
+ * No-op when no candidate decoded (`reason !== "ok"`); analyzer already
+ * has contingencies for that path. Throws HttpError(409) on cross-session
+ * reclaim — same shape as the existing session-replay block.
+ */
+function enforceStunCandidateSingleUse(
+  webrtcSigint: SigintCandidateDecodeResult,
+  ctx: HandleContext,
+): void {
+  if (webrtcSigint.reason !== "ok" || !webrtcSigint.decoded) return;
+  const claim = claimStunNonce(
+    webrtcSigint.decoded.cipherB64,
+    ctx.sessionId,
+    ctx.cpi,
+    webrtcSigint.decoded.ip,
+  );
+  if (claim.accepted) return;
+  ctx.deps.metrics.addMetric("WebrtcStunReplay", MetricUnit.Count, 1);
+  ctx.deps.logger.warn("WebRTC STUN candidate replay rejected", {
+    session_id: ctx.sessionId,
+    cpi: ctx.cpi,
+    attested_ip: webrtcSigint.decoded.ip,
+    first_claimed_by: claim.firstClaimedBy.sessionId,
+    first_claimed_at: claim.firstClaimedBy.claimedAt,
+  });
+  throw new HttpError(409, "webrtc attestation already redeemed");
+}
+
 function buildIntegrityItem(
   ctx: HandleContext,
   hydratedPayload: ArgusPayload,
@@ -511,6 +546,7 @@ function buildIntegrityItem(
     raw.device,
     process.env.SIGINT_AES_KEY,
   );
+  enforceStunCandidateSingleUse(webrtcSigint, ctx);
   const webrtcSigintField = buildWebrtcSigintField(webrtcSigint);
   const requestHeaders = captureRequestHeaders(ctx.event);
 
