@@ -190,6 +190,7 @@ describe("buildWebrtcSigintField", () => {
         nonce: "deadbeef",
         macValid: true,
         fresh: true,
+        cipherB64: "AAECAwQFBgcICQoLDA0ODw==",
       },
       candidateCount: 1,
       reason: "ok",

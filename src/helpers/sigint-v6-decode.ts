@@ -32,6 +32,14 @@ export interface DecodedV6Payload {
   nonce: string;
   macValid: boolean;
   fresh: boolean;
+  /**
+   * Base64 of the original 16-byte ciphertext. Stable across encodings
+   * (this is what arrived on the wire) — used as the canonical key for
+   * single-use enforcement in stun-nonce-tracker. AES-128-ECB output is
+   * uniformly random over 2^128, so collisions across distinct
+   * attestations are effectively impossible.
+   */
+  cipherB64: string;
 }
 
 interface DerivedKeys {
@@ -104,6 +112,7 @@ export function decodeV6Payload(
     nonce,
     macValid,
     fresh: macValid && Math.abs(ageSec) <= FRESH_WINDOW_SECONDS,
+    cipherB64: ciphertext.toString("base64"),
   };
 }
 
