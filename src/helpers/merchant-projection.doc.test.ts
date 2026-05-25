@@ -337,12 +337,21 @@ describe("§3 — automation axis", () => {
     // Same likeHeadlessRating=50 as above, but with iPhone UA → automation 0.
     // Real iPhones look "headless-y" by desktop standards (no plugins, no
     // chrome runtime, no taskbar). Penalizing them for that would block
-    // every legit iPhone visitor.
+    // every legit iPhone visitor. PAT included because real iPhone Safari
+    // ships one (see PAT score enforcement in §3); without PAT the
+    // apple_attestation_missing penalty would add +25 here.
     const base = cleanSession();
     const r = project({
       ...base,
       user_agent:
         "Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.7 Mobile/15E148 Safari/604.1",
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      pat: {
+        attested: true,
+        issuer: "demo-issuer.private-access-tokens.fastly.com",
+        tokenHash: "abc",
+        redeemedAt: 1_700_000_000_000,
+      } as any,
       device: {
         headless: {
           headlessRating: 0,
@@ -982,6 +991,13 @@ describe("§9 — end-to-end realistic scenarios", () => {
       cleanSession({
         user_agent:
           "Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.7 Mobile/15E148 Safari/604.1",
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        pat: {
+          attested: true,
+          issuer: "demo-issuer.private-access-tokens.fastly.com",
+          tokenHash: "abc",
+          redeemedAt: 1_700_000_000_000,
+        } as any,
         analysis: {
           ...cleanSession().analysis,
           ip: {

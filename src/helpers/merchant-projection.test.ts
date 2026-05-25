@@ -815,6 +815,92 @@ describe("buildMerchantResponse", () => {
       expect(result.tags).not.toContain("apple_attestation_missing");
     });
 
+    describe("PAT score enforcement (applyPatAdjustment)", () => {
+      const iphoneSafariUA =
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.5 Mobile/15E148 Safari/604.1";
+      const validPat = {
+        attested: true,
+        issuer: "demo-issuer.private-access-tokens.fastly.com",
+        tokenHash: "abc",
+        redeemedAt: 1_700_000_000_000,
+      };
+
+      it("valid PAT caps a soft automation score at 25", () => {
+        // likeHeadlessRating 50 on desktop normally → automation 50.
+        // PAT-valid caps it at 25 (suspect tier, not block).
+        const base = baseIntegrity();
+        const result = buildMerchantResponse({
+          session_id: "s",
+          integrity: {
+            ...base,
+            user_agent: iphoneSafariUA,
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            pat: validPat as any,
+            device: {
+              headless: {
+                headlessRating: 0,
+                likeHeadlessRating: 50,
+                stealthRating: 0,
+              },
+            },
+          },
+        });
+        // Without PAT cap, this would be 50 (or with iPhone mobile carve-out
+        // would zero out anyway). With PAT it's capped at 25.
+        expect(result.automation).toBeLessThanOrEqual(25);
+      });
+
+      it("valid PAT does NOT rescue webdriver=true (hard strict marker)", () => {
+        // Real Apple hardware can still run WebDriver. PAT proves the
+        // device, not the behavior. Hard tier (>= 75) passes through.
+        const base = baseIntegrity();
+        const result = buildMerchantResponse({
+          session_id: "s",
+          integrity: {
+            ...base,
+            user_agent: iphoneSafariUA,
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            pat: validPat as any,
+            device: {
+              headless: {
+                headlessRating: 100,
+                headless: { webDriverIsOn: true, hasHeadlessUA: true },
+              },
+            },
+          },
+        });
+        expect(result.automation).toBe(100);
+      });
+
+      it("iOS Safari without PAT penalizes automation by +25", () => {
+        // Clean iPhone-claimed session → botProbability ≈ 0. PAT-missing
+        // penalty pushes to 25 — surfaces as suspect, not block.
+        const base = baseIntegrity();
+        const result = buildMerchantResponse({
+          session_id: "s",
+          integrity: { ...base, user_agent: iphoneSafariUA },
+        });
+        expect(result.automation).toBe(25);
+        expect(result.tags).toContain("apple_attestation_missing");
+      });
+
+      it("non-Apple UA without PAT is NOT penalized (fail-open)", () => {
+        // Firefox/Linux has no platform PAT primitive — absence is
+        // expected, must not contribute to automation.
+        const base = baseIntegrity();
+        const result = buildMerchantResponse({
+          session_id: "s",
+          integrity: {
+            ...base,
+            user_agent:
+              "Mozilla/5.0 (X11; Linux x86_64; rv:150.0) Gecko/20100101 Firefox/150.0",
+          },
+        });
+        expect(result.automation).toBe(0);
+        expect(result.tags).not.toContain("apple_attestation_missing");
+      });
+    });
+
     it("automation is 100 when all 3 strict markers fire (headlessRating 100)", () => {
       const base = baseIntegrity();
       const result = buildMerchantResponse({
@@ -1070,7 +1156,10 @@ describe("buildMerchantResponse", () => {
     it("mobile carve-out: iPhone UA zeroes likeHeadlessRating contribution", () => {
       // Real-world floor on iPhone Safari: noTaskbar, noPlugins, blank UA-CH
       // are legitimately absent and otherwise produce likeHeadlessRating ≈ 9
-      // → rounds to automation 10 on every real iPhone visitor.
+      // → rounds to automation 10 on every real iPhone visitor. PAT is
+      // included because real iPhone Safari ships one — see PAT score
+      // enforcement (`applyPatAdjustment`); a real iPhone WITHOUT PAT is a
+      // different scenario covered by the apple_attestation_missing tests.
       const base = baseIntegrity();
       const result = buildMerchantResponse({
         session_id: "s",
@@ -1078,6 +1167,13 @@ describe("buildMerchantResponse", () => {
           ...base,
           user_agent:
             "Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.5 Mobile/15E148 Safari/604.1",
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          pat: {
+            attested: true,
+            issuer: "demo-issuer.private-access-tokens.fastly.com",
+            tokenHash: "abc",
+            redeemedAt: 1_700_000_000_000,
+          } as any,
           device: {
             headless: {
               headlessRating: 0,
@@ -1807,8 +1903,13 @@ describe("buildMerchantResponse", () => {
         session_id: "s",
         integrity: {
           ...base,
+          // Firefox/Linux rather than macOS Safari: this test is about the
+          // absence of the mobile carve-out, not the PAT score path. macOS
+          // Safari without PAT now correctly trips the apple_attestation_missing
+          // penalty (separate coverage); using a non-Apple UA isolates the
+          // mobile-vs-desktop behavior under test.
           user_agent:
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15",
+            "Mozilla/5.0 (X11; Linux x86_64; rv:150.0) Gecko/20100101 Firefox/150.0",
           device: {
             headless: {
               headlessRating: 0,
