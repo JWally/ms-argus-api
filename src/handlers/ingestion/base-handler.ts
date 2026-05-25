@@ -176,8 +176,24 @@ async function hydrateSigint(
     });
     deps.metrics.addMetric("IntegritySigintRedeemed", MetricUnit.Count, 1);
   } catch (err) {
-    deps.logger.warn("Sigint token redemption failed", { error: err });
-    return payload;
+    // Refuse the request rather than fall back to the *original* payload.
+    // Returning `payload` here would silently restore the attacker-controlled
+    // inline `sigint.tcp_probe` / `sigint.h2` / `sigint.aws_cf` blobs that
+    // Layer-1 strips inside redeemSigintTokens. Layer-2's anyHydrated check
+    // would then see those inline objects as "hydrated" and let the row
+    // through. Any throw out of redeemSigintTokens (DDB throttle, AWS SDK
+    // transient, unexpected crypto error) is therefore a structural reopen
+    // of ARGUS_URGENT_FIXES finding #1. 503 is the right semantic: this is
+    // server-side transient unavailability, not a client error, so retries
+    // are appropriate.
+    deps.logger.warn(
+      "Sigint token redemption threw — refusing rather than green-lighting original payload",
+      {
+        error: err,
+      },
+    );
+    deps.metrics.addMetric("SigintHydrationError", MetricUnit.Count, 1);
+    throw new HttpError(503, "sigint verification temporarily unavailable");
   }
 
   // Layer 2: require at least one probe to redeem successfully. Combined
