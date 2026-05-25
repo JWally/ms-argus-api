@@ -156,6 +156,36 @@ const UA_HEADER = "user-agent";
 const XFF_HEADER = "x-forwarded-for";
 
 /**
+ * Validate that the sigint verification env is configured. Missing env
+ * has the same Layer-1-bypass property as the catch arm below — if we
+ * skip redeemSigintTokens we skip its inline-data strip and inline
+ * attacker blobs would survive to Layer-2's anyHydrated check. Refuse
+ * with 503 rather than fall back to the original payload. Distinct
+ * metric (SigintNotConfigured) so ops can alert at zero threshold —
+ * unlike SigintHydrationError, this should never be non-zero in a
+ * healthy deployment.
+ */
+function requireSigintEnv(deps: BaseHandlerDeps): {
+  sigintAesKey: string;
+  probeTokensTable: string;
+} {
+  const sigintAesKey = process.env.SIGINT_AES_KEY;
+  const probeTokensTable = process.env.PROBE_TOKENS_TABLE_NAME;
+  if (sigintAesKey && probeTokensTable) {
+    return { sigintAesKey, probeTokensTable };
+  }
+  deps.logger.error(
+    "Sigint env not configured — refusing rather than green-lighting original payload",
+    {
+      sigintAesKeyPresent: !!sigintAesKey,
+      probeTokensTablePresent: !!probeTokensTable,
+    },
+  );
+  deps.metrics.addMetric("SigintNotConfigured", MetricUnit.Count, 1);
+  throw new HttpError(503, "sigint verification not configured");
+}
+
+/**
  * Exported for unit testing of the catch arm — the "throw out of
  * redeemSigintTokens means refuse with 503, not silently fall back to
  * the original payload" semantic is structurally important and worth
@@ -167,9 +197,7 @@ export async function hydrateSigint(
   deps: BaseHandlerDeps,
   event: ExtendedEvent,
 ): Promise<ArgusPayload> {
-  const sigintAesKey = process.env.SIGINT_AES_KEY;
-  const probeTokensTable = process.env.PROBE_TOKENS_TABLE_NAME;
-  if (!sigintAesKey || !probeTokensTable) return payload;
+  const { sigintAesKey, probeTokensTable } = requireSigintEnv(deps);
 
   let hydrated: ArgusPayload;
   try {

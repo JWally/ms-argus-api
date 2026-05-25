@@ -162,6 +162,66 @@ describe("hydrateSigint catch arm — ARGUS_URGENT_FIXES #4 layer-1-bypass", () 
     expect(warnArgs[0]).toContain("Sigint token redemption threw");
   });
 
+  it("throws HttpError(503) when SIGINT_AES_KEY env var is missing", async () => {
+    // Misconfiguration trigger: same structural bypass as the catch arm
+    // (Layer-1 strip never runs → inline attacker data would survive). Refuse
+    // rather than fall back to original payload.
+    delete process.env.SIGINT_AES_KEY;
+    const deps = { logger: mockLogger, metrics: mockMetrics };
+    let caught: unknown;
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await hydrateSigint(makePayload(), deps, makeEvent() as any);
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(HttpError);
+    expect((caught as HttpError).statusCode).toBe(503);
+    expect((caught as HttpError).message).toBe(
+      "sigint verification not configured",
+    );
+  });
+
+  it("throws HttpError(503) when PROBE_TOKENS_TABLE_NAME env var is missing", async () => {
+    delete process.env.PROBE_TOKENS_TABLE_NAME;
+    const deps = { logger: mockLogger, metrics: mockMetrics };
+    await expect(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      hydrateSigint(makePayload(), deps, makeEvent() as any),
+    ).rejects.toThrow(HttpError);
+  });
+
+  it("emits SigintNotConfigured metric (distinct from SigintHydrationError)", async () => {
+    // Ops alerts on this one should fire on ANY non-zero count — it means
+    // the deploy is misconfigured. Distinct metric from SigintHydrationError
+    // (the transient catch case) so the alarms can be tuned differently.
+    delete process.env.SIGINT_AES_KEY;
+    const deps = { logger: mockLogger, metrics: mockMetrics };
+    await expect(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      hydrateSigint(makePayload(), deps, makeEvent() as any),
+    ).rejects.toThrow();
+
+    const metricNames = vi
+      .mocked(mockMetrics.addMetric)
+      .mock.calls.map((c) => c[0]);
+    expect(metricNames).toContain("SigintNotConfigured");
+    expect(metricNames).not.toContain("SigintHydrationError");
+  });
+
+  it("does NOT return the original payload when env is missing (structural fix)", async () => {
+    delete process.env.PROBE_TOKENS_TABLE_NAME;
+    const deps = { logger: mockLogger, metrics: mockMetrics };
+    let returned: ArgusPayload | null = null;
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      returned = await hydrateSigint(makePayload(), deps, makeEvent() as any);
+    } catch {
+      // expected
+    }
+    expect(returned).toBeNull();
+  });
+
   it("happy path: when redeemSigintTokens resolves, hydrateSigint runs through (sanity)", async () => {
     // Layer-2's anyHydrated check will throw HttpError(400) because the
     // mock returns a payload with no hydrated probes, but the IMPORTANT
