@@ -324,6 +324,16 @@ const WEBRTC_MATCH_DAMPER_CAP = 0.3;
  *  cross-bench compare when both sides are noise. */
 const BENCH_NOISE_FLOOR_US = 10;
 
+/** Absolute `log_heavy_us` threshold above which we treat the bench as
+ *  CDP-attached regardless of the ratio. Was 25µs; raised to 50µs after
+ *  a real Android Chrome session (May 2026) tripped at heavy=27.2µs —
+ *  same device 9 min earlier had measured 16.8µs, so the worker bench
+ *  on real mobile Chrome roams the high-20s naturally. The Playwright
+ *  CDP baseline is heavy≈63µs (see BENCH_NOISE_FLOOR_US docstring),
+ *  so 50 keeps ~13µs of headroom on the CDP side and ~20µs of margin
+ *  against the highest mobile-Chrome reading we've seen. */
+const BENCH_HEAVY_ABS_US = 50;
+
 /** Unclamped rcv_rtt_refreshed/rtt_refreshed ratio from the TCP probe. Null
  *  when data is missing (legacy records, probe failure). */
 function readRttRatio(input: MerchantProjectionInput): number | null {
@@ -765,9 +775,12 @@ function hasBenchDependencyTamper(t: ConsoleTimingFields): boolean {
  *     ratio is dividing two sub-floor measurements and means nothing —
  *     real-Brave/Chrome telemetry sees worker ratios randomly walking
  *     0.8–2.0 at heavy=4–9µs from thread-scheduling jitter alone) OR
- *     `log_heavy_us > 25` (absolute). Real-Chrome baseline 0.79 / 7,
- *     Playwright CDP 2.11 / 63. The CDP signal lives at heavy≈63µs;
- *     anything under 10µs can't discriminate stub-vs-real.
+ *     `log_heavy_us > BENCH_HEAVY_ABS_US` (absolute). Real-Chrome
+ *     baseline 0.79 / 7, Playwright CDP 2.11 / 63. The CDP signal
+ *     lives at heavy≈63µs; anything under 10µs can't discriminate
+ *     stub-vs-real. See BENCH_HEAVY_ABS_US for why the absolute
+ *     threshold is 50 (not the original 25 — that FP'd real
+ *     mobile Chrome).
  */
 function benchTrips(t: ConsoleTimingFields): boolean {
   if (hasBenchDependencyTamper(t)) return true;
@@ -777,7 +790,9 @@ function benchTrips(t: ConsoleTimingFields): boolean {
     return true;
   }
   const ratio = t.heavy_over_tiny ?? 0;
-  return (ratio > 1.5 && heavy > BENCH_NOISE_FLOOR_US) || heavy > 25;
+  return (
+    (ratio > 1.5 && heavy > BENCH_NOISE_FLOOR_US) || heavy > BENCH_HEAVY_ABS_US
+  );
 }
 
 /**

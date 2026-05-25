@@ -1156,9 +1156,12 @@ describe("buildMerchantResponse", () => {
       expect(result.automation).toBe(75);
     });
 
-    it("CDP timing: log_heavy_us above 25 → automation 75 even with ratio near 1", () => {
+    it("CDP timing: log_heavy_us above absolute threshold → automation 75 even with ratio near 1", () => {
       // Edge case: muted ratio (busy CPU during bench) but absolute
       // heavy-object time still implausibly slow for a real user.
+      // Uses 55µs to exceed BENCH_HEAVY_ABS_US (50) — anything below
+      // that floor is in the range real mobile Chrome reaches under
+      // thermal or scheduler noise (we've seen 27µs on a real Pixel).
       const base = baseIntegrity();
       const result = buildMerchantResponse({
         session_id: "s",
@@ -1169,9 +1172,9 @@ describe("buildMerchantResponse", () => {
               headlessRating: 0,
               cdp: {
                 consoleTiming: {
-                  log_tiny_us: 28,
-                  log_heavy_us: 35,
-                  dir_heavy_us: 32,
+                  log_tiny_us: 44,
+                  log_heavy_us: 55,
+                  dir_heavy_us: 52,
                   heavy_over_tiny: 1.25,
                 },
               },
@@ -1180,6 +1183,44 @@ describe("buildMerchantResponse", () => {
         },
       });
       expect(result.automation).toBe(75);
+    });
+
+    it("CDP timing: real Android Chrome worker bench at heavy=27µs does not flag", () => {
+      // Regression: same physical phone scanned the pair captcha twice,
+      // 9 min apart. First scan worker bench reported log_heavy_us=16.8;
+      // second reported 27.2 — pure scheduler/cache noise. The old
+      // absolute threshold (25µs) caught the second one and the merchant
+      // saw automation=75 → block. BENCH_HEAVY_ABS_US=50 puts honest
+      // mobile readings comfortably below the trip line.
+      const base = baseIntegrity();
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: {
+          ...base,
+          device: {
+            headless: {
+              headlessRating: 0,
+              cdp: {
+                consoleTiming: {
+                  log_tiny_us: 29.4,
+                  log_heavy_us: 24,
+                  tl_heavy_us: 24,
+                  dir_heavy_us: 27.4,
+                  heavy_over_tiny: 0.82,
+                },
+                consoleTimingWorker: {
+                  log_tiny_us: 28.1,
+                  log_heavy_us: 27.2,
+                  tl_heavy_us: 27,
+                  dir_heavy_us: 19.3,
+                  heavy_over_tiny: 0.97,
+                },
+              },
+            },
+          },
+        },
+      });
+      expect(result.automation).toBe(0);
     });
 
     it("CDP timing: real-Chrome ratio (0.79) does not flag", () => {
