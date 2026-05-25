@@ -974,6 +974,66 @@ function hasIframeCryptoStuck(
 }
 
 /**
+ * Pristine-iframe lift state compromised. Distinct from `hasIframeCryptoStuck`
+ * above:
+ *
+ *   - `hasIframeCryptoStuck` fires on `iframe_created: true && responsive:
+ *     false` — iframe was constructable but its WebCrypto thread orphaned
+ *     (Marionette/Camoufox signature).
+ *   - This predicate fires on the SDK-side `pristine` lift state shipped
+ *     in `device.status.pristine` (ms-argus-web-integrity PR #23). The
+ *     SDK's bytecode unpack SHA-256, AES-GCM IV generation, payload
+ *     sessionToken, attestation envelope stringify, SIGN_BYTES, and
+ *     incoming attest-payload parse ALL route through pristine refs
+ *     lifted from a nested hidden iframe. If iframe construction fails,
+ *     each of those callsites silently falls back to top-level globals
+ *     which a page-realm attacker can then freely hook.
+ *
+ * Two failure shapes both score the same:
+ *
+ *  1. Honest admission — `pristine.lifted === false`. The lift code's
+ *     try/catch swallowed the failure and reported it. Either an attacker
+ *     hooked `document.createElement('iframe')` /
+ *     `HTMLIFrameElement.prototype.contentWindow` / `Element.prototype.
+ *     attachShadow` to break iframe construction, or the environment
+ *     legitimately blocks iframes (sandboxed webview, restrictive CSP,
+ *     very early page lifecycle).
+ *
+ *  2. Forged claim — `pristine.lifted === true` but
+ *     `getRandomValuesNativeSource === null`. A real successful lift
+ *     ALWAYS populates the RNG source snapshot (RNG is universal across
+ *     browsers; the snapshot comes from `Function.prototype.toString.call
+ *     (unboundFn)` inside the iframe realm). Missing snapshot with
+ *     claimed lift = the `lifted` field itself was tampered. The
+ *     `randomUUIDNativeSource` is allowed to be null (older browsers
+ *     without `Crypto.randomUUID`) — only the RNG snapshot is required.
+ *
+ * Returns false when the `pristine` field is entirely absent — pre-PR-23
+ * legacy bundles don't ship it and shouldn't be penalized.
+ */
+function hasPristineLiftCompromised(
+  integrity: IntegrityResultsData | undefined,
+): boolean {
+  const p = (
+    integrity?.device as
+      | {
+          status?: {
+            pristine?: {
+              lifted?: boolean;
+              getRandomValuesNativeSource?: string | null;
+              randomUUIDNativeSource?: string | null;
+            };
+          };
+        }
+      | undefined
+  )?.status?.pristine;
+  if (!p) return false; // legacy bundle, not present in payload
+  if (p.lifted === false) return true; // honest admission
+  // Forged: lift claimed but the required snapshot is missing.
+  return p.lifted === true && p.getRandomValuesNativeSource === null;
+}
+
+/**
  * Automation score. Tiered checks, MAX WINS (composes, doesn't short-circuit):
  *   1. STRICT markers (`headlessRating`) — webdriver / headless UA /
  *      headless worker UA. Each is unambiguous on its own — no legitimate
@@ -1034,6 +1094,23 @@ function cdpAutomationScore(
   // on its own, because the "clean" side is the stub.
   if (hasBenchDisagreement(headless)) return 75;
   if (hasSoftCdpResidue(headless)) return 75;
+  // Pristine-iframe lift state. The SDK's bytecode unpack, AES-GCM IV
+  // generation, session token, signing envelope, etc. all route through
+  // pristine refs lifted from a nested hidden iframe. If iframe
+  // construction fails — most commonly because an attacker hooked
+  // `document.createElement('iframe')` or `HTMLIFrameElement.prototype.
+  // contentWindow` via addInitScript to neutralize the pristine-routed
+  // hardening — every one of those calls silently falls back to top-level
+  // globals which the attacker can then freely hook. Catches both the
+  // honest admission (`pristine.lifted: false`) and the forged claim
+  // (`lifted: true` with the required source snapshots missing — a real
+  // lift always populates getRandomValuesNativeSource). False-positive
+  // surface: some sandboxed webviews / CSP-restricted embeds legitimately
+  // fail iframe lift, so we score at 75 (not 100) and leave room to
+  // recalibrate once we have empirical baseline rates. Most attackers
+  // won't try this trick, but the ones who do trivially nullify every
+  // pristine-routed defense — lock-on-the-door tier signal.
+  if (hasPristineLiftCompromised(input.integrity)) return 75;
   return 0;
 }
 

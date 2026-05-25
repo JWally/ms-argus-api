@@ -888,6 +888,122 @@ describe("buildMerchantResponse", () => {
       expect(result.automation).toBe(100);
     });
 
+    it("pristine lift admission: lifted=false → automation 75", () => {
+      // The SDK reports lifted=false when its nested-iframe pristine-ref
+      // module couldn't construct an iframe at module init. The common
+      // attacker path is hooking document.createElement('iframe') via
+      // addInitScript so every SDK call that "uses pristine" silently
+      // falls back to top-level globals — which the attacker has hooked.
+      // Score below the iframeCryptoStuck 100 tier because legitimate
+      // sandboxed/CSP environments can also produce this. Lock-on-the-door
+      // tier; refine with empirical data.
+      const base = baseIntegrity();
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: {
+          ...base,
+          device: {
+            status: {
+              pristine: {
+                lifted: false,
+                getRandomValuesNativeSource: null,
+                randomUUIDNativeSource: null,
+              },
+            },
+          } as IntegrityResultsData["device"],
+        },
+      });
+      expect(result.automation).toBe(75);
+    });
+
+    it("pristine lift forged: lifted=true but RNG snapshot missing → automation 75", () => {
+      // A real successful lift always populates getRandomValuesNativeSource
+      // (RNG is universal). If the client claims lifted=true but the
+      // snapshot is null, the lifted field itself was tampered to hide
+      // the fallback. Same score as honest admission — the attempt to
+      // hide is itself the signal.
+      const base = baseIntegrity();
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: {
+          ...base,
+          device: {
+            status: {
+              pristine: {
+                lifted: true,
+                getRandomValuesNativeSource: null,
+                randomUUIDNativeSource: null,
+              },
+            },
+          } as IntegrityResultsData["device"],
+        },
+      });
+      expect(result.automation).toBe(75);
+    });
+
+    it("pristine lift clean: lifted=true with RNG snapshot present → no automation", () => {
+      // The healthy path. RNG snapshot populated as expected.
+      const base = baseIntegrity();
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: {
+          ...base,
+          device: {
+            status: {
+              pristine: {
+                lifted: true,
+                getRandomValuesNativeSource:
+                  "function getRandomValues() { [native code] }",
+                randomUUIDNativeSource:
+                  "function randomUUID() { [native code] }",
+              },
+            },
+          } as IntegrityResultsData["device"],
+        },
+      });
+      expect(result.automation).toBe(0);
+    });
+
+    it("pristine lift clean on older browser: lifted=true, RNG present, UUID absent → no automation", () => {
+      // Older browsers without Crypto.randomUUID legitimately leave the
+      // randomUUIDNativeSource null. Only the RNG snapshot is required
+      // for a real lift.
+      const base = baseIntegrity();
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: {
+          ...base,
+          device: {
+            status: {
+              pristine: {
+                lifted: true,
+                getRandomValuesNativeSource:
+                  "function getRandomValues() { [native code] }",
+                randomUUIDNativeSource: null,
+              },
+            },
+          } as IntegrityResultsData["device"],
+        },
+      });
+      expect(result.automation).toBe(0);
+    });
+
+    it("pristine field absent (pre-PR-23 legacy bundle) → no automation penalty", () => {
+      // Sessions from SDK versions before the lift signal was wired
+      // don't include device.status.pristine at all. Don't penalize.
+      const base = baseIntegrity();
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: {
+          ...base,
+          device: {
+            status: {},
+          } as IntegrityResultsData["device"],
+        },
+      });
+      expect(result.automation).toBe(0);
+    });
+
     it("automation is 100 when any single strict marker fires (webdriver alone)", () => {
       // Playwright Firefox / Webkit case — sets navigator.webdriver but
       // doesn't change UA. A single strict marker is on its own
