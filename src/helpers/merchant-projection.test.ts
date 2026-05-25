@@ -2698,6 +2698,69 @@ describe("buildMerchantResponse", () => {
     });
   });
 
+  describe("ip_scatter penalty (Layer 5)", () => {
+    function withScatter(
+      severity: number,
+      network_class: string | null = null,
+    ) {
+      const base = baseIntegrity();
+      return {
+        session_id: "s",
+        integrity: baseIntegrity({
+          analysis: {
+            ...base.analysis,
+            ip: {
+              ...base.analysis.ip,
+              asn: {
+                ...base.analysis.ip.asn,
+                network_class,
+              } as typeof base.analysis.ip.asn,
+              signals: [
+                {
+                  code: "IP_PROBE_SCATTER",
+                  severity,
+                  evidence: "2 distinct: 1.2.3.4, 8.8.8.8",
+                },
+              ],
+            },
+          },
+        }),
+      } as MerchantProjectionInput;
+    }
+
+    it("lifts network_tampering to 60 when IP_PROBE_SCATTER fires at severity 0.6", () => {
+      const result = buildMerchantResponse(withScatter(0.6));
+      expect(result.network_tampering).toBe(60);
+      expect(result.verdict).toBe("suspect");
+    });
+
+    it("lifts network_tampering to 80 when IP_PROBE_SCATTER fires at severity 0.8 (blocks)", () => {
+      const result = buildMerchantResponse(withScatter(0.8));
+      expect(result.network_tampering).toBe(80);
+      expect(result.verdict).toBe("block");
+    });
+
+    it("suppresses penalty on mobile network_class (CGNAT scatter is benign)", () => {
+      const result = buildMerchantResponse(withScatter(0.8, "mobile"));
+      expect(result.network_tampering).toBe(0);
+      expect(result.verdict).toBe("clean");
+    });
+
+    it("suppresses penalty on security_filter network_class (corporate shield)", () => {
+      const result = buildMerchantResponse(withScatter(0.8, "security_filter"));
+      expect(result.network_tampering).toBe(0);
+      expect(result.verdict).toBe("clean");
+    });
+
+    it("does not penalize when IP_PROBE_SCATTER is absent", () => {
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: baseIntegrity(),
+      });
+      expect(result.network_tampering).toBe(0);
+    });
+  });
+
   describe("requestHeaders", () => {
     it("surfaces captured headers and cookie names", () => {
       const result = buildMerchantResponse({

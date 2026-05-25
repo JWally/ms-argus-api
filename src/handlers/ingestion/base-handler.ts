@@ -117,6 +117,13 @@ export function createBaseHandler(deps: BaseHandlerDeps) {
 
     const payload = event.parsedBody as ArgusPayload;
     const sessionId = getSessionId(payload);
+    if (!sessionId) {
+      deps.metrics.addMetric("MissingSessionId", MetricUnit.Count, 1);
+      throw new HttpError(
+        400,
+        "Missing or malformed session_id — set identifiers.session_id",
+      );
+    }
     // Header is the preferred source — see resolveCpi() docstring.
     const cpiHeader =
       event.headers?.["x-argus-cpi"] ?? event.headers?.["X-Argus-Cpi"];
@@ -153,28 +160,46 @@ async function hydrateSigint(
   const probeTokensTable = process.env.PROBE_TOKENS_TABLE_NAME;
   if (!sigintAesKey || !probeTokensTable) return payload;
 
+  let hydrated: ArgusPayload;
   try {
-    const hydrated = await redeemSigintTokens(payload, {
+    hydrated = await redeemSigintTokens(payload, {
       sigintAesKeyHex: sigintAesKey,
       probeTokensTableName: probeTokensTable,
       dynamo: ddbClient,
       logger: deps.logger,
       fpidCookie: extractFpidCookie(event.cookies),
+      requestSourceIp: event.requestContext.http.sourceIp,
     });
     deps.metrics.addMetric("IntegritySigintRedeemed", MetricUnit.Count, 1);
-    // PAT redemption is independent of sigint probe redemption — its token
-    // is self-contained (HMAC-signed at /v1/pat-attestation, verified inline
-    // here), so it shares the AES key but no DB infra. Failure modes drop
-    // the field silently inside redeemPatToken.
-    return redeemPatToken(hydrated, {
-      expectedSrcIp: event.requestContext.http.sourceIp,
-      sigintAesKeyHex: sigintAesKey,
-      logger: deps.logger,
-    });
   } catch (err) {
     deps.logger.warn("Sigint token redemption failed", { error: err });
     return payload;
   }
+
+  // Layer 2: require at least one probe to redeem successfully. Combined
+  // with Layer 1 (inline data cleared before redemption), zero hydrated
+  // probes means the submission carries NO trustworthy network evidence:
+  // every authoritative field was either absent, forged, replayed, or
+  // mismatched-IP. A real SDK execution always redeems all three. Reject
+  // here rather than write a row that will analyze as clean-by-omission.
+  const anyHydrated =
+    !!hydrated.sigint?.tcp_probe ||
+    !!hydrated.sigint?.h2 ||
+    !!hydrated.sigint?.aws_cf;
+  if (!anyHydrated) {
+    deps.metrics.addMetric("SigintRedeemAllFailed", MetricUnit.Count, 1);
+    throw new HttpError(400, "sigint probe redemption failed");
+  }
+
+  // PAT redemption is independent of sigint probe redemption — its token
+  // is self-contained (HMAC-signed at /v1/pat-attestation, verified inline
+  // here), so it shares the AES key but no DB infra. Failure modes drop
+  // the field silently inside redeemPatToken.
+  return redeemPatToken(hydrated, {
+    expectedSrcIp: event.requestContext.http.sourceIp,
+    sigintAesKeyHex: sigintAesKey,
+    logger: deps.logger,
+  });
 }
 
 function sigintSummary(payload: ArgusPayload): Record<string, string> {

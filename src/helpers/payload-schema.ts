@@ -305,12 +305,20 @@ export const payloadJsonSchema = {
 } as const;
 
 /**
- * Extract session_id from a validated payload
- * @param payload - Validated Argus payload
- * @returns Session ID string
+ * Extract session_id from an inbound payload. Returns null when the field
+ * is missing, malformed, or empty — the caller is expected to surface 400.
+ *
+ * Defensive about input shape: ingestion accepts arbitrary JSON, so
+ * `identifiers` (and the field within it) may be absent at runtime even
+ * though the static `ArgusPayload` type asserts otherwise. Previously this
+ * function did an unguarded property access and crashed with a 500 +
+ * stack-leaking error message when `identifiers` was missing.
  */
-export function getSessionId(payload: ArgusPayload): string {
-  return payload.identifiers.session_id;
+export function getSessionId(payload: ArgusPayload): string | null {
+  const ids = (payload as { identifiers?: { session_id?: unknown } })
+    ?.identifiers;
+  const id = ids?.session_id;
+  return typeof id === "string" && id.length > 0 ? id : null;
 }
 
 const CPI_FORMAT = /^argus_cpi_(test|live)_[A-Za-z0-9]{10,40}$/;
