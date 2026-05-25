@@ -155,7 +155,14 @@ interface HandleContext {
 const UA_HEADER = "user-agent";
 const XFF_HEADER = "x-forwarded-for";
 
-async function hydrateSigint(
+/**
+ * Exported for unit testing of the catch arm — the "throw out of
+ * redeemSigintTokens means refuse with 503, not silently fall back to
+ * the original payload" semantic is structurally important and worth
+ * direct coverage. Production callers use it via handleIntegrity
+ * unchanged.
+ */
+export async function hydrateSigint(
   payload: ArgusPayload,
   deps: BaseHandlerDeps,
   event: ExtendedEvent,
