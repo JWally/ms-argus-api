@@ -112,6 +112,39 @@ async function handleEcdhPayload(
   event.isBase64Encoded = false;
 }
 
+/**
+ * SECURITY: /v1/integrity-collect POSTs are sealed to the ECDH path only —
+ * application/octet-stream + X-Argus-Origin (client pubkey). The
+ * unencrypted JSON and gzip-only paths were historically supported for
+ * "server-to-server tests, debugging tools, future direct integrators"
+ * (see payload-schema.resolveCpi docstring) but provided no additional
+ * auth gate over the encrypted path: same trust level, same analyzer,
+ * same storage. That made them a free curl-from-anywhere submission
+ * channel for anyone who could scrape a public CPI from a merchant
+ * embed. Sealed 2026-05-25 — internal/server-to-server callers must
+ * either use the SDK (ECDH) or land behind a separate authenticated
+ * endpoint (not this one).
+ */
+function enforceIntegrityCollectSeal(
+  event: APIGatewayProxyEventV2,
+  contentType: string,
+  metrics: Metrics,
+): void {
+  const isIntegrityCollectPost =
+    event.rawPath === INTEGRITY_COLLECT_PATH &&
+    event.requestContext.http.method === "POST";
+  if (!isIntegrityCollectPost) return;
+
+  const hasOrigin = !!event.headers["x-argus-origin"];
+  if (contentType.startsWith("application/octet-stream") && hasOrigin) return;
+
+  metrics.addMetric("UnencryptedSubmissionRejected", MetricUnit.Count, 1);
+  throw new HttpError(
+    415,
+    "Unsupported Media Type: integrity submissions must be ECDH-encrypted (application/octet-stream + X-Argus-Origin)",
+  );
+}
+
 export const binaryGzipBodyParser = (
   config: { maxBodyBytes: number; maxDecompressedBytes: number },
   metrics: Metrics,
@@ -119,6 +152,9 @@ export const binaryGzipBodyParser = (
   before: async (request) => {
     const { event } = request;
     const contentType = (event.headers["content-type"] ?? "").toLowerCase();
+
+    enforceIntegrityCollectSeal(event, contentType, metrics);
+
     if (!contentType.startsWith("application/octet-stream")) {
       if (Buffer.byteLength(event.body ?? "", "utf8") > config.maxBodyBytes) {
         metrics.addMetric("PayloadTooLarge", MetricUnit.Count, 1);

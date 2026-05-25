@@ -10,7 +10,7 @@ import { createHmac, timingSafeEqual } from "crypto";
 import { DynamoDBClient, GetItemCommand } from "@aws-sdk/client-dynamodb";
 import { unmarshall } from "@aws-sdk/util-dynamodb";
 import type { Logger } from "@aws-lambda-powertools/logger";
-import type { ArgusPayload } from "./payload-schema";
+import type { ArgusPayload, PayloadSigint } from "./payload-schema";
 import {
   verifyCfToken,
   verifyCfCookie,
@@ -100,6 +100,14 @@ interface RedeemCtx {
   tableName: string;
   dynamo: DynamoDBClient;
   logger?: Logger;
+  /**
+   * IP of the request that is attempting to redeem the token. Probe tokens
+   * are HMAC-bound to the clientIP recorded at mint time; redemption is
+   * rejected when this doesn't match. Closes "harvest tokens from a real
+   * browser, replay from a different IP." Required — callers must pass the
+   * authoritative APIGW source IP (event.requestContext.http.sourceIp).
+   */
+  requestSourceIp: string;
 }
 
 /**
@@ -160,6 +168,19 @@ async function redeemToken(
   if (!item) {
     ctx.logger?.warn("Sigint token not found in DynamoDB", {
       nonce: token.split(".")[0],
+    });
+    return null;
+  }
+
+  // Layer 3: token was minted bound to a specific clientIP (HMAC'd in).
+  // Reject when the request now attempting to redeem comes from a different
+  // IP — the typical "real-browser harvest → curl replay from elsewhere"
+  // pattern. Real SDK traffic always redeems from the same IP that minted.
+  if (item.clientIp !== ctx.requestSourceIp) {
+    ctx.logger?.warn("Sigint token IP mismatch", {
+      nonce: token.split(".")[0],
+      tokenIp: item.clientIp,
+      requestIp: ctx.requestSourceIp,
     });
     return null;
   }
@@ -261,6 +282,29 @@ function applyTlsJson(
   sigint.aws_cf = awsCf;
 }
 
+/**
+ * Layer 1: server-authoritative sigint fields cannot be populated by client
+ * inline data — `tcp_probe` and `h2` come only from token redemption,
+ * `aws_cf` only from CF probe decode. Clearing before redemption means a
+ * failed/forged/replayed token leaves the field genuinely absent (the
+ * analyzer treats absence as absence). Without this clear, the existing
+ * fail-silent paths preserve whatever the client submitted as if it had
+ * come from a real probe — defeating the entire HMAC infrastructure.
+ *
+ * Using `delete` (not `= undefined`) so the later
+ * `if (tcpData) sigint.tcp_probe = tcpData` assignment isn't blocked by
+ * TS narrowing the property type to `undefined`.
+ */
+function stripClientControlledSigintFields(
+  source: ArgusPayload["sigint"],
+): PayloadSigint {
+  const sigint: PayloadSigint = source ? { ...source } : {};
+  delete sigint.tcp_probe;
+  delete sigint.h2;
+  delete sigint.aws_cf;
+  return sigint;
+}
+
 export async function redeemSigintTokens(
   payload: ArgusPayload,
   ctx: Omit<RedeemCtx, "tableName"> & {
@@ -268,11 +312,15 @@ export async function redeemSigintTokens(
     fpidCookie?: string;
   },
 ): Promise<ArgusPayload> {
-  const { sigintAesKeyHex, probeTokensTableName, dynamo, logger, fpidCookie } =
-    ctx;
-  const sigint: ArgusPayload["sigint"] = payload.sigint
-    ? { ...payload.sigint }
-    : {};
+  const {
+    sigintAesKeyHex,
+    probeTokensTableName,
+    dynamo,
+    logger,
+    fpidCookie,
+    requestSourceIp,
+  } = ctx;
+  const sigint = stripClientControlledSigintFields(payload.sigint);
 
   const tcpToken = resolveProbeToken(
     payload.sigintTcpToken,
@@ -294,14 +342,15 @@ export async function redeemSigintTokens(
     tableName: probeTokensTableName,
     dynamo,
     logger,
+    requestSourceIp,
   };
   const [tcpData, h2Data] = await Promise.all([
     redeemToken(tcpToken, redeemCtx),
     redeemToken(h2Token, redeemCtx),
   ]);
 
-  if (tcpData) sigint.tcp_probe = tcpData as typeof sigint.tcp_probe;
-  if (h2Data) sigint.h2 = h2Data as typeof sigint.h2;
+  if (tcpData) sigint.tcp_probe = tcpData as PayloadSigint["tcp_probe"];
+  if (h2Data) sigint.h2 = h2Data as PayloadSigint["h2"];
 
   return {
     ...payload,

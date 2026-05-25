@@ -2107,10 +2107,40 @@ function deriveRequestHeaders(
 }
 
 /**
+ * Penalty from IP_PROBE_SCATTER — when probes (XFF / CF / TCP) observe
+ * distinct client IPs, that's a structural sign of a proxy/VPN in the path
+ * that proxy_waterfall sometimes misses (e.g., when its RTT-ratio gate is
+ * null because the TCP probe didn't ship).
+ *
+ * Gated on `network_class` to avoid penalizing benign explanations:
+ *   - `mobile`: cellular CGNAT legitimately produces per-flow egress IPs.
+ *     The analyzer already emits SAME_SUBNET_CGNAT (severity 0.1) for the
+ *     same-/16 case; we trust that path and don't second-guess.
+ *   - `security_filter`: corporate proxies (Cisco Umbrella et al.)
+ *     re-originate TLS and naturally scatter probes; merchant-projection's
+ *     `isCorporateShieldedAsn` carve-out documents this elsewhere.
+ *
+ * Severity maps directly: 0.6 (2 distinct IPs) → 60, 0.8 (3+) → 80. Both
+ * cross SUSPECT_THRESHOLD; 0.8 crosses BLOCK. Math.max with proxy_waterfall
+ * prevents double-count when both fire.
+ */
+function ipScatterPenalty(input: MerchantProjectionInput): number {
+  const ip = input.integrity?.analysis?.ip;
+  if (!ip) return 0;
+  const networkClass = ip.asn?.network_class;
+  if (networkClass === "mobile" || networkClass === "security_filter") return 0;
+  const scatter = (ip.signals ?? []).find((s) => s.code === "IP_PROBE_SCATTER");
+  if (!scatter) return 0;
+  return Math.round(scatter.severity * 100);
+}
+
+/**
  * Compose `network_tampering` from the merchant-facing network signals:
  *   - vpn_component (MSS-derived tunnel encapsulation fingerprint)
  *   - proxy waterfall threat (the integrated analyzer; itself already
- *     factors WebRTC consensus / IP scatter / RTT jitter / ASN class)
+ *     factors WebRTC consensus / RTT jitter / ASN class)
+ *   - ip_scatter penalty (probe-IP disagreement, gated on network_class
+ *     to avoid mobile/corporate-shield false positives)
  * Max wins — any one of these saturating is enough to flag the path.
  *
  * networkIntegrity (the WebRTC/probe consensus scalar) is intentionally
@@ -2122,7 +2152,8 @@ function networkTamperingScore(input: MerchantProjectionInput): number {
   const vpn = probabilityFromUnit(vpnScore(input));
   const proxyThreat =
     input.integrity?.analysis?.proxy_waterfall?.threat_score ?? 0;
-  return Math.max(vpn, proxyThreat);
+  const ipScatter = ipScatterPenalty(input);
+  return Math.max(vpn, proxyThreat, ipScatter);
 }
 
 function deriveVerdict(
