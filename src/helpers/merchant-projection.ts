@@ -1129,6 +1129,46 @@ function cdpAutomationScore(
   return 0;
 }
 
+/**
+ * Apple PAT score enforcement. Asymmetric:
+ *
+ *   - **Valid PAT → enhance.** Caps the automation score at
+ *     `PAT_VALID_AUTOMATION_CAP` (25 — keeps room for "suspect" tier without
+ *     reaching "block"). Does NOT override hard automation evidence:
+ *     scores at or above `PAT_AUTOMATION_HARD_FLOOR` (webdriver, headless
+ *     UA, CDP residue, pristine-lift compromised) pass through unchanged.
+ *     A real Apple device can still be running WebDriver — PAT proves the
+ *     hardware, not the behavior.
+ *
+ *   - **iOS / macOS Safari UA without PAT → penalize.** Adds
+ *     `PAT_MISSING_AUTOMATION_PENALTY` (capped at 100). Penalty is
+ *     Apple-only: those are the UAs that *should* be able to produce a PAT,
+ *     so absence is meaningful. Every other UA fails open.
+ *
+ * Only touches the `automation` axis. `device_tampering` and
+ * `network_tampering` compose independently — PAT proves the device is
+ * real Apple hardware, not that it is behaving honestly, so cross-signal
+ * tampering evidence still flows through unmodified.
+ */
+const PAT_AUTOMATION_HARD_FLOOR = 75;
+const PAT_VALID_AUTOMATION_CAP = 25;
+const PAT_MISSING_AUTOMATION_PENALTY = 25;
+
+function applyPatAdjustment(
+  automation: number,
+  input: MerchantProjectionInput,
+): number {
+  const attested = input.integrity?.pat?.attested === true;
+  if (attested) {
+    if (automation >= PAT_AUTOMATION_HARD_FLOOR) return automation;
+    return Math.min(automation, PAT_VALID_AUTOMATION_CAP);
+  }
+  if (isAppleClaimedUA(input.integrity)) {
+    return Math.min(100, automation + PAT_MISSING_AUTOMATION_PENALTY);
+  }
+  return automation;
+}
+
 function botProbability(input: MerchantProjectionInput): number {
   const headless = readHeadless(
     input.integrity ?? ({} as IntegrityResultsData),
@@ -2118,7 +2158,7 @@ export function buildMerchantResponse(
   // networkTamperingScore() docstring for the double-count rationale.
   void networkIntegrityScore;
 
-  const automation = botProbability(input);
+  const automation = applyPatAdjustment(botProbability(input), input);
   const device_tampering = tamperingProbability(input);
   const network_tampering = networkTamperingScore(input);
   const verdict = deriveVerdict(
