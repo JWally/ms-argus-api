@@ -10,10 +10,15 @@ vi.mock("../../helpers/get-ecdh-keys", () => ({
 
 vi.mock("../../helpers/ecdh-decrypt", () => ({
   decryptArgusPayload: vi.fn(),
+  decryptIntegrityPayload: vi.fn(),
+  decryptIntegrityPayloadV2: vi.fn(),
 }));
 
 import { getEcdhKeys } from "../../helpers/get-ecdh-keys";
-import { decryptArgusPayload } from "../../helpers/ecdh-decrypt";
+import {
+  decryptArgusPayload,
+  decryptIntegrityPayload,
+} from "../../helpers/ecdh-decrypt";
 import { binaryGzipBodyParser, sigintTokenValidator } from "./middleware";
 import { Metrics } from "@aws-lambda-powertools/metrics";
 
@@ -110,6 +115,98 @@ describe("binaryGzipBodyParser — ECDH path", () => {
       "EcdhPayloadReceived",
       expect.any(String),
       1,
+    );
+  });
+});
+
+describe("binaryGzipBodyParser — /v1/integrity-collect seal (Layer 6)", () => {
+  function makeCollectRequest(headers: Record<string, string>, body = "body") {
+    return {
+      event: {
+        headers,
+        body,
+        isBase64Encoded: false,
+        requestContext: { http: { method: "POST" } },
+        rawPath: "/v1/integrity-collect",
+      },
+    } as any;
+  }
+
+  beforeEach(() => {
+    vi.mocked(mockMetrics.addMetric).mockReset();
+  });
+
+  it("rejects integrity-collect POST with application/json (415)", async () => {
+    const mw = binaryGzipBodyParser(config, mockMetrics);
+    const req = makeCollectRequest({ "content-type": "application/json" });
+    await expect(mw.before!(req)).rejects.toMatchObject({ statusCode: 415 });
+    expect(mockMetrics.addMetric).toHaveBeenCalledWith(
+      "UnencryptedSubmissionRejected",
+      expect.any(String),
+      1,
+    );
+  });
+
+  it("rejects integrity-collect POST with octet-stream but no X-Argus-Origin (415)", async () => {
+    const mw = binaryGzipBodyParser(config, mockMetrics);
+    const req = makeCollectRequest({
+      "content-type": "application/octet-stream",
+      // x-argus-origin deliberately absent
+    });
+    await expect(mw.before!(req)).rejects.toMatchObject({ statusCode: 415 });
+    expect(mockMetrics.addMetric).toHaveBeenCalledWith(
+      "UnencryptedSubmissionRejected",
+      expect.any(String),
+      1,
+    );
+  });
+
+  it("permits integrity-collect POST with octet-stream + X-Argus-Origin (falls through to ECDH)", async () => {
+    vi.mocked(getEcdhKeys).mockResolvedValue({
+      current: {} as any,
+      previous: undefined,
+    });
+    // /v1/integrity-collect uses decryptIntegrityPayload (v1) or
+    // decryptIntegrityPayloadV2 (v2) depending on the x-argus-v header.
+    // Default header value here is absent → v1 path.
+    vi.mocked(decryptIntegrityPayload).mockResolvedValue({
+      identifiers: { session_id: "s" },
+      device: {},
+    });
+    const mw = binaryGzipBodyParser(config, mockMetrics);
+    const req = makeCollectRequest({
+      "content-type": "application/octet-stream",
+      "x-argus-origin": "fakepubkey",
+    });
+    await mw.before!(req); // does not throw
+    expect(mockMetrics.addMetric).not.toHaveBeenCalledWith(
+      "UnencryptedSubmissionRejected",
+      expect.any(String),
+      expect.any(Number),
+    );
+  });
+
+  it("does not seal non-POST methods (OPTIONS preflight still works)", async () => {
+    const mw = binaryGzipBodyParser(config, mockMetrics);
+    const req = makeCollectRequest({ "content-type": "application/json" });
+    req.event.requestContext.http.method = "OPTIONS";
+    await mw.before!(req); // does not throw — preflight passes through
+    expect(mockMetrics.addMetric).not.toHaveBeenCalledWith(
+      "UnencryptedSubmissionRejected",
+      expect.any(String),
+      expect.any(Number),
+    );
+  });
+
+  it("does not seal non-integrity-collect paths (JSON still ok elsewhere)", async () => {
+    const mw = binaryGzipBodyParser(config, mockMetrics);
+    const req = makeCollectRequest({ "content-type": "application/json" });
+    req.event.rawPath = "/some/other/path";
+    await mw.before!(req); // does not throw
+    expect(mockMetrics.addMetric).not.toHaveBeenCalledWith(
+      "UnencryptedSubmissionRejected",
+      expect.any(String),
+      expect.any(Number),
     );
   });
 });
