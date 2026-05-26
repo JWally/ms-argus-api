@@ -39,6 +39,34 @@ describe("detectCrossFieldAnomalies", () => {
     expect(detectCrossFieldAnomalies(FP, raw)).toEqual([]);
   });
 
+  it("does NOT flag identical-content arrays across scopes (regression)", () => {
+    // Pre-2026-05-25 the comparison used `v1 !== v2` which is reference
+    // equality on arrays. Distinct array literals with identical contents
+    // (the post-JSON-deserialize shape on the server) fired
+    // WORKER_MISMATCH on every legitimate session whose `languages`
+    // array shipped on both navigator and worker scopes. Now
+    // canonicalized via JSON for arrays.
+    const raw = {
+      navigator: { ...HONEST_NAV, languages: ["en-US", "en"] },
+      workerScope: {
+        scopes: { web: { ...HONEST_NAV, languages: ["en-US", "en"] } },
+      },
+    };
+    expect(detectCrossFieldAnomalies(FP, raw)).toEqual([]);
+  });
+
+  it("flags arrays with different contents", () => {
+    const raw = {
+      navigator: { ...HONEST_NAV, languages: ["en-US", "en"] },
+      workerScope: {
+        scopes: { web: { ...HONEST_NAV, languages: ["fr-FR", "fr"] } },
+      },
+    };
+    const signals = detectCrossFieldAnomalies(FP, raw);
+    expect(signals.length).toBeGreaterThan(0);
+    expect(signals.some((s) => s.code === "WORKER_MISMATCH")).toBe(true);
+  });
+
   it("flags userAgent mismatch between navigator and dedicated worker", () => {
     const raw = {
       navigator: HONEST_NAV,

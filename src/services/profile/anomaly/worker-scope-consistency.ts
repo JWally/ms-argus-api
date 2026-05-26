@@ -77,13 +77,34 @@ function collectScopes(device: Record<string, unknown>): Env[] {
   return envs;
 }
 
+/**
+ * Compare two values across scopes — handles primitives and arrays.
+ *
+ * For arrays (e.g. `languages: ["en-US", "en"]`), `v1 !== v2` is reference
+ * equality: identical-content arrays produced by separate JSON.parse
+ * invocations always differ. Pre-2026-05-25 this fired
+ * `WORKER_MISMATCH(0.5)` on every legitimate session whose navigator
+ * and worker scopes shipped matching `languages`. Surfaced by the
+ * worker-scope-oracle PoC bot during the #2 closure.
+ *
+ * Canonicalize via JSON for arrays; everything else uses `!==` as
+ * before. Plain objects aren't in COMPARE_FIELDS so they don't need
+ * structural compare.
+ */
+function valuesDiffer(v1: unknown, v2: unknown): boolean {
+  if (Array.isArray(v1) && Array.isArray(v2)) {
+    return JSON.stringify(v1) !== JSON.stringify(v2);
+  }
+  return v1 !== v2;
+}
+
 /** Compare two scopes and return signals for any field mismatches. */
 function compareScopes([n1, e1]: Env, [n2, e2]: Env): AnomalySignal[] {
   const signals: AnomalySignal[] = [];
   for (const { key, severity } of FIELDS) {
     const v1 = e1[key],
       v2 = e2[key];
-    if (v1 !== undefined && v2 !== undefined && v1 !== v2) {
+    if (v1 !== undefined && v2 !== undefined && valuesDiffer(v1, v2)) {
       signals.push(
         createSignal("CROSS_FIELD", AnomalyCodes.WORKER_MISMATCH, severity, {
           expected: `${DISPLAY[n1]} ${key} matches ${DISPLAY[n2]}`,
