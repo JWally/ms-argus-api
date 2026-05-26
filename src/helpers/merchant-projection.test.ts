@@ -3161,6 +3161,118 @@ describe("buildMerchantResponse", () => {
       expect(result.device_tampering).toBe(0);
     });
 
+    it("(E.4) aws_cf.tampered=true → device_tampering=100 (definitive)", () => {
+      // ARGUS_URGENT_FIXES #4: SipHash sig mismatch is structurally
+      // provable forgery — no honest browser produces this. Pre-fix the
+      // analyzer read aws_cf.country/ip/asn/tz regardless of the flag;
+      // post-fix tampered=true forces the row to tier-100 tampering.
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: baseIntegrity({
+          sigint: {
+            aws_cf: {
+              tampered: true,
+              expired: false,
+              ageSec: 0,
+              country: "US",
+              ip: "73.0.0.1",
+              asn: "AS7922",
+            },
+          } as unknown as Record<string, string>,
+        }),
+      });
+      expect(result.device_tampering).toBe(100);
+    });
+
+    it("(E.5) aws_cf.expired with ageSec>300 (long-stale replay) → 100", () => {
+      // Valid sig but token is 6+ minutes stale: this is replay of an
+      // attestation issued for a different session. No honest path
+      // produces a 6-minute-stale token (the SDK re-runs the scan).
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: baseIntegrity({
+          sigint: {
+            aws_cf: {
+              tampered: false,
+              expired: true,
+              ageSec: 420, // 7 minutes stale
+              country: "US",
+              ip: "73.0.0.1",
+              asn: "AS7922",
+            },
+          } as unknown as Record<string, string>,
+        }),
+      });
+      expect(result.device_tampering).toBe(100);
+    });
+
+    it("(E.6) aws_cf future-dated (ageSec < -90) → 100", () => {
+      // Egregious clock skew or attacker fabricating with a forward ts.
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: baseIntegrity({
+          sigint: {
+            aws_cf: { tampered: false, expired: true, ageSec: -200 },
+          } as unknown as Record<string, string>,
+        }),
+      });
+      expect(result.device_tampering).toBe(100);
+    });
+
+    it("(E.7) aws_cf slow-page (expired, ageSec 90-300, valid sig) → tier-60", () => {
+      // Gray zone: user with slow network / idle tab / multi-tab restore.
+      // Suspicious but possibly honest — tier-60 not tier-100.
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: baseIntegrity({
+          sigint: {
+            aws_cf: { tampered: false, expired: true, ageSec: 150 },
+          } as unknown as Record<string, string>,
+        }),
+      });
+      expect(result.device_tampering).toBe(60);
+    });
+
+    it("(E.8) aws_cf fresh + valid sig → no tampering contribution", () => {
+      // Control: legitimate CF attestation, well within the freshness
+      // window. aws_cf flags must NOT bump device_tampering at all.
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: baseIntegrity({
+          sigint: {
+            aws_cf: {
+              tampered: false,
+              expired: false,
+              ageSec: 5,
+              country: "US",
+              ip: "73.0.0.1",
+              asn: "AS7922",
+            },
+          } as unknown as Record<string, string>,
+        }),
+      });
+      expect(result.device_tampering).toBe(0);
+    });
+
+    it("(E.9) aws_cf.cookieTampered alone (absent _fpid) does NOT score", () => {
+      // First-visit / cleared-cookies is normal, not tampering. Only the
+      // SipHash-sig path (tampered / expired) scores.
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: baseIntegrity({
+          sigint: {
+            aws_cf: {
+              tampered: false,
+              expired: false,
+              ageSec: 5,
+              cookieTampered: true,
+            },
+          } as unknown as Record<string, string>,
+        }),
+      });
+      expect(result.device_tampering).toBe(0);
+    });
+
     it("(F) WEBRTC_BLOCKED on datacenter ASN applies extra 0.5× downgrade", () => {
       const input: MerchantProjectionInput = {
         session_id: "s",

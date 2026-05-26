@@ -271,12 +271,13 @@ function applyTlsJson(
   const awsCf = unwrapTlsPayload(sigintTls);
   if (!awsCf) return;
   if (sigintAesKeyHex) {
-    const { expired, tampered } = verifyCfToken(
+    const { expired, tampered, ageSec } = verifyCfToken(
       awsCf as CfTokenFields,
       sigintAesKeyHex,
     );
     awsCf.expired = expired;
     awsCf.tampered = tampered;
+    awsCf.ageSec = ageSec;
     stampCookieFlags(awsCf, sigintAesKeyHex, fpidCookie);
   }
   sigint.aws_cf = awsCf;

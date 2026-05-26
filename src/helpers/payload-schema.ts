@@ -51,6 +51,14 @@ export interface SigintTlsFingerprint {
   expired?: boolean;
   /** Set by API during verification: true if token sig missing / mismatched / unverifiable */
   tampered?: boolean;
+  /**
+   * Set by API during verification: signed age of the attestation in
+   * seconds (now - ts). Positive = past, negative = future-dated. null
+   * when ts was missing. Drives the tampering tier mapping —
+   * separates "honest slow-page replay" (90-300s) from "no legitimate
+   * path" (>300s past, or any future-dated).
+   */
+  ageSec?: number | null;
   /** Set by API: true if the `_fpid` cookie sig failed validation or the cookie was absent */
   cookieTampered?: boolean;
   /** Set by API: true if cookie's uuid/issuedAt matches what's in the token payload */
