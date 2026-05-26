@@ -51,6 +51,13 @@ import {
   classifyProxy,
   type WebrtcSigintStatus,
 } from "../../analysis";
+import { computeDeviceHistoryAnalysis } from "../../analysis/device-history";
+import type { DeviceHistoryAnalysis } from "../../analysis/device-history";
+import {
+  processDeviceHistory,
+  hashUserAgent,
+  type ProcessDeviceHistoryResult,
+} from "../../helpers/device-history";
 import type { AsnCategory } from "../../analysis/ip-consistency/asn-catalog";
 import { prewarmAsnDataset } from "../../services/network/asn-classifier";
 import { prewarmAutoOverlay } from "../../services/network/auto-overlay";
@@ -406,6 +413,9 @@ interface AnalysisInputs {
   requestHeaders: Record<string, string> | null;
   webrtcSigint: SigintCandidateDecodeResult;
   webrtcSigintField: ReturnType<typeof buildWebrtcSigintField>;
+  /** Recurrence/stability signals from the device-history blob. See
+   *  helpers/device-history + analysis/device-history. */
+  deviceHistory: DeviceHistoryAnalysis;
 }
 
 /**
@@ -472,6 +482,7 @@ function buildAnalysisBlock(inputs: AnalysisInputs) {
     ),
     proxy_waterfall: proxyWaterfall,
     ...(webrtcSigintField && { webrtc_sigint: webrtcSigintField }),
+    device_history: inputs.deviceHistory,
   };
 }
 
@@ -585,12 +596,16 @@ function enforceStunCandidateSingleUse(
   throw new HttpError(409, "webrtc attestation already redeemed");
 }
 
-function buildIntegrityItem(
-  ctx: HandleContext,
-  hydratedPayload: ArgusPayload,
-  identity: IdentityOutcome,
-  merchantId: string | null,
-) {
+interface BuildIntegrityItemArgs {
+  ctx: HandleContext;
+  hydratedPayload: ArgusPayload;
+  identity: IdentityOutcome;
+  merchantId: string | null;
+  deviceHistory: DeviceHistoryAnalysis;
+}
+
+function buildIntegrityItem(args: BuildIntegrityItemArgs) {
+  const { ctx, hydratedPayload, identity, merchantId, deviceHistory } = args;
   const now = Date.now();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const raw = ctx.payload as any;
@@ -630,6 +645,7 @@ function buildIntegrityItem(
       requestHeaders: requestHeaders?.headers ?? null,
       webrtcSigint,
       webrtcSigintField,
+      deviceHistory,
     }),
     client_ip: clientIp,
     user_agent: ua,
@@ -706,6 +722,46 @@ async function resolveMerchantId(ctx: HandleContext): Promise<string | null> {
   }
 }
 
+/**
+ * Phase 2 device-history round-trip. Decrypts the incoming blob (if any),
+ * computes recurrence signals from pre-visit state, appends the current
+ * submission as a fresh visit, re-encrypts. Returns the pre-visit signals
+ * for the row's analysis.device_history block and the encrypted outbound
+ * blob for the response.
+ */
+function runDeviceHistory(
+  ctx: HandleContext,
+  identity: IdentityOutcome,
+): {
+  dh: ProcessDeviceHistoryResult;
+  analysis: DeviceHistoryAnalysis;
+} {
+  const dh = processDeviceHistory({
+    incomingBlob: ctx.payload.deviceHistoryBlob,
+    pubkey: identity.pubkey,
+    sigintAesKey: process.env.SIGINT_AES_KEY,
+    visit: {
+      cpi: ctx.cpi,
+      session: ctx.sessionId,
+      ip: ctx.event.requestContext.http.sourceIp,
+      ua_hash: hashUserAgent(ctx.event.headers[UA_HEADER]),
+      // net_class + country are deferred to Phase 2c — would require
+      // running the network / locale analyzers BEFORE this step. For
+      // now the visit records the unambiguous server-observed fields.
+      net_class: null,
+      country: null,
+    },
+  });
+  const analysis = computeDeviceHistoryAnalysis({
+    outcome: dh.preVisitBlob
+      ? { kind: "ok", blob: dh.preVisitBlob }
+      : { kind: dh.outcomeKind === "auth_fail" ? "auth_fail" : "absent" },
+    pubkey: identity.pubkey,
+  });
+  emitDeviceHistoryMetrics(ctx.deps, dh);
+  return { dh, analysis };
+}
+
 async function handleIntegrity(
   ctx: HandleContext,
 ): Promise<APIGatewayProxyResultV2> {
@@ -730,7 +786,19 @@ async function handleIntegrity(
     }),
   ]);
   emitIdentityMetrics(ctx.deps, identity);
-  const item = buildIntegrityItem(ctx, hydratedPayload, identity, merchantId);
+
+  const { dh, analysis: deviceHistoryAnalysis } = runDeviceHistory(
+    ctx,
+    identity,
+  );
+
+  const item = buildIntegrityItem({
+    ctx,
+    hydratedPayload,
+    identity,
+    merchantId,
+    deviceHistory: deviceHistoryAnalysis,
+  });
 
   await persistIntegrityRecord(ctx, item);
 
@@ -744,7 +812,34 @@ async function handleIntegrity(
 
   return {
     statusCode: 200,
-    body: JSON.stringify({ session_id: ctx.sessionId }),
+    body: JSON.stringify({
+      session_id: ctx.sessionId,
+      ...(dh.outboundBlob ? { deviceHistoryBlob: dh.outboundBlob } : {}),
+    }),
     headers: { "Content-Type": "application/json" },
   };
+}
+
+/**
+ * Emit metrics for the device-history round-trip outcome. tampered /
+ * identity_mismatch / fresh distinct counts so ops can see the
+ * distribution post-deploy.
+ */
+function emitDeviceHistoryMetrics(
+  deps: BaseHandlerDeps,
+  dh: ProcessDeviceHistoryResult,
+): void {
+  if (dh.outcomeKind === "auth_fail") {
+    deps.metrics.addMetric("DeviceHistoryAuthFail", MetricUnit.Count, 1);
+  } else if (dh.outcomeKind === "absent") {
+    deps.metrics.addMetric("DeviceHistoryAbsent", MetricUnit.Count, 1);
+  } else if (!dh.identityMatched) {
+    deps.metrics.addMetric(
+      "DeviceHistoryIdentityMismatch",
+      MetricUnit.Count,
+      1,
+    );
+  } else {
+    deps.metrics.addMetric("DeviceHistoryRoundtrip", MetricUnit.Count, 1);
+  }
 }
