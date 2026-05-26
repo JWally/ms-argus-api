@@ -752,10 +752,28 @@ function runDeviceHistory(
       country: null,
     },
   });
+  // Discriminate on the round-trip outcome, NOT on preVisitBlob (which
+  // processDeviceHistory always populates with a fresh-for-this-pubkey
+  // blob on the absent / auth_fail / identity-mismatch paths so it can
+  // still record the current visit). The analyzer needs the original
+  // outcome so freshDevice / tampered signals actually light up.
+  let analyzerOutcome:
+    | { kind: "ok"; blob: typeof dh.preVisitBlob & object }
+    | { kind: "absent" }
+    | { kind: "auth_fail" };
+  if (dh.outcomeKind === "ok" && dh.identityMatched && dh.preVisitBlob) {
+    analyzerOutcome = { kind: "ok", blob: dh.preVisitBlob };
+  } else if (dh.outcomeKind === "auth_fail") {
+    analyzerOutcome = { kind: "auth_fail" };
+  } else {
+    // absent OR identity-mismatch-on-ok-decrypt — both are honest
+    // "no history for this pubkey" cases. The analyzer already
+    // distinguishes mismatch via the pubkey check below, but we
+    // already discarded the non-matching blob in processDeviceHistory.
+    analyzerOutcome = { kind: "absent" };
+  }
   const analysis = computeDeviceHistoryAnalysis({
-    outcome: dh.preVisitBlob
-      ? { kind: "ok", blob: dh.preVisitBlob }
-      : { kind: dh.outcomeKind === "auth_fail" ? "auth_fail" : "absent" },
+    outcome: analyzerOutcome,
     pubkey: identity.pubkey,
   });
   emitDeviceHistoryMetrics(ctx.deps, dh);
