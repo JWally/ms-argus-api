@@ -17,8 +17,12 @@ function xor(data: Uint8Array, key: Uint8Array): Uint8Array {
   return out;
 }
 
-/** Mint a pubkey + valid sig over an XOR'd h2 token, for happy-path tests. */
-async function mintIdentity(h2Token: string): Promise<{
+/**
+ * Mint a pubkey + sig over a caller-supplied signed-input buffer.
+ * Returns the pubkey too so tests can swap pubkeys vs sigs to exercise
+ * negative paths.
+ */
+async function mintIdentitySigning(signedInput: Uint8Array): Promise<{
   pubkeyB64: string;
   sigB64: string;
 }> {
@@ -37,14 +41,31 @@ async function mintIdentity(h2Token: string): Promise<{
     false,
     ["sign"],
   );
-  const tokenBytes = new TextEncoder().encode(h2Token);
-  const signedInput = xor(tokenBytes, XOR_KEY);
   const sig = await crypto.subtle.sign(
     { name: "ECDSA", hash: "SHA-256" },
     webPriv,
     signedInput,
   );
   return { pubkeyB64, sigB64: Buffer.from(sig).toString("base64") };
+}
+
+/** Mint via the legacy v1 XOR construction. */
+async function mintIdentity(h2Token: string): Promise<{
+  pubkeyB64: string;
+  sigB64: string;
+}> {
+  const tokenBytes = new TextEncoder().encode(h2Token);
+  return mintIdentitySigning(xor(tokenBytes, XOR_KEY));
+}
+
+/** Mint via the v2 payload-binding construction. */
+async function mintIdentityV2(
+  h2Token: string,
+  stableHash: string,
+  fuzzyHash: string,
+): Promise<{ pubkeyB64: string; sigB64: string }> {
+  const canonical = `${h2Token}|${stableHash}|${fuzzyHash}`;
+  return mintIdentitySigning(new TextEncoder().encode(canonical));
 }
 
 function basePayload(extras: Partial<ArgusPayload> = {}): ArgusPayload {
@@ -131,7 +152,7 @@ describe("verifyDeviceIdentity", () => {
     expect(outcome).toMatchObject({ verified: false, reason: "sig_invalid" });
   });
 
-  it("verifies a well-formed sig + pubkey + token", async () => {
+  it("verifies a well-formed sig + pubkey + token (v1 legacy XOR)", async () => {
     const token = "abc123.99999999.deadbeef";
     const { pubkeyB64, sigB64 } = await mintIdentity(token);
     const outcome = await verifyDeviceIdentity(
@@ -146,5 +167,115 @@ describe("verifyDeviceIdentity", () => {
       pubkey: pubkeyB64,
       sig_present: true,
     });
+  });
+
+  // ── v2 (payload-binding) coverage — ARGUS_URGENT_FIXES #5 hardening ────
+
+  it("verifies a v2 sig over (h2Token || stableHash || fuzzyHash)", async () => {
+    const token = "v2tok.99999999.deadbeef";
+    const { pubkeyB64, sigB64 } = await mintIdentityV2(
+      token,
+      "stable-a",
+      "fuzzy-a",
+    );
+    const outcome = await verifyDeviceIdentity(
+      basePayload({
+        hashes: { stable: "stable-a", fuzzy: "fuzzy-a" },
+        device_identity: { pubkey: pubkeyB64, sig: sigB64 },
+        sigintH2Token: token,
+      }),
+    );
+    expect(outcome).toMatchObject({ present: true, verified: true });
+  });
+
+  it("v2 sig REJECTED when replayed against a payload with different hashes", async () => {
+    // The headline of finding #5's hardening: a sig minted for one
+    // payload must NOT verify against a different payload's hashes.
+    // Pre-hardening (v1 only) this verified because the sig was just
+    // over xor(h2Token, KEY) — independent of payload content.
+    const token = "v2tok.99999999.deadbeef";
+    const { pubkeyB64, sigB64 } = await mintIdentityV2(
+      token,
+      "stable-a",
+      "fuzzy-a",
+    );
+
+    // Same (pubkey, sig), but the payload claims DIFFERENT hashes:
+    const outcome = await verifyDeviceIdentity(
+      basePayload({
+        hashes: { stable: "stable-b", fuzzy: "fuzzy-b" }, // ← different
+        device_identity: { pubkey: pubkeyB64, sig: sigB64 },
+        sigintH2Token: token,
+      }),
+    );
+    expect(outcome).toMatchObject({ verified: false, reason: "sig_invalid" });
+  });
+
+  it("v2 sig REJECTED when stableHash differs (fuzzy still matches)", async () => {
+    const token = "v2tok.99999999.deadbeef";
+    const { pubkeyB64, sigB64 } = await mintIdentityV2(
+      token,
+      "stable-a",
+      "fuzzy-a",
+    );
+    const outcome = await verifyDeviceIdentity(
+      basePayload({
+        hashes: { stable: "stable-DIFFERENT", fuzzy: "fuzzy-a" },
+        device_identity: { pubkey: pubkeyB64, sig: sigB64 },
+        sigintH2Token: token,
+      }),
+    );
+    expect(outcome).toMatchObject({ verified: false, reason: "sig_invalid" });
+  });
+
+  it("v2 sig REJECTED when fuzzyHash differs (stable still matches)", async () => {
+    const token = "v2tok.99999999.deadbeef";
+    const { pubkeyB64, sigB64 } = await mintIdentityV2(
+      token,
+      "stable-a",
+      "fuzzy-a",
+    );
+    const outcome = await verifyDeviceIdentity(
+      basePayload({
+        hashes: { stable: "stable-a", fuzzy: "fuzzy-DIFFERENT" },
+        device_identity: { pubkey: pubkeyB64, sig: sigB64 },
+        sigintH2Token: token,
+      }),
+    );
+    expect(outcome).toMatchObject({ verified: false, reason: "sig_invalid" });
+  });
+
+  it("v1 sigs still verify during SDK rollout (backward compat)", async () => {
+    // Legacy SDK bundles still signing the v1 XOR construction must
+    // continue to land verified=true until they're rolled to v2.
+    const token = "v1tok.99999999.deadbeef";
+    const { pubkeyB64, sigB64 } = await mintIdentity(token);
+    const outcome = await verifyDeviceIdentity(
+      basePayload({
+        hashes: { stable: "anything", fuzzy: "anything-else" },
+        device_identity: { pubkey: pubkeyB64, sig: sigB64 },
+        sigintH2Token: token,
+      }),
+    );
+    expect(outcome).toMatchObject({ verified: true });
+  });
+
+  it("v1 sig replay across payloads still verifies (known gap during rollout)", async () => {
+    // The v1 fallback is intentionally permissive — it's the same shape
+    // as today's behavior, kept ONLY so legacy SDK bundles continue
+    // working. This test documents the gap: once the SDK rolls and we
+    // remove the v1 fallback, this test should flip to expect
+    // verified=false.
+    const token = "v1tok.99999999.deadbeef";
+    const { pubkeyB64, sigB64 } = await mintIdentity(token);
+    // Same sig, totally different payload — v1 doesn't bind to hashes:
+    const outcome = await verifyDeviceIdentity(
+      basePayload({
+        hashes: { stable: "different", fuzzy: "different" },
+        device_identity: { pubkey: pubkeyB64, sig: sigB64 },
+        sigintH2Token: token,
+      }),
+    );
+    expect(outcome.verified).toBe(true);
   });
 });
