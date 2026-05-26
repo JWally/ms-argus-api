@@ -1491,6 +1491,24 @@ interface TamperingEvidence {
   cfTampered: boolean;
   cfReplayed: boolean;
   cfSlowPage: boolean;
+  /**
+   * PAT attestation was attempted (client shipped a `patToken`) but
+   * verification failed at the API. Pre-2026-05-25 this was silent on
+   * the row, indistinguishable from "user did not attempt PAT." Now
+   * scores as tier-60: a credible spoof — the attacker manufactured a
+   * token-shaped string but the HMAC didn't verify.
+   */
+  patAttestationFailed: boolean;
+  /**
+   * device_identity verification was attempted (client shipped a
+   * pubkey+sig pair) but ECDSA verify failed. Same shape as
+   * patAttestationFailed: tier-60 credible spoof. Note: the signing
+   * input is weak (xor(h2Token, hardcoded_key)) per ARGUS_URGENT_FIXES
+   * #5, so verified=true isn't a strong trust signal — but
+   * verified=false with sig_present=true IS clear evidence the client
+   * tried and failed.
+   */
+  deviceIdentitySigFailed: boolean;
 }
 
 function readChUaMismatch(integrity: IntegrityResultsData): boolean {
@@ -1732,7 +1750,40 @@ function collectTamperingEvidence(
     iframeCryptoStuck: hasIframeCryptoStuck(integrity),
     workerOracleMissing: readWorkerOracleMissing(integrity),
     ...readCfTamperEvidence(integrity),
+    patAttestationFailed: readPatAttestationFailed(integrity),
+    deviceIdentitySigFailed: readDeviceIdentitySigFailed(integrity),
   };
+}
+
+/**
+ * PAT attestation attempted-and-failed. Reads `integrity.patAttempt`
+ * set by redeem-pat-token. Returns true only when the client shipped a
+ * patToken AND verifyPatAttestation rejected it. Returns false for
+ * "no token shipped" (legitimate non-iOS) and "token shipped and
+ * verified" (legitimate iOS).
+ */
+function readPatAttestationFailed(integrity: IntegrityResultsData): boolean {
+  const a = (
+    integrity as { patAttempt?: { attempted?: unknown; verified?: unknown } }
+  ).patAttempt;
+  return a?.attempted === true && a?.verified === false;
+}
+
+/**
+ * device_identity sig-present-but-verify-failed. Reads
+ * `integrity.identification` set by buildIdentificationField. The shape
+ * is `{ pubkey, verified, reason, sig_present }`. We score the
+ * sig_present=true && verified=false case at tier-60. Absence (no
+ * device_identity block on the row) is unscored — legacy SDK bundles
+ * pre-migration produce that and aren't suspicious by itself.
+ */
+function readDeviceIdentitySigFailed(integrity: IntegrityResultsData): boolean {
+  const id = (
+    integrity as {
+      identification?: { sig_present?: unknown; verified?: unknown };
+    }
+  ).identification;
+  return id?.sig_present === true && id?.verified === false;
 }
 
 /**
@@ -1863,7 +1914,14 @@ function hasTier60Signal(e: TamperingEvidence): boolean {
     // "slow page / idle tab" envelope (90-300s past). Credible spoof but
     // not structurally impossible — gray zone with real-user FP risk if
     // we pushed it higher.
-    e.cfSlowPage
+    e.cfSlowPage ||
+    // Attestation attempted-and-failed cases (PAT + device_identity).
+    // Both are "client manufactured a sig-shaped string but the HMAC /
+    // ECDSA verify rejected it." No honest user produces a malformed
+    // signature; tier-60 credible spoof. See TamperingEvidence
+    // docstrings for the per-field rationale.
+    e.patAttestationFailed ||
+    e.deviceIdentitySigFailed
   );
 }
 

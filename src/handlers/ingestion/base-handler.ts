@@ -537,10 +537,16 @@ function extractCfCountry(sigint: unknown): string | null {
  */
 function buildPatFields(hydratedPayload: ArgusPayload): {
   pat?: ArgusPayload["pat"];
+  patAttempt?: ArgusPayload["patAttempt"];
   patDiag?: string;
 } {
-  const out: { pat?: ArgusPayload["pat"]; patDiag?: string } = {};
+  const out: {
+    pat?: ArgusPayload["pat"];
+    patAttempt?: ArgusPayload["patAttempt"];
+    patDiag?: string;
+  } = {};
   if (hydratedPayload.pat) out.pat = hydratedPayload.pat;
+  if (hydratedPayload.patAttempt) out.patAttempt = hydratedPayload.patAttempt;
   if (hydratedPayload.patDiag) out.patDiag = hydratedPayload.patDiag;
   return out;
 }

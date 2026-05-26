@@ -70,4 +70,59 @@ describe("redeemPatToken", () => {
     });
     expect(out.pat).toBeUndefined();
   });
+
+  // ── patAttempt telemetry (added 2026-05-25 for tier-60 scoring) ───────
+
+  it("stamps patAttempt={attempted:false} when no patToken shipped", () => {
+    const out = redeemPatToken(basePayload(), {
+      expectedSrcIp: SRC_IP,
+      sigintAesKeyHex: KEY,
+    });
+    expect(out.patAttempt).toEqual({ attempted: false, verified: false });
+  });
+
+  it("stamps patAttempt={attempted:true, verified:true} on success", () => {
+    const token = signPatAttestation({
+      issuer: "demo-issuer.private-access-tokens.fastly.com",
+      srcIp: SRC_IP,
+      tokenHash: "deadbeef".repeat(8),
+      sigintAesKeyHex: KEY,
+    });
+    const out = redeemPatToken(basePayload({ patToken: token }), {
+      expectedSrcIp: SRC_IP,
+      sigintAesKeyHex: KEY,
+    });
+    expect(out.patAttempt).toEqual({ attempted: true, verified: true });
+  });
+
+  it("stamps patAttempt={attempted:true, verified:false, reason} on bad IP", () => {
+    const token = signPatAttestation({
+      issuer: "demo-issuer.private-access-tokens.fastly.com",
+      srcIp: SRC_IP,
+      tokenHash: "deadbeef".repeat(8),
+      sigintAesKeyHex: KEY,
+    });
+    const out = redeemPatToken(basePayload({ patToken: token }), {
+      expectedSrcIp: "198.51.100.1",
+      sigintAesKeyHex: KEY,
+    });
+    expect(out.patAttempt?.attempted).toBe(true);
+    expect(out.patAttempt?.verified).toBe(false);
+    expect(out.patAttempt?.reason).toBeDefined();
+  });
+
+  it("stamps patAttempt={attempted:true, verified:false} on bad HMAC", () => {
+    const token = signPatAttestation({
+      issuer: "demo-issuer.private-access-tokens.fastly.com",
+      srcIp: SRC_IP,
+      tokenHash: "deadbeef".repeat(8),
+      sigintAesKeyHex: KEY,
+    });
+    const out = redeemPatToken(basePayload({ patToken: token }), {
+      expectedSrcIp: SRC_IP,
+      sigintAesKeyHex: "b".repeat(64),
+    });
+    expect(out.patAttempt?.attempted).toBe(true);
+    expect(out.patAttempt?.verified).toBe(false);
+  });
 });
