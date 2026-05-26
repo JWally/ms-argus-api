@@ -16,6 +16,7 @@ import {
 } from "@aws-sdk/client-dynamodb";
 import { marshall } from "@aws-sdk/util-dynamodb";
 import { HttpError } from "../../helpers/http-error";
+import { verifyDeviceMac } from "../../helpers/device-mac";
 import {
   getSessionId,
   resolveCpi,
@@ -780,10 +781,44 @@ function runDeviceHistory(
   return { dh, analysis };
 }
 
+/**
+ * Verify the SDK's device.mac chain (HMAC-MD5 over the device slices,
+ * keyed by session-bound material — see helpers/device-mac.ts and the
+ * ms-argus-web-integrity defense/hmac-chain branch). Three outcomes:
+ *   - 'absent'   → old cached SDK bundle without device.mac. Skip
+ *                  (rollout grace window so cached clients keep working).
+ *   - 'ok'       → payload integrity confirmed. Proceed.
+ *   - 'mismatch' → cleartext was tampered between SDK collection and
+ *                  the wire. Hard reject with HttpError(400).
+ */
+function enforceDeviceMac(ctx: HandleContext): void {
+  const sessionToken =
+    ctx.event.headers["x-argus-session"] ??
+    ctx.event.headers["X-Argus-Session"] ??
+    "";
+  const macOutcome = verifyDeviceMac(ctx.payload, { sessionToken });
+  if (macOutcome.kind === "mismatch") {
+    ctx.deps.metrics.addMetric("DeviceMacMismatch", MetricUnit.Count, 1);
+    ctx.deps.logger.warn("device.mac mismatch — rejecting", {
+      cpi: ctx.cpi,
+      session_id: ctx.sessionId,
+      expected_prefix: macOutcome.expected.slice(0, 16),
+      received_prefix: macOutcome.received.slice(0, 16),
+    });
+    throw new HttpError(400, "device_mac_mismatch");
+  }
+  if (macOutcome.kind === "absent") {
+    ctx.deps.metrics.addMetric("DeviceMacAbsent", MetricUnit.Count, 1);
+  } else {
+    ctx.deps.metrics.addMetric("DeviceMacOk", MetricUnit.Count, 1);
+  }
+}
+
 async function handleIntegrity(
   ctx: HandleContext,
 ): Promise<APIGatewayProxyResultV2> {
   const hydratedPayload = await hydrateSigint(ctx.payload, ctx.deps, ctx.event);
+  enforceDeviceMac(ctx);
   // Verify the client's device-identity sig against the raw (pre-hydration)
   // payload so sigintH2Token is still available. Failures never block —
   // the outcome is recorded on the row for analytics.
