@@ -25,6 +25,16 @@ export interface CfTokenFields {
 export interface CfTokenVerification {
   expired: boolean;
   tampered: boolean;
+  /**
+   * Signed age of the attestation in seconds: `now - data.ts`. Positive =
+   * past, negative = future (clock skew or fabrication). `null` when
+   * `data.ts` was missing or non-numeric.
+   *
+   * Carries more signal than the binary `expired` flag — used by the
+   * tampering scorer to separate "honest slow page" (90-300s past
+   * freshness) from "no legitimate path" (>300s past, or future-dated).
+   */
+  ageSec: number | null;
 }
 
 const MASK = 0xffffffffffffffffn;
@@ -122,9 +132,14 @@ export function verifyCfToken(
   now: number = Math.floor(Date.now() / 1000),
   maxAgeSeconds = 90,
 ): CfTokenVerification {
-  const result: CfTokenVerification = { expired: true, tampered: true };
+  const result: CfTokenVerification = {
+    expired: true,
+    tampered: true,
+    ageSec: null,
+  };
 
   if (typeof data.ts === "number") {
+    result.ageSec = now - data.ts;
     result.expired =
       now - data.ts > maxAgeSeconds || data.ts > now + maxAgeSeconds;
   }

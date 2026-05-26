@@ -1464,6 +1464,33 @@ interface TamperingEvidence {
    *  oracle is sufficient. Only zero-workers scores. See
    *  ARGUS_URGENT_FIXES #2. */
   workerOracleMissing: "main_only" | false;
+  /**
+   * CF TLS attestation (`sigint.aws_cf`) tamper/freshness state. The
+   * applyTlsJson path always lands a `tampered` and `expired` flag on
+   * the row when SIGINT_AES_KEY is configured. Pre-2026-05-25 the
+   * analyzer downstream read `aws_cf.{country,ip,asn,tz}` regardless
+   * of these flags, letting an attacker forge geo/network/timezone
+   * with a junk sig and have the analyzer believe it. Tiers:
+   *
+   *   - tampered=true → tier-100 (isDefinitiveTampering). SipHash sig
+   *     mismatch is structurally provable forgery; no honest browser
+   *     produces this.
+   *   - expired=true (sig OK) AND ageSec > 300 → tier-100. Five+
+   *     minutes past freshness with a valid sig means someone is
+   *     replaying a token that was issued for a different session.
+   *   - ageSec < -90 (future-dated) → tier-100. Egregious clock skew
+   *     or fabrication; either way don't trust.
+   *   - expired=true (sig OK) AND ageSec ∈ (90, 300] → tier-60. The
+   *     "slow page / idle tab" gray zone. Suspicious but possibly
+   *     honest.
+   *
+   * Note: cookieTampered intentionally NOT here — absent cookie is
+   * normal for first-visit / cleared cookies and doesn't imply
+   * tampering.
+   */
+  cfTampered: boolean;
+  cfReplayed: boolean;
+  cfSlowPage: boolean;
 }
 
 function readChUaMismatch(integrity: IntegrityResultsData): boolean {
@@ -1704,6 +1731,40 @@ function collectTamperingEvidence(
     kernelOsMismatchSoft: kernelSignals.soft && !shielded && !appleRelay,
     iframeCryptoStuck: hasIframeCryptoStuck(integrity),
     workerOracleMissing: readWorkerOracleMissing(integrity),
+    ...readCfTamperEvidence(integrity),
+  };
+}
+
+/**
+ * Tier the CF TLS attestation tamper / freshness state for the
+ * tampering scorer. Reads sigint.aws_cf's `tampered`, `expired`, and
+ * `ageSec` (set by applyTlsJson). See TamperingEvidence.cfTampered
+ * for the tier mapping. Honest sessions return {false, false, false}.
+ */
+function readCfTamperEvidence(integrity: IntegrityResultsData): {
+  cfTampered: boolean;
+  cfReplayed: boolean;
+  cfSlowPage: boolean;
+} {
+  const cf = (
+    integrity.sigint as
+      | { aws_cf?: { tampered?: unknown; expired?: unknown; ageSec?: unknown } }
+      | undefined
+  )?.aws_cf;
+  if (!cf) return { cfTampered: false, cfReplayed: false, cfSlowPage: false };
+  const tampered = cf.tampered === true;
+  if (tampered) {
+    return { cfTampered: true, cfReplayed: false, cfSlowPage: false };
+  }
+  const expired = cf.expired === true;
+  const ageSec = typeof cf.ageSec === "number" ? cf.ageSec : null;
+  // Future-dated (< -90) and long-stale (> 300s) both → replayed.
+  // No legitimate path produces either.
+  const replayed = ageSec !== null && (ageSec < -90 || ageSec > 300);
+  return {
+    cfTampered: false,
+    cfReplayed: replayed,
+    cfSlowPage: !replayed && expired && ageSec !== null,
   };
 }
 
@@ -1724,32 +1785,50 @@ function readWorkerOracleMissing(
   return false;
 }
 
+/**
+ * Worker-scope divergence on ANY of the structurally-constant navigator
+ * fields is conclusive. Real browsers propagate navigator state from the
+ * parent realm to dedicated/shared workers identically — no browser has
+ * ever shipped otherwise, and no privacy mode / extension produces this
+ * split. The only mechanism that does is automation tooling overriding
+ * the UA on the main thread without propagating to workers.
+ * `uaDivergence` is the userAgent-specific narrow check; the count
+ * covers the other COMPARE_FIELDS (platform, hardwareConcurrency, webgl
+ * renderer/vendor, languages, appVersion, etc.).
+ */
+function hasDivergenceTampering(e: TamperingEvidence): boolean {
+  return e.divergences >= 1 || e.uaDivergence || e.platformLie;
+}
+
+/**
+ * Structurally-impossible UA / engine / OS / TLS observations. Each is a
+ * "real browsers can't produce this" signal.
+ *
+ * - chUaMismatch: client-hints vs UA disagreement (platform/mobile/brand).
+ * - browserEngineHardBreak: UA's baseline says some observed field has
+ *   zero prevalence (e.g. Safari UA + V8 jsEngine).
+ * - cfTampered / cfReplayed: CF TLS attestation forged (sig mismatch)
+ *   or replayed from another session (valid sig but >5min stale, or
+ *   future-dated). See cfTampered / cfReplayed for the tier mapping.
+ * - kernelOsMismatchHard: server's own kernel sees a non-Darwin TCP
+ *   options bitmask on a UA claiming iOS/macOS. The client cannot lie
+ *   about this from JS — bits negotiated at SYN time.
+ */
+function hasStructuralTampering(e: TamperingEvidence): boolean {
+  return (
+    e.chUaMismatch ||
+    e.browserEngineHardBreak ||
+    e.cfTampered ||
+    e.cfReplayed ||
+    e.kernelOsMismatchHard
+  );
+}
+
 function isDefinitiveTampering(e: TamperingEvidence): boolean {
   if (e.lies >= 20 || e.ja4Mismatch) return true;
-  // Worker-scope divergence on ANY of the structurally-constant navigator
-  // fields (see `collectTamperingEvidence` for the list) is conclusive on
-  // its own. Real browsers propagate navigator state from the parent realm
-  // to dedicated/shared workers identically — no browser has ever shipped
-  // otherwise, and no privacy mode / extension produces this split. The
-  // only mechanism that does is automation tooling (Playwright/Puppeteer/
-  // Selenium) overriding the UA on the main thread without propagating to
-  // workers. `uaDivergence` is the userAgent-specific narrow check; the
-  // count covers the other COMPARE_FIELDS (platform, hardwareConcurrency,
-  // webgl renderer/vendor, languages, appVersion, etc.).
-  if (e.divergences >= 1 || e.uaDivergence || e.platformLie) return true;
+  if (hasDivergenceTampering(e)) return true;
   if (e.webrtcApiTampered) return true;
-  // Client-hints vs UA disagreement (platform/mobile/brand) is proof of
-  // partial spoofing — real browsers never have this split.
-  if (e.chUaMismatch) return true;
-  // Browser-engine hard break: claimed UA's baseline says some observed
-  // value has 0 prevalence (e.g. Safari UA + V8 jsEngine). Structurally
-  // impossible per accumulated good traffic.
-  if (e.browserEngineHardBreak) return true;
-  // Kernel-OS hard break: server's own kernel sees a non-Darwin TCP
-  // options bitmask on a UA claiming iOS/macOS. The client cannot lie
-  // about this from JS — the bits are negotiated at SYN time. Strongest
-  // device-axis signal we have.
-  return e.kernelOsMismatchHard;
+  return hasStructuralTampering(e);
 }
 
 /**
@@ -1779,7 +1858,12 @@ function hasTier60Signal(e: TamperingEvidence): boolean {
     e.localeTamper ||
     e.tlsUaMismatch ||
     e.browserEngineSoft ||
-    e.kernelOsMismatchSoft
+    e.kernelOsMismatchSoft ||
+    // CF TLS attestation past freshness with a valid sig but within the
+    // "slow page / idle tab" envelope (90-300s past). Credible spoof but
+    // not structurally impossible — gray zone with real-user FP risk if
+    // we pushed it higher.
+    e.cfSlowPage
   );
 }
 

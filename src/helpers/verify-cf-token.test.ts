@@ -68,7 +68,28 @@ describe("verifyCfToken", () => {
     expect(verifyCfToken(token, key, now)).toEqual({
       expired: false,
       tampered: false,
+      ageSec: 0,
     });
+  });
+
+  it("returns ageSec = now - ts (positive for stale tokens)", () => {
+    const token = makeToken(now - 120); // 120s past
+    const r = verifyCfToken(token, key, now);
+    expect(r.ageSec).toBe(120);
+    expect(r.expired).toBe(true); // outside ±90s
+    expect(r.tampered).toBe(false); // sig still valid
+  });
+
+  it("returns negative ageSec for future-dated tokens", () => {
+    const token = makeToken(now + 200); // 200s in the future
+    const r = verifyCfToken(token, key, now);
+    expect(r.ageSec).toBe(-200);
+    expect(r.expired).toBe(true);
+  });
+
+  it("returns ageSec=null when ts is missing", () => {
+    const { ts: _ts, ...withoutTs } = makeToken(now);
+    expect(verifyCfToken(withoutTs, key, now).ageSec).toBeNull();
   });
 
   it("flags tampered when the sig does not match", () => {
