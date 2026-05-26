@@ -1,9 +1,5 @@
 import { describe, it, expect } from "vitest";
-import {
-  analyzeWorkerScopes,
-  WORKER_ORACLE_MAIN_ONLY,
-  WORKER_ORACLE_NO_SHARED,
-} from "./index";
+import { analyzeWorkerScopes, WORKER_ORACLE_MAIN_ONLY } from "./index";
 
 // Realistic, identical scope values so pairsDiverge has nothing to flag.
 // `languages` deliberately omitted — see worker-scope-oracle-omission.mjs
@@ -43,21 +39,34 @@ describe("analyzeWorkerScopes — oracle availability scoring", () => {
     expect(r.signals.some((s) => s.code === WORKER_ORACLE_MAIN_ONLY)).toBe(
       true,
     );
-    expect(r.signals.some((s) => s.code === WORKER_ORACLE_NO_SHARED)).toBe(
-      false,
-    );
   });
 
-  it("scopes = {main, web} (no shared) → WORKER_ORACLE_NO_SHARED, lied=true", () => {
+  it("scopes = {main, web} (no shared) → CLEAN (regression: Android Chrome FP)", () => {
+    // Android Chrome ships dedicated Worker but not SharedWorker (Chromium
+    // intentionally never enabled SharedWorker on Android). Pre-iOS-16
+    // Safari same. Any worker present is sufficient — only the
+    // zero-workers case scores. Regression: an earlier iteration emitted
+    // WORKER_ORACLE_NO_SHARED here and bumped device_tampering to 25 for
+    // every legit Android Chrome user.
     const r = analyzeWorkerScopes({
       navigator: NAV,
       workerScope: { scopes: { main: SCOPE, web: SCOPE } },
     });
-    expect(r.lied).toBe(true);
-    expect(r.signals.some((s) => s.code === WORKER_ORACLE_NO_SHARED)).toBe(
-      true,
+    expect(r.lied).toBe(false);
+    expect(r.signals.some((s) => s.code.startsWith("WORKER_ORACLE_"))).toBe(
+      false,
     );
-    expect(r.signals.some((s) => s.code === WORKER_ORACLE_MAIN_ONLY)).toBe(
+  });
+
+  it("scopes = {main, shared} (no dedicated worker) → CLEAN (unusual but oracle present)", () => {
+    // Theoretically rare but defensively correct: shared worker alone
+    // still provides a cross-thread oracle, so the divergence check works.
+    const r = analyzeWorkerScopes({
+      navigator: NAV,
+      workerScope: { scopes: { main: SCOPE, shared: SCOPE } },
+    });
+    expect(r.lied).toBe(false);
+    expect(r.signals.some((s) => s.code.startsWith("WORKER_ORACLE_"))).toBe(
       false,
     );
   });
@@ -87,19 +96,10 @@ describe("analyzeWorkerScopes — oracle availability scoring", () => {
     );
   });
 
-  it("WORKER_ORACLE_MAIN_ONLY severity is 0.6 (tier-60 in tampering ladder)", () => {
+  it("WORKER_ORACLE_MAIN_ONLY severity is 0.5 (tier-50 in tampering ladder)", () => {
     const r = analyzeWorkerScopes({ navigator: NAV });
     const sig = r.signals.find((s) => s.code === WORKER_ORACLE_MAIN_ONLY);
-    expect(sig?.severity).toBe(0.6);
-  });
-
-  it("WORKER_ORACLE_NO_SHARED severity is 0.25 (tier-25 in tampering ladder)", () => {
-    const r = analyzeWorkerScopes({
-      navigator: NAV,
-      workerScope: { scopes: { main: SCOPE, web: SCOPE } },
-    });
-    const sig = r.signals.find((s) => s.code === WORKER_ORACLE_NO_SHARED);
-    expect(sig?.severity).toBe(0.25);
+    expect(sig?.severity).toBe(0.5);
   });
 
   it("non-object device → EMPTY result (no signals)", () => {

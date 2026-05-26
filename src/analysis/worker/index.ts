@@ -4,14 +4,19 @@
  * Compares main-thread, dedicated worker, and shared worker scopes
  * to detect spoofing that only patches the main thread. ALSO scores
  * the *availability* of the oracle itself: a real browser running our
- * SDK produces all three scopes (main / web / shared). Submissions
- * that ship fewer scopes either (a) are honest legacy browsers without
- * full worker support — iOS Safari pre-16 famously lacked SharedWorker
- * — or (b) are attackers who learned that patching multiple realms is
- * hard and chose to ship only the main thread. Either way, omission
- * reduces the cross-check's power, and the analyzer surfaces that
- * reduction as a scored signal rather than silently treating absence
- * as innocence (the pre-2026-05 behavior — see ARGUS_URGENT_FIXES #2).
+ * SDK produces a worker scope alongside main. Submissions that ship
+ * zero worker scopes either (a) are running an unusual browser
+ * configuration that doesn't support Worker at all (rare in 2026) or
+ * (b) are attackers who learned that patching multiple realms is hard
+ * and chose to ship only the main thread.
+ *
+ * Note on shared workers: an earlier iteration ALSO penalized
+ * "main+dedicated, no shared" but that produced false positives on
+ * every legitimate Android Chrome session (Chromium intentionally
+ * never shipped SharedWorker on Android) and pre-iOS-16 Safari. The
+ * production rule is now: any worker (dedicated OR shared) present is
+ * sufficient for the cross-thread divergence check; only the
+ * zero-workers case scores. See ARGUS_URGENT_FIXES #2.
  */
 
 import { detectCrossFieldAnomalies } from "../../services/profile/anomaly/worker-scope-consistency";
@@ -106,21 +111,24 @@ function formatSignals(
 }
 
 /**
- * Codes emitted when the cross-thread oracle is incomplete. Read by
+ * Code emitted when the cross-thread oracle is incomplete. Read by
  * `collectTamperingEvidence` in merchant-projection.ts to lift the
  * device-tampering floor for submissions that withheld the oracle.
  *
- *  - WORKER_ORACLE_MAIN_ONLY: zero worker scopes shipped (or no
- *    workerScope object at all). Severity 0.6 → tier-60 in the
- *    tampering ladder ("credible spoof — they withheld the oracle").
- *  - WORKER_ORACLE_NO_SHARED: main + dedicated worker present,
- *    shared worker absent. Severity 0.25 → tier-25 fallback ("minor
- *    tell — could be older Safari, worth flagging"). Reflects iOS
- *    Safari pre-16's lack of SharedWorker, hence the lighter
- *    penalty.
+ * WORKER_ORACLE_MAIN_ONLY fires when NEITHER `scopes.web` (dedicated
+ * worker) NOR `scopes.shared` (shared worker) is present — i.e. zero
+ * worker scopes, or no `workerScope` object at all. Severity 0.5 →
+ * tier-50 in the tampering ladder (same slot as `iframeCryptoStuck`).
+ *
+ * Earlier iterations also emitted WORKER_ORACLE_NO_SHARED for the
+ * "main + dedicated, no shared" case, but that fired on every
+ * legitimate Android Chrome session (Chromium intentionally never
+ * shipped SharedWorker on Android) and pre-iOS-16 Safari. The
+ * production rule is now: ANY worker (dedicated or shared) present
+ * means the oracle is sufficient to trust the cross-thread divergence
+ * check; only zero-workers is a tell.
  */
 export const WORKER_ORACLE_MAIN_ONLY = "WORKER_ORACLE_MAIN_ONLY";
-export const WORKER_ORACLE_NO_SHARED = "WORKER_ORACLE_NO_SHARED";
 
 /** Decide whether the available scope set warrants an oracle-missing signal. */
 function oracleMissingSignal(
@@ -128,17 +136,11 @@ function oracleMissingSignal(
 ): { code: string; severity: number; evidence: string } | null {
   const hasWeb = !!(scopes && isObj(scopes.web));
   const hasShared = !!(scopes && isObj(scopes.shared));
-  if (hasShared) return null;
-  if (hasWeb)
-    return {
-      code: WORKER_ORACLE_NO_SHARED,
-      severity: 0.25,
-      evidence: "main+web scopes present; shared worker scope absent",
-    };
+  if (hasWeb || hasShared) return null;
   return {
     code: WORKER_ORACLE_MAIN_ONLY,
-    severity: 0.6,
-    evidence: "no dedicated/shared worker scopes shipped",
+    severity: 0.5,
+    evidence: "no dedicated or shared worker scopes shipped",
   };
 }
 
