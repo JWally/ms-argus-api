@@ -247,16 +247,17 @@ export interface ArgusPayload {
    */
   patDiag?: string;
   /**
-   * Encrypted device-history blob from the client's IndexedDB. Wire
-   * format is base64(iv[12] || aes-gcm-ciphertext || authTag[16]).
-   * Server decrypts via a key derived from SIGINT_AES_KEY (HKDF info
-   * "argus-device-history-v1"), appends the current submission as a
-   * visit, prunes to DEVICE_HISTORY_MAX_VISITS, re-encrypts, and
-   * returns the updated blob in the response. Absent on first
-   * submission or after the client cleared IDB. See
-   * helpers/device-history.ts + ARGUS_URGENT_FIXES #5 Phase 2.
+   * Server-managed client-carried encrypted state. Field name is
+   * deliberately bland — see helpers/device-history.ts for the actual
+   * shape. Wire format is base64(iv[12] || aes-gcm-ciphertext ||
+   * authTag[16]). Server decrypts via a key derived from
+   * SIGINT_AES_KEY (HKDF info "argus-device-history-v1"), appends the
+   * current submission as a visit, prunes to DEVICE_HISTORY_MAX_VISITS,
+   * re-encrypts, and returns the updated value in the response.
+   * Absent on first submission or after the client cleared storage.
+   * See ARGUS_URGENT_FIXES #5 Phase 2.
    */
-  deviceHistoryBlob?: string;
+  cache?: string;
 }
 
 /**

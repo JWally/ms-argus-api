@@ -737,7 +737,7 @@ function runDeviceHistory(
   analysis: DeviceHistoryAnalysis;
 } {
   const dh = processDeviceHistory({
-    incomingBlob: ctx.payload.deviceHistoryBlob,
+    incomingBlob: ctx.payload.cache,
     pubkey: identity.pubkey,
     sigintAesKey: process.env.SIGINT_AES_KEY,
     visit: {
@@ -832,7 +832,7 @@ async function handleIntegrity(
     statusCode: 200,
     body: JSON.stringify({
       session_id: ctx.sessionId,
-      ...(dh.outboundBlob ? { deviceHistoryBlob: dh.outboundBlob } : {}),
+      ...(dh.outboundBlob ? { cache: dh.outboundBlob } : {}),
     }),
     headers: { "Content-Type": "application/json" },
   };
