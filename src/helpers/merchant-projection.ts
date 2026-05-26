@@ -1509,6 +1509,15 @@ interface TamperingEvidence {
    * tried and failed.
    */
   deviceIdentitySigFailed: boolean;
+  /**
+   * Device-history blob presented but failed AES-GCM auth-tag
+   * verification (or otherwise corrupt). Honest clients either present
+   * a server-issued valid blob OR no blob at all (first visit / cleared
+   * IDB). A corrupt blob means the client tampered with bytes only the
+   * server can produce — tier-60 credible spoof. See
+   * ARGUS_URGENT_FIXES #5 Phase 2 / analysis/device-history.
+   */
+  deviceHistoryTampered: boolean;
 }
 
 function readChUaMismatch(integrity: IntegrityResultsData): boolean {
@@ -1752,6 +1761,7 @@ function collectTamperingEvidence(
     ...readCfTamperEvidence(integrity),
     patAttestationFailed: readPatAttestationFailed(integrity),
     deviceIdentitySigFailed: readDeviceIdentitySigFailed(integrity),
+    deviceHistoryTampered: readDeviceHistoryTampered(integrity),
   };
 }
 
@@ -1784,6 +1794,22 @@ function readDeviceIdentitySigFailed(integrity: IntegrityResultsData): boolean {
     }
   ).identification;
   return id?.sig_present === true && id?.verified === false;
+}
+
+/**
+ * Device-history AES-GCM auth-tag failure on a presented blob. Reads
+ * `integrity.analysis.device_history.tampered` set by the analyzer.
+ * Returns false when the client presented no blob (absent / fresh
+ * device) or when the blob decrypted cleanly. Returns true ONLY when
+ * the client presented bytes that decoded but failed integrity check.
+ */
+function readDeviceHistoryTampered(integrity: IntegrityResultsData): boolean {
+  const dh = (
+    integrity.analysis as {
+      device_history?: { tampered?: unknown };
+    }
+  ).device_history;
+  return dh?.tampered === true;
 }
 
 /**
@@ -1921,7 +1947,12 @@ function hasTier60Signal(e: TamperingEvidence): boolean {
     // signature; tier-60 credible spoof. See TamperingEvidence
     // docstrings for the per-field rationale.
     e.patAttestationFailed ||
-    e.deviceIdentitySigFailed
+    e.deviceIdentitySigFailed ||
+    // Device-history blob presented but AES-GCM auth-tag verification
+    // failed. Same shape: client manufactured bytes only the server
+    // can validly produce. Honest clients present a valid server-
+    // issued blob OR no blob; presenting a corrupt one is a tell.
+    e.deviceHistoryTampered
   );
 }
 

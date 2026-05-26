@@ -3363,6 +3363,66 @@ describe("buildMerchantResponse", () => {
       expect(result.device_tampering).toBe(0);
     });
 
+    it("(E.16) deviceHistory.tampered=true → tier-60 (auth-tag fail on blob)", () => {
+      // ARGUS_URGENT_FIXES #5 Phase 2: client presented a device-history
+      // blob whose AES-GCM auth-tag verification failed. Honest clients
+      // present a valid server-issued blob OR no blob at all; presenting
+      // corrupt bytes is a tampering tell.
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: baseIntegrity({
+          analysis: {
+            ...baseIntegrity().analysis,
+            device_history: {
+              tampered: true,
+              identityMismatch: false,
+              freshDevice: false,
+              scanCount: 0,
+              ageSeconds: 0,
+              distinctIpCount: 0,
+              distinctCountryCount: 0,
+              distinctNetClassCount: 0,
+              distinctCpiCount: 0,
+              distinctUaCount: 0,
+              recent5MinCount: 0,
+              recent1HourCount: 0,
+              recent24HourCount: 0,
+            },
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          } as any,
+        }),
+      });
+      expect(result.device_tampering).toBeGreaterThanOrEqual(60);
+    });
+
+    it("(E.17) deviceHistory.freshDevice=true → no penalty (legitimate first visit)", () => {
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: baseIntegrity({
+          analysis: {
+            ...baseIntegrity().analysis,
+            device_history: {
+              tampered: false,
+              identityMismatch: false,
+              freshDevice: true,
+              scanCount: 0,
+              ageSeconds: 0,
+              distinctIpCount: 0,
+              distinctCountryCount: 0,
+              distinctNetClassCount: 0,
+              distinctCpiCount: 0,
+              distinctUaCount: 0,
+              recent5MinCount: 0,
+              recent1HourCount: 0,
+              recent24HourCount: 0,
+            },
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          } as any,
+        }),
+      });
+      expect(result.device_tampering).toBe(0);
+    });
+
     it("(F) WEBRTC_BLOCKED on datacenter ASN applies extra 0.5× downgrade", () => {
       const input: MerchantProjectionInput = {
         session_id: "s",
