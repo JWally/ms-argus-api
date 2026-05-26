@@ -3086,11 +3086,13 @@ describe("buildMerchantResponse", () => {
       expect(result.device_tampering).toBeGreaterThanOrEqual(60);
     });
 
-    it("(E.1) workerOracleMissing=main_only → tampering.probability>=60", () => {
-      // ARGUS_URGENT_FIXES #2: a submission with no worker scopes (or only
-      // main) withholds the cross-thread oracle that catches single-realm
-      // patching. Without other signals, this lifts device_tampering to the
-      // tier-60 ("credible spoof") floor.
+    it("(E.1) workerOracleMissing=main_only → tampering.probability=50", () => {
+      // ARGUS_URGENT_FIXES #2: a submission with zero worker scopes (only
+      // main) withholds the cross-thread oracle entirely. Tier-50 in the
+      // tampering ladder — same slot as iframeCryptoStuck. Real browsers
+      // running our SDK always produce at least a dedicated Worker
+      // (Android Chrome included), so zero-workers has no honest-browser
+      // carve-out.
       const result = buildMerchantResponse({
         session_id: "s",
         integrity: baseIntegrity({
@@ -3102,21 +3104,25 @@ describe("buildMerchantResponse", () => {
               signals: [
                 {
                   code: "WORKER_ORACLE_MAIN_ONLY",
-                  severity: 0.6,
-                  evidence: "no dedicated/shared worker scopes shipped",
+                  severity: 0.5,
+                  evidence: "no dedicated or shared worker scopes shipped",
                 },
               ],
             },
           },
         }),
       });
-      expect(result.device_tampering).toBeGreaterThanOrEqual(60);
+      expect(result.device_tampering).toBe(50);
     });
 
-    it("(E.2) workerOracleMissing=no_shared → tampering.probability>=25", () => {
-      // Modest penalty: main + dedicated worker shipped, shared absent. Could
-      // be honest older Safari (pre-iOS-16) or an attacker who patched two
-      // realms but not three. Tier 25 reflects the ambiguity.
+    it("(E.2 regression) WORKER_ORACLE_NO_SHARED in signals does NOT score", () => {
+      // The earlier iteration of the worker-oracle scoring tiered
+      // "main+dedicated, no shared" at 25. That fired on every legit
+      // Android Chrome session (Chromium never shipped SharedWorker on
+      // Android) and pre-iOS-16 Safari. Now the rule is "any worker
+      // present is enough"; analyzeWorkerScopes no longer emits this
+      // code at all, but if legacy/synthetic data carries it, it must
+      // NOT contribute to device_tampering.
       const result = buildMerchantResponse({
         session_id: "s",
         integrity: baseIntegrity({
@@ -3129,17 +3135,14 @@ describe("buildMerchantResponse", () => {
                 {
                   code: "WORKER_ORACLE_NO_SHARED",
                   severity: 0.25,
-                  evidence:
-                    "main+web scopes present; shared worker scope absent",
+                  evidence: "legacy signal from prior analyzer version",
                 },
               ],
             },
           },
         }),
       });
-      expect(result.device_tampering).toBeGreaterThanOrEqual(25);
-      // Should NOT be tier-60: alone, no_shared is only a minor tell.
-      expect(result.device_tampering).toBeLessThan(60);
+      expect(result.device_tampering).toBe(0);
     });
 
     it("(E.3) workerOracleMissing=false (all three scopes) → no extra penalty", () => {

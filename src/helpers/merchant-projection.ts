@@ -1453,14 +1453,17 @@ interface TamperingEvidence {
    *  in `botProbability`. */
   iframeCryptoStuck: boolean;
   /** Worker-scope cross-check oracle availability. Set by the worker
-   *  analyzer when the client shipped fewer than all three scopes:
-   *    - "main_only": zero worker scopes (or no workerScope object at all)
-   *    - "no_shared": main + dedicated worker present, shared absent
-   *    - false: all three scopes present (no oracle missing)
-   *  See ARGUS_URGENT_FIXES #2. "main_only" feeds tier-60 (credible
-   *  spoof — they withheld the oracle deliberately); "no_shared" feeds
-   *  tier-25 (modest tell, partially compatible with older iOS Safari). */
-  workerOracleMissing: "main_only" | "no_shared" | false;
+   *  analyzer when the client shipped no worker scopes at all (only
+   *  main thread, or no `workerScope` object). Feeds tier-50 in the
+   *  tampering ladder (same slot as iframeCryptoStuck).
+   *
+   *  Earlier iterations also tracked a "no_shared" state, but that
+   *  fired on every legitimate Android Chrome session and pre-iOS-16
+   *  Safari (Chromium intentionally never shipped SharedWorker on
+   *  Android). The production rule is now: ANY worker present →
+   *  oracle is sufficient. Only zero-workers scores. See
+   *  ARGUS_URGENT_FIXES #2. */
+  workerOracleMissing: "main_only" | false;
 }
 
 function readChUaMismatch(integrity: IntegrityResultsData): boolean {
@@ -1705,22 +1708,19 @@ function collectTamperingEvidence(
 }
 
 /**
- * Read the WORKER_ORACLE_* signal (if any) emitted by analysis/worker.
- * Returns "main_only" when no worker scopes were shipped, "no_shared" when
- * the dedicated worker is present but the shared worker is absent, and
- * false when all three scopes are present (oracle is complete; existing
- * `divergences` count handles the comparison).
- *
- * See ARGUS_URGENT_FIXES #2 / `analyzeWorkerScopes` for the rationale.
+ * Read the WORKER_ORACLE_MAIN_ONLY signal (if any) emitted by
+ * analysis/worker. Returns "main_only" when no worker scopes were
+ * shipped at all, false when at least one worker (dedicated or shared)
+ * is present. The "any worker is enough" rule replaces the earlier
+ * NO_SHARED tier — see analyzeWorkerScopes for the Android Chrome /
+ * pre-iOS-16 Safari false-positive that motivated the simplification.
  */
 function readWorkerOracleMissing(
   integrity: IntegrityResultsData,
-): "main_only" | "no_shared" | false {
+): "main_only" | false {
   const sigs = integrity.analysis.worker.signals ?? [];
   if (sigs.some((s) => s.code === "WORKER_ORACLE_MAIN_ONLY"))
     return "main_only";
-  if (sigs.some((s) => s.code === "WORKER_ORACLE_NO_SHARED"))
-    return "no_shared";
   return false;
 }
 
@@ -1779,15 +1779,7 @@ function hasTier60Signal(e: TamperingEvidence): boolean {
     e.localeTamper ||
     e.tlsUaMismatch ||
     e.browserEngineSoft ||
-    e.kernelOsMismatchSoft ||
-    // Worker-scope cross-check oracle entirely missing. A real browser
-    // running our SDK ships all three scopes; shipping only main is a
-    // credible spoof — they withheld the cross-thread oracle that would
-    // otherwise have caught a single-realm patch. iOS Safari pre-16
-    // lacks SharedWorker but still produces a dedicated worker, so the
-    // "main only" case isn't an honest-browser carve-out. See
-    // ARGUS_URGENT_FIXES #2.
-    e.workerOracleMissing === "main_only"
+    e.kernelOsMismatchSoft
   );
 }
 
@@ -1801,15 +1793,20 @@ function tamperingProbabilityFromEvidence(e: TamperingEvidence): number {
   // fingerprint values pass every other check. Tier 50: more confident than
   // tzGeoMismatch (35, often benign for travelers), less than tier60Signal
   // signals which include cipher-level evidence.
-  if (e.iframeCryptoStuck) return 50;
+  // Tier 50: confident tells that aren't structurally impossible.
+  //   - iframeCryptoStuck: Marionette / Camoufox signature.
+  //   - workerOracleMissing=main_only: zero worker scopes shipped. Real
+  //     browsers running our SDK always produce at least a dedicated
+  //     Worker (Android Chrome included — it just lacks SharedWorker).
+  //     Zero-workers is "no honest-browser carve-out exists" territory:
+  //     either a heavily-locked-down embed (rare) or an attacker who
+  //     didn't want to instrument multiple realms. See
+  //     ARGUS_URGENT_FIXES #2.
+  if (e.iframeCryptoStuck || e.workerOracleMissing === "main_only") return 50;
   // TZ location vs IP TZ disagreement — VPN/proxy tell, often benign for
   // travelers but still worth surfacing.
   if (e.tzGeoMismatch) return 35;
-  // Tier 25: minor tells. A submission with main + dedicated worker but no
-  // shared worker is consistent with iOS Safari pre-16 (legit) or with an
-  // attacker who didn't bother spinning up SharedWorker (suspicious but
-  // not damning). Tier 25 reflects the ambiguity. See ARGUS_URGENT_FIXES #2.
-  if (e.lies >= 1 || e.workerOracleMissing === "no_shared") return 25;
+  if (e.lies >= 1) return 25;
   // langGeoCrossContinent / langGeoCrossCountry intentionally do NOT feed
   // device_tampering. en-GB on a US IP and similar accept-language quirks
   // are widespread legitimate user preferences (British-spelling fans,
