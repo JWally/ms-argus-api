@@ -178,6 +178,31 @@ export interface PayloadPat {
   redeemedAt: number;
 }
 
+/**
+ * Per-row PAT attestation telemetry. Distinct from `pat` — `pat` is the
+ * trust signal (only present when verification succeeded), this records
+ * whether the client TRIED to attest regardless of outcome.
+ *
+ * Lets merchant-projection distinguish:
+ *   - "no patToken shipped" (non-iOS, or iOS without the SDK PAT path) →
+ *     not suspicious, no signal
+ *   - "patToken present, verification failed" → credible spoof (the
+ *     attacker manufactured a token-shaped string but the HMAC didn't
+ *     verify) → tier-60 tampering
+ *
+ * Reason values mirror `verifyPatAttestation`'s rejection codes
+ * ("BAD_FORMAT", "BAD_MAC", "EXPIRED", "WRONG_IP", etc.). Logged for
+ * forensics; not directly used by the scorer.
+ */
+export interface PayloadPatAttempt {
+  /** True when the client shipped a `patToken` field in the submission. */
+  attempted: boolean;
+  /** True when verifyPatAttestation succeeded. */
+  verified: boolean;
+  /** Failure reason from verifyPatAttestation when verified=false. */
+  reason?: string;
+}
+
 export interface ArgusPayload {
   identifiers: PayloadIdentifiers;
   hashes: PayloadHashes;
@@ -208,6 +233,12 @@ export interface ArgusPayload {
   patToken?: string;
   /** Hydrated PAT attestation, populated only after successful patToken redemption. */
   pat?: PayloadPat;
+  /**
+   * Per-row PAT attestation telemetry (always populated when redeemPatToken
+   * runs). Distinct from `pat` — captures "the client tried" regardless of
+   * whether verification succeeded. See PayloadPatAttempt docstring.
+   */
+  patAttempt?: PayloadPatAttempt;
   /**
    * Forensic-only diagnostic from the SDK's PAT probe — JSON string of
    * what the JS-layer `fetch()` actually saw (`{status, ok, hasToken,
@@ -508,6 +539,12 @@ export interface IntegrityResultsData {
    *  field. Absent on non-Apple traffic / failed attestation / legacy
    *  records pre-migration. Read-only from the merchant projection. */
   pat?: PayloadPat;
+  /** Per-row PAT attestation telemetry — always present when the
+   *  ingestion handler ran redeemPatToken. Distinct from `pat`: this
+   *  records whether the client TRIED, regardless of outcome.
+   *  attempted=true && verified=false is the "credible spoof" case
+   *  that scores as tier-60 tampering. */
+  patAttempt?: PayloadPatAttempt;
   /** SDK-side observation of what the JS-layer fetch() saw on the PAT
    *  probe (`{status, ok, hasToken, err?}` JSON-encoded). Forensic only,
    *  never returned to merchants. */

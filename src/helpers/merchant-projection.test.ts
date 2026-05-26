@@ -3273,6 +3273,96 @@ describe("buildMerchantResponse", () => {
       expect(result.device_tampering).toBe(0);
     });
 
+    it("(E.10) patAttempt attempted+!verified → tier-60", () => {
+      // ARGUS_URGENT_FIXES #4: PAT verification failure was silent
+      // pre-fix. A client that shipped a token-shaped string with a bad
+      // HMAC could not be distinguished from a non-iOS user who never
+      // attempted PAT at all. Now: attempted=true, verified=false →
+      // tier-60 (credible spoof).
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: baseIntegrity({
+          patAttempt: { attempted: true, verified: false, reason: "BAD_MAC" },
+        }),
+      });
+      expect(result.device_tampering).toBe(60);
+    });
+
+    it("(E.11) patAttempt attempted=false → no penalty (legit non-iOS)", () => {
+      // Control: client did not attempt PAT (most non-iOS traffic). Not
+      // suspicious; no signal.
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: baseIntegrity({
+          patAttempt: { attempted: false, verified: false },
+        }),
+      });
+      expect(result.device_tampering).toBe(0);
+    });
+
+    it("(E.12) patAttempt verified=true → no penalty (legit iOS)", () => {
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: baseIntegrity({
+          patAttempt: { attempted: true, verified: true },
+        }),
+      });
+      expect(result.device_tampering).toBe(0);
+    });
+
+    it("(E.13) identification sig_present=true && verified=false → tier-60", () => {
+      // ARGUS_URGENT_FIXES #4: device_identity verification was stored on
+      // the row but never read by the scorer. Now: sig_present=true AND
+      // verified=false → tier-60 (client tried to attest, ECDSA verify
+      // rejected). NB: this scores the FAILURE; the weak signing-input
+      // problem (sig over xor(h2Token, hardcoded_key)) is finding #5,
+      // separate.
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: baseIntegrity({
+          identification: {
+            pubkey: "dGVzdA==",
+            verified: false,
+            reason: "sig_invalid",
+            sig_present: true,
+          },
+        }),
+      });
+      expect(result.device_tampering).toBe(60);
+    });
+
+    it("(E.14) identification sig_present=false → no penalty (legacy SDK)", () => {
+      // SDK pre-migration didn't ship device_identity. The row has
+      // identification with sig_present=false. Not suspicious by itself.
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: baseIntegrity({
+          identification: {
+            pubkey: "",
+            verified: false,
+            reason: "absent",
+            sig_present: false,
+          },
+        }),
+      });
+      expect(result.device_tampering).toBe(0);
+    });
+
+    it("(E.15) identification verified=true → no penalty", () => {
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: baseIntegrity({
+          identification: {
+            pubkey: "dGVzdA==",
+            verified: true,
+            reason: null,
+            sig_present: true,
+          },
+        }),
+      });
+      expect(result.device_tampering).toBe(0);
+    });
+
     it("(F) WEBRTC_BLOCKED on datacenter ASN applies extra 0.5× downgrade", () => {
       const input: MerchantProjectionInput = {
         session_id: "s",
