@@ -1374,6 +1374,27 @@ function detectWebrtcApiTampering(
  * Pairs with JA4 mismatch: this catches the case where UA + JA4 agree on
  * Chromium but the client hints are missing (stealth-strip headers).
  */
+/**
+ * Carve-out: if the encrypted body ships navigator.userAgentData.brands
+ * (populated by the SDK from navigator.userAgentData on Chromium — exposed
+ * in both window AND worker scope), the SDK was running on a real Chromium
+ * browser that knows about CH. Missing request header is then structural
+ * (Brave Shields privacy strip, or Chrome's cross-origin policy on Worker
+ * fetches) rather than stealth-strip Puppeteer. A stealth-strip Puppeteer
+ * would null BOTH the header and the body data; honest Chromium nulls
+ * only the header.
+ */
+function hasBodyClientHints(integrity: IntegrityResultsData): boolean {
+  const navData = (
+    integrity.device as
+      | { navigator?: { userAgentData?: { brands?: unknown } } }
+      | undefined
+  )?.navigator?.userAgentData;
+  if (!navData || typeof navData !== "object") return false;
+  const brands = (navData as { brands?: unknown[] }).brands;
+  return Array.isArray(brands) && brands.length > 0;
+}
+
 function detectUaFamilyHeaderMismatch(
   integrity: IntegrityResultsData | undefined,
 ): boolean {
@@ -1383,7 +1404,12 @@ function detectUaFamilyHeaderMismatch(
   if (secChUa && secChUa.length > 0) return false;
   const ua = integrity.user_agent ?? headers["user-agent"] ?? "";
   // UA token "Chrome/<ver>" reliably indicates Chromium-stack Chrome/Edge.
-  return /Chrome\/\d/.test(ua) && !/Edg(e|A|iOS)\//.test(ua + " nope");
+  const isChromiumStackUa =
+    /Chrome\/\d/.test(ua) && !/Edg(e|A|iOS)\//.test(ua + " nope");
+  if (!isChromiumStackUa) return false;
+  // Honest Chromium ships UA-CH in body even when the request header is
+  // absent — see hasBodyClientHints.
+  return !hasBodyClientHints(integrity);
 }
 
 /** Has-lie helpers for the tampering decision (D). */
