@@ -64,7 +64,13 @@ import { prewarmAsnDataset } from "../../services/network/asn-classifier";
 import { prewarmAutoOverlay } from "../../services/network/auto-overlay";
 import { prewarmBrowserBaselines } from "../../services/network/browser-baselines";
 import { archiveToFirehose } from "../../helpers/firehose-archive";
+import { buildMerchantResponse } from "../../helpers/merchant-projection";
 import { resolveIntegrityTtlSeconds } from "./ttl";
+
+/** Bump when merchant-projection.ts rules change in a way you want stamped on
+ *  rows. Stored on the row so historical verdicts are traceable to the code
+ *  that produced them. */
+const PROJECTION_VERSION = "v1";
 
 /** API Gateway event extended with pre-parsed body from middleware. */
 export interface ExtendedEvent extends APIGatewayProxyEventV2 {
@@ -657,6 +663,44 @@ function buildIntegrityItem(args: BuildIntegrityItemArgs) {
 }
 
 /**
+ * Run the merchant-projection builder against the freshly-built row and
+ * splice the snapshot onto the item. Readers (pair-api, dashboard) can read
+ * the stored verdict instead of rebuilding from raw — kills version-drift
+ * between writer and reader and saves the per-read cost of the builder.
+ *
+ * Fails open: if the builder throws (it shouldn't on a well-formed item),
+ * we log and persist the row without the snapshot. Ingestion must not break
+ * on a scoring bug.
+ */
+function applyProjectionSnapshot(
+  ctx: HandleContext,
+  item: Record<string, unknown>,
+): Record<string, unknown> {
+  try {
+    const projection = buildMerchantResponse({
+      session_id: ctx.sessionId,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      integrity: item as any,
+    });
+    return {
+      ...item,
+      merchant_projection: projection,
+      projection_built_at: Date.now(),
+      projection_version: PROJECTION_VERSION,
+    };
+  } catch (err) {
+    ctx.deps.logger.warn(
+      "projection snapshot failed; persisting row without it",
+      {
+        error: err,
+        session_id: ctx.sessionId,
+      },
+    );
+    return item;
+  }
+}
+
+/**
  * Dual-write the integrity record. DDB is required (its result drives the
  * HTTP response). Firehose archive runs in parallel and never throws —
  * errors are logged + metered inside the helper. Shadow mode: the existing
@@ -853,7 +897,9 @@ async function handleIntegrity(
     deviceHistory: deviceHistoryAnalysis,
   });
 
-  await persistIntegrityRecord(ctx, item);
+  const itemWithProjection = applyProjectionSnapshot(ctx, item);
+
+  await persistIntegrityRecord(ctx, itemWithProjection);
 
   ctx.deps.metrics.addMetric("IntegrityStored", MetricUnit.Count, 1);
 
