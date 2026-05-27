@@ -61,6 +61,14 @@ const SLICE_ORDER: ReadonlyArray<{ id: number; name: string }> = [
   { id: 0x63, name: "canvas" },
   { id: 0x64, name: "audio" },
   { id: 0x65, name: "fonts" },
+  // Worker-collected self-attestation. SDK (ms-argus-web-integrity
+  // defense/worker-isolation) populates this inside the dedicated VM
+  // worker by reading self.navigator + self.performance + the toString
+  // of self.crypto.getRandomValues. Anchors the iframe-supplied
+  // device.navigator slice against the worker's own observation:
+  // analyzer can compare device.navigator.userAgent vs
+  // device.worker_attest.ua to surface postMessage-substitution.
+  { id: 0x66, name: "worker_attest" },
 ];
 
 /**
@@ -108,21 +116,10 @@ function strToLowByteBuffer(s: string): Buffer {
   return out;
 }
 
-function buildAbsorbBuffer(device: Record<string, unknown>): Buffer {
-  const chunks: Buffer[] = [];
-  for (const { id, name } of SLICE_ORDER) {
-    const idBuf = Buffer.alloc(4);
-    idBuf.writeUInt32BE(id, 0);
-    chunks.push(idBuf);
-    // device[name] may be undefined; canonicalStringify(undefined) === undefined
-    // (the JS function returns undefined, not 'undefined'). Walker emits
-    // 'null' for undefined — so we substitute the literal string 'null'.
-    const v = device[name];
-    const serialized = v === undefined ? "null" : canonicalStringify(v);
-    chunks.push(strToLowByteBuffer(serialized ?? "null"));
-  }
-  return Buffer.concat(chunks);
-}
+// buildAbsorbBuffer was inlined into computeMac when the rollout-compat
+// dual-MAC was added (need to vary slice order per attempt). Same
+// algorithm — per-slice 4-byte BE id prefix + canonicalStringify
+// truncated via strToLowByteBuffer.
 
 /**
  * Build the MAC-key material in the fixed (bytecode-private) order:
@@ -202,6 +199,24 @@ function extractMacInputs(payload: unknown): MacInputs | null {
   };
 }
 
+function computeMac(
+  device: Record<string, unknown>,
+  key: Buffer,
+  order: ReadonlyArray<{ id: number; name: string }>,
+): string {
+  const chunks: Buffer[] = [];
+  for (const { id, name } of order) {
+    const idBuf = Buffer.alloc(4);
+    idBuf.writeUInt32BE(id, 0);
+    chunks.push(idBuf);
+    const v = device[name];
+    const serialized = v === undefined ? "null" : canonicalStringify(v);
+    chunks.push(strToLowByteBuffer(serialized ?? "null"));
+  }
+  const absorb = Buffer.concat(chunks);
+  return createHmac("md5", key).update(absorb).digest("hex").toLowerCase();
+}
+
 export function verifyDeviceMac(
   payload: unknown,
   opts: { sessionToken: string },
@@ -217,12 +232,19 @@ export function verifyDeviceMac(
     devicePubkey: inputs.devicePubkey,
   });
   const key = createHmac("md5", BUILD_SALT).update(material).digest();
-  const absorb = buildAbsorbBuffer(inputs.device);
-  const expected = createHmac("md5", key)
-    .update(absorb)
-    .digest("hex")
-    .toLowerCase();
   const received = inputs.received.toLowerCase();
+
+  // Primary order: the current 23-slice chain (post worker-isolation).
+  const expected = computeMac(inputs.device, key, SLICE_ORDER);
   if (expected === received) return { kind: "ok" };
+
+  // Rollout compat: try the legacy 22-slice order (without
+  // SLICE_WORKER_ATTEST at 0x66). Old SDK bundles cached in browsers
+  // continue to verify during the migration window. Remove this
+  // fallback once the bundle TTL has fully expired across all clients.
+  const legacyOrder = SLICE_ORDER.filter((s) => s.id !== 0x66);
+  const expectedLegacy = computeMac(inputs.device, key, legacyOrder);
+  if (expectedLegacy === received) return { kind: "ok" };
+
   return { kind: "mismatch", expected, received };
 }
