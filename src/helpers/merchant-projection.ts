@@ -313,26 +313,32 @@ const CEILING_UPLIFT_FLOOR = 0.95;
  *  component at "suspect, not damning" for plausibly-legit ratios. */
 const WEBRTC_MATCH_DAMPER_CAP = 0.3;
 
-/** Console-bench noise floor in microseconds. Below this, `log_heavy_us`
- *  measurements are dominated by thread-scheduling jitter and clock
- *  resolution rather than CDP serialization cost. Real-Brave telemetry
- *  (May 2026, 10 same-machine submissions) showed worker `heavy_over_tiny`
- *  randomly walking 0.81–2.00 at heavy=4–9µs. The CDP signal we're after
- *  lives at heavy≈63µs (Playwright CDP baseline) — ratios on sub-floor
- *  measurements can't discriminate stub-vs-real. Used by `benchTrips`
- *  to gate the ratio check and by `hasBenchDisagreement` to skip the
- *  cross-bench compare when both sides are noise. */
-const BENCH_NOISE_FLOOR_US = 10;
+/** Both-realms-hot magnitude floor (µs). If MIN(iframe.log_heavy_us,
+ *  worker.log_heavy_us) exceeds this, the inspector is attached to both
+ *  realms — desktop Playwright/Puppeteer/DevTools-toggled emulation. Real
+ *  mobile Chrome peaks ~52µs in any single realm under worst-case scheduler
+ *  noise (real Pixel 5, 2-day telemetry); the CDP baseline both desktop
+ *  and DevTools-emu sit at ≥40µs in BOTH realms simultaneously, while real
+ *  mobile rarely lands both realms above ~30µs in the same scan. */
+const BENCH_BOTH_HOT_US = 40;
 
-/** Absolute `log_heavy_us` threshold above which we treat the bench as
- *  CDP-attached regardless of the ratio. Was 25µs; raised to 50µs after
- *  a real Android Chrome session (May 2026) tripped at heavy=27.2µs —
- *  same device 9 min earlier had measured 16.8µs, so the worker bench
- *  on real mobile Chrome roams the high-20s naturally. The Playwright
- *  CDP baseline is heavy≈63µs (see BENCH_NOISE_FLOOR_US docstring),
- *  so 50 keeps ~13µs of headroom on the CDP side and ~20µs of margin
- *  against the highest mobile-Chrome reading we've seen. */
-const BENCH_HEAVY_ABS_US = 50;
+/** Asymmetric-realm thresholds. When one realm is hot (`> BENCH_REALM_HOT_US`)
+ *  and the other is floor-cold (`< BENCH_REALM_COLD_US`), the inspector is
+ *  attached to one realm only. Two attack shapes share this fingerprint:
+ *
+ *   1. Mobile-emulator CDP harness (e.g. BrowserStack Pixel 10): the
+ *      iframe realm is inspected (heavy 24–39 µs) but the blob-worker
+ *      realm survives unhooked (heavy 5–11 µs).
+ *   2. Bundle-rewrite stub: attacker patches one bench function to a
+ *      baseline-clean return; the other realm still measures real CDP
+ *      (e.g. iframe stubbed to 8 µs, worker still 63 µs under Playwright).
+ *
+ *  Calibrated against real-Pixel-5 traffic where MIN(iframe, worker)
+ *  never dropped below 15 µs across 15 scans — 12 leaves a 3 µs safety
+ *  margin against the floor.
+ */
+const BENCH_REALM_HOT_US = 20;
+const BENCH_REALM_COLD_US = 12;
 
 /** Unclamped rcv_rtt_refreshed/rtt_refreshed ratio from the TCP probe. Null
  *  when data is missing (legacy records, probe failure). */
@@ -728,20 +734,47 @@ function buildTags(
  * CDP attach detector via console-serialization timing.
  *
  * The SDK (headless/getConsoleTiming.ts) benches console.log('a') vs
- * console.log(heavyObject) inside a pristine iframe. Under CDP (every
- * Playwright/Puppeteer/Selenium-CDP/patchright client) the heavy call
- * takes ≳2× longer because Chrome serializes the object to push over
- * the inspector wire. Without CDP, both calls are dropped at the same
- * near-zero cost. The ratio self-normalizes for hardware speed.
+ * console.log(heavyObject) inside a pristine iframe AND inside a blob-URL
+ * worker. Under CDP the heavy call takes longer because Chrome serializes
+ * the object onto the inspector wire; without CDP, both calls drop at
+ * near-zero cost.
  *
- * Initial calibration (Chrome 148 / Linux desktop):
- *   - Playwright CDP attached: ratio 2.11, log_heavy_us 63
- *   - Plain Chrome:            ratio 0.79, log_heavy_us 7
- *   - --headless=new (no CDP): ratio 1.22, log_heavy_us 8
+ * The earlier detector compared `heavy_over_tiny` to a 1.5 threshold
+ * per bench, plus an absolute `log_heavy_us > 50` backstop, plus a
+ * cross-bench |Δratio|>0.5 disagreement check. Real-traffic calibration
+ * (2 days of Pixel 5, BrowserStack Pixel 10, Linux puppeteer/playwright,
+ * DevTools-emulated Pixel 7 — see merchant-projection.test.ts fixtures)
+ * showed the ratio clauses false-positiving real mobile (~47% of one
+ * physical Pixel 5's scans) while still missing 25% of BrowserStack.
+ * The ratio normalises for hardware speed but does NOT discriminate
+ * mobile-scheduler jitter from CDP overhead at the magnitudes mobile
+ * browsers actually produce (15–50 µs per realm).
  *
- * Thresholds chosen for wide margin from initial measurements. Tune
- * from real-user telemetry on the `device.headless.cdp.consoleTiming`
- * field before locking in further.
+ * Replaced with a two-clause magnitude check on `log_heavy_us` (`hasCdpTimingSignal`):
+ *
+ *   - **Both realms hot** — `min(iframe.heavy, worker.heavy) > 40`.
+ *     Desktop Chrome with CDP attached drives both realms through the
+ *     same inspector wire; real mobile never lands both realms above
+ *     ~30 µs simultaneously. Catches all observed desktop puppeteer/
+ *     playwright/DevTools-emulation traffic.
+ *
+ *   - **Asymmetric realms** — `max(heavy) > 20 && min(heavy) < 12`.
+ *     One realm under inspection, the other not. Covers (a) mobile-
+ *     emulator harnesses where the iframe is inspected and the blob
+ *     worker survives unhooked (BrowserStack), and (b) bundle-rewrite
+ *     stubs where the attacker patched one bench to a baseline-clean
+ *     return while the other still measures real CDP.
+ *
+ * Plus a per-bench primitive-tampering check (`hasBenchDependencyTamper`):
+ * if Performance.now / Date.now / console.log / console.dir has been
+ * replaced with a non-native function, the bench primitive is
+ * compromised and we fire regardless of the timing numbers.
+ *
+ * Calibration (2-day telemetry):
+ *   - Real Pixel 5:                   heavy 15–52 µs both realms; 0 FP
+ *   - BrowserStack mobile (CDP):      iframe 24–39, worker 5–11; 100% catch
+ *   - Desktop puppeteer/playwright:   both realms 40–69; 100% catch
+ *   - DevTools-emulated Pixel 7:      both realms 52–73; 100% catch
  */
 /**
  * Any of the four use-site native checks reporting false means the
@@ -758,114 +791,68 @@ function hasBenchDependencyTamper(t: ConsoleTimingFields): boolean {
 }
 
 /**
- * Per-bench trip test. Same thresholds applied to either the iframe
- * bench or the worker bench output. Extracted so `hasCdpTimingSignal`
- * can call it once per available bench path.
- *
- *   - Bench-dependency tampering: any of the four use-site native
- *     checks reporting false means the bench primitive (Performance.now,
- *     Date.now, console.log, console.dir) was replaced.
- *   - Cross-clock divergence: `tl_heavy_us` is the heavy loop measured
- *     with a second clock (Date.now). Both clocks read wall time
- *     independently, so they should agree within ~3µs/call. An attacker
- *     who only patches `Performance.prototype.now` leaves the second
- *     clock untouched and the deltas diverge.
- *   - Ratio / absolute thresholds: `heavy_over_tiny > 1.5` (only when
- *     `log_heavy_us` is above the BENCH_NOISE_FLOOR; below that the
- *     ratio is dividing two sub-floor measurements and means nothing —
- *     real-Brave/Chrome telemetry sees worker ratios randomly walking
- *     0.8–2.0 at heavy=4–9µs from thread-scheduling jitter alone) OR
- *     `log_heavy_us > BENCH_HEAVY_ABS_US` (absolute). Real-Chrome
- *     baseline 0.79 / 7, Playwright CDP 2.11 / 63. The CDP signal
- *     lives at heavy≈63µs; anything under 10µs can't discriminate
- *     stub-vs-real. See BENCH_HEAVY_ABS_US for why the absolute
- *     threshold is 50 (not the original 25 — that FP'd real
- *     mobile Chrome).
+ * Cross-clock divergence per bench. `tl_heavy_us` is the heavy loop
+ * measured with a second clock (Date.now). Both clocks read wall time
+ * independently, so they should agree within ~3µs/call. An attacker
+ * who only patches `Performance.prototype.now` leaves the second clock
+ * untouched and the deltas diverge — direct evidence of a Proxy wrap
+ * on the timing primitive. Extracted to keep `hasCdpTimingSignal` under
+ * the cyclomatic-complexity cap.
  */
-function benchTrips(t: ConsoleTimingFields): boolean {
-  if (hasBenchDependencyTamper(t)) return true;
-  const heavy = t.log_heavy_us ?? 0;
+function hasCrossClockDivergence(t: ConsoleTimingFields): boolean {
+  const heavy = t.log_heavy_us;
   const tlHeavy = t.tl_heavy_us;
-  if (typeof tlHeavy === "number" && Math.abs(tlHeavy - heavy) > 3) {
-    return true;
-  }
-  const ratio = t.heavy_over_tiny ?? 0;
+  if (typeof heavy !== "number" || typeof tlHeavy !== "number") return false;
+  return Math.abs(tlHeavy - heavy) > 3;
+}
+
+/**
+ * Per-bench primitive checks: dependency tampering OR cross-clock
+ * divergence. A Proxy wrap on Performance.now / console.log is a hard
+ * tell regardless of what the bench numbers show, so this runs
+ * independently of magnitude and independently of the other bench's
+ * presence.
+ */
+function benchPrimitiveTampered(t: ConsoleTimingFields | undefined): boolean {
+  if (!t) return false;
+  return hasBenchDependencyTamper(t) || hasCrossClockDivergence(t);
+}
+
+/**
+ * Magnitude match against the two CDP signatures (both-hot or
+ * asymmetric). See the detector docstring above for calibration.
+ */
+function magnitudeMatchesCdp(ih: number, wh: number): boolean {
+  // Both realms hot → desktop Chrome with CDP attached (single inspector
+  // wire serializes both realms).
+  if (Math.min(ih, wh) > BENCH_BOTH_HOT_US) return true;
+  // One realm hot, the other floor-cold → inspector attached to one
+  // realm only (mobile-emulator harness, or bundle-rewrite stub).
   return (
-    (ratio > 1.5 && heavy > BENCH_NOISE_FLOOR_US) || heavy > BENCH_HEAVY_ABS_US
+    Math.max(ih, wh) > BENCH_REALM_HOT_US &&
+    Math.min(ih, wh) < BENCH_REALM_COLD_US
   );
 }
 
 /**
- * CDP timing signal. True if either bench (iframe or worker) trips its
- * own thresholds. The two paths are independently susceptible:
- *
- *   - The iframe bench runs on the main thread and can be defeated by
- *     a `page.route` rewrite of the integrity bundle or by main-thread
- *     Proxy patches on console/Performance/Element prototypes.
- *   - The worker bench runs in a Worker realm spawned via blob URL.
- *     `page.route` cannot intercept `blob:` (browser-internal), and
- *     main-thread Proxy patches don't reach the worker realm. To stub
- *     the worker, the attacker has to wrap the `Worker` constructor or
- *     `URL.createObjectURL` (both more elaborate than a regex rewrite).
- *
- * Either path tripping → automation. See `hasBenchDisagreement` for
- * the cross-check that catches stub-one-leave-the-other attacks.
+ * CDP timing signal. Returns true if either bench's primitives have
+ * been tampered with, or the iframe/worker `log_heavy_us` pair matches
+ * one of the two CDP signatures. See the detector docstring above for
+ * calibration and attack model.
  */
 function hasCdpTimingSignal(headless: HeadlessSignals | undefined): boolean {
   const iframe = headless?.cdp?.consoleTiming;
   const worker = headless?.cdp?.consoleTimingWorker;
-  return (!!iframe && benchTrips(iframe)) || (!!worker && benchTrips(worker));
-}
-
-/**
- * Cross-bench disagreement detector.
- *
- * The iframe and worker benches measure the same thing (console-log
- * serialization cost) on the same device. They will produce slightly
- * different numbers — different realms, different thread schedulers,
- * different cold-cache behavior — but the *qualitative* answer should
- * agree: either both see CDP serialization overhead, or neither does.
- *
- * A `heavy_over_tiny` gap > 0.5 is the signature of a one-sided stub:
- * the attacker rewrote one bench function to return clean numbers
- * (~1.0) but didn't reach the other path, which still measures the
- * real ~2.0 ratio under CDP.
- *
- * Tolerance picked above hardware/jitter variance (empirically <0.3
- * between iframe and worker on real Chrome) and well below the gap
- * between a stub (~1.0) and a real CDP measurement (~2.0+).
- *
- * Only fires when both benches are present — if a merchant's CSP
- * blocks blob workers and only the iframe ships, we don't have
- * anything to disagree against.
- */
-function hasBenchDisagreement(headless: HeadlessSignals | undefined): boolean {
-  const iframe = headless?.cdp?.consoleTiming;
-  const worker = headless?.cdp?.consoleTimingWorker;
-  if (!iframe || !worker) return false;
-  // Magnitude floor: BOTH sides must be above the CDP detection floor for
-  // a ratio disagreement to be meaningful. If either side is sub-floor,
-  // its ratio is noise dividing noise (real-Brave telemetry: worker ratios
-  // randomly walking 0.81–2.00 at heavy=4–9µs from thread-scheduling
-  // jitter alone), and comparing a noise ratio against a real ratio
-  // produces false-positive deltas with no attack signal underneath.
-  //
-  // What we lose: nothing. The attack model — stub one bench to ratio ~1
-  // while leaving the other unstubbed and seeing real CDP — requires the
-  // unstubbed side to actually show CDP overhead (heavy ≥ 25µs). That
-  // case is already caught by `benchTrips` per-bench on the unstubbed
-  // side, regardless of disagreement. This detector's marginal coverage
-  // is for attacks where BOTH sides are above the noise floor but ratios
-  // diverge — that case is preserved.
-  const aHeavy = iframe.log_heavy_us ?? 0;
-  const bHeavy = worker.log_heavy_us ?? 0;
-  if (aHeavy < BENCH_NOISE_FLOOR_US || bHeavy < BENCH_NOISE_FLOOR_US) {
-    return false;
+  if (benchPrimitiveTampered(iframe) || benchPrimitiveTampered(worker)) {
+    return true;
   }
-  const a = iframe.heavy_over_tiny;
-  const b = worker.heavy_over_tiny;
-  if (typeof a !== "number" || typeof b !== "number") return false;
-  return Math.abs(a - b) > 0.5;
+  // Magnitude clauses compare iframe against worker — both benches must
+  // be present and report a numeric heavy time.
+  if (!iframe || !worker) return false;
+  const ih = iframe.log_heavy_us;
+  const wh = worker.log_heavy_us;
+  if (typeof ih !== "number" || typeof wh !== "number") return false;
+  return magnitudeMatchesCdp(ih, wh);
 }
 
 /**
@@ -1062,13 +1049,15 @@ function hasPristineLiftCompromised(
  *      thoroughly static residue has been scrubbed, because Chrome's
  *      inspector serialization can't be hidden by JS-level patches.
  *      Two independent benches run per session (iframe on main thread,
- *      Worker on its own thread) and the check trips if either crosses
- *      the threshold. → 75 (block-tier). See hasCdpTimingSignal.
- *   2a. BENCH DISAGREEMENT — both benches present and their
- *       `heavy_over_tiny` differs by more than 0.5. Signature of a
- *       stub-one-leave-the-other attack (e.g. `page.route` rewriting
- *       the iframe bundle while the blob-URL worker survives intact).
- *       → 75. See hasBenchDisagreement.
+ *      Worker on its own thread). The detector compares the iframe and
+ *      worker `log_heavy_us` pair against two CDP signatures:
+ *      (a) BOTH realms hot (min > 40 µs) — desktop CDP, single inspector
+ *          driving both realms; or
+ *      (b) ONE realm hot and the OTHER floor-cold (max > 20 µs, min
+ *          < 12 µs) — mobile-emulator harness or one-sided stub.
+ *      Plus per-bench primitive tampering (Performance.now/console.log
+ *      Proxy wraps) and a cross-clock divergence check.
+ *      → 75 (block-tier). See hasCdpTimingSignal.
  *   2b. HARD CDP RESIDUE — `$cdc_*` / `__pw_*` / known automation globals
  *       / bot litter scaffolding. These don't appear in real browsers,
  *       extensions included. → 100 (full-block tier). See hasHardCdpResidue.
@@ -1103,11 +1092,6 @@ function cdpAutomationScore(
   if (hasIframeCryptoStuck(input.integrity)) return 100;
   if (hasHardCdpResidue(headless)) return 100;
   if (hasCdpTimingSignal(headless)) return 75;
-  // Iframe vs. worker bench disagreement: one was stubbed, the other
-  // measures real CDP overhead. Direct evidence of bundle-rewrite or
-  // function-replacement tampering — fire even when neither bench trips
-  // on its own, because the "clean" side is the stub.
-  if (hasBenchDisagreement(headless)) return 75;
   if (hasSoftCdpResidue(headless)) return 75;
   // Pristine-iframe lift state. The SDK's bytecode unpack, AES-GCM IV
   // generation, session token, signing envelope, etc. all route through

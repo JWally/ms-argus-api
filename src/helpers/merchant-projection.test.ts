@@ -1227,8 +1227,11 @@ describe("buildMerchantResponse", () => {
       expect(result.automation).toBe(0);
     });
 
-    it("CDP timing: heavy_over_tiny ratio above 1.5 → automation 75", () => {
-      // Empirical Playwright Chrome 148: ratio 2.11. Real Chrome: 0.79.
+    it("CDP timing: both realms hot (desktop CDP) → automation 75", () => {
+      // Calibration row from the May 2026 adversarial e2e suite (puppeteer-
+      // vanilla on Linux Chrome): iframe heavy 58.7, worker heavy 52.3.
+      // Both above BENCH_BOTH_HOT_US — single inspector wire serializing
+      // both realms.
       const base = baseIntegrity();
       const result = buildMerchantResponse({
         session_id: "s",
@@ -1239,9 +1242,15 @@ describe("buildMerchantResponse", () => {
               headlessRating: 0,
               cdp: {
                 consoleTiming: {
-                  log_tiny_us: 30,
-                  log_heavy_us: 63,
-                  dir_heavy_us: 54,
+                  log_tiny_us: 33,
+                  log_heavy_us: 58.7,
+                  dir_heavy_us: 52,
+                  heavy_over_tiny: 1.77,
+                },
+                consoleTimingWorker: {
+                  log_tiny_us: 25,
+                  log_heavy_us: 52.3,
+                  dir_heavy_us: 50,
                   heavy_over_tiny: 2.11,
                 },
               },
@@ -1252,12 +1261,12 @@ describe("buildMerchantResponse", () => {
       expect(result.automation).toBe(75);
     });
 
-    it("CDP timing: log_heavy_us above absolute threshold → automation 75 even with ratio near 1", () => {
-      // Edge case: muted ratio (busy CPU during bench) but absolute
-      // heavy-object time still implausibly slow for a real user.
-      // Uses 55µs to exceed BENCH_HEAVY_ABS_US (50) — anything below
-      // that floor is in the range real mobile Chrome reaches under
-      // thermal or scheduler noise (we've seen 27µs on a real Pixel).
+    it("CDP timing: asymmetric realms (iframe hot, worker cold) → automation 75", () => {
+      // Calibration row from BrowserStack Pixel 10 Pro XL (May 2026):
+      // iframe heavy 29.3 (inspector hooked the iframe realm), worker
+      // heavy 7.4 (blob worker survived unhooked). Mobile-emulator harness
+      // signature — neither realm crosses BENCH_BOTH_HOT_US, but the
+      // asymmetry clause fires.
       const base = baseIntegrity();
       const result = buildMerchantResponse({
         session_id: "s",
@@ -1268,10 +1277,16 @@ describe("buildMerchantResponse", () => {
               headlessRating: 0,
               cdp: {
                 consoleTiming: {
-                  log_tiny_us: 44,
-                  log_heavy_us: 55,
-                  dir_heavy_us: 52,
-                  heavy_over_tiny: 1.25,
+                  log_tiny_us: 19,
+                  log_heavy_us: 29.3,
+                  dir_heavy_us: 28,
+                  heavy_over_tiny: 1.54,
+                },
+                consoleTimingWorker: {
+                  log_tiny_us: 7,
+                  log_heavy_us: 7.4,
+                  dir_heavy_us: 7,
+                  heavy_over_tiny: 1.06,
                 },
               },
             },
@@ -1284,10 +1299,9 @@ describe("buildMerchantResponse", () => {
     it("CDP timing: real Android Chrome worker bench at heavy=27µs does not flag", () => {
       // Regression: same physical phone scanned the pair captcha twice,
       // 9 min apart. First scan worker bench reported log_heavy_us=16.8;
-      // second reported 27.2 — pure scheduler/cache noise. The old
-      // absolute threshold (25µs) caught the second one and the merchant
-      // saw automation=75 → block. BENCH_HEAVY_ABS_US=50 puts honest
-      // mobile readings comfortably below the trip line.
+      // second reported 27.2 — pure scheduler/cache noise. Neither
+      // magnitude clause fires: min(24, 27.2)=24 < BENCH_BOTH_HOT_US,
+      // and min < BENCH_REALM_COLD_US is false for the asymmetric clause.
       const base = baseIntegrity();
       const result = buildMerchantResponse({
         session_id: "s",
@@ -1565,10 +1579,10 @@ describe("buildMerchantResponse", () => {
       expect(result.automation).toBe(0);
     });
 
-    it("worker bench: missing heavy_over_tiny disables disagreement check", () => {
-      // Defensive: if either side is malformed or older-SDK omits the
-      // ratio field, the disagreement detector must not produce a false
-      // positive on the missing-value comparison.
+    it("worker bench: missing log_heavy_us on one side does not trip", () => {
+      // Defensive: if the worker bench is partial (older SDK, scheduling
+      // failure), the magnitude clauses must short-circuit rather than
+      // compare a numeric heavy against undefined.
       const base = baseIntegrity();
       const result = buildMerchantResponse({
         session_id: "s",
@@ -1585,9 +1599,8 @@ describe("buildMerchantResponse", () => {
                   heavy_over_tiny: 0.89,
                 },
                 consoleTimingWorker: {
-                  // ratio absent — partial payload
+                  // heavy absent — partial payload
                   log_tiny_us: 9,
-                  log_heavy_us: 8,
                 },
               },
             },
@@ -1725,12 +1738,12 @@ describe("buildMerchantResponse", () => {
 
     // Regression fixtures captured 2026-05-24 from real Brave / Linux desktop,
     // same hardware, same network, 10 same-day submissions to arcades.click/
-    // bot-buster. Pre-fix (no magnitude floor) 4 of 10 false-blocked at
-    // automation=75: two via worker `heavy_over_tiny > 1.5` per-bench, two via
-    // `hasBenchDisagreement` |Δratio|>0.5. Cause: sub-10µs measurements
-    // dominated by thread-scheduling jitter, not CDP serialization. Real CDP
-    // lives at heavy≈63µs, so ratios on sub-floor measurements have no
-    // discriminative value. See BENCH_NOISE_FLOOR_US in merchant-projection.ts.
+    // bot-buster. Under the original per-bench `heavy_over_tiny > 1.5` rule
+    // (plus the |Δratio|>0.5 cross-bench check) 4 of 10 false-blocked at
+    // automation=75: sub-10µs measurements were dominated by thread-scheduling
+    // jitter, not CDP serialization, so the ratio carried no signal. The
+    // magnitude-based detector retires both clauses — fixtures retained so
+    // any future re-introduction of a ratio-only path is caught here.
     describe("real-Brave sub-floor regressions (2026-05-24)", () => {
       const braveSubFloor = (
         i: { tiny: number; heavy: number; dir: number; ratio: number },
@@ -1838,7 +1851,10 @@ describe("buildMerchantResponse", () => {
     // tests lock that in so we'd catch a future tweak that accidentally
     // raises the floor above the CDP signal.
     describe("magnitude floor preserves real CDP detection", () => {
-      it("Playwright CDP iframe (heavy=63, ratio=2.11) → 75", () => {
+      it("Playwright CDP both realms (heavy=63/60) → 75", () => {
+        // SDK calibration baseline: Playwright Chromium with CDP attached
+        // serializes both iframe and worker realms via the inspector.
+        // Real mobile Chrome never lands both realms above ~30 µs.
         const result = buildMerchantResponse({
           session_id: "s",
           integrity: {
@@ -1853,6 +1869,12 @@ describe("buildMerchantResponse", () => {
                     dir_heavy_us: 54,
                     heavy_over_tiny: 2.11,
                   },
+                  consoleTimingWorker: {
+                    log_tiny_us: 28,
+                    log_heavy_us: 60,
+                    dir_heavy_us: 52,
+                    heavy_over_tiny: 2.14,
+                  },
                 },
               },
             },
@@ -1861,13 +1883,12 @@ describe("buildMerchantResponse", () => {
         expect(result.automation).toBe(75);
       });
 
-      it("stubbed iframe (ratio 1.0 / heavy 8) + real-CDP worker (ratio 2.1 / heavy 63) → 75 via per-bench", () => {
-        // The attack model hasBenchDisagreement was designed for: one
-        // bench stubbed near-baseline, the other untouched and showing
-        // CDP. Per-bench fires on the worker (heavy>25). Disagreement
-        // does NOT fire under the new OR-floor rule (iframe is sub-floor)
-        // because the unstubbed side is already caught by per-bench at
-        // heavy=63 — the disagreement check is redundant for this case.
+      it("stubbed iframe (heavy 8) + real-CDP worker (heavy 63) → 75 via asymmetric clause", () => {
+        // Bundle-rewrite attack: attacker stubbed the iframe bench to a
+        // baseline-clean number, but `page.route` can't intercept the
+        // blob-URL worker — the worker still measures real CDP at 63 µs.
+        // max(8, 63)=63 > BENCH_REALM_HOT_US, min=8 < BENCH_REALM_COLD_US
+        // → asymmetric clause fires.
         const result = buildMerchantResponse({
           session_id: "s",
           integrity: {
