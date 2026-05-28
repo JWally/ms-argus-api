@@ -46,11 +46,16 @@ const RTT_RATIO_THRESHOLDS: [number, number][] = [
   [1.5, 0.15],
 ];
 
-/** Threshold table: [maxMss, severity, description] — first match wins. */
+/** Threshold table: [maxMss, severity, description] — first match wins.
+ *  Severities quartered from {0.7, 0.5, 0.25} after BT-residential FPs: a
+ *  legitimate user running Mullvad/WireGuard over a home connection trips
+ *  the 1380 tier and lands at network_tampering=65 (suspect) with no other
+ *  evidence. Quartering keeps the signal visible without dominating the
+ *  axis — combine with other evidence to actually escalate. */
 const MSS_THRESHOLDS: [number, number, string][] = [
-  [1300, 0.7, "heavy tunnel encapsulation"],
-  [1380, 0.5, "VPN encapsulation likely (WireGuard/OpenVPN range)"],
-  [1440, 0.25, "slightly reduced, possible light tunnel"],
+  [1300, 0.175, "heavy tunnel encapsulation"],
+  [1380, 0.125, "VPN encapsulation likely (WireGuard/OpenVPN range)"],
+  [1440, 0.0625, "slightly reduced, possible light tunnel"],
 ];
 
 function checkRttRatio(rtt: number, rcvRtt: number): AnomalySignal | null {

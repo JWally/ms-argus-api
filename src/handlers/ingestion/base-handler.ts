@@ -62,9 +62,11 @@ import {
 import type { AsnCategory } from "../../analysis/ip-consistency/asn-catalog";
 import { prewarmAsnDataset } from "../../services/network/asn-classifier";
 import { prewarmAutoOverlay } from "../../services/network/auto-overlay";
+import { prewarmAppleRelay } from "../../services/network/apple-relay";
 import { prewarmBrowserBaselines } from "../../services/network/browser-baselines";
 import { archiveToFirehose } from "../../helpers/firehose-archive";
 import { buildMerchantResponse } from "../../helpers/merchant-projection";
+import { lookupAppleRelaySync } from "../../services/network/apple-relay";
 import { resolveIntegrityTtlSeconds } from "./ttl";
 
 /** Bump when merchant-projection.ts rules change in a way you want stamped on
@@ -657,6 +659,17 @@ function buildIntegrityItem(args: BuildIntegrityItemArgs) {
     client_ip: clientIp,
     user_agent: ua,
     request_headers: requestHeaders,
+    // Apple iCloud Private Relay egress check — Apple's published egress
+    // CIDR list (mask-api.icloud.com) is ground truth for "real Apple
+    // device." When present, the projection treats the row as
+    // PAT-equivalent trust evidence and suppresses signals whose root
+    // cause is the Fastly/Cloudflare/Akamai Linux egress terminator
+    // (KERNEL_OS_MISMATCH_DARWIN, etc.). Field absent on non-match,
+    // empty list, or pre-prewarm cold start.
+    ...((): { apple_relay_egress?: object } => {
+      const m = lookupAppleRelaySync(clientIp);
+      return m ? { apple_relay_egress: m } : {};
+    })(),
     created_at: now,
     ttl: Math.floor(now / 1000) + INTEGRITY_TTL_SECONDS,
   };
@@ -877,6 +890,9 @@ async function handleIntegrity(
     }),
     prewarmAutoOverlay().catch((err) => {
       ctx.deps.logger.warn("Auto-overlay prewarm failed", { error: err });
+    }),
+    prewarmAppleRelay().catch((err) => {
+      ctx.deps.logger.warn("Apple Relay prewarm failed", { error: err });
     }),
     prewarmBrowserBaselines().catch((err) => {
       ctx.deps.logger.warn("Browser baselines prewarm failed", { error: err });
