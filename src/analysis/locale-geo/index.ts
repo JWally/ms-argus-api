@@ -217,10 +217,17 @@ export function analyzeLocaleGeo(
         s.code === "ACCEPT_LANG_GEO_CROSS_CONTINENT" ||
         s.code === "ACCEPT_LANG_GEO_CROSS_COUNTRY",
     ),
+    // LOCALE_NAV_INTL_MISMATCH (intl.locale vs navigator.language) was
+    // disabled from scoring on 2026-05-28 after blocking a real
+    // trilingual user in Hanoi (intl=en-GB, nav=vi-VN — normal
+    // multilingual config across SE Asia and many other regions).
+    // Without a population baseline we can't safely calibrate severity;
+    // signal still emits in `signals` for diagnostics and future
+    // re-enablement once we have enough data to score via -log(p).
+    // LOCALE_WORKER_MAIN_MISMATCH stays — main vs worker locale
+    // disagreement is structurally a tampering tell, not user pref.
     hasLocaleTamper: signals.some(
-      (s) =>
-        s.code === "LOCALE_NAV_INTL_MISMATCH" ||
-        s.code === "LOCALE_WORKER_MAIN_MISMATCH",
+      (s) => s.code === "LOCALE_WORKER_MAIN_MISMATCH",
     ),
   };
 }

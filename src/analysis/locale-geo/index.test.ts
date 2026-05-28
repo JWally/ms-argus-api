@@ -265,7 +265,7 @@ describe("B1 — Accept-Language vs CF country", () => {
 });
 
 describe("analyzeLocaleGeo — convenience flags", () => {
-  it("hasLocaleTamper true when only A1 fires", () => {
+  it("hasLocaleTamper stays false when only A1 fires (signal disabled from scoring on 2026-05-28; emits but doesn't tip the flag)", () => {
     const r = analyzeLocaleGeo(
       {
         intl: { locale: "fr-FR" },
@@ -274,8 +274,12 @@ describe("analyzeLocaleGeo — convenience flags", () => {
       null,
       null,
     );
-    expect(r.hasLocaleTamper).toBe(true);
+    expect(r.hasLocaleTamper).toBe(false);
     expect(r.hasLocationMismatch).toBe(false);
+    // Signal still emits for diagnostics / future re-enable via population stats.
+    expect(r.signals.some((s) => s.code === "LOCALE_NAV_INTL_MISMATCH")).toBe(
+      true,
+    );
   });
 
   it("hasLocationMismatch true when only B1 fires", () => {
@@ -284,7 +288,7 @@ describe("analyzeLocaleGeo — convenience flags", () => {
     expect(r.hasLocaleTamper).toBe(false);
   });
 
-  it("both flags true when both groups fire", () => {
+  it("hasLocationMismatch true and hasLocaleTamper still false when A1 + B1 both fire (A1 informational only)", () => {
     const r = analyzeLocaleGeo(
       {
         intl: { locale: "fr-FR" },
@@ -293,7 +297,7 @@ describe("analyzeLocaleGeo — convenience flags", () => {
       "zh-CN",
       "US",
     );
-    expect(r.hasLocaleTamper).toBe(true);
+    expect(r.hasLocaleTamper).toBe(false);
     expect(r.hasLocationMismatch).toBe(true);
     expect(r.signals.length).toBe(2);
   });
