@@ -1149,6 +1149,23 @@ function isCorporateShieldedAsn(integrity: IntegrityResultsData): boolean {
  * `analysis.kernel_os.signals` for forensic review.
  */
 function isVerifiedAppleRelay(integrity: IntegrityResultsData): boolean {
+  // Path 1 (authoritative): the row was stamped with apple_relay_egress at
+  // ingest time because the client IP matched Apple's published Private
+  // Relay egress range (mask-api.icloud.com/egress-ip-ranges.csv, loaded by
+  // services/network/apple-relay.ts and looked up in buildIntegrityItem).
+  // This is ground truth — only iOS 15+/iPadOS 15+/macOS Monterey+ devices
+  // with iCloud+ subscription originate from these CIDRs. Empty list (S3
+  // fetch failure / first deploy before refresh job) leaves the field
+  // absent and we fall through to path 2.
+  if ((integrity as { apple_relay_egress?: unknown }).apple_relay_egress) {
+    return true;
+  }
+
+  // Path 2 (heuristic fallback): JA4 + H2 + UA convergence on Safari.
+  // Catches the case where the IP list isn't yet loaded but the TLS
+  // fingerprint passes through unstripped. Less reliable than path 1 —
+  // Fastly egress sometimes strips the H2 fingerprint to null, which
+  // fails this check (the original FP we observed on 146.75.248.145).
   if (integrity.analysis?.ip?.asn?.category !== "privacy_relay") return false;
   const ja4Ua = (
     integrity.analysis as {
