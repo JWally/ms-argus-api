@@ -159,6 +159,27 @@ describe("analyzeIpConsistency — signals", () => {
     expect(r.signals.some((s) => s.code === "WEBRTC_IP_MISMATCH")).toBe(true);
   });
 
+  it("suppresses IP_PROBE_SCATTER when probe-IP drift < 256 (carrier-NAT pool)", () => {
+    // REYCOM DEL SUR (CR) repro: TLS .106, API .104, drift = 2.
+    const r = analyzeIpConsistency(
+      deviceWithWebrtc(),
+      sigint({ tlsIp: "38.196.151.106" }),
+      "38.196.151.104",
+      { ip: "38.196.151.106", forgery: false },
+    );
+    expect(r.signals.some((s) => s.code === "IP_PROBE_SCATTER")).toBe(false);
+  });
+
+  it("still emits IP_PROBE_SCATTER when drift crosses /24 boundary by >256", () => {
+    const r = analyzeIpConsistency(
+      deviceWithWebrtc(),
+      sigint({ tlsIp: "38.196.151.106" }),
+      "38.196.152.200",
+      { ip: "38.196.151.106", forgery: false },
+    );
+    expect(r.signals.some((s) => s.code === "IP_PROBE_SCATTER")).toBe(true);
+  });
+
   it("emits WEBRTC_BLOCKED when device.webrtc is absent", () => {
     const r = analyzeIpConsistency(
       {},

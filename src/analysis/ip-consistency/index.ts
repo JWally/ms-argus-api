@@ -187,11 +187,30 @@ function allSameSubnet16(ips: string[]): boolean {
   });
 }
 
+/** IPv4 dotted-quad → unsigned 32-bit integer. Returns null for non-IPv4. */
+function ipv4ToInt(ip: string): number | null {
+  const o = parseIpv4(ip);
+  if (!o) return null;
+  // `* 16777216` instead of `<< 24` to avoid the 32-bit signed-int overflow
+  // that would turn IPs ≥ 128.0.0.0 negative.
+  return o[0] * 16777216 + o[1] * 65536 + o[2] * 256 + o[3];
+}
+
 function checkProbeScatter(probeIps: (string | null)[]): AnomalySignal | null {
   const present = probeIps.filter((ip): ip is string => ip !== null);
   if (present.length < 2) return null;
   const unique = [...new Set(present)];
   if (unique.length <= 1) return null;
+
+  // Carrier-NAT pool carve-out: when all distinct probe IPs fit inside a
+  // 256-IP numeric window, treat as one customer egressing through a tight
+  // CGNAT pool rather than scattered probes. Drift well over 256 only
+  // happens when traffic is genuinely riding two different network paths.
+  const ints = unique.map(ipv4ToInt);
+  if (ints.every((n): n is number => n !== null)) {
+    const drift = Math.max(...ints) - Math.min(...ints);
+    if (drift < 256) return null;
+  }
 
   const severity = unique.length >= 3 ? 0.8 : 0.6;
   return createSignal("NETWORK", AnomalyCodes.IP_PROBE_SCATTER, severity, {
