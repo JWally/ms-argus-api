@@ -1044,10 +1044,15 @@ function botProbability(input: MerchantProjectionInput): number {
   const cdpScore = cdpAutomationScore(input, headless);
   const hardScore = Math.max(strictScore, cdpScore);
   if (hardScore > 0) return hardScore;
-  const stealth = headless?.stealthRating ?? 0;
-  const weak = isMobileBrowser(input.integrity)
-    ? 0
-    : (headless?.likeHeadlessRating ?? 0);
+  // Mobile carve-out applies to BOTH weak and stealth contributions. The
+  // stealth probe `incompleteAppSurface` (window.chrome.app missing) is
+  // platform-correct on Android Chrome / Brave-on-Android — that property
+  // is desktop-Chromium-only — but the SDK still counts the "miss" toward
+  // stealthRating. Result: every real Android Chrome user was paying a
+  // flat +20 automation tax. Match the likeHeadless carve-out below.
+  const isMobile = isMobileBrowser(input.integrity);
+  const stealth = isMobile ? 0 : (headless?.stealthRating ?? 0);
+  const weak = isMobile ? 0 : (headless?.likeHeadlessRating ?? 0);
   return roundProbability(weak + (stealth > 0 ? 20 : 0));
 }
 
