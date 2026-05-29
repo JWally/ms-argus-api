@@ -16,6 +16,10 @@ function pending(overrides: Partial<PendingVisit> = {}): PendingVisit {
     ua_hash: "deadbeef12345678",
     net_class: "residential",
     country: "US",
+    region: "US-CA",
+    city: "Mountain View",
+    lat: 37.4043,
+    lon: -122.0748,
     ...overrides,
   };
 }

@@ -67,6 +67,17 @@ export interface DeviceHistoryVisit {
   net_class?: string | null;
   /** ISO 3166-1 alpha-2 country, when the CF probe authentically attested it. */
   country?: string | null;
+  /** ISO 3166-2 subdivision code (e.g. "US-GA"). From CloudFront viewer
+   *  headers — free per request. Optional for back-compat with old blobs. */
+  region?: string | null;
+  /** City name (e.g. "Atlanta"). From CloudFront viewer headers. */
+  city?: string | null;
+  /** Latitude in decimal degrees. From CloudFront viewer headers. Enables
+   *  travel-velocity signals across visits (Atlanta yesterday + Hong Kong
+   *  10 min later = teleport). */
+  lat?: number | null;
+  /** Longitude in decimal degrees. From CloudFront viewer headers. */
+  lon?: number | null;
 }
 
 /** Visit fields the server has at integrity-collect processing time. */
@@ -77,6 +88,10 @@ export interface PendingVisit {
   ua_hash: string | null;
   net_class: string | null;
   country: string | null;
+  region: string | null;
+  city: string | null;
+  lat: number | null;
+  lon: number | null;
 }
 
 /** Bounded blob size — oldest visit pruned when the array exceeds this. */
@@ -195,6 +210,10 @@ export function appendVisit(
     ua_hash: visit.ua_hash,
     net_class: visit.net_class,
     country: visit.country,
+    region: visit.region,
+    city: visit.city,
+    lat: visit.lat,
+    lon: visit.lon,
   };
   const next = [...blob.visits, fresh];
   // Prune oldest entries if we exceed cap. Keep most-recent MAX.
