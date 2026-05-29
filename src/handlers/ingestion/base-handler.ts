@@ -60,7 +60,10 @@ import {
   type ProcessDeviceHistoryResult,
 } from "../../helpers/device-history";
 import type { AsnCategory } from "../../analysis/ip-consistency/asn-catalog";
-import { prewarmAsnDataset } from "../../services/network/asn-classifier";
+import {
+  prewarmAsnDataset,
+  classifyAsnSync,
+} from "../../services/network/asn-classifier";
 import { prewarmAutoOverlay } from "../../services/network/auto-overlay";
 import { prewarmAppleRelay } from "../../services/network/apple-relay";
 import { prewarmBrowserBaselines } from "../../services/network/browser-baselines";
@@ -787,6 +790,36 @@ async function resolveMerchantId(ctx: HandleContext): Promise<string | null> {
  * for the row's analysis.device_history block and the encrypted outbound
  * blob for the response.
  */
+/**
+ * Build the PendingVisit shape from request-time data. CloudFront
+ * viewer-* headers are present on every request (country, region, city,
+ * latitude, longitude, asn) — no analyzer needed. net_class is derived
+ * from `cloudfront-viewer-asn` through the prewarmed ASN classifier
+ * (microseconds). lat/lon arrive as string-encoded floats; NaN on
+ * absence or malformed input maps to null.
+ */
+function buildPendingVisit(
+  ctx: HandleContext,
+): import("../../helpers/device-history").PendingVisit {
+  const h = ctx.event.headers;
+  const lat = parseFloat(h["cloudfront-viewer-latitude"] ?? "");
+  const lon = parseFloat(h["cloudfront-viewer-longitude"] ?? "");
+  const cfAsn = h["cloudfront-viewer-asn"];
+  const asnNum = cfAsn ? parseInt(cfAsn, 10) : NaN;
+  return {
+    cpi: ctx.cpi,
+    session: ctx.sessionId,
+    ip: ctx.event.requestContext.http.sourceIp,
+    ua_hash: hashUserAgent(h[UA_HEADER]),
+    net_class: Number.isFinite(asnNum) ? classifyAsnSync(asnNum) : null,
+    country: h["cloudfront-viewer-country"]?.toUpperCase() ?? null,
+    region: h["cloudfront-viewer-country-region"] ?? null,
+    city: h["cloudfront-viewer-city"] ?? null,
+    lat: Number.isFinite(lat) ? lat : null,
+    lon: Number.isFinite(lon) ? lon : null,
+  };
+}
+
 function runDeviceHistory(
   ctx: HandleContext,
   identity: IdentityOutcome,
@@ -798,17 +831,7 @@ function runDeviceHistory(
     incomingBlob: ctx.payload.cache,
     pubkey: identity.pubkey,
     sigintAesKey: process.env.SIGINT_AES_KEY,
-    visit: {
-      cpi: ctx.cpi,
-      session: ctx.sessionId,
-      ip: ctx.event.requestContext.http.sourceIp,
-      ua_hash: hashUserAgent(ctx.event.headers[UA_HEADER]),
-      // net_class + country are deferred to Phase 2c — would require
-      // running the network / locale analyzers BEFORE this step. For
-      // now the visit records the unambiguous server-observed fields.
-      net_class: null,
-      country: null,
-    },
+    visit: buildPendingVisit(ctx),
   });
   // Discriminate on the round-trip outcome, NOT on preVisitBlob (which
   // processDeviceHistory always populates with a fresh-for-this-pubkey
