@@ -70,6 +70,11 @@ import { prewarmBrowserBaselines } from "../../services/network/browser-baseline
 import { archiveToFirehose } from "../../helpers/firehose-archive";
 import { buildMerchantResponse } from "../../helpers/merchant-projection";
 import { lookupAppleRelaySync } from "../../services/network/apple-relay";
+import {
+  updateIpVelocity,
+  pickDeviceId,
+  type IpVelocitySnapshot,
+} from "../../helpers/ip-velocity";
 import { resolveIntegrityTtlSeconds } from "./ttl";
 
 /** Bump when merchant-projection.ts rules change in a way you want stamped on
@@ -717,6 +722,49 @@ function applyProjectionSnapshot(
 }
 
 /**
+ * Apply the per-IP per-hour velocity snapshot to the row before persist.
+ * Increments hits + blocked counters on the (ip, current-hour) row,
+ * adds the device identity to the rolling HLL, and reads back the post-
+ * update snapshot for stamping. Non-fatal — velocity is a stats signal,
+ * never a correctness path. Returns the item unchanged on any failure.
+ */
+async function applyIpVelocitySnapshot(
+  ctx: HandleContext,
+  item: Record<string, unknown>,
+  identity: IdentityOutcome,
+): Promise<Record<string, unknown>> {
+  const ip = (item as { client_ip?: string }).client_ip;
+  if (!ip) return item;
+  const clientUuid =
+    (ctx.payload as { device?: { client_uuid?: string } }).device
+      ?.client_uuid ?? null;
+  const deviceId = pickDeviceId(identity.pubkey, clientUuid);
+  if (!deviceId) return item;
+  const proj = (item as { merchant_projection?: { verdict?: string } })
+    .merchant_projection;
+  const verdictWasBlock = proj?.verdict === "block";
+  try {
+    const snap: IpVelocitySnapshot | null = await updateIpVelocity({
+      ip,
+      deviceId,
+      verdictWasBlock,
+      ddb: ddbClient,
+    });
+    if (!snap) return item;
+    return { ...item, ip_velocity_1h: snap };
+  } catch (err) {
+    ctx.deps.logger.warn(
+      "ip-velocity snapshot failed; persisting row without it",
+      {
+        error: err,
+        session_id: ctx.sessionId,
+      },
+    );
+    return item;
+  }
+}
+
+/**
  * Dual-write the integrity record. DDB is required (its result drives the
  * HTTP response). Firehose archive runs in parallel and never throws —
  * errors are logged + metered inside the helper. Shadow mode: the existing
@@ -937,22 +985,40 @@ async function handleIntegrity(
   });
 
   const itemWithProjection = applyProjectionSnapshot(ctx, item);
+  const itemWithVelocity = await applyIpVelocitySnapshot(
+    ctx,
+    itemWithProjection,
+    identity,
+  );
 
-  await persistIntegrityRecord(ctx, itemWithProjection);
+  await persistIntegrityRecord(ctx, itemWithVelocity);
 
+  emitIngestMetricsAndReturn(ctx, dh);
+  return buildIntegrityResponse(ctx.sessionId, dh.outboundBlob);
+}
+
+function emitIngestMetricsAndReturn(
+  ctx: HandleContext,
+  dh: ProcessDeviceHistoryResult,
+): void {
   ctx.deps.metrics.addMetric("IntegrityStored", MetricUnit.Count, 1);
-
   ctx.deps.metrics.addMetric(
     "IntegrityDuration",
     MetricUnit.Milliseconds,
     Date.now() - ctx.start,
   );
+  void dh;
+}
 
+function buildIntegrityResponse(
+  sessionId: string,
+  outboundBlob: string | undefined,
+): APIGatewayProxyResultV2 {
   return {
     statusCode: 200,
     body: JSON.stringify({
-      session_id: ctx.sessionId,
-      ...(dh.outboundBlob ? { cache: dh.outboundBlob } : {}),
+      session_id: sessionId,
+      ...(outboundBlob ? { cache: outboundBlob } : {}),
     }),
     headers: { "Content-Type": "application/json" },
   };

@@ -44,6 +44,7 @@ interface LambdasConstructProps {
 
   // Data layer references (not owned here).
   integrityResultsTable: dynamodb.ITable;
+  ipVelocityTable: dynamodb.ITable;
   archiveBucket: s3.IBucket; // analytics integrityArchiveBucket
   ipClassBucket: s3.IBucket; // shared by builder + discoverer + browser-baselines
 
@@ -150,6 +151,7 @@ export class LambdasConstruct extends Construct {
       environment: {
         ...createPowertoolsEnv("argus-ingestion", `argus-${stage}`, stage),
         INTEGRITY_RESULTS_TABLE: props.integrityResultsTable.tableName,
+        IP_VELOCITY_TABLE: props.ipVelocityTable.tableName,
         ...(props.ecdhKeyParamName && {
           ECDH_KEY_PARAM: props.ecdhKeyParamName,
         }),
@@ -431,6 +433,9 @@ export class LambdasConstruct extends Construct {
   private applyApiLambdaGrants(props: LambdasConstructProps): void {
     // ── ingestion ──
     props.integrityResultsTable.grantWriteData(this.ingestion);
+    // UpdateItem with ReturnValues=ALL_NEW does the per-session
+    // increment + read-back in one call. Read+write needed.
+    props.ipVelocityTable.grantReadWriteData(this.ingestion);
 
     if (props.probeTokensTableArn) {
       this.ingestion.addToRolePolicy(

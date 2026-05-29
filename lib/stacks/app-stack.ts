@@ -220,6 +220,7 @@ export class ArgusApiStack extends cdk.Stack {
       stackName,
       stage,
       integrityResultsTable: dynamodb.integrityResultsTable,
+      ipVelocityTable: dynamodb.ipVelocityTable,
       archiveBucket: analytics.integrityArchiveBucket,
       ipClassBucket: ipClass.bucket,
       probeTokensTableName: sigint.probeTokensTableName,
