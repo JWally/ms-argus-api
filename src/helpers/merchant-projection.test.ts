@@ -73,6 +73,84 @@ function baseIntegrity(
 }
 
 describe("buildMerchantResponse", () => {
+  describe("ip_velocity_1h projection", () => {
+    it("returns null when the row carries no velocity stamp", () => {
+      const r = buildMerchantResponse({
+        session_id: "s",
+        integrity: baseIntegrity(),
+      });
+      expect(r.ip_velocity_1h).toBeNull();
+    });
+
+    it("threads the stamp through with derived block_rate", () => {
+      const integrity = baseIntegrity({
+        ip_velocity_1h: {
+          bucket: "1h:2026052914",
+          hits: 100,
+          blocked: 23,
+          distinct_devices_est: 8,
+          first_seen_ms: 1779984000000,
+          last_seen_ms: 1779984500000,
+        },
+      } as Partial<IntegrityResultsData>);
+      const r = buildMerchantResponse({ session_id: "s", integrity });
+      expect(r.ip_velocity_1h).toEqual({
+        bucket: "1h:2026052914",
+        hits: 100,
+        blocked: 23,
+        distinct_devices_est: 8,
+        block_rate: 0.23,
+        residential_proxy_suspect: false,
+        first_seen_ms: 1779984000000,
+        last_seen_ms: 1779984500000,
+      });
+    });
+
+    it("flags residential_proxy_suspect when residential ASN + >10 distinct devices", () => {
+      const integrity = baseIntegrity({
+        analysis: {
+          ...baseIntegrity().analysis,
+          ip: {
+            ...baseIntegrity().analysis.ip,
+            asn: { number: "7018", category: "residential", org: "AT&T US" },
+          },
+        },
+        ip_velocity_1h: {
+          bucket: "1h:2026052914",
+          hits: 50,
+          blocked: 0,
+          distinct_devices_est: 15,
+          first_seen_ms: 0,
+          last_seen_ms: 0,
+        },
+      } as Partial<IntegrityResultsData>);
+      const r = buildMerchantResponse({ session_id: "s", integrity });
+      expect(r.ip_velocity_1h?.residential_proxy_suspect).toBe(true);
+    });
+
+    it("does NOT flag residential_proxy_suspect on a datacenter ASN even with high distinct count", () => {
+      const integrity = baseIntegrity({
+        analysis: {
+          ...baseIntegrity().analysis,
+          ip: {
+            ...baseIntegrity().analysis.ip,
+            asn: { number: "16509", category: "datacenter", org: "AWS" },
+          },
+        },
+        ip_velocity_1h: {
+          bucket: "1h:2026052914",
+          hits: 50,
+          blocked: 0,
+          distinct_devices_est: 50,
+          first_seen_ms: 0,
+          last_seen_ms: 0,
+        },
+      } as Partial<IntegrityResultsData>);
+      const r = buildMerchantResponse({ session_id: "s", integrity });
+      expect(r.ip_velocity_1h?.residential_proxy_suspect).toBe(false);
+    });
+  });
+
   describe("shape contract", () => {
     it("returns the documented shape with nulls where we don't have data", () => {
       const result = buildMerchantResponse({ session_id: "s-1" });
@@ -130,6 +208,7 @@ describe("buildMerchantResponse", () => {
         developer_tools: { result: false },
         tags: [],
         requestHeaders: null,
+        ip_velocity_1h: null,
       });
     });
 

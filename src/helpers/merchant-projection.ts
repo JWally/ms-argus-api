@@ -280,6 +280,42 @@ export interface MerchantSafeResponse {
 
   /** Curated request headers preserved at ingestion. Null for pre-capture records. */
   requestHeaders: MerchantRequestHeaders | null;
+
+  /**
+   * Per-IP velocity rollup for the current hour. Stamped at ingest from the
+   * (ip, bucket) row in the ip-velocity table. Useful directly as a fraud
+   * signal:
+   *   - high `hits` + low `distinct_devices_est` ⇒ same device, retries
+   *   - high `distinct_devices_est` on residential ⇒ proxy / botnet exit
+   *   - high `block_rate` ⇒ historically problematic IP
+   *
+   * Null when the velocity table wasn't reachable at ingest, or for rows
+   * ingested before this feature shipped (mid-2026).
+   */
+  ip_velocity_1h: IpVelocityProjection | null;
+}
+
+export interface IpVelocityProjection {
+  /** Hour bucket label, e.g. "1h:2026052914". */
+  bucket: string;
+  /** Total submissions on this IP in this hour. */
+  hits: number;
+  /** Submissions that ended verdict=block. */
+  blocked: number;
+  /** Estimated distinct device pubkeys seen on this IP in this hour.
+   *  HLL-derived (±1.6% std error past ~1k distinct; exact via linear
+   *  counting at the small cardinalities residential IPs produce). */
+  distinct_devices_est: number;
+  /** blocked / hits when hits > 0, else 0. Convenience for merchant rules. */
+  block_rate: number;
+  /** Convenience flag: residential IP with >10 distinct devices/hour, no
+   *  carve-out — i.e. a likely residential-proxy egress. Merchants can
+   *  use this directly OR derive their own rule from the numbers above. */
+  residential_proxy_suspect: boolean;
+  /** Epoch ms when this IP first appeared in this hour bucket. */
+  first_seen_ms: number;
+  /** Epoch ms of the most recent session on this IP in this hour bucket. */
+  last_seen_ms: number;
 }
 
 // --- Tag derivation helpers (pure, testable) ---
@@ -2294,5 +2330,42 @@ export function buildMerchantResponse(
     tags: buildTags(input, tagProbs),
 
     requestHeaders: deriveRequestHeaders(input),
+
+    ip_velocity_1h: deriveIpVelocity(input),
+  };
+}
+
+/**
+ * Project the raw ip_velocity_1h stamped on the integrity row into the
+ * merchant-facing shape. Returns null when absent or malformed.
+ * Adds two derived convenience fields the merchant rules can act on
+ * directly: block_rate and residential_proxy_suspect.
+ */
+function numField(r: Record<string, unknown>, key: string): number {
+  const v = r[key];
+  return typeof v === "number" && Number.isFinite(v) ? v : 0;
+}
+
+function deriveIpVelocity(
+  input: MerchantProjectionInput,
+): IpVelocityProjection | null {
+  const raw = (input.integrity as { ip_velocity_1h?: unknown } | undefined)
+    ?.ip_velocity_1h;
+  if (!raw || typeof raw !== "object") return null;
+  const r = raw as Record<string, unknown>;
+  const hits = numField(r, "hits");
+  if (hits <= 0) return null;
+  const blocked = numField(r, "blocked");
+  const distinct = numField(r, "distinct_devices_est");
+  const asnCategory = input.integrity?.analysis?.ip?.asn?.category;
+  return {
+    bucket: typeof r.bucket === "string" ? r.bucket : "",
+    hits,
+    blocked,
+    distinct_devices_est: distinct,
+    block_rate: Math.round((blocked / hits) * 10000) / 10000,
+    residential_proxy_suspect: asnCategory === "residential" && distinct > 10,
+    first_seen_ms: numField(r, "first_seen_ms"),
+    last_seen_ms: numField(r, "last_seen_ms"),
   };
 }
