@@ -72,6 +72,7 @@ import { buildMerchantResponse } from "../../helpers/merchant-projection";
 import { lookupAppleRelaySync } from "../../services/network/apple-relay";
 import {
   updateIpVelocity,
+  bumpVelocityBlocked,
   pickDeviceId,
   type IpVelocitySnapshot,
 } from "../../helpers/ip-velocity";
@@ -722,11 +723,11 @@ function applyProjectionSnapshot(
 }
 
 /**
- * Apply the per-IP per-hour velocity snapshot to the row before persist.
- * Increments hits + blocked counters on the (ip, current-hour) row,
- * adds the device identity to the rolling HLL, and reads back the post-
- * update snapshot for stamping. Non-fatal — velocity is a stats signal,
- * never a correctness path. Returns the item unchanged on any failure.
+ * Phase 1 of velocity wiring: hits + HLL update + stamp. Runs BEFORE
+ * the projection so buildMerchantResponse can pull ip_velocity_1h into
+ * MerchantSafeResponse. `blocked` counter is NOT incremented here —
+ * verdict isn't known yet. bumpIpVelocityBlocked handles that
+ * atomically after the projection. Non-fatal on any failure.
  */
 async function applyIpVelocitySnapshot(
   ctx: HandleContext,
@@ -740,14 +741,10 @@ async function applyIpVelocitySnapshot(
       ?.client_uuid ?? null;
   const deviceId = pickDeviceId(identity.pubkey, clientUuid);
   if (!deviceId) return item;
-  const proj = (item as { merchant_projection?: { verdict?: string } })
-    .merchant_projection;
-  const verdictWasBlock = proj?.verdict === "block";
   try {
     const snap: IpVelocitySnapshot | null = await updateIpVelocity({
       ip,
       deviceId,
-      verdictWasBlock,
       ddb: ddbClient,
     });
     if (!snap) return item;
@@ -761,6 +758,35 @@ async function applyIpVelocitySnapshot(
       },
     );
     return item;
+  }
+}
+
+/**
+ * Phase 2 of velocity wiring: atomic ADD blocked :1 on the velocity
+ * bucket when the projection's verdict is "block". Non-fatal — verdicts
+ * are never blocked by a failed velocity bump.
+ */
+async function bumpIpVelocityBlocked(
+  ctx: HandleContext,
+  item: Record<string, unknown>,
+): Promise<void> {
+  const proj = (item as { merchant_projection?: { verdict?: string } })
+    .merchant_projection;
+  if (proj?.verdict !== "block") return;
+  const vel = (item as { ip_velocity_1h?: { ip?: string; bucket?: string } })
+    .ip_velocity_1h;
+  if (!vel?.ip || !vel?.bucket) return;
+  try {
+    await bumpVelocityBlocked({
+      ip: vel.ip,
+      bucket: vel.bucket,
+      ddb: ddbClient,
+    });
+  } catch (err) {
+    ctx.deps.logger.warn("ip-velocity blocked bump failed", {
+      error: err,
+      session_id: ctx.sessionId,
+    });
   }
 }
 
@@ -984,14 +1010,15 @@ async function handleIntegrity(
     deviceHistory: deviceHistoryAnalysis,
   });
 
-  const itemWithProjection = applyProjectionSnapshot(ctx, item);
-  const itemWithVelocity = await applyIpVelocitySnapshot(
-    ctx,
-    itemWithProjection,
-    identity,
-  );
+  // Velocity first so the projection-builder can pull ip_velocity_1h
+  // into MerchantSafeResponse (with derived block_rate +
+  // residential_proxy_suspect). Then bump blocked counter post-projection
+  // once the verdict is known.
+  const itemWithVelocity = await applyIpVelocitySnapshot(ctx, item, identity);
+  const itemWithProjection = applyProjectionSnapshot(ctx, itemWithVelocity);
+  await bumpIpVelocityBlocked(ctx, itemWithProjection);
 
-  await persistIntegrityRecord(ctx, itemWithVelocity);
+  await persistIntegrityRecord(ctx, itemWithProjection);
 
   emitIngestMetricsAndReturn(ctx, dh);
   return buildIntegrityResponse(ctx.sessionId, dh.outboundBlob);

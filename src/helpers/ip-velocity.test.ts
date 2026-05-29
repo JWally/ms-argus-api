@@ -58,7 +58,6 @@ describe("updateIpVelocity", () => {
     const r = await updateIpVelocity({
       ip: "1.2.3.4",
       deviceId: "pk-1",
-      verdictWasBlock: false,
       ddb,
     });
     expect(r).toBeNull();
@@ -85,7 +84,6 @@ describe("updateIpVelocity", () => {
     const snap = await updateIpVelocity({
       ip: "1.2.3.4",
       deviceId: "pk-first-visit",
-      verdictWasBlock: false,
       ddb,
       nowMs: NOW,
     });
@@ -130,7 +128,6 @@ describe("updateIpVelocity", () => {
     const snap = await updateIpVelocity({
       ip: "1.2.3.4",
       deviceId: "device-D", // new device, should tick distinct to 4
-      verdictWasBlock: true,
       ddb,
       nowMs: NOW,
     });
@@ -165,7 +162,6 @@ describe("updateIpVelocity", () => {
     const snap = await updateIpVelocity({
       ip: "1.2.3.4",
       deviceId: "device-A", // already in HLL
-      verdictWasBlock: false,
       ddb,
       nowMs: NOW,
     });

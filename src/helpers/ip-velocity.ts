@@ -78,9 +78,23 @@ export function pickDeviceId(
 interface UpdateInput {
   ip: string;
   deviceId: string;
-  verdictWasBlock: boolean;
+  /**
+   * Verdict-was-block is known only AFTER the projection runs, but
+   * velocity needs to be stamped on the row BEFORE the projection so
+   * the merchant projection can pull it. So we split the work: this
+   * call always counts hits + adds to HLL; a follow-up
+   * `bumpVelocityBlocked` call after projection increments `blocked`
+   * atomically when verdict is block. Net cost: 1 extra DDB write per
+   * blocked session only (clean and suspect verdicts pay nothing).
+   */
   ddb: DynamoDBClient;
   nowMs?: number;
+}
+
+interface BumpBlockedInput {
+  ip: string;
+  bucket: string;
+  ddb: DynamoDBClient;
 }
 
 /**
@@ -129,7 +143,6 @@ interface WriteVelocityArgs {
   ip: string;
   bucket: string;
   hllBytes: Buffer;
-  verdictWasBlock: boolean;
   nowMs: number;
   ttl: number;
 }
@@ -142,15 +155,18 @@ async function writeVelocityRow(
     new UpdateItemCommand({
       TableName: args.tableName,
       Key: { ip: { S: args.ip }, bucket: { S: args.bucket } },
+      // blocked is initialised to 0 here on first-write but never
+      // incremented by this call — the post-projection bumpVelocityBlocked
+      // does that atomically once verdict is known.
       UpdateExpression: [
-        "ADD hits :one, blocked :b",
+        "ADD hits :one, blocked :zero",
         "SET hll_devices = :hll, last_seen_ms = :now, #ttl = :ttl,",
         "    first_seen_ms = if_not_exists(first_seen_ms, :now)",
       ].join(" "),
       ExpressionAttributeNames: { "#ttl": "ttl" },
       ExpressionAttributeValues: {
         ":one": { N: "1" },
-        ":b": { N: args.verdictWasBlock ? "1" : "0" },
+        ":zero": { N: "0" },
         ":hll": { B: args.hllBytes },
         ":now": { N: String(args.nowMs) },
         ":ttl": { N: String(args.ttl) },
@@ -181,7 +197,6 @@ export async function updateIpVelocity(
     ip: input.ip,
     bucket,
     hllBytes: hll.toBytes(),
-    verdictWasBlock: input.verdictWasBlock,
     nowMs: now,
     ttl,
   });
@@ -194,4 +209,31 @@ export async function updateIpVelocity(
     first_seen_ms: Number(attrs.first_seen_ms?.N ?? now),
     last_seen_ms: Number(attrs.last_seen_ms?.N ?? now),
   };
+}
+
+/**
+ * Atomic `ADD blocked :1` on an existing velocity bucket. Called from
+ * the ingest handler after the projection has computed verdict, only
+ * when verdict === "block". Non-fatal — caller catches + logs.
+ *
+ * Separate write from updateIpVelocity so the projection-builder can
+ * see the velocity stamp on the row BEFORE this session's verdict is
+ * known. Cost: 1 extra DDB write per block verdict only.
+ */
+export async function bumpVelocityBlocked(
+  input: BumpBlockedInput,
+): Promise<void> {
+  const tableName = process.env.IP_VELOCITY_TABLE;
+  if (!tableName) return;
+  await input.ddb.send(
+    new UpdateItemCommand({
+      TableName: tableName,
+      Key: {
+        ip: { S: input.ip },
+        bucket: { S: input.bucket },
+      },
+      UpdateExpression: "ADD blocked :one",
+      ExpressionAttributeValues: { ":one": { N: "1" } },
+    }),
+  );
 }
