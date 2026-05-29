@@ -209,6 +209,7 @@ describe("buildMerchantResponse", () => {
         tags: [],
         requestHeaders: null,
         ip_velocity_1h: null,
+        device_history: null,
       });
     });
 
@@ -3521,6 +3522,83 @@ describe("buildMerchantResponse", () => {
         }),
       });
       expect(result.device_tampering).toBe(0);
+    });
+
+    it("device_history projection: surfaces aggregates from analysis.device_history", () => {
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: baseIntegrity({
+          analysis: {
+            ...baseIntegrity().analysis,
+            device_history: {
+              tampered: false,
+              identityMismatch: false,
+              freshDevice: false,
+              scanCount: 7,
+              ageSeconds: 86400,
+              distinctIpCount: 2,
+              distinctCountryCount: 1,
+              distinctNetClassCount: 2,
+              distinctCpiCount: 1,
+              distinctUaCount: 1,
+              recent5MinCount: 1,
+              recent1HourCount: 3,
+              recent24HourCount: 7,
+            },
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          } as any,
+        }),
+      });
+      expect(result.device_history).toEqual({
+        tampered: false,
+        identityMismatch: false,
+        freshDevice: false,
+        scanCount: 7,
+        ageSeconds: 86400,
+        distinctIpCount: 2,
+        distinctCountryCount: 1,
+        distinctNetClassCount: 2,
+        recent5MinCount: 1,
+        recent1HourCount: 3,
+        recent24HourCount: 7,
+      });
+    });
+
+    it("device_history projection: null when analyzer block absent", () => {
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: baseIntegrity(),
+      });
+      expect(result.device_history).toBeNull();
+    });
+
+    it("device_history projection: freshDevice surfaces with zero counters", () => {
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: baseIntegrity({
+          analysis: {
+            ...baseIntegrity().analysis,
+            device_history: {
+              tampered: false,
+              identityMismatch: false,
+              freshDevice: true,
+              scanCount: 0,
+              ageSeconds: 0,
+              distinctIpCount: 0,
+              distinctCountryCount: 0,
+              distinctNetClassCount: 0,
+              distinctCpiCount: 0,
+              distinctUaCount: 0,
+              recent5MinCount: 0,
+              recent1HourCount: 0,
+              recent24HourCount: 0,
+            },
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          } as any,
+        }),
+      });
+      expect(result.device_history?.freshDevice).toBe(true);
+      expect(result.device_history?.scanCount).toBe(0);
     });
 
     it("(F) WEBRTC_BLOCKED on datacenter ASN applies extra 0.5× downgrade", () => {

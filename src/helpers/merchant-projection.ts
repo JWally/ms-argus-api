@@ -293,6 +293,16 @@ export interface MerchantSafeResponse {
    * ingested before this feature shipped (mid-2026).
    */
   ip_velocity_1h: IpVelocityProjection | null;
+
+  /**
+   * Per-device recurrence summary. Computed from the encrypted device-
+   * history blob the SDK carries between scans (HKDF-derived AES-GCM key,
+   * 50-visit ring buffer). Aggregates only — no individual visit records.
+   *
+   * Null when the client presented no blob (legitimate first visit shows
+   * `freshDevice: true` inside `null`-equivalent counters; see field flags).
+   */
+  device_history: MerchantDeviceHistory | null;
 }
 
 export interface IpVelocityProjection {
@@ -316,6 +326,35 @@ export interface IpVelocityProjection {
   first_seen_ms: number;
   /** Epoch ms of the most recent session on this IP in this hour bucket. */
   last_seen_ms: number;
+}
+
+export interface MerchantDeviceHistory {
+  /** True when the client presented a blob but it failed AES-GCM auth-tag
+   *  verification — the analyzer's tampering tier-60 trigger. */
+  tampered: boolean;
+  /** True when the blob decrypted cleanly but blob.id !== payload's pubkey
+   *  (cross-device blob replay attempt). */
+  identityMismatch: boolean;
+  /** True when the client presented no blob at all — legitimate first
+   *  visit, NOT a tampering signal. */
+  freshDevice: boolean;
+  /** Total visits in the blob INCLUDING the current submission. */
+  scanCount: number;
+  /** Age in seconds since blob.created — how long this device has been
+   *  known to the system. */
+  ageSeconds: number;
+  /** Distinct IPs seen across all visits in the blob. */
+  distinctIpCount: number;
+  /** Distinct ISO 3166-1 alpha-2 countries seen across visits. */
+  distinctCountryCount: number;
+  /** Distinct net_class values seen — proxy/network flapping signal. */
+  distinctNetClassCount: number;
+  /** Visit count in the last 5 minutes. */
+  recent5MinCount: number;
+  /** Visit count in the last hour. */
+  recent1HourCount: number;
+  /** Visit count in the last 24 hours. */
+  recent24HourCount: number;
 }
 
 // --- Tag derivation helpers (pure, testable) ---
@@ -2332,6 +2371,42 @@ export function buildMerchantResponse(
     requestHeaders: deriveRequestHeaders(input),
 
     ip_velocity_1h: deriveIpVelocity(input),
+
+    device_history: deriveDeviceHistory(input),
+  };
+}
+
+/**
+ * Project the analyzer's `device_history` aggregates into the merchant-facing
+ * shape. Reads strictly from `integrity.analysis.device_history` (computed
+ * from the client-carried encrypted blob at ingest). Returns null when the
+ * field is absent — pre-feature rows or sessions where the analyzer skipped
+ * the block. Internal-only `distinctCpiCount` / `distinctUaCount` are not
+ * surfaced.
+ */
+function deriveDeviceHistory(
+  input: MerchantProjectionInput,
+): MerchantDeviceHistory | null {
+  const dh = (
+    input.integrity?.analysis as
+      | {
+          device_history?: Record<string, unknown>;
+        }
+      | undefined
+  )?.device_history;
+  if (!dh || typeof dh !== "object") return null;
+  return {
+    tampered: dh.tampered === true,
+    identityMismatch: dh.identityMismatch === true,
+    freshDevice: dh.freshDevice === true,
+    scanCount: numField(dh, "scanCount"),
+    ageSeconds: numField(dh, "ageSeconds"),
+    distinctIpCount: numField(dh, "distinctIpCount"),
+    distinctCountryCount: numField(dh, "distinctCountryCount"),
+    distinctNetClassCount: numField(dh, "distinctNetClassCount"),
+    recent5MinCount: numField(dh, "recent5MinCount"),
+    recent1HourCount: numField(dh, "recent1HourCount"),
+    recent24HourCount: numField(dh, "recent24HourCount"),
   };
 }
 
