@@ -1284,6 +1284,40 @@ function readBrowserEngineSignals(integrity: IntegrityResultsData): {
   };
 }
 
+/**
+ * True when JA4 (TLS hello) AND H2 (HTTP/2 SETTINGS + frame order) both
+ * identify the client as Safari and the UA's OS family is Darwin
+ * (iOS / macOS). This is the "wire-level corroboration" gate that
+ * demotes KERNEL_OS_MISMATCH_DARWIN from structural tier-100 to soft
+ * tier-60: if all three independent fingerprints (JA4, H2, UA) agree
+ * on Safari/Darwin but TCP options say no-ECN, the most plausible
+ * explanation is a network-path artifact (CGNAT / ECN-stripping
+ * middlebox) — not a Linux box pretending to be iOS.
+ *
+ * Empirical justification: 14 of 119 (12%) real AT&T residential
+ * iPhone Safari sessions in dev-jw over a 7-day window produced
+ * `options=7`. A Linux→iOS spoofer can't fake Safari's BoringSSL
+ * stack JA4 or its H2 frame ordering, so the corroboration is a
+ * tight gate that recovers the FPs without unblocking real spoofs.
+ */
+function ja4AndH2CorroborateDarwin(integrity: IntegrityResultsData): boolean {
+  const ja4Ua = (
+    integrity.analysis as {
+      ja4_ua?: {
+        ja4_browser_family?: string | null;
+        h2_browser_family?: string | null;
+        ua_os?: string | null;
+      };
+    }
+  ).ja4_ua;
+  if (!ja4Ua) return false;
+  return (
+    ja4Ua.ja4_browser_family === "safari" &&
+    ja4Ua.h2_browser_family === "safari" &&
+    (ja4Ua.ua_os === "iOS" || ja4Ua.ua_os === "macOS")
+  );
+}
+
 function readKernelOsSignals(integrity: IntegrityResultsData): {
   hard: boolean;
   soft: boolean;
@@ -1294,9 +1328,20 @@ function readKernelOsSignals(integrity: IntegrityResultsData): {
     }
   ).kernel_os?.signals;
   if (!Array.isArray(sigs)) return { hard: false, soft: false };
+  const darwinMismatch = sigs.some(
+    (s) => s.code === "KERNEL_OS_MISMATCH_DARWIN",
+  );
+  const linuxMismatch = sigs.some((s) => s.code === "KERNEL_OS_MISMATCH_LINUX");
+  // Wire corroboration: when JA4 + H2 both say Safari and UA agrees,
+  // the Darwin TCP-mismatch is almost certainly a network artifact
+  // (CGNAT / ECN-stripping middlebox), not a Linux spoof. Demote
+  // hard → soft so the row lands at tier-60 (suspect) instead of
+  // tier-100 (block). A Linux box pretending to be iOS still gets
+  // hard because its JA4 + H2 won't match Safari's BoringSSL stack.
+  const corroborated = darwinMismatch && ja4AndH2CorroborateDarwin(integrity);
   return {
-    hard: sigs.some((s) => s.code === "KERNEL_OS_MISMATCH_DARWIN"),
-    soft: sigs.some((s) => s.code === "KERNEL_OS_MISMATCH_LINUX"),
+    hard: darwinMismatch && !corroborated,
+    soft: linuxMismatch || corroborated,
   };
 }
 

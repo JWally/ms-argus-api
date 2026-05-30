@@ -641,6 +641,102 @@ describe("buildMerchantResponse", () => {
       expect(result.tags).toContain("corporate_shield");
     });
 
+    it("KERNEL_OS_MISMATCH_DARWIN demotes to soft tier-60 when JA4+H2+UA all corroborate Safari (e.g. AT&T residential ECN strip)", () => {
+      // Real AT&T residential iPhone Safari with tcpi_options=7 (no ECN bit
+      // — CGNAT or ECN-incompatible middlebox on the path strips it). The
+      // Darwin TCP-mismatch rule would fire tier-100, but JA4/H2 are
+      // BoringSSL Safari and UA says iOS, so the wire fingerprints
+      // corroborate the UA. Demote to tier-60 (suspect) instead of
+      // tier-100 (block). Calibration: 14 of 119 AT&T residential iPhones
+      // in dev-jw 7-day window produced options=7.
+      const base = baseIntegrity();
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: {
+          ...base,
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          analysis: {
+            ...base.analysis,
+            ja4_ua: {
+              ja4_browser_family: "safari",
+              h2_browser_family: "safari",
+              ua_os: "iOS",
+            },
+            kernel_os: {
+              signals: [
+                {
+                  code: "KERNEL_OS_MISMATCH_DARWIN",
+                  severity: 1,
+                  evidence: "Apple UA, no ECN",
+                },
+              ],
+            },
+          } as any,
+        },
+      });
+      expect(result.device_tampering).toBe(60);
+    });
+
+    it("KERNEL_OS_MISMATCH_DARWIN stays hard tier-100 when JA4 disagrees (real Linux→iOS spoof)", () => {
+      // Linux Chrome pretending to be iOS: UA claims iOS but JA4 says
+      // chromium, so the corroboration gate doesn't fire. Still tier-100.
+      const base = baseIntegrity();
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: {
+          ...base,
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          analysis: {
+            ...base.analysis,
+            ja4_ua: {
+              ja4_browser_family: "chrome",
+              h2_browser_family: "safari",
+              ua_os: "iOS",
+            },
+            kernel_os: {
+              signals: [
+                {
+                  code: "KERNEL_OS_MISMATCH_DARWIN",
+                  severity: 1,
+                  evidence: "Apple UA, no ECN",
+                },
+              ],
+            },
+          } as any,
+        },
+      });
+      expect(result.device_tampering).toBe(100);
+    });
+
+    it("KERNEL_OS_MISMATCH_DARWIN stays hard tier-100 when H2 disagrees", () => {
+      const base = baseIntegrity();
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: {
+          ...base,
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          analysis: {
+            ...base.analysis,
+            ja4_ua: {
+              ja4_browser_family: "safari",
+              h2_browser_family: "chrome",
+              ua_os: "iOS",
+            },
+            kernel_os: {
+              signals: [
+                {
+                  code: "KERNEL_OS_MISMATCH_DARWIN",
+                  severity: 1,
+                  evidence: "Apple UA, no ECN",
+                },
+              ],
+            },
+          } as any,
+        },
+      });
+      expect(result.device_tampering).toBe(100);
+    });
+
     it("KERNEL_OS_MISMATCH_LINUX (soft) bumps device_tampering to 60 outside a shield", () => {
       const base = baseIntegrity();
       const result = buildMerchantResponse({
