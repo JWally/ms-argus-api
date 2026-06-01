@@ -39,11 +39,6 @@ export interface StageConfig {
     sessionGet: {
       memorySize: number; // API handler - session retrieval (simple read, minimal CPU)
     };
-    vectorWorker: {
-      memorySize: number; // VPC Lambda - QDrant vector operations
-      timeout: Duration;
-      reservedConcurrency: number;
-    };
     provisionedConcurrency: number;
     /**
      * Enable X-Ray active tracing on all Lambdas. Off by default in every
@@ -133,11 +128,6 @@ const devConfig: StageConfig = {
     sessionGet: {
       memorySize: 512, // Bumped from 256 for cold-start headroom + warmup
     },
-    vectorWorker: {
-      memorySize: 512, // Network I/O to QDrant
-      timeout: Duration.seconds(30),
-      reservedConcurrency: 10, // Low concurrency in dev
-    },
     provisionedConcurrency: 0, // No warm instances in dev
     tracingEnabled: false, // see StageConfig.lambda.tracingEnabled
   },
@@ -213,11 +203,6 @@ const prodConfig: StageConfig = {
     },
     sessionGet: {
       memorySize: 512, // Bumped from 256 for cold-start headroom + warmup
-    },
-    vectorWorker: {
-      memorySize: 512, // Network I/O to QDrant
-      timeout: Duration.seconds(30),
-      reservedConcurrency: 100, // Higher concurrency in prod
     },
     provisionedConcurrency: 2, // Keep 2 warm in prod
     tracingEnabled: false, // see StageConfig.lambda.tracingEnabled

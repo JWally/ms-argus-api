@@ -70,6 +70,12 @@ import { prewarmBrowserBaselines } from "../../services/network/browser-baseline
 import { archiveToFirehose } from "../../helpers/firehose-archive";
 import { buildMerchantResponse } from "../../helpers/merchant-projection";
 import { lookupAppleRelaySync } from "../../services/network/apple-relay";
+import {
+  updateIpVelocity,
+  bumpVelocityBlocked,
+  pickDeviceId,
+  type IpVelocitySnapshot,
+} from "../../helpers/ip-velocity";
 import { resolveIntegrityTtlSeconds } from "./ttl";
 
 /** Bump when merchant-projection.ts rules change in a way you want stamped on
@@ -717,6 +723,74 @@ function applyProjectionSnapshot(
 }
 
 /**
+ * Phase 1 of velocity wiring: hits + HLL update + stamp. Runs BEFORE
+ * the projection so buildMerchantResponse can pull ip_velocity_1h into
+ * MerchantSafeResponse. `blocked` counter is NOT incremented here —
+ * verdict isn't known yet. bumpIpVelocityBlocked handles that
+ * atomically after the projection. Non-fatal on any failure.
+ */
+async function applyIpVelocitySnapshot(
+  ctx: HandleContext,
+  item: Record<string, unknown>,
+  identity: IdentityOutcome,
+): Promise<Record<string, unknown>> {
+  const ip = (item as { client_ip?: string }).client_ip;
+  if (!ip) return item;
+  const clientUuid =
+    (ctx.payload as { device?: { client_uuid?: string } }).device
+      ?.client_uuid ?? null;
+  const deviceId = pickDeviceId(identity.pubkey, clientUuid);
+  if (!deviceId) return item;
+  try {
+    const snap: IpVelocitySnapshot | null = await updateIpVelocity({
+      ip,
+      deviceId,
+      ddb: ddbClient,
+    });
+    if (!snap) return item;
+    return { ...item, ip_velocity_1h: snap };
+  } catch (err) {
+    ctx.deps.logger.warn(
+      "ip-velocity snapshot failed; persisting row without it",
+      {
+        error: err,
+        session_id: ctx.sessionId,
+      },
+    );
+    return item;
+  }
+}
+
+/**
+ * Phase 2 of velocity wiring: atomic ADD blocked :1 on the velocity
+ * bucket when the projection's verdict is "block". Non-fatal — verdicts
+ * are never blocked by a failed velocity bump.
+ */
+async function bumpIpVelocityBlocked(
+  ctx: HandleContext,
+  item: Record<string, unknown>,
+): Promise<void> {
+  const proj = (item as { merchant_projection?: { verdict?: string } })
+    .merchant_projection;
+  if (proj?.verdict !== "block") return;
+  const vel = (item as { ip_velocity_1h?: { ip?: string; bucket?: string } })
+    .ip_velocity_1h;
+  if (!vel?.ip || !vel?.bucket) return;
+  try {
+    await bumpVelocityBlocked({
+      ip: vel.ip,
+      bucket: vel.bucket,
+      ddb: ddbClient,
+    });
+  } catch (err) {
+    ctx.deps.logger.warn("ip-velocity blocked bump failed", {
+      error: err,
+      session_id: ctx.sessionId,
+    });
+  }
+}
+
+/**
  * Dual-write the integrity record. DDB is required (its result drives the
  * HTTP response). Firehose archive runs in parallel and never throws —
  * errors are logged + metered inside the helper. Shadow mode: the existing
@@ -936,23 +1010,42 @@ async function handleIntegrity(
     deviceHistory: deviceHistoryAnalysis,
   });
 
-  const itemWithProjection = applyProjectionSnapshot(ctx, item);
+  // Velocity first so the projection-builder can pull ip_velocity_1h
+  // into MerchantSafeResponse (with derived block_rate +
+  // residential_proxy_suspect). Then bump blocked counter post-projection
+  // once the verdict is known.
+  const itemWithVelocity = await applyIpVelocitySnapshot(ctx, item, identity);
+  const itemWithProjection = applyProjectionSnapshot(ctx, itemWithVelocity);
+  await bumpIpVelocityBlocked(ctx, itemWithProjection);
 
   await persistIntegrityRecord(ctx, itemWithProjection);
 
-  ctx.deps.metrics.addMetric("IntegrityStored", MetricUnit.Count, 1);
+  emitIngestMetricsAndReturn(ctx, dh);
+  return buildIntegrityResponse(ctx.sessionId, dh.outboundBlob);
+}
 
+function emitIngestMetricsAndReturn(
+  ctx: HandleContext,
+  dh: ProcessDeviceHistoryResult,
+): void {
+  ctx.deps.metrics.addMetric("IntegrityStored", MetricUnit.Count, 1);
   ctx.deps.metrics.addMetric(
     "IntegrityDuration",
     MetricUnit.Milliseconds,
     Date.now() - ctx.start,
   );
+  void dh;
+}
 
+function buildIntegrityResponse(
+  sessionId: string,
+  outboundBlob: string | undefined,
+): APIGatewayProxyResultV2 {
   return {
     statusCode: 200,
     body: JSON.stringify({
-      session_id: ctx.sessionId,
-      ...(dh.outboundBlob ? { cache: dh.outboundBlob } : {}),
+      session_id: sessionId,
+      ...(outboundBlob ? { cache: outboundBlob } : {}),
     }),
     headers: { "Content-Type": "application/json" },
   };

@@ -280,6 +280,81 @@ export interface MerchantSafeResponse {
 
   /** Curated request headers preserved at ingestion. Null for pre-capture records. */
   requestHeaders: MerchantRequestHeaders | null;
+
+  /**
+   * Per-IP velocity rollup for the current hour. Stamped at ingest from the
+   * (ip, bucket) row in the ip-velocity table. Useful directly as a fraud
+   * signal:
+   *   - high `hits` + low `distinct_devices_est` ⇒ same device, retries
+   *   - high `distinct_devices_est` on residential ⇒ proxy / botnet exit
+   *   - high `block_rate` ⇒ historically problematic IP
+   *
+   * Null when the velocity table wasn't reachable at ingest, or for rows
+   * ingested before this feature shipped (mid-2026).
+   */
+  ip_velocity_1h: IpVelocityProjection | null;
+
+  /**
+   * Per-device recurrence summary. Computed from the encrypted device-
+   * history blob the SDK carries between scans (HKDF-derived AES-GCM key,
+   * 50-visit ring buffer). Aggregates only — no individual visit records.
+   *
+   * Null when the client presented no blob (legitimate first visit shows
+   * `freshDevice: true` inside `null`-equivalent counters; see field flags).
+   */
+  device_history: MerchantDeviceHistory | null;
+}
+
+export interface IpVelocityProjection {
+  /** Hour bucket label, e.g. "1h:2026052914". */
+  bucket: string;
+  /** Total submissions on this IP in this hour. */
+  hits: number;
+  /** Submissions that ended verdict=block. */
+  blocked: number;
+  /** Estimated distinct device pubkeys seen on this IP in this hour.
+   *  HLL-derived (±1.6% std error past ~1k distinct; exact via linear
+   *  counting at the small cardinalities residential IPs produce). */
+  distinct_devices_est: number;
+  /** blocked / hits when hits > 0, else 0. Convenience for merchant rules. */
+  block_rate: number;
+  /** Convenience flag: residential IP with >10 distinct devices/hour, no
+   *  carve-out — i.e. a likely residential-proxy egress. Merchants can
+   *  use this directly OR derive their own rule from the numbers above. */
+  residential_proxy_suspect: boolean;
+  /** Epoch ms when this IP first appeared in this hour bucket. */
+  first_seen_ms: number;
+  /** Epoch ms of the most recent session on this IP in this hour bucket. */
+  last_seen_ms: number;
+}
+
+export interface MerchantDeviceHistory {
+  /** True when the client presented a blob but it failed AES-GCM auth-tag
+   *  verification — the analyzer's tampering tier-60 trigger. */
+  tampered: boolean;
+  /** True when the blob decrypted cleanly but blob.id !== payload's pubkey
+   *  (cross-device blob replay attempt). */
+  identityMismatch: boolean;
+  /** True when the client presented no blob at all — legitimate first
+   *  visit, NOT a tampering signal. */
+  freshDevice: boolean;
+  /** Total visits in the blob INCLUDING the current submission. */
+  scanCount: number;
+  /** Age in seconds since blob.created — how long this device has been
+   *  known to the system. */
+  ageSeconds: number;
+  /** Distinct IPs seen across all visits in the blob. */
+  distinctIpCount: number;
+  /** Distinct ISO 3166-1 alpha-2 countries seen across visits. */
+  distinctCountryCount: number;
+  /** Distinct net_class values seen — proxy/network flapping signal. */
+  distinctNetClassCount: number;
+  /** Visit count in the last 5 minutes. */
+  recent5MinCount: number;
+  /** Visit count in the last hour. */
+  recent1HourCount: number;
+  /** Visit count in the last 24 hours. */
+  recent24HourCount: number;
 }
 
 // --- Tag derivation helpers (pure, testable) ---
@@ -1209,6 +1284,40 @@ function readBrowserEngineSignals(integrity: IntegrityResultsData): {
   };
 }
 
+/**
+ * True when JA4 (TLS hello) AND H2 (HTTP/2 SETTINGS + frame order) both
+ * identify the client as Safari and the UA's OS family is Darwin
+ * (iOS / macOS). This is the "wire-level corroboration" gate that
+ * demotes KERNEL_OS_MISMATCH_DARWIN from structural tier-100 to soft
+ * tier-60: if all three independent fingerprints (JA4, H2, UA) agree
+ * on Safari/Darwin but TCP options say no-ECN, the most plausible
+ * explanation is a network-path artifact (CGNAT / ECN-stripping
+ * middlebox) — not a Linux box pretending to be iOS.
+ *
+ * Empirical justification: 14 of 119 (12%) real AT&T residential
+ * iPhone Safari sessions in dev-jw over a 7-day window produced
+ * `options=7`. A Linux→iOS spoofer can't fake Safari's BoringSSL
+ * stack JA4 or its H2 frame ordering, so the corroboration is a
+ * tight gate that recovers the FPs without unblocking real spoofs.
+ */
+function ja4AndH2CorroborateDarwin(integrity: IntegrityResultsData): boolean {
+  const ja4Ua = (
+    integrity.analysis as {
+      ja4_ua?: {
+        ja4_browser_family?: string | null;
+        h2_browser_family?: string | null;
+        ua_os?: string | null;
+      };
+    }
+  ).ja4_ua;
+  if (!ja4Ua) return false;
+  return (
+    ja4Ua.ja4_browser_family === "safari" &&
+    ja4Ua.h2_browser_family === "safari" &&
+    (ja4Ua.ua_os === "iOS" || ja4Ua.ua_os === "macOS")
+  );
+}
+
 function readKernelOsSignals(integrity: IntegrityResultsData): {
   hard: boolean;
   soft: boolean;
@@ -1219,9 +1328,20 @@ function readKernelOsSignals(integrity: IntegrityResultsData): {
     }
   ).kernel_os?.signals;
   if (!Array.isArray(sigs)) return { hard: false, soft: false };
+  const darwinMismatch = sigs.some(
+    (s) => s.code === "KERNEL_OS_MISMATCH_DARWIN",
+  );
+  const linuxMismatch = sigs.some((s) => s.code === "KERNEL_OS_MISMATCH_LINUX");
+  // Wire corroboration: when JA4 + H2 both say Safari and UA agrees,
+  // the Darwin TCP-mismatch is almost certainly a network artifact
+  // (CGNAT / ECN-stripping middlebox), not a Linux spoof. Demote
+  // hard → soft so the row lands at tier-60 (suspect) instead of
+  // tier-100 (block). A Linux box pretending to be iOS still gets
+  // hard because its JA4 + H2 won't match Safari's BoringSSL stack.
+  const corroborated = darwinMismatch && ja4AndH2CorroborateDarwin(integrity);
   return {
-    hard: sigs.some((s) => s.code === "KERNEL_OS_MISMATCH_DARWIN"),
-    soft: sigs.some((s) => s.code === "KERNEL_OS_MISMATCH_LINUX"),
+    hard: darwinMismatch && !corroborated,
+    soft: linuxMismatch || corroborated,
   };
 }
 
@@ -2294,5 +2414,78 @@ export function buildMerchantResponse(
     tags: buildTags(input, tagProbs),
 
     requestHeaders: deriveRequestHeaders(input),
+
+    ip_velocity_1h: deriveIpVelocity(input),
+
+    device_history: deriveDeviceHistory(input),
+  };
+}
+
+/**
+ * Project the analyzer's `device_history` aggregates into the merchant-facing
+ * shape. Reads strictly from `integrity.analysis.device_history` (computed
+ * from the client-carried encrypted blob at ingest). Returns null when the
+ * field is absent — pre-feature rows or sessions where the analyzer skipped
+ * the block. Internal-only `distinctCpiCount` / `distinctUaCount` are not
+ * surfaced.
+ */
+function deriveDeviceHistory(
+  input: MerchantProjectionInput,
+): MerchantDeviceHistory | null {
+  const dh = (
+    input.integrity?.analysis as
+      | {
+          device_history?: Record<string, unknown>;
+        }
+      | undefined
+  )?.device_history;
+  if (!dh || typeof dh !== "object") return null;
+  return {
+    tampered: dh.tampered === true,
+    identityMismatch: dh.identityMismatch === true,
+    freshDevice: dh.freshDevice === true,
+    scanCount: numField(dh, "scanCount"),
+    ageSeconds: numField(dh, "ageSeconds"),
+    distinctIpCount: numField(dh, "distinctIpCount"),
+    distinctCountryCount: numField(dh, "distinctCountryCount"),
+    distinctNetClassCount: numField(dh, "distinctNetClassCount"),
+    recent5MinCount: numField(dh, "recent5MinCount"),
+    recent1HourCount: numField(dh, "recent1HourCount"),
+    recent24HourCount: numField(dh, "recent24HourCount"),
+  };
+}
+
+/**
+ * Project the raw ip_velocity_1h stamped on the integrity row into the
+ * merchant-facing shape. Returns null when absent or malformed.
+ * Adds two derived convenience fields the merchant rules can act on
+ * directly: block_rate and residential_proxy_suspect.
+ */
+function numField(r: Record<string, unknown>, key: string): number {
+  const v = r[key];
+  return typeof v === "number" && Number.isFinite(v) ? v : 0;
+}
+
+function deriveIpVelocity(
+  input: MerchantProjectionInput,
+): IpVelocityProjection | null {
+  const raw = (input.integrity as { ip_velocity_1h?: unknown } | undefined)
+    ?.ip_velocity_1h;
+  if (!raw || typeof raw !== "object") return null;
+  const r = raw as Record<string, unknown>;
+  const hits = numField(r, "hits");
+  if (hits <= 0) return null;
+  const blocked = numField(r, "blocked");
+  const distinct = numField(r, "distinct_devices_est");
+  const asnCategory = input.integrity?.analysis?.ip?.asn?.category;
+  return {
+    bucket: typeof r.bucket === "string" ? r.bucket : "",
+    hits,
+    blocked,
+    distinct_devices_est: distinct,
+    block_rate: Math.round((blocked / hits) * 10000) / 10000,
+    residential_proxy_suspect: asnCategory === "residential" && distinct > 10,
+    first_seen_ms: numField(r, "first_seen_ms"),
+    last_seen_ms: numField(r, "last_seen_ms"),
   };
 }

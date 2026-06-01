@@ -73,6 +73,84 @@ function baseIntegrity(
 }
 
 describe("buildMerchantResponse", () => {
+  describe("ip_velocity_1h projection", () => {
+    it("returns null when the row carries no velocity stamp", () => {
+      const r = buildMerchantResponse({
+        session_id: "s",
+        integrity: baseIntegrity(),
+      });
+      expect(r.ip_velocity_1h).toBeNull();
+    });
+
+    it("threads the stamp through with derived block_rate", () => {
+      const integrity = baseIntegrity({
+        ip_velocity_1h: {
+          bucket: "1h:2026052914",
+          hits: 100,
+          blocked: 23,
+          distinct_devices_est: 8,
+          first_seen_ms: 1779984000000,
+          last_seen_ms: 1779984500000,
+        },
+      } as Partial<IntegrityResultsData>);
+      const r = buildMerchantResponse({ session_id: "s", integrity });
+      expect(r.ip_velocity_1h).toEqual({
+        bucket: "1h:2026052914",
+        hits: 100,
+        blocked: 23,
+        distinct_devices_est: 8,
+        block_rate: 0.23,
+        residential_proxy_suspect: false,
+        first_seen_ms: 1779984000000,
+        last_seen_ms: 1779984500000,
+      });
+    });
+
+    it("flags residential_proxy_suspect when residential ASN + >10 distinct devices", () => {
+      const integrity = baseIntegrity({
+        analysis: {
+          ...baseIntegrity().analysis,
+          ip: {
+            ...baseIntegrity().analysis.ip,
+            asn: { number: "7018", category: "residential", org: "AT&T US" },
+          },
+        },
+        ip_velocity_1h: {
+          bucket: "1h:2026052914",
+          hits: 50,
+          blocked: 0,
+          distinct_devices_est: 15,
+          first_seen_ms: 0,
+          last_seen_ms: 0,
+        },
+      } as Partial<IntegrityResultsData>);
+      const r = buildMerchantResponse({ session_id: "s", integrity });
+      expect(r.ip_velocity_1h?.residential_proxy_suspect).toBe(true);
+    });
+
+    it("does NOT flag residential_proxy_suspect on a datacenter ASN even with high distinct count", () => {
+      const integrity = baseIntegrity({
+        analysis: {
+          ...baseIntegrity().analysis,
+          ip: {
+            ...baseIntegrity().analysis.ip,
+            asn: { number: "16509", category: "datacenter", org: "AWS" },
+          },
+        },
+        ip_velocity_1h: {
+          bucket: "1h:2026052914",
+          hits: 50,
+          blocked: 0,
+          distinct_devices_est: 50,
+          first_seen_ms: 0,
+          last_seen_ms: 0,
+        },
+      } as Partial<IntegrityResultsData>);
+      const r = buildMerchantResponse({ session_id: "s", integrity });
+      expect(r.ip_velocity_1h?.residential_proxy_suspect).toBe(false);
+    });
+  });
+
   describe("shape contract", () => {
     it("returns the documented shape with nulls where we don't have data", () => {
       const result = buildMerchantResponse({ session_id: "s-1" });
@@ -130,6 +208,8 @@ describe("buildMerchantResponse", () => {
         developer_tools: { result: false },
         tags: [],
         requestHeaders: null,
+        ip_velocity_1h: null,
+        device_history: null,
       });
     });
 
@@ -559,6 +639,102 @@ describe("buildMerchantResponse", () => {
       expect(result.device_tampering).toBe(0);
       expect(result.tags).not.toContain("browser_tampering");
       expect(result.tags).toContain("corporate_shield");
+    });
+
+    it("KERNEL_OS_MISMATCH_DARWIN demotes to soft tier-60 when JA4+H2+UA all corroborate Safari (e.g. AT&T residential ECN strip)", () => {
+      // Real AT&T residential iPhone Safari with tcpi_options=7 (no ECN bit
+      // — CGNAT or ECN-incompatible middlebox on the path strips it). The
+      // Darwin TCP-mismatch rule would fire tier-100, but JA4/H2 are
+      // BoringSSL Safari and UA says iOS, so the wire fingerprints
+      // corroborate the UA. Demote to tier-60 (suspect) instead of
+      // tier-100 (block). Calibration: 14 of 119 AT&T residential iPhones
+      // in dev-jw 7-day window produced options=7.
+      const base = baseIntegrity();
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: {
+          ...base,
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          analysis: {
+            ...base.analysis,
+            ja4_ua: {
+              ja4_browser_family: "safari",
+              h2_browser_family: "safari",
+              ua_os: "iOS",
+            },
+            kernel_os: {
+              signals: [
+                {
+                  code: "KERNEL_OS_MISMATCH_DARWIN",
+                  severity: 1,
+                  evidence: "Apple UA, no ECN",
+                },
+              ],
+            },
+          } as any,
+        },
+      });
+      expect(result.device_tampering).toBe(60);
+    });
+
+    it("KERNEL_OS_MISMATCH_DARWIN stays hard tier-100 when JA4 disagrees (real Linux→iOS spoof)", () => {
+      // Linux Chrome pretending to be iOS: UA claims iOS but JA4 says
+      // chromium, so the corroboration gate doesn't fire. Still tier-100.
+      const base = baseIntegrity();
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: {
+          ...base,
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          analysis: {
+            ...base.analysis,
+            ja4_ua: {
+              ja4_browser_family: "chrome",
+              h2_browser_family: "safari",
+              ua_os: "iOS",
+            },
+            kernel_os: {
+              signals: [
+                {
+                  code: "KERNEL_OS_MISMATCH_DARWIN",
+                  severity: 1,
+                  evidence: "Apple UA, no ECN",
+                },
+              ],
+            },
+          } as any,
+        },
+      });
+      expect(result.device_tampering).toBe(100);
+    });
+
+    it("KERNEL_OS_MISMATCH_DARWIN stays hard tier-100 when H2 disagrees", () => {
+      const base = baseIntegrity();
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: {
+          ...base,
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          analysis: {
+            ...base.analysis,
+            ja4_ua: {
+              ja4_browser_family: "safari",
+              h2_browser_family: "chrome",
+              ua_os: "iOS",
+            },
+            kernel_os: {
+              signals: [
+                {
+                  code: "KERNEL_OS_MISMATCH_DARWIN",
+                  severity: 1,
+                  evidence: "Apple UA, no ECN",
+                },
+              ],
+            },
+          } as any,
+        },
+      });
+      expect(result.device_tampering).toBe(100);
     });
 
     it("KERNEL_OS_MISMATCH_LINUX (soft) bumps device_tampering to 60 outside a shield", () => {
@@ -3442,6 +3618,83 @@ describe("buildMerchantResponse", () => {
         }),
       });
       expect(result.device_tampering).toBe(0);
+    });
+
+    it("device_history projection: surfaces aggregates from analysis.device_history", () => {
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: baseIntegrity({
+          analysis: {
+            ...baseIntegrity().analysis,
+            device_history: {
+              tampered: false,
+              identityMismatch: false,
+              freshDevice: false,
+              scanCount: 7,
+              ageSeconds: 86400,
+              distinctIpCount: 2,
+              distinctCountryCount: 1,
+              distinctNetClassCount: 2,
+              distinctCpiCount: 1,
+              distinctUaCount: 1,
+              recent5MinCount: 1,
+              recent1HourCount: 3,
+              recent24HourCount: 7,
+            },
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          } as any,
+        }),
+      });
+      expect(result.device_history).toEqual({
+        tampered: false,
+        identityMismatch: false,
+        freshDevice: false,
+        scanCount: 7,
+        ageSeconds: 86400,
+        distinctIpCount: 2,
+        distinctCountryCount: 1,
+        distinctNetClassCount: 2,
+        recent5MinCount: 1,
+        recent1HourCount: 3,
+        recent24HourCount: 7,
+      });
+    });
+
+    it("device_history projection: null when analyzer block absent", () => {
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: baseIntegrity(),
+      });
+      expect(result.device_history).toBeNull();
+    });
+
+    it("device_history projection: freshDevice surfaces with zero counters", () => {
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: baseIntegrity({
+          analysis: {
+            ...baseIntegrity().analysis,
+            device_history: {
+              tampered: false,
+              identityMismatch: false,
+              freshDevice: true,
+              scanCount: 0,
+              ageSeconds: 0,
+              distinctIpCount: 0,
+              distinctCountryCount: 0,
+              distinctNetClassCount: 0,
+              distinctCpiCount: 0,
+              distinctUaCount: 0,
+              recent5MinCount: 0,
+              recent1HourCount: 0,
+              recent24HourCount: 0,
+            },
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          } as any,
+        }),
+      });
+      expect(result.device_history?.freshDevice).toBe(true);
+      expect(result.device_history?.scanCount).toBe(0);
     });
 
     it("(F) WEBRTC_BLOCKED on datacenter ASN applies extra 0.5× downgrade", () => {
