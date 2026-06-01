@@ -12,6 +12,7 @@ import * as events from "aws-cdk-lib/aws-events";
 import * as targets from "aws-cdk-lib/aws-events-targets";
 import * as cr from "aws-cdk-lib/custom-resources";
 import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
+import * as ec2 from "aws-cdk-lib/aws-ec2";
 import {
   createBaseLambdaConfig,
   createPowertoolsEnv,
@@ -76,6 +77,43 @@ interface LambdasConstructProps {
 
   // Stage-derived config (memory tuning, alarm thresholds, tracing).
   config: StageConfig;
+
+  /**
+   * Shared VPC + lambda SG + Valkey endpoint, plumbed in from
+   * ms-argus-infra via SSM in app-stack.ts. When all three are
+   * provided, the ingestion Lambda is VPC-attached and routes
+   * IP velocity through Valkey instead of DDB.
+   */
+  sharedVpc?: ec2.IVpc;
+  sharedLambdaSecurityGroup?: ec2.ISecurityGroup;
+  valkeyEndpoint?: string;
+}
+
+/**
+ * Type-narrowing helper for the Valkey-attach decision. Returns a
+ * concrete object when all three pieces are available; undefined
+ * otherwise. Lets the call site avoid non-null assertions and keeps
+ * the Lambda config readable.
+ */
+function resolveValkeyAttach(props: LambdasConstructProps):
+  | {
+      vpc: ec2.IVpc;
+      lambdaSecurityGroup: ec2.ISecurityGroup;
+      endpoint: string;
+    }
+  | undefined {
+  if (
+    !props.sharedVpc ||
+    !props.sharedLambdaSecurityGroup ||
+    !props.valkeyEndpoint
+  ) {
+    return undefined;
+  }
+  return {
+    vpc: props.sharedVpc,
+    lambdaSecurityGroup: props.sharedLambdaSecurityGroup,
+    endpoint: props.valkeyEndpoint,
+  };
 }
 
 export class LambdasConstruct extends Construct {
@@ -140,6 +178,13 @@ export class LambdasConstruct extends Construct {
     });
     preserveLogicalId(logGroup, "HttpApiIngestionLogGroup2008CA96");
 
+    // VPC-attach only when the shared VPC + lambda SG + Valkey endpoint
+    // are all provided. The Lambda lives in the shared private subnets
+    // so it can reach ElastiCache Serverless Valkey on 6379. The shared
+    // lambda SG is already authorised by Valkey's ingress rule, so no
+    // per-stack SG wiring is needed here.
+    const valkey = resolveValkeyAttach(props);
+
     const fn = new lambdaNode.NodejsFunction(this, "IngestionFunction", {
       ...createBaseLambdaConfig(),
       functionName: `${stackName}-ingestion`,
@@ -148,10 +193,24 @@ export class LambdasConstruct extends Construct {
       memorySize: config.lambda.ingestion.memorySize,
       timeout: Duration.seconds(10),
       logGroup,
+      ...(valkey && {
+        vpc: valkey.vpc,
+        vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
+        securityGroups: [valkey.lambdaSecurityGroup],
+      }),
       environment: {
         ...createPowertoolsEnv("argus-ingestion", `argus-${stage}`, stage),
         INTEGRITY_RESULTS_TABLE: props.integrityResultsTable.tableName,
         IP_VELOCITY_TABLE: props.ipVelocityTable.tableName,
+        ...(valkey && {
+          // Valkey-backed IP velocity. USE_VALKEY_IP_VELOCITY=true
+          // routes updateIpVelocity + bumpVelocityBlocked through
+          // native PFADD/PFCOUNT/INCR instead of DDB. Both code paths
+          // ship; flip the env to roll back without a redeploy.
+          VALKEY_ENDPOINT: valkey.endpoint,
+          VALKEY_PORT: "6379",
+          USE_VALKEY_IP_VELOCITY: "true",
+        }),
         ...(props.ecdhKeyParamName && {
           ECDH_KEY_PARAM: props.ecdhKeyParamName,
         }),

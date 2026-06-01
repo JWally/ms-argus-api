@@ -23,9 +23,42 @@ import {
 } from "@aws-sdk/client-dynamodb";
 import { createHash } from "node:crypto";
 import { Hll, HLL_SERIALIZED_BYTES } from "./hll";
+import { getValkey } from "./valkey-client";
 
 const HOUR_MS = 60 * 60 * 1000;
 const BUCKET_TTL_SEC = 7 * 24 * 60 * 60; // 7 days
+
+/**
+ * Feature flag — when 'true', updateIpVelocity + bumpVelocityBlocked
+ * route through Valkey native HLL primitives instead of DDB's
+ * GetItem-then-mutate-then-UpdateItem dance. Both code paths ship;
+ * flip the env to roll back without a code redeploy.
+ */
+function isValkeyIpVelocityEnabled(): boolean {
+  return process.env.USE_VALKEY_IP_VELOCITY === "true";
+}
+
+/**
+ * Cluster-hash-tagged key family for one (ip, bucket). All keys for a
+ * given pair colocate on the same Valkey slot — needed for pipelines
+ * that touch more than one of them in a single round-trip.
+ *
+ *   ipv:{ip|bucket}:hll      → HLL (PFADD/PFCOUNT)
+ *   ipv:{ip|bucket}:hits     → INCR counter
+ *   ipv:{ip|bucket}:blocked  → INCR counter
+ *   ipv:{ip|bucket}:first    → SET NX (first_seen_ms)
+ *   ipv:{ip|bucket}:last     → SET (last_seen_ms)
+ */
+function vkeyFamily(ip: string, bucket: string) {
+  const tag = `${ip}|${bucket}`;
+  return {
+    hll: `ipv:{${tag}}:hll`,
+    hits: `ipv:{${tag}}:hits`,
+    blocked: `ipv:{${tag}}:blocked`,
+    first: `ipv:{${tag}}:first`,
+    last: `ipv:{${tag}}:last`,
+  };
+}
 
 export interface IpVelocitySnapshot {
   /** Source IP. */
@@ -177,6 +210,57 @@ async function writeVelocityRow(
   return resp.Attributes ?? {};
 }
 
+/**
+ * Valkey-backed updateIpVelocity. Single pipelined round-trip:
+ *   PFADD hll {device}                — adds to native HLL
+ *   INCR  hits                        — atomic counter
+ *   SET   first {now} NX EX <ttl>     — first-seen latch
+ *   SET   last  {now} EX <ttl>        — always overwrite
+ *   EXPIRE hll, hits, blocked         — sync TTL across the family
+ *   PFCOUNT hll                       — post-add distinct estimate
+ *   GET   blocked, first              — return-snapshot fields
+ * Hash-tags ({ip|bucket}) colocate keys on one cluster slot so the
+ * pipeline runs without CROSSSLOT errors.
+ */
+async function updateIpVelocityValkey(
+  ip: string,
+  bucket: string,
+  deviceHash: Buffer,
+  now: number,
+): Promise<IpVelocitySnapshot> {
+  const k = vkeyFamily(ip, bucket);
+  const valkey = getValkey();
+  const pipe = valkey.pipeline();
+  pipe.pfadd(k.hll, deviceHash);
+  pipe.incr(k.hits);
+  pipe.set(k.first, String(now), "EX", BUCKET_TTL_SEC, "NX");
+  pipe.set(k.last, String(now), "EX", BUCKET_TTL_SEC);
+  pipe.expire(k.hll, BUCKET_TTL_SEC);
+  pipe.expire(k.hits, BUCKET_TTL_SEC);
+  pipe.expire(k.blocked, BUCKET_TTL_SEC);
+  pipe.pfcount(k.hll);
+  pipe.get(k.blocked);
+  pipe.get(k.first);
+  const results = (await pipe.exec()) ?? [];
+  const pick = <T>(idx: number, fallback: T): T => {
+    const tuple = results[idx];
+    if (!tuple) return fallback;
+    const [err, val] = tuple;
+    if (err || val == null) return fallback;
+    return val as T;
+  };
+  // Indices match the pipeline command order above.
+  return {
+    ip,
+    bucket,
+    hits: Number(pick<number | string>(1, 0)),
+    blocked: Number(pick<string | null>(8, "0") ?? "0"),
+    distinct_devices_est: Number(pick<number>(7, 0)),
+    first_seen_ms: Number(pick<string | null>(9, String(now)) ?? String(now)),
+    last_seen_ms: now,
+  };
+}
+
 export async function updateIpVelocity(
   input: UpdateInput,
 ): Promise<IpVelocitySnapshot | null> {
@@ -188,9 +272,14 @@ export async function updateIpVelocity(
   const now = input.nowMs ?? Date.now();
   const bucket = hourBucket(now);
   const ttl = Math.floor(now / 1000) + BUCKET_TTL_SEC;
+  const deviceHash = deviceHashFor(input.deviceId);
+
+  if (isValkeyIpVelocityEnabled()) {
+    return updateIpVelocityValkey(input.ip, bucket, deviceHash, now);
+  }
 
   const hll = await loadHll(input.ddb, tableName, input.ip, bucket);
-  hll.add(deviceHashFor(input.deviceId));
+  hll.add(deviceHash);
   const attrs = await writeVelocityRow({
     ddb: input.ddb,
     tableName,
@@ -225,6 +314,17 @@ export async function bumpVelocityBlocked(
 ): Promise<void> {
   const tableName = process.env.IP_VELOCITY_TABLE;
   if (!tableName) return;
+
+  if (isValkeyIpVelocityEnabled()) {
+    // `blocked` already has its TTL set by updateIpVelocity's pipeline.
+    // INCR is enough — EXPIRE is reapplied implicitly via the family-
+    // wide TTL stamp on the next updateIpVelocity for this bucket.
+    const k = vkeyFamily(input.ip, input.bucket);
+    const valkey = getValkey();
+    await valkey.incr(k.blocked);
+    return;
+  }
+
   await input.ddb.send(
     new UpdateItemCommand({
       TableName: tableName,

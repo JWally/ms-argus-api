@@ -68,6 +68,7 @@
     "@middy/warmup": "^6.0.0",
     "aws-cdk-lib": "2.190.0",
     "constructs": "^10.4.2",
+    "ioredis": "^5.11.0",
     "lru-cache": "^11.0.2"
   },
   "eslintConfig": {

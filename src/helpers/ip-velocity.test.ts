@@ -171,3 +171,123 @@ describe("updateIpVelocity", () => {
     expect(snap!.distinct_devices_est).toBe(2);
   });
 });
+
+describe("updateIpVelocity / bumpVelocityBlocked under Valkey path", () => {
+  // Minimal Valkey mock: a fake pipeline that records every command
+  // queued and returns canned exec() results in the same order the
+  // production helper expects.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const makeFakeValkey = (pipelineResults: [Error | null, any][]) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const calls: { method: string; args: any[] }[] = [];
+    const pipeline = {
+      pfadd: vi.fn((...args: unknown[]) => {
+        calls.push({ method: "pfadd", args });
+        return pipeline;
+      }),
+      incr: vi.fn((...args: unknown[]) => {
+        calls.push({ method: "incr", args });
+        return pipeline;
+      }),
+      set: vi.fn((...args: unknown[]) => {
+        calls.push({ method: "set", args });
+        return pipeline;
+      }),
+      expire: vi.fn((...args: unknown[]) => {
+        calls.push({ method: "expire", args });
+        return pipeline;
+      }),
+      pfcount: vi.fn((...args: unknown[]) => {
+        calls.push({ method: "pfcount", args });
+        return pipeline;
+      }),
+      get: vi.fn((...args: unknown[]) => {
+        calls.push({ method: "get", args });
+        return pipeline;
+      }),
+      exec: vi.fn().mockResolvedValue(pipelineResults),
+    };
+    return { pipeline, calls };
+  };
+
+  beforeEach(() => {
+    vi.resetModules();
+    process.env.USE_VALKEY_IP_VELOCITY = "true";
+    process.env.VALKEY_ENDPOINT = "fake-host.local";
+    process.env.VALKEY_PORT = "6379";
+  });
+  afterEach(() => {
+    delete process.env.USE_VALKEY_IP_VELOCITY;
+    delete process.env.VALKEY_ENDPOINT;
+    delete process.env.VALKEY_PORT;
+    vi.doUnmock("./valkey-client");
+  });
+
+  it("issues a single pipelined PFADD+INCR+SET+EXPIRE+PFCOUNT+GET round-trip and returns the snapshot", async () => {
+    const NOW = Date.UTC(2026, 4, 29, 14, 0, 0);
+    const fake = makeFakeValkey([
+      [null, 1], // pfadd
+      [null, 7], // incr (hits=7)
+      [null, "OK"], // set first
+      [null, "OK"], // set last
+      [null, 1], // expire hll
+      [null, 1], // expire hits
+      [null, 1], // expire blocked
+      [null, 3], // pfcount distinct=3
+      [null, "2"], // get blocked
+      [null, String(NOW - 90_000)], // get first_seen_ms
+    ]);
+    vi.doMock("./valkey-client", () => ({
+      getValkey: () => ({ pipeline: () => fake.pipeline }),
+    }));
+    const mod = await import("./ip-velocity");
+    const snap = await mod.updateIpVelocity({
+      ip: "1.2.3.4",
+      deviceId: "pk-1",
+      ddb: {
+        send: vi.fn(() => {
+          throw new Error("DDB should not be touched on the Valkey path");
+        }),
+      } as unknown as DynamoDBClient,
+      nowMs: NOW,
+    });
+    expect(snap).not.toBeNull();
+    expect(snap!.hits).toBe(7);
+    expect(snap!.distinct_devices_est).toBe(3);
+    expect(snap!.blocked).toBe(2);
+    expect(snap!.first_seen_ms).toBe(NOW - 90_000);
+    expect(snap!.last_seen_ms).toBe(NOW);
+    const methods = fake.calls.map((c) => c.method);
+    expect(methods).toEqual([
+      "pfadd",
+      "incr",
+      "set",
+      "set",
+      "expire",
+      "expire",
+      "expire",
+      "pfcount",
+      "get",
+      "get",
+    ]);
+  });
+
+  it("bumps blocked via a single Valkey INCR with no DDB call", async () => {
+    const incr = vi.fn().mockResolvedValue(1);
+    vi.doMock("./valkey-client", () => ({
+      getValkey: () => ({ incr }),
+    }));
+    const mod = await import("./ip-velocity");
+    await mod.bumpVelocityBlocked({
+      ip: "1.2.3.4",
+      bucket: "1h:2026052914",
+      ddb: {
+        send: vi.fn(() => {
+          throw new Error("DDB should not be touched on the Valkey path");
+        }),
+      } as unknown as DynamoDBClient,
+    });
+    expect(incr).toHaveBeenCalledTimes(1);
+    expect(incr).toHaveBeenCalledWith("ipv:{1.2.3.4|1h:2026052914}:blocked");
+  });
+});
