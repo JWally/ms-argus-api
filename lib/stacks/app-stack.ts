@@ -7,6 +7,7 @@ import * as acm from "aws-cdk-lib/aws-certificatemanager";
 import * as events from "aws-cdk-lib/aws-events";
 import * as targets from "aws-cdk-lib/aws-events-targets";
 import * as ssm from "aws-cdk-lib/aws-ssm";
+import * as ec2 from "aws-cdk-lib/aws-ec2";
 import { Construct } from "constructs";
 
 import { SecretConstruct } from "../constructs/secrets";
@@ -213,6 +214,45 @@ export class ArgusApiStack extends cdk.Stack {
       stage,
     });
 
+    // ── Shared infra (VPC + Valkey) from ms-argus-infra via SSM ───────
+    // Optional — only wired when ms-argus-infra is deployed in the same
+    // environment. When all three lookups succeed, the ingestion Lambda
+    // gets VPC-attached and routes IP velocity through Valkey instead
+    // of DDB. Stage derived from the api stack's `environment` (the
+    // same string ms-argus-infra exports under /argus/{stage}/...).
+    const sharedInfraSsmBase = `/argus/${environment}`;
+    let sharedVpc: ec2.IVpc | undefined;
+    let sharedLambdaSg: ec2.ISecurityGroup | undefined;
+    let valkeyEndpoint: string | undefined;
+    try {
+      const vpcId = ssm.StringParameter.valueFromLookup(
+        this,
+        `${sharedInfraSsmBase}/vpc-id`,
+      );
+      // valueFromLookup returns a dummy "dummy-value-for-..." string if
+      // the param doesn't exist yet (CDK lookup placeholder). Guard so
+      // we don't try to attach to a non-existent VPC.
+      if (vpcId && !vpcId.startsWith("dummy-value-for-")) {
+        sharedVpc = ec2.Vpc.fromLookup(this, "SharedVpc", { vpcId });
+        const sgId = ssm.StringParameter.valueForStringParameter(
+          this,
+          `${sharedInfraSsmBase}/lambda-security-group-id`,
+        );
+        sharedLambdaSg = ec2.SecurityGroup.fromSecurityGroupId(
+          this,
+          "SharedLambdaSg",
+          sgId,
+        );
+        valkeyEndpoint = ssm.StringParameter.valueForStringParameter(
+          this,
+          `${sharedInfraSsmBase}/valkey-endpoint`,
+        );
+      }
+    } catch {
+      // ms-argus-infra not deployed in this env; ingestion stays on DDB
+      // for IP velocity. Non-fatal.
+    }
+
     // ── Compute layer ─────────────────────────────────────────────────
     const stageConfig = getStageConfig(stage);
 
@@ -234,6 +274,9 @@ export class ArgusApiStack extends cdk.Stack {
       platformPubkeySsmPath,
       integrityFirehoseStreamName: integrityFirehose.deliveryStreamName,
       config: stageConfig,
+      sharedVpc,
+      sharedLambdaSecurityGroup: sharedLambdaSg,
+      valkeyEndpoint,
     });
 
     // Bucket reads + env-var injection for the API Lambdas. The cron
