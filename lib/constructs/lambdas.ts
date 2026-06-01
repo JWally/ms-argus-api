@@ -4,6 +4,7 @@ import * as path from "path";
 import { Construct } from "constructs";
 import * as cdk from "aws-cdk-lib";
 import { Duration, RemovalPolicy, SecretValue } from "aws-cdk-lib";
+import * as lambda from "aws-cdk-lib/aws-lambda";
 import * as lambdaNode from "aws-cdk-lib/aws-lambda-nodejs";
 import * as logs from "aws-cdk-lib/aws-logs";
 import * as iam from "aws-cdk-lib/aws-iam";
@@ -117,10 +118,22 @@ function resolveValkeyAttach(props: LambdasConstructProps):
 }
 
 export class LambdasConstruct extends Construct {
-  // API-attached
+  // API-attached — the raw functions. Keep exposed so IAM grants and
+  // metrics that target the function (not the alias) still work.
   public readonly ingestion: lambdaNode.NodejsFunction;
   public readonly sessionGet: lambdaNode.NodejsFunction;
   public readonly patAttest?: lambdaNode.NodejsFunction;
+
+  // API-attached — `live` aliases with Provisioned Concurrency. The
+  // HTTP API and REST API integrations route through these so cold
+  // starts disappear from the user-perceived path. Without PC the
+  // first concurrent invoke on each Lambda pays ~500ms init; on the
+  // pair flow that compounds (ingestion is hit by every scan).
+  // Replaces the 1-minute EventBridge warmup pings that used to ride
+  // alongside these Lambdas.
+  public readonly ingestionAlias: lambda.Alias;
+  public readonly sessionGetAlias: lambda.Alias;
+  public readonly patAttestAlias?: lambda.Alias;
 
   // Cron / batch
   public readonly ipClassBuilder: lambdaNode.NodejsFunction;
@@ -144,6 +157,25 @@ export class LambdasConstruct extends Construct {
     this.sessionGet = this.makeSessionGet(props);
     if (props.sigintAesKeySecretArn) {
       this.patAttest = this.makePatAttest(props);
+    }
+
+    // `live` aliases with Provisioned Concurrency. PC=2 across the
+    // board: enough to absorb the natural concurrent burst of a pair
+    // flow (desktop scan + phone scan land within ~1s of each other)
+    // without paying for capacity that idles. Bump per-Lambda if a
+    // hotter endpoint warrants it. addAlias auto-publishes a new
+    // Version on every code-hash change, so PC stays pinned to the
+    // latest deploy without manual version juggling.
+    this.ingestionAlias = this.ingestion.addAlias("live", {
+      provisionedConcurrentExecutions: 2,
+    });
+    this.sessionGetAlias = this.sessionGet.addAlias("live", {
+      provisionedConcurrentExecutions: 2,
+    });
+    if (this.patAttest) {
+      this.patAttestAlias = this.patAttest.addAlias("live", {
+        provisionedConcurrentExecutions: 2,
+      });
     }
 
     this.ipClassBuilder = this.makeIpClassBuilder(props);
