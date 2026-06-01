@@ -635,6 +635,25 @@ function isAppleClaimedUA(
   return /iPhone|iPad|iPod|Macintosh/.test(ua);
 }
 
+/**
+ * Narrower variant of `isAppleClaimedUA`: matches **iOS / iPadOS Safari
+ * only**, not macOS Safari. macOS Safari rarely produces PAT in practice
+ * (Apple's PrivacyPass issuer is iOS-tilted, and a lot of real desktop
+ * Safari sessions on a normal home network legitimately come through
+ * with `pat.attested: false`), so we don't apply the
+ * `PAT_MISSING_AUTOMATION_PENALTY` to them. iPhone / iPad Safari, on
+ * the other hand, should be able to produce one — absence there stays
+ * meaningful.
+ */
+function isAppleMobileClaimedUA(
+  integrity: IntegrityResultsData | undefined,
+): boolean {
+  if (!isAppleClaimedUA(integrity)) return false;
+  const headers = integrity?.request_headers?.headers ?? {};
+  const ua = integrity?.user_agent ?? headers[UA_HEADER_KEY] ?? "";
+  return /iPhone|iPad|iPod/.test(ua);
+}
+
 type TagPredicate = [MerchantTag, (i: MerchantProjectionInput) => boolean];
 
 function buildTags(
@@ -1093,7 +1112,26 @@ function applyPatAdjustment(
     if (automation >= PAT_AUTOMATION_HARD_FLOOR) return automation;
     return Math.min(automation, PAT_VALID_AUTOMATION_CAP);
   }
-  if (isAppleClaimedUA(input.integrity)) {
+  // PAT_MISSING penalty narrowed in two directions to kill false-
+  // positives on real corporate Mac Safari users:
+  //
+  //   1. iOS/iPadOS Safari ONLY. macOS Safari rarely produces PAT in
+  //      practice — Apple's PrivacyPass issuer is mobile-tilted, and
+  //      `pat.attested: false` from a desktop-Safari home user is
+  //      common enough that penalising it produces too much noise.
+  //      iPhone / iPad still get penalised since they're where PAT
+  //      *should* work.
+  //
+  //   2. Corporate-shield ASNs (Cisco Umbrella / Zscaler /
+  //      Cloudflare Access) bypass the penalty entirely. The shield
+  //      breaks the per-origin Privacy-Pass round-trip, so PAT
+  //      absence under a known corporate proxy is an architectural
+  //      fact, not an automation signal. The shield is already
+  //      surfaced as the `corporate_shield` tag.
+  if (
+    isAppleMobileClaimedUA(input.integrity) &&
+    !isCorporateShieldedAsn(input.integrity ?? ({} as IntegrityResultsData))
+  ) {
     return Math.min(100, automation + PAT_MISSING_AUTOMATION_PENALTY);
   }
   return automation;
