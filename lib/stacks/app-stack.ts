@@ -4,8 +4,6 @@ import * as cdk from "aws-cdk-lib";
 import * as sns from "aws-cdk-lib/aws-sns";
 import * as route53 from "aws-cdk-lib/aws-route53";
 import * as acm from "aws-cdk-lib/aws-certificatemanager";
-import * as events from "aws-cdk-lib/aws-events";
-import * as targets from "aws-cdk-lib/aws-events-targets";
 import * as ssm from "aws-cdk-lib/aws-ssm";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
 import { Construct } from "constructs";
@@ -287,6 +285,9 @@ export class ArgusApiStack extends cdk.Stack {
     integrityFirehose.grantPutRecord(lambdas.ingestion);
 
     // ── API layer ─────────────────────────────────────────────────────
+    // Integrations route to the `live` aliases (PC-warm versions), not
+    // the raw $LATEST functions. The raw function refs still ride
+    // through for IAM grants and CloudWatch alarms.
     const httpApi = new HttpApiConstruct(this, "HttpApi", {
       stackName,
       alarmsTopic,
@@ -294,6 +295,8 @@ export class ArgusApiStack extends cdk.Stack {
       ingestionFunction: lambdas.ingestion,
       sessionGetFunction: lambdas.sessionGet,
       patAttestFunction: lambdas.patAttest,
+      ingestionAlias: lambdas.ingestionAlias,
+      patAttestAlias: lambdas.patAttestAlias,
     });
 
     const restApi = new RestApiConstruct(this, "RestApi", {
@@ -301,35 +304,13 @@ export class ArgusApiStack extends cdk.Stack {
       environment,
       rootDomain,
       hostedZone,
-      sessionGetFunction: lambdas.sessionGet,
+      sessionGetFunction: lambdas.sessionGetAlias,
     });
 
-    // ── Warmers (1-min ping to keep the two API Lambdas hot) ──────────
-    const warmupPayload = events.RuleTargetInput.fromObject({
-      warmup: true,
-      source: "warmup-rule",
-      timestamp: events.EventField.time,
-    });
-
-    new events.Rule(this, "IngestionWarmupRule", {
-      ruleName: `${stackName}-ingestion-warmup`,
-      description: "Keep integrity ingestion Lambda warm",
-      schedule: events.Schedule.rate(cdk.Duration.minutes(1)),
-      targets: [
-        new targets.LambdaFunction(lambdas.ingestion, { event: warmupPayload }),
-      ],
-    });
-
-    new events.Rule(this, "SessionGetWarmupRule", {
-      ruleName: `${stackName}-session-get-warmup`,
-      description: "Keep session-get Lambda warm",
-      schedule: events.Schedule.rate(cdk.Duration.minutes(1)),
-      targets: [
-        new targets.LambdaFunction(lambdas.sessionGet, {
-          event: warmupPayload,
-        }),
-      ],
-    });
+    // Warmup EventBridge rules are gone. Provisioned Concurrency on the
+    // `live` aliases (set in LambdasConstruct) holds containers pre-
+    // initialized — the cron-ping pattern is obsolete and was paying
+    // for ~720 invocations/day per Lambda that did nothing.
 
     // ── Edge layer ────────────────────────────────────────────────────
     const cdn = new CloudFrontWafConstruct(this, "CDN", {

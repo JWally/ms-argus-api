@@ -16,13 +16,19 @@ interface HttpApiConstructProps {
   alarmsTopic: sns.ITopic;
   config: StageConfig;
 
-  /** Pre-built ingestion Lambda from LambdasConstruct. */
+  /** Pre-built ingestion Lambda (raw function — used for alarms). */
   ingestionFunction: lambda.Function;
   /** Pre-built session-get Lambda. (Wired only for log-group import here —
    *  routes are on RestApiConstruct, not the HTTP API.) */
   sessionGetFunction: lambda.Function;
   /** Pre-built PAT-attestation Lambda. Routes only mount when present. */
   patAttestFunction?: lambda.Function;
+
+  /** `live` alias on the ingestion Lambda — the integration routes here
+   *  so requests land on the PC-warm version. */
+  ingestionAlias: lambda.IFunction;
+  /** `live` alias on the PAT Lambda (when patAttestFunction is set). */
+  patAttestAlias?: lambda.IFunction;
 }
 
 /**
@@ -62,7 +68,7 @@ export class HttpApiConstruct extends Construct {
 
     const ingestionIntegration = new integrations.HttpLambdaIntegration(
       "IngestionIntegration",
-      props.ingestionFunction,
+      props.ingestionAlias,
     );
 
     this.api.addRoutes({
@@ -77,10 +83,10 @@ export class HttpApiConstruct extends Construct {
       integration: ingestionIntegration,
     });
 
-    if (props.patAttestFunction) {
+    if (props.patAttestFunction && props.patAttestAlias) {
       const patIntegration = new integrations.HttpLambdaIntegration(
         "PatAttestIntegration",
-        props.patAttestFunction,
+        props.patAttestAlias,
       );
 
       this.api.addRoutes({
