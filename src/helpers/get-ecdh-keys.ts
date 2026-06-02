@@ -61,8 +61,21 @@ async function fetchFromSsm(paramName: string): Promise<EcdhKeys | null> {
  * Returns null if ECDH_KEY_PARAM is not set (feature disabled).
  *
  * Concurrent callers during a cache miss share a single in-flight SSM
- * fetch via `inFlightFetch`. Without this dedup, the eager prefetch
- * below + a fast first request would both fire the SSM call.
+ * fetch via `inFlightFetch`.
+ *
+ * NO module-load eager-fetch. A previous version fired a fire-and-
+ * forget SSM call at module init thinking PC would hide the latency
+ * in the unbilled Init phase. Lambda actually FROZE the container
+ * mid-flight after Init completed, and when a real request thawed
+ * the container 30+ minutes later the in-flight signed request fell
+ * outside the SigV4 5-minute window. SSM responded
+ * `InvalidSignatureException`, middleware retried, ingestion took
+ * 8+ seconds. Caused a ~p90=3.6s ingestion regression. Reverted.
+ *
+ * If we ever want to pre-warm again, the only safe pattern is a
+ * synchronous module-top `await` (Node ESM top-level await), which
+ * blocks Init phase until the call completes — no mid-flight freeze
+ * possible. Trade-off: SSM outages at deploy time crash the module.
  */
 export async function getEcdhKeys(): Promise<EcdhKeys | null> {
   const paramName = process.env.ECDH_KEY_PARAM;
@@ -78,22 +91,6 @@ export async function getEcdhKeys(): Promise<EcdhKeys | null> {
     });
   }
   return inFlightFetch;
-}
-
-// Eager pre-warm at module load. With Provisioned Concurrency, AWS
-// imports this module during container init (the unbilled Init phase)
-// before any request routes here, so the SSM round-trip + key parse
-// is hidden from request-time. Cache miss tail on /v1/integrity-collect
-// was the source of an 800ms p90 that dropped to ~240ms once warm.
-//
-// Fire-and-forget is fine: if the first request lands before SSM
-// returns, it awaits the same `inFlightFetch` promise instead of
-// starting a second fetch. The catch keeps an SSM init failure from
-// crashing the module — request-time path will retry naturally.
-if (process.env.ECDH_KEY_PARAM) {
-  void getEcdhKeys().catch(() => {
-    /* surfaced + logged by fetchFromSsm; module load must not throw */
-  });
 }
 
 /**
