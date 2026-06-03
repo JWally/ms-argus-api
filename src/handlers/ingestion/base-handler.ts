@@ -796,11 +796,26 @@ async function bumpIpVelocityBlocked(
  * errors are logged + metered inside the helper. Shadow mode: the existing
  * DDB-stream → integrity-archiver path keeps writing per-session JSON
  * until Firehose is validated.
+ *
+ * Returns `{ duplicate }`. A `ConditionalCheckFailedException` means a row
+ * already exists for this (cpi, session_id) — i.e. the SAME scan was already
+ * processed under the SAME session_id. That is the idempotent-retry path,
+ * NOT a distinct replay: the SDK mints one session_id per scan and shares it
+ * across its worker submission and the in-iframe fallback submission (and
+ * API Gateway / network layers may retry), so the second write is a
+ * duplicate of an already-committed session. We surface `duplicate:true` and
+ * let the caller return the same 200 response (the same session_id it already
+ * holds) instead of a 409. This mirrors the STUN single-use claim, which
+ * already accepts a same-session re-claim as idempotent
+ * (`stun-nonce-tracker` `existing.sessionId === sessionId`). It is also safe
+ * against a genuine replay attacker: they cannot mutate the committed row
+ * (the condition still blocks the overwrite) and only get back the original
+ * session's response.
  */
-async function persistIntegrityRecord(
+export async function persistIntegrityRecord(
   ctx: HandleContext,
   item: Record<string, unknown>,
-): Promise<void> {
+): Promise<{ duplicate: boolean }> {
   try {
     await Promise.all([
       ddbClient.send(
@@ -819,10 +834,20 @@ async function persistIntegrityRecord(
         metrics: ctx.deps.metrics,
       }),
     ]);
+    return { duplicate: false };
   } catch (err) {
     if (err instanceof ConditionalCheckFailedException) {
-      ctx.deps.metrics.addMetric("IntegrityReplayBlocked", MetricUnit.Count, 1);
-      throw new HttpError(409, "Session already processed");
+      // Idempotent same-session retry — see docstring. Not an error.
+      ctx.deps.metrics.addMetric(
+        "IntegrityIdempotentRetry",
+        MetricUnit.Count,
+        1,
+      );
+      ctx.deps.logger.info(
+        "integrity same-session retry — returning existing session",
+        { cpi: ctx.cpi, session_id: ctx.sessionId },
+      );
+      return { duplicate: true };
     }
     ctx.deps.logger.error("Integrity DynamoDB write failed", {
       error: err,
@@ -1018,17 +1043,22 @@ async function handleIntegrity(
   const itemWithProjection = applyProjectionSnapshot(ctx, itemWithVelocity);
   await bumpIpVelocityBlocked(ctx, itemWithProjection);
 
-  await persistIntegrityRecord(ctx, itemWithProjection);
+  const { duplicate } = await persistIntegrityRecord(ctx, itemWithProjection);
 
-  emitIngestMetricsAndReturn(ctx, dh);
+  emitIngestMetricsAndReturn(ctx, dh, duplicate);
   return buildIntegrityResponse(ctx.sessionId, dh.outboundBlob);
 }
 
 function emitIngestMetricsAndReturn(
   ctx: HandleContext,
   dh: ProcessDeviceHistoryResult,
+  duplicate: boolean,
 ): void {
-  ctx.deps.metrics.addMetric("IntegrityStored", MetricUnit.Count, 1);
+  // Only count a fresh write as "stored"; an idempotent same-session retry
+  // is metered separately in persistIntegrityRecord (IntegrityIdempotentRetry).
+  if (!duplicate) {
+    ctx.deps.metrics.addMetric("IntegrityStored", MetricUnit.Count, 1);
+  }
   ctx.deps.metrics.addMetric(
     "IntegrityDuration",
     MetricUnit.Milliseconds,
