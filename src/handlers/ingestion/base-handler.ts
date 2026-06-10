@@ -68,6 +68,7 @@ import { prewarmAutoOverlay } from "../../services/network/auto-overlay";
 import { prewarmAppleRelay } from "../../services/network/apple-relay";
 import { prewarmBrowserBaselines } from "../../services/network/browser-baselines";
 import { archiveToFirehose } from "../../helpers/firehose-archive";
+import { boundedRequestHandler } from "../../helpers/sdk-http-handler";
 import { buildMerchantResponse } from "../../helpers/merchant-projection";
 import { lookupAppleRelaySync } from "../../services/network/apple-relay";
 import {
@@ -117,7 +118,13 @@ async function routeRequest(
   return null;
 }
 
-const ddbClient = new DynamoDBClient({});
+// Bounded timeouts (defense-in-depth): DDB is the critical-path write that
+// gates the response, and is subject to the same stale-keep-alive-socket hang
+// across container freezes. It stays warm (hit on every request), so it rarely
+// bites — but a dead socket here would block the client. See sdk-http-handler.ts.
+const ddbClient = new DynamoDBClient({
+  requestHandler: boundedRequestHandler,
+});
 const INTEGRITY_RESULTS_TABLE = process.env.INTEGRITY_RESULTS_TABLE ?? "";
 const INTEGRITY_FIREHOSE_STREAM = process.env.INTEGRITY_FIREHOSE_STREAM;
 const INTEGRITY_TTL_SECONDS = resolveIntegrityTtlSeconds(process.env);

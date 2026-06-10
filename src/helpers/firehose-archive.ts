@@ -13,8 +13,15 @@
 import { FirehoseClient, PutRecordCommand } from "@aws-sdk/client-firehose";
 import { Logger } from "@aws-lambda-powertools/logger";
 import { Metrics, MetricUnit } from "@aws-lambda-powertools/metrics";
+import { boundedRequestHandler } from "./sdk-http-handler";
 
-const firehoseClient = new FirehoseClient({});
+// Bounded timeouts: this client is touched once per integrity request and sits
+// idle the whole inter-request gap, so across a container freeze its socket is
+// the one most likely dead on thaw. Without a bound, the dead-socket write
+// hangs ~7.5s. See sdk-http-handler.ts.
+const firehoseClient = new FirehoseClient({
+  requestHandler: boundedRequestHandler,
+});
 
 /**
  * Send one record to the integrity-archive Firehose stream as
