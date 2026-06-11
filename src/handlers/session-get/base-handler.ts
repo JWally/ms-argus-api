@@ -137,6 +137,58 @@ async function debitCreditOr402(
   return { ok: true, remaining: debit.remaining };
 }
 
+/**
+ * The billable read pipeline: verify token → burn a credit → fetch integrity
+ * → project. Each phase is timed; a single structured line breaks down the
+ * warm-path latency (token verify / SSM, credit DDB, integrity DDB, projection
+ * CPU). performance.now() is a monotonic ms clock.
+ */
+async function runTimedPipeline(
+  cpi: string,
+  sessionId: string,
+  event: APIGatewayProxyEvent,
+  deps: HandlerDeps,
+): Promise<APIGatewayProxyResultV2> {
+  const t0 = performance.now();
+  const auth = await authorize(cpi, event, deps);
+  if (!auth.ok) return auth.response;
+  const tAuth = performance.now();
+
+  const debit = await debitCreditOr402(auth.claims.merchantId, deps);
+  if (!debit.ok) return debit.response;
+  const tDebit = performance.now();
+
+  const integrity = await fetchIntegrityResultsByComposite(
+    cpi,
+    sessionId,
+    deps,
+  );
+  const tFetch = performance.now();
+  if (!integrity) {
+    return {
+      statusCode: 404,
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ error: "Session not found" }),
+    };
+  }
+  deps.metrics.addMetric("IntegritySessionRetrieved", MetricUnit.Count, 1);
+  const response = buildIntegrityResponse({
+    sessionId,
+    integrity,
+    creditsRemaining: debit.remaining,
+  });
+  const tProject = performance.now();
+
+  deps.logger.info("session-get timing", {
+    authMs: Math.round(tAuth - t0),
+    debitMs: Math.round(tDebit - tAuth),
+    fetchMs: Math.round(tFetch - tDebit),
+    projectMs: Math.round(tProject - tFetch),
+    totalMs: Math.round(tProject - t0),
+  });
+  return response;
+}
+
 export function createBaseHandler(deps: HandlerDeps) {
   return async (
     event: APIGatewayProxyEvent,
@@ -155,29 +207,6 @@ export function createBaseHandler(deps: HandlerDeps) {
       };
     }
     const sessionId = extractSessionId(event, deps.metrics);
-    const auth = await authorize(cpi, event, deps);
-    if (!auth.ok) return auth.response;
-
-    const debit = await debitCreditOr402(auth.claims.merchantId, deps);
-    if (!debit.ok) return debit.response;
-
-    const integrity = await fetchIntegrityResultsByComposite(
-      cpi,
-      sessionId,
-      deps,
-    );
-    if (!integrity) {
-      return {
-        statusCode: 404,
-        headers: JSON_HEADERS,
-        body: JSON.stringify({ error: "Session not found" }),
-      };
-    }
-    deps.metrics.addMetric("IntegritySessionRetrieved", MetricUnit.Count, 1);
-    return buildIntegrityResponse({
-      sessionId,
-      integrity,
-      creditsRemaining: debit.remaining,
-    });
+    return runTimedPipeline(cpi, sessionId, event, deps);
   };
 }
