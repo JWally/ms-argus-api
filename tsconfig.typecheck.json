@@ -1,0 +1,14 @@
+{
+  // Type-check gate (npm run build). Same files as tsconfig.json, but
+  // module: es2022 so top-level `await` is allowed — session-get init-primes
+  // during container init via TLA. The Lambda bundles are already ESM
+  // (esbuild OutputFormat.ESM), so this matches runtime reality. The root
+  // tsconfig.json stays commonjs because the CDK app runs through ts-node,
+  // which breaks on an ESM module setting without "type": "module".
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "module": "es2022",
+    "moduleResolution": "node",
+    "noEmit": true
+  }
+}

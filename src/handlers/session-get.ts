@@ -11,6 +11,7 @@ import { corsMiddleware } from "../helpers/cors-middleware";
 import { jsonErrorHandler } from "../helpers/error-middleware";
 import { onWarmup } from "../helpers/middy-helpers";
 import { createBaseHandler } from "./session-get/base-handler";
+import { primeSessionGet } from "./session-get/prime";
 
 interface SessionGetEnvConfig {
   INTEGRITY_RESULTS_TABLE: string;
@@ -62,3 +63,17 @@ export const handler = middy(baseHandler)
     }),
   )
   .use(jsonErrorHandler({ logger }));
+
+// Init-prime — top-level await, so (ESM bundle) container init does not
+// complete until this resolves. Provisioned-Concurrency runs init when it
+// mints a container, so every PC container is fully warm (pubkey + DDB socket
+// + projection JIT) before its first real request, and it re-runs on every
+// recycle. Awaited-to-completion = no in-flight request to freeze, the safe
+// inverse of fire-and-forget eager init. Bounded + fail-open inside.
+await primeSessionGet({
+  dynamodb,
+  integrityResultsTable: envConfig.INTEGRITY_RESULTS_TABLE,
+  logger,
+  metrics,
+  ssmPubkeyPath: process.env.PLATFORM_PUBKEY_SSM_PATH,
+});

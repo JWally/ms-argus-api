@@ -146,6 +146,15 @@ async function loadPublicKey(ssmPath: string): Promise<KeyObject> {
   return fetchAndCacheKey(ssmPath);
 }
 
+/**
+ * Prime the in-process pubkey cache. Called during container init (see
+ * session-get's init-prime) so the first real request never pays the SSM
+ * read. Safe to call repeatedly — it's just loadPublicKey without a verify.
+ */
+export async function primePublicKey(ssmPath: string): Promise<void> {
+  await loadPublicKey(ssmPath);
+}
+
 function base64urlDecode(s: string): Buffer {
   const pad = s.length % 4 === 0 ? "" : "=".repeat(4 - (s.length % 4));
   return Buffer.from(s.replace(/-/g, "+").replace(/_/g, "/") + pad, "base64");
