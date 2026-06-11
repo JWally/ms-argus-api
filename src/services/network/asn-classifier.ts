@@ -13,6 +13,7 @@
  * the integrity-archive empirical validation in `__ideas__/asn-classifier.md`.
  */
 import { S3Client, GetObjectCommand } from "@aws-sdk/client-s3";
+import { boundedRequestHandler } from "../../helpers/sdk-http-handler";
 import { gunzipSync } from "node:zlib";
 import type { NetworkCategory as BaseNetworkCategory } from "./categorize";
 
@@ -58,7 +59,10 @@ const REFRESH_INTERVAL_MS = 24 * 60 * 60 * 1000;
 let cached: CachedDataset | null = null;
 let cachedAt = 0;
 let inflight: Promise<CachedDataset> | null = null;
-const s3 = new S3Client({});
+// Bounded timeouts: this TTL-cached S3 load refetches on the first request
+// after an idle gap — when the keep-alive socket is most likely dead (see
+// sdk-http-handler.ts) — fail fast and retry instead of a ~7.5s blackhole.
+const s3 = new S3Client({ requestHandler: boundedRequestHandler });
 
 async function loadDataset(): Promise<CachedDataset> {
   const bucket = process.env.IP_CLASS_BUCKET;

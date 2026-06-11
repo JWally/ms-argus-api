@@ -24,6 +24,7 @@
  * pre-existing JA4-based `isVerifiedAppleRelay` heuristic still runs.
  */
 import { S3Client, GetObjectCommand } from "@aws-sdk/client-s3";
+import { boundedRequestHandler } from "../../helpers/sdk-http-handler";
 import { gunzipSync } from "node:zlib";
 import {
   compileCidrList,
@@ -58,7 +59,10 @@ const REFRESH_INTERVAL_MS = 24 * 60 * 60 * 1000;
 let cached: readonly CompiledRange<AppleRelayMeta>[] | null = null;
 let cachedAt = 0;
 let inflight: Promise<readonly CompiledRange<AppleRelayMeta>[]> | null = null;
-const s3 = new S3Client({});
+// Bounded timeouts: this TTL-cached S3 load refetches on the first request
+// after an idle gap — when the keep-alive socket is most likely dead (see
+// sdk-http-handler.ts) — fail fast and retry instead of a ~7.5s blackhole.
+const s3 = new S3Client({ requestHandler: boundedRequestHandler });
 
 async function loadAppleRelay(): Promise<
   readonly CompiledRange<AppleRelayMeta>[]
