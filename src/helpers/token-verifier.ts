@@ -26,8 +26,12 @@ import {
   type KeyObject,
 } from "node:crypto";
 import { SSMClient, GetParameterCommand } from "@aws-sdk/client-ssm";
+import { boundedRequestHandler } from "./sdk-http-handler";
 
-const ssm = new SSMClient({});
+// Bounded timeouts: the 5-min key cache refetches on the first request after
+// an idle gap, when the keep-alive socket is most likely dead (see
+// sdk-http-handler.ts) — fail fast and retry instead of a ~7.5s blackhole.
+const ssm = new SSMClient({ requestHandler: boundedRequestHandler });
 
 let cachedKey: KeyObject | null = null;
 let cacheExpiry = 0;
