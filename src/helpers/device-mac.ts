@@ -82,6 +82,9 @@ const SLICE_ORDER: ReadonlyArray<{ id: number; name: string }> = [
  * string keys. JSON.parse on the wire preserves insertion order. So
  * stringify(parsedSlice) replays the same order the SDK serialized.
  */
+// nosemgrep: semgrep.no-wrapper-function — deliberate seam, not indirection:
+// this is the documented one-place hook where the server's replay of the
+// SDK's serialization gets mirrored if the SDK walker ever drifts.
 function canonicalStringify(value: unknown): string {
   return JSON.stringify(value);
 }
