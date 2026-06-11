@@ -11,6 +11,7 @@
 
 import { SSMClient, GetParameterCommand } from "@aws-sdk/client-ssm";
 import { Logger } from "@aws-lambda-powertools/logger";
+import { boundedRequestHandler } from "./sdk-http-handler";
 
 const logger = new Logger({ serviceName: "argus-ecdh-keys" });
 
@@ -39,7 +40,10 @@ let inFlightFetch: Promise<EcdhKeys | null> | null = null;
 
 async function fetchFromSsm(paramName: string): Promise<EcdhKeys | null> {
   if (!ssmClient) {
-    ssmClient = new SSMClient({});
+    // Bounded timeouts: the 30-min key cache refetches on the first request
+    // after an idle gap, when the keep-alive socket is most likely dead (see
+    // sdk-http-handler.ts) — fail fast and retry instead of a ~7.5s blackhole.
+    ssmClient = new SSMClient({ requestHandler: boundedRequestHandler });
   }
   try {
     const result = await ssmClient.send(

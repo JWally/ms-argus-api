@@ -15,6 +15,7 @@ import {
   KEY_CACHE_DURATION,
   ERROR_STRINGS,
 } from "../helpers/constants";
+import { boundedRequestHandler } from "./sdk-http-handler";
 
 const logger = new Logger({ serviceName: "argus-secrets" });
 
@@ -110,7 +111,13 @@ export const getVersionedSecrets = async (): Promise<VersionedSecrets> => {
   }
 
   if (!client) {
-    client = new SecretsManagerClient({});
+    // Bounded timeouts: the 15-min key cache guarantees a refetch on the
+    // first request after an idle gap — exactly when the keep-alive socket
+    // is most likely dead (see sdk-http-handler.ts). Unbounded, that refetch
+    // blackholes for ~7.5s; bounded, it fails fast and retries fresh.
+    client = new SecretsManagerClient({
+      requestHandler: boundedRequestHandler,
+    });
   }
 
   const isCacheValid =
