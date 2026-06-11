@@ -139,4 +139,40 @@ describe("verifyMerchantToken", () => {
     await verifyMerchantToken(claims.keyId, token, { ssmPubkeyPath: SSM_PATH });
     expect(mockSsmSend).toHaveBeenCalledTimes(1);
   });
+
+  it("stale-while-revalidate: a stale key is served immediately and refreshed in the background", async () => {
+    vi.useFakeTimers();
+    try {
+      mockSsmSend.mockResolvedValue({ Parameter: { Value: publicPem } });
+      const claims = {
+        merchantId: "m1",
+        cpi: "argus_cpi_test_xyz1234567890",
+        keyId: "argus_sk_test_abc1234567890",
+        plan: "free",
+        iat: 1700000000,
+      };
+      const token = makeToken(claims);
+
+      // First call primes the cache (1 SSM read).
+      const r1 = await verifyMerchantToken(claims.keyId, token, {
+        ssmPubkeyPath: SSM_PATH,
+      });
+      expect(r1).not.toBeNull();
+      expect(mockSsmSend).toHaveBeenCalledTimes(1);
+
+      // Advance past the 1h TTL so the cached key is now stale.
+      vi.advanceTimersByTime(61 * 60 * 1000);
+
+      // Next call still resolves immediately with a valid result (served the
+      // stale key) and kicks off exactly one background refresh.
+      const r2 = await verifyMerchantToken(claims.keyId, token, {
+        ssmPubkeyPath: SSM_PATH,
+      });
+      expect(r2).not.toBeNull();
+      await vi.runAllTimersAsync(); // let the background refresh settle
+      expect(mockSsmSend).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

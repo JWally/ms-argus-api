@@ -15,7 +15,15 @@
  * so a stolen token can't be paired with a different gateway key.
  *
  * The platform signs with its private key (Secrets Manager); we fetch the
- * matching public key from SSM and cache it for 5 minutes.
+ * matching public key from SSM and cache it in-process. The cache is
+ * stale-while-revalidate (see loadPublicKey): once any key is cached, no
+ * request ever blocks on SSM again — a stale key is served immediately and
+ * refreshed in the background. The platform's Ed25519 key rotates rarely,
+ * so a 1h TTL plus SWR keeps the ~230ms SSM read off the user path entirely
+ * (it was the dominant warm-path cost on session-get; DDB + projection are
+ * tens of ms). Eager fetch at module load is deliberately avoided — a PC
+ * container can freeze mid-init and the signed request expires (see
+ * sdk-http-handler.ts).
  *
  * @module helpers/token-verifier
  */
@@ -28,14 +36,15 @@ import {
 import { SSMClient, GetParameterCommand } from "@aws-sdk/client-ssm";
 import { boundedRequestHandler } from "./sdk-http-handler";
 
-// Bounded timeouts: the 5-min key cache refetches on the first request after
-// an idle gap, when the keep-alive socket is most likely dead (see
-// sdk-http-handler.ts) — fail fast and retry instead of a ~7.5s blackhole.
+// Bounded timeouts: the background key refresh can fire after an idle gap,
+// when the keep-alive socket is most likely dead (see sdk-http-handler.ts) —
+// fail fast and retry next request instead of a ~7.5s blackhole.
 const ssm = new SSMClient({ requestHandler: boundedRequestHandler });
 
 let cachedKey: KeyObject | null = null;
 let cacheExpiry = 0;
-const CACHE_TTL_MS = 5 * 60 * 1000;
+let refreshInFlight: Promise<unknown> | null = null;
+const CACHE_TTL_MS = 60 * 60 * 1000; // 1h — pubkey rotates rarely
 
 export interface VerifiedClaims {
   merchantId: string;
@@ -106,15 +115,35 @@ export async function verifyMerchantToken(
   return ok ? parsed.claims : null;
 }
 
-async function loadPublicKey(ssmPath: string): Promise<KeyObject> {
-  const now = Date.now();
-  if (cachedKey && now < cacheExpiry) return cachedKey;
+async function fetchAndCacheKey(ssmPath: string): Promise<KeyObject> {
   const r = await ssm.send(new GetParameterCommand({ Name: ssmPath }));
   const pem = r.Parameter?.Value;
   if (!pem) throw new Error(`signing pubkey not found at ${ssmPath}`);
   cachedKey = createPublicKey({ key: pem, format: "pem" });
-  cacheExpiry = now + CACHE_TTL_MS;
+  cacheExpiry = Date.now() + CACHE_TTL_MS;
   return cachedKey;
+}
+
+/**
+ * Stale-while-revalidate. First call per container awaits the SSM read; every
+ * call thereafter returns the cached key immediately. When the key goes stale,
+ * a single background refresh is kicked off (deduped via refreshInFlight) and
+ * the stale key is served meanwhile — so the ~230ms SSM read never lands on a
+ * request once the container is primed. A failed refresh keeps the stale key
+ * and retries on the next request.
+ */
+async function loadPublicKey(ssmPath: string): Promise<KeyObject> {
+  if (cachedKey) {
+    if (Date.now() >= cacheExpiry && !refreshInFlight) {
+      refreshInFlight = fetchAndCacheKey(ssmPath)
+        .catch(() => {}) // keep serving stale; retry next request
+        .finally(() => {
+          refreshInFlight = null;
+        });
+    }
+    return cachedKey;
+  }
+  return fetchAndCacheKey(ssmPath);
 }
 
 function base64urlDecode(s: string): Buffer {
@@ -126,5 +155,6 @@ export const __testing__ = {
   resetCache(): void {
     cachedKey = null;
     cacheExpiry = 0;
+    refreshInFlight = null;
   },
 };
