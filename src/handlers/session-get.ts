@@ -70,10 +70,19 @@ export const handler = middy(baseHandler)
 // + projection JIT) before its first real request, and it re-runs on every
 // recycle. Awaited-to-completion = no in-flight request to freeze, the safe
 // inverse of fire-and-forget eager init. Bounded + fail-open inside.
-await primeSessionGet({
-  dynamodb,
-  integrityResultsTable: envConfig.INTEGRITY_RESULTS_TABLE,
-  logger,
-  metrics,
-  ssmPubkeyPath: process.env.PLATFORM_PUBKEY_SSM_PATH,
-});
+//
+// ONLY prime on PC init. PC init happens off the request path (when a
+// container is minted/recycled), so the prime is free there. An on-demand
+// cold start (spillover beyond PC) runs init ON the request path — priming
+// there would just add ~0.5-3s to that one request. Those fall back to the
+// handler's lazy paths (SWR key fetch, normal DDB). AWS sets this env var to
+// "provisioned-concurrency" vs "on-demand".
+if (process.env.AWS_LAMBDA_INITIALIZATION_TYPE === "provisioned-concurrency") {
+  await primeSessionGet({
+    dynamodb,
+    integrityResultsTable: envConfig.INTEGRITY_RESULTS_TABLE,
+    logger,
+    metrics,
+    ssmPubkeyPath: process.env.PLATFORM_PUBKEY_SSM_PATH,
+  });
+}
