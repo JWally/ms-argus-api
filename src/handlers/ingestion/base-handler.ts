@@ -73,6 +73,7 @@ import {
   warmFirehose,
 } from "../../helpers/firehose-archive";
 import { getAwsSecrets } from "../../helpers/get-aws-secrets";
+import { getValkey } from "../../helpers/valkey-client";
 import { boundedRequestHandler } from "../../helpers/sdk-http-handler";
 import { buildMerchantResponse } from "../../helpers/merchant-projection";
 import { lookupAppleRelaySync } from "../../services/network/apple-relay";
@@ -168,6 +169,19 @@ export async function deepWarmup(): Promise<void> {
     );
   }
   tasks.push(warmFirehose(INTEGRITY_FIREHOSE_STREAM));
+  // Valkey (ioredis) is the hot-path dependency NOT covered by the SDK bounded
+  // handler, and its stale socket is the integrity-collect hang. PING keeps the
+  // keep-alive socket fresh; if it's already dead, the ping fails fast and
+  // ioredis reconnects in the background so the next real request finds it
+  // ready. Bounded + swallowed so a Valkey blip never fails the warm.
+  if (process.env.USE_VALKEY_IP_VELOCITY === "true") {
+    tasks.push(
+      Promise.race([
+        Promise.resolve().then(() => getValkey().ping()),
+        new Promise((resolve) => setTimeout(resolve, 1500)),
+      ]).catch(() => {}),
+    );
+  }
   // allSettled: a single downstream hiccup must not fail the warm (or, worse,
   // surface as a Lambda error on the scheduled invoke).
   await Promise.allSettled(tasks);
@@ -778,11 +792,19 @@ async function applyIpVelocitySnapshot(
   const deviceId = pickDeviceId(identity.pubkey, clientUuid);
   if (!deviceId) return item;
   try {
-    const snap: IpVelocitySnapshot | null = await updateIpVelocity({
-      ip,
-      deviceId,
-      ddb: ddbClient,
-    });
+    // Hard deadline: IP-velocity is non-critical enrichment, and its Valkey
+    // path (ioredis) is NOT covered by the SDK bounded handler — a stale
+    // keep-alive socket across a PC freeze makes ioredis reconnect/retry stack
+    // toward the 10s Lambda timeout (the intermittent integrity-collect hang).
+    // Cap it and fail open fast: score without velocity rather than hang.
+    const velocityPromise = updateIpVelocity({ ip, deviceId, ddb: ddbClient });
+    // Mark handled so a late rejection (after the race times out) isn't an
+    // unhandled rejection; a fast rejection still propagates to the catch below.
+    velocityPromise.catch(() => {});
+    const snap: IpVelocitySnapshot | null = await Promise.race([
+      velocityPromise,
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 1500)),
+    ]);
     if (!snap) return item;
     return { ...item, ip_velocity_1h: snap };
   } catch (err) {
