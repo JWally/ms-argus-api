@@ -13,6 +13,7 @@ import {
   ConditionalCheckFailedException,
   DynamoDBClient,
   PutItemCommand,
+  DescribeTableCommand,
 } from "@aws-sdk/client-dynamodb";
 import { marshall } from "@aws-sdk/util-dynamodb";
 import { HttpError } from "../../helpers/http-error";
@@ -67,7 +68,11 @@ import {
 import { prewarmAutoOverlay } from "../../services/network/auto-overlay";
 import { prewarmAppleRelay } from "../../services/network/apple-relay";
 import { prewarmBrowserBaselines } from "../../services/network/browser-baselines";
-import { archiveToFirehose } from "../../helpers/firehose-archive";
+import {
+  archiveToFirehose,
+  warmFirehose,
+} from "../../helpers/firehose-archive";
+import { getAwsSecrets } from "../../helpers/get-aws-secrets";
 import { boundedRequestHandler } from "../../helpers/sdk-http-handler";
 import { buildMerchantResponse } from "../../helpers/merchant-projection";
 import { lookupAppleRelaySync } from "../../services/network/apple-relay";
@@ -143,6 +148,30 @@ const cpiMerchantResolver = MERCHANT_KEYS_TABLE
       indexName: process.env.MERCHANT_KEYS_CPI_INDEX,
     })
   : null;
+
+/**
+ * Deep warmup for the integrity-collect path. Runs the @middy/warmup onWarmup
+ * hook (post-deploy ping + the 1-minute heater rule), exercising the exact
+ * client singletons the real request uses so their keep-alive sockets never go
+ * stale across a PC container freeze (the ~7.5s dead-socket stall). Strictly
+ * READ-ONLY — DescribeTable + DescribeDeliveryStream + secret preload — so
+ * nothing is written and no integrity record is created. Never throws; the
+ * @middy/warmup short-circuit returns before any request handling.
+ */
+export async function deepWarmup(): Promise<void> {
+  const tasks: Array<Promise<unknown>> = [getAwsSecrets()];
+  if (INTEGRITY_RESULTS_TABLE) {
+    tasks.push(
+      ddbClient.send(
+        new DescribeTableCommand({ TableName: INTEGRITY_RESULTS_TABLE }),
+      ),
+    );
+  }
+  tasks.push(warmFirehose(INTEGRITY_FIREHOSE_STREAM));
+  // allSettled: a single downstream hiccup must not fail the warm (or, worse,
+  // surface as a Lambda error on the scheduled invoke).
+  await Promise.allSettled(tasks);
+}
 
 export function createBaseHandler(deps: BaseHandlerDeps) {
   return async (event: ExtendedEvent): Promise<APIGatewayProxyResultV2> => {

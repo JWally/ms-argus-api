@@ -6,6 +6,9 @@ import * as route53 from "aws-cdk-lib/aws-route53";
 import * as acm from "aws-cdk-lib/aws-certificatemanager";
 import * as ssm from "aws-cdk-lib/aws-ssm";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
+import * as events from "aws-cdk-lib/aws-events";
+import * as targets from "aws-cdk-lib/aws-events-targets";
+import { Duration } from "aws-cdk-lib";
 import { Construct } from "constructs";
 
 import { SecretConstruct } from "../constructs/secrets";
@@ -16,6 +19,7 @@ import { IpClassBuilderConstruct } from "../constructs/ip-class-builder";
 import { LambdasConstruct } from "../constructs/lambdas";
 import { HttpApiConstruct } from "../constructs/http-api";
 import { RestApiConstruct } from "../constructs/rest-api";
+import { PostDeployWarmer } from "../constructs/post-deploy-warmer";
 import { CloudFrontWafConstruct } from "../constructs/cloudfront";
 import { getStageConfig } from "../config";
 
@@ -283,6 +287,7 @@ export class ArgusApiStack extends cdk.Stack {
     ipClass.grantReadTo(lambdas.sessionGet);
 
     integrityFirehose.grantPutRecord(lambdas.ingestion);
+    integrityFirehose.grantDescribe(lambdas.ingestion);
 
     // ── API layer ─────────────────────────────────────────────────────
     // Integrations route to the `live` aliases (PC-warm versions), not
@@ -311,6 +316,36 @@ export class ArgusApiStack extends cdk.Stack {
     // `live` aliases (set in LambdasConstruct) holds containers pre-
     // initialized — the cron-ping pattern is obsolete and was paying
     // for ~720 invocations/day per Lambda that did nothing.
+    //
+    // One gap PC leaves: the post-deploy ramp, where a freshly published
+    // Version's PC isn't ready yet and invokes spill to cold on-demand. A
+    // single warmup ping per deploy at the user-facing aliases pre-inits a
+    // container so the first real request after a release isn't cold. Only
+    // ingestion + session-get are pinged — they run @middy/warmup and no-op the
+    // serverless-plugin-warmup event; other handlers don't, so leave them to PC.
+    new PostDeployWarmer(this, "PostDeployWarmer", {
+      targets: [lambdas.ingestionAlias, lambdas.sessionGetAlias],
+      deployId: Date.now().toString(),
+    });
+
+    // Heater: a second gap PC leaves is the stale keep-alive socket. PC holds
+    // the container, but a frozen container's downstream sockets (DDB, Firehose)
+    // still die on thaw — the ~7.5s dead-socket stall on the first integrity-
+    // collect after an idle gap. This 1-minute ping drives ingestion's
+    // deepWarmup(), which runs the happy-path downstreams READ-ONLY
+    // (DescribeTable + DescribeDeliveryStream + secret preload) so the real
+    // request's sockets never go stale. Nothing is written; no record is created.
+    new events.Rule(this, "IngestionSocketHeater", {
+      ruleName: `${stackName}-ingestion-heater`,
+      schedule: events.Schedule.rate(Duration.minutes(1)),
+      targets: [
+        new targets.LambdaFunction(lambdas.ingestionAlias, {
+          event: events.RuleTargetInput.fromObject({
+            source: "serverless-plugin-warmup",
+          }),
+        }),
+      ],
+    });
 
     // ── Edge layer ────────────────────────────────────────────────────
     const cdn = new CloudFrontWafConstruct(this, "CDN", {

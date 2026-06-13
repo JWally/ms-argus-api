@@ -5,7 +5,6 @@ import { injectLambdaContext } from "@aws-lambda-powertools/logger/middleware";
 import middy from "@middy/core";
 import httpHeaderNormalizer from "@middy/http-header-normalizer";
 import warmup from "@middy/warmup";
-import { onWarmup } from "../helpers/middy-helpers";
 import { corsMiddleware } from "../helpers/cors-middleware";
 import { jsonErrorHandler } from "../helpers/error-middleware";
 import {
@@ -13,7 +12,7 @@ import {
   jsonBodyParser,
   sigintTokenValidator,
 } from "./ingestion/middleware";
-import { createBaseHandler } from "./ingestion/base-handler";
+import { createBaseHandler, deepWarmup } from "./ingestion/base-handler";
 
 const logger = new Logger({
   serviceName: process.env.POWERTOOLS_SERVICE_NAME ?? "argus-ingestion",
@@ -42,7 +41,7 @@ const CORS_CONFIG = {
 const baseHandler = createBaseHandler({ logger, metrics });
 
 export const handler = middy(baseHandler)
-  .use(warmup({ onWarmup }))
+  .use(warmup({ onWarmup: deepWarmup }))
   .use(injectLambdaContext(logger))
   .use(logMetrics(metrics))
   .use(httpHeaderNormalizer())

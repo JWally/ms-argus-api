@@ -166,16 +166,15 @@ export class LambdasConstruct extends Construct {
     // hotter endpoint warrants it. addAlias auto-publishes a new
     // Version on every code-hash change, so PC stays pinned to the
     // latest deploy without manual version juggling.
-    this.ingestionAlias = this.ingestion.addAlias("live", {
-      provisionedConcurrentExecutions: 2,
-    });
-    this.sessionGetAlias = this.sessionGet.addAlias("live", {
-      provisionedConcurrentExecutions: 2,
-    });
+    // PC is stage-driven (stage-config.lambda.provisionedConcurrency). CFN
+    // rejects ProvisionedConcurrentExecutions:0, so 0 → a plain alias (pure
+    // on-demand); >0 → that many pre-initialized containers.
+    const pc = props.config.lambda.provisionedConcurrency;
+    const pcOpts = pc > 0 ? { provisionedConcurrentExecutions: pc } : {};
+    this.ingestionAlias = this.ingestion.addAlias("live", pcOpts);
+    this.sessionGetAlias = this.sessionGet.addAlias("live", pcOpts);
     if (this.patAttest) {
-      this.patAttestAlias = this.patAttest.addAlias("live", {
-        provisionedConcurrentExecutions: 2,
-      });
+      this.patAttestAlias = this.patAttest.addAlias("live", pcOpts);
     }
 
     this.ipClassBuilder = this.makeIpClassBuilder(props);
@@ -524,6 +523,15 @@ export class LambdasConstruct extends Construct {
   private applyApiLambdaGrants(props: LambdasConstructProps): void {
     // ── ingestion ──
     props.integrityResultsTable.grantWriteData(this.ingestion);
+    // Read-only DescribeTable: deepWarmup() pings it on the 1-min heater to
+    // keep the DDB keep-alive socket fresh (DescribeTable hits the same
+    // endpoint as PutItem). No data read or written.
+    this.ingestion.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ["dynamodb:DescribeTable"],
+        resources: [props.integrityResultsTable.tableArn],
+      }),
+    );
     // UpdateItem with ReturnValues=ALL_NEW does the per-session
     // increment + read-back in one call. Read+write needed.
     props.ipVelocityTable.grantReadWriteData(this.ingestion);
