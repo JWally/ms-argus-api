@@ -126,7 +126,10 @@ const devConfig: StageConfig = {
       memorySize: 512, // Bumped from 256 — testing CPU headroom for ECDH decrypt
     },
     sessionGet: {
-      memorySize: 512, // Bumped from 256 for cold-start headroom + warmup
+      // 1024 (from 512): on ARM vCPU scales with memory, so this roughly halves
+      // the ~680ms cold-start init AND speeds warm execution. session-get is on
+      // the captcha human-gate critical path, so its tail is user-felt.
+      memorySize: 1024,
     },
     provisionedConcurrency: 2, // Keep dev warm too — sparse traffic cold-starts the scan path otherwise
     tracingEnabled: false, // see StageConfig.lambda.tracingEnabled
@@ -202,7 +205,10 @@ const prodConfig: StageConfig = {
       memorySize: 512, // Bumped from 256 for cold-start headroom + ECDH decrypt
     },
     sessionGet: {
-      memorySize: 512, // Bumped from 256 for cold-start headroom + warmup
+      // 1024 (from 512): on ARM vCPU scales with memory, so this roughly halves
+      // the ~680ms cold-start init AND speeds warm execution. session-get is on
+      // the captcha human-gate critical path, so its tail is user-felt.
+      memorySize: 1024,
     },
     provisionedConcurrency: 2, // Keep 2 warm in prod
     tracingEnabled: false, // see StageConfig.lambda.tracingEnabled
