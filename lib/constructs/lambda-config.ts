@@ -90,6 +90,10 @@ export function createPowertoolsEnv(
     POWERTOOLS_METRICS_NAMESPACE: metricsNamespace,
     NODE_OPTIONS: "--enable-source-maps",
     LOG_LEVEL: stage === "prod" ? "WARN" : "INFO",
+    // Per-phase hot-path timing (helpers/phase-timer): ON by default in non-prod,
+    // OFF in prod. To profile prod temporarily, set this Lambda's PHASE_TIMING
+    // env var to "true" (a function-config update — no redeploy needed).
+    PHASE_TIMING: String(stage !== "prod"),
   };
 }
 
