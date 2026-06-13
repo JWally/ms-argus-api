@@ -78,8 +78,8 @@ describe("stage-config", () => {
         expect(dev.lambda.sessionGet.memorySize).toBe(512);
       });
 
-      it("should have no provisioned concurrency", () => {
-        expect(dev.lambda.provisionedConcurrency).toBe(0);
+      it("should keep dev warm with provisioned concurrency", () => {
+        expect(dev.lambda.provisionedConcurrency).toBe(2);
       });
 
       it("should have shorter retention periods", () => {

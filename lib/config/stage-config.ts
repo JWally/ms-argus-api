@@ -128,7 +128,7 @@ const devConfig: StageConfig = {
     sessionGet: {
       memorySize: 512, // Bumped from 256 for cold-start headroom + warmup
     },
-    provisionedConcurrency: 0, // No warm instances in dev
+    provisionedConcurrency: 2, // Keep dev warm too — sparse traffic cold-starts the scan path otherwise
     tracingEnabled: false, // see StageConfig.lambda.tracingEnabled
   },
 

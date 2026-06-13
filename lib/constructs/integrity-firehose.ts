@@ -132,4 +132,20 @@ export class IntegrityFirehoseConstruct extends Construct {
       }),
     );
   }
+
+  /**
+   * Read-only DescribeDeliveryStream — used by the integrity-collect deep
+   * warmup to keep the Firehose keep-alive socket fresh without writing.
+   */
+  public grantDescribe(grantee: iam.IGrantable): void {
+    grantee.grantPrincipal.addToPrincipalPolicy(
+      new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: ["firehose:DescribeDeliveryStream"],
+        resources: [
+          `arn:aws:firehose:${Stack.of(this).region}:${Stack.of(this).account}:deliverystream/${this.deliveryStreamName}`,
+        ],
+      }),
+    );
+  }
 }

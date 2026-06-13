@@ -10,7 +10,11 @@
  * is already durably stored in DynamoDB, and the response to the client
  * does not depend on the archive succeeding.
  */
-import { FirehoseClient, PutRecordCommand } from "@aws-sdk/client-firehose";
+import {
+  FirehoseClient,
+  PutRecordCommand,
+  DescribeDeliveryStreamCommand,
+} from "@aws-sdk/client-firehose";
 import { Logger } from "@aws-lambda-powertools/logger";
 import { Metrics, MetricUnit } from "@aws-lambda-powertools/metrics";
 import { boundedRequestHandler } from "./sdk-http-handler";
@@ -52,6 +56,27 @@ export async function archiveToFirehose(
   } catch (err) {
     deps.logger.warn("Firehose archive put failed", { error: err });
     deps.metrics.addMetric("FirehoseArchiveFailed", MetricUnit.Count, 1);
+    return false;
+  }
+}
+
+/**
+ * Keep the Firehose keep-alive socket fresh without writing a record.
+ * DescribeDeliveryStream hits the same firehose endpoint as PutRecord, so it
+ * exercises the exact socket that would otherwise go stale across a container
+ * freeze (see the dead-socket note above). Read-only — nothing is archived.
+ * Never throws.
+ */
+export async function warmFirehose(
+  streamName: string | undefined,
+): Promise<boolean> {
+  if (!streamName) return false;
+  try {
+    await firehoseClient.send(
+      new DescribeDeliveryStreamCommand({ DeliveryStreamName: streamName }),
+    );
+    return true;
+  } catch {
     return false;
   }
 }
