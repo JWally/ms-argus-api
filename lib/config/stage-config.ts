@@ -123,7 +123,10 @@ const devConfig: StageConfig = {
       reservedConcurrency: 25,
     },
     ingestion: {
-      memorySize: 512, // Bumped from 256 — testing CPU headroom for ECDH decrypt
+      // 1536 (2048 * 0.75): more vCPU for the hot ingest path (ECDH decrypt +
+      // integrity processing) and faster cold-start init on the highest-volume
+      // handler.
+      memorySize: 1536,
     },
     sessionGet: {
       // 1024 (from 512): on ARM vCPU scales with memory, so this roughly halves
@@ -202,7 +205,10 @@ const prodConfig: StageConfig = {
       reservedConcurrency: 500,
     },
     ingestion: {
-      memorySize: 512, // Bumped from 256 for cold-start headroom + ECDH decrypt
+      // 1536 (2048 * 0.75): more vCPU for the hot ingest path (ECDH decrypt +
+      // integrity processing) and faster cold-start init on the highest-volume
+      // handler.
+      memorySize: 1536,
     },
     sessionGet: {
       // 1024 (from 512): on ARM vCPU scales with memory, so this roughly halves
