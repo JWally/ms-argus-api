@@ -84,6 +84,12 @@ import {
   type IpVelocitySnapshot,
 } from "../../helpers/ip-velocity";
 import { resolveIntegrityTtlSeconds } from "./ttl";
+import {
+  makePhaseTimer,
+  phaseTimingEnabled,
+  timeAsync,
+  type PhaseTimer,
+} from "../../helpers/phase-timer";
 
 /** Bump when merchant-projection.ts rules change in a way you want stamped on
  *  rows. Stored on the row so historical verdicts are traceable to the code
@@ -160,7 +166,21 @@ const cpiMerchantResolver = MERCHANT_KEYS_TABLE
  * @middy/warmup short-circuit returns before any request handling.
  */
 export async function deepWarmup(): Promise<void> {
-  const tasks: Array<Promise<unknown>> = [getAwsSecrets()];
+  // Dataset prewarms (S3 GET + gunzip of ASN / overlay / Apple-relay / browser
+  // baselines). On a cold container the first real request used to pay ~8s
+  // loading these (the identity-phase spike phase-timing exposed) — Apple alone
+  // is ~7s of synchronous compile, which is WHY it's loaded here and NEVER on
+  // the request path. Loading them in the warmup means a fresh PC container is
+  // primed by the post-deploy ping / 60s heater before any real traffic.
+  // allSettled below swallows individual failures.
+  const tasks: Array<Promise<unknown>> = [
+    getAwsSecrets(),
+    warmFirehose(INTEGRITY_FIREHOSE_STREAM),
+    prewarmAsnDataset(),
+    prewarmAutoOverlay(),
+    prewarmAppleRelay(),
+    prewarmBrowserBaselines(),
+  ];
   if (INTEGRITY_RESULTS_TABLE) {
     tasks.push(
       ddbClient.send(
@@ -168,7 +188,6 @@ export async function deepWarmup(): Promise<void> {
       ),
     );
   }
-  tasks.push(warmFirehose(INTEGRITY_FIREHOSE_STREAM));
   // Valkey (ioredis) is the hot-path dependency NOT covered by the SDK bounded
   // handler, and its stale socket is the integrity-collect hang. PING keeps the
   // keep-alive socket fresh; if it's already dead, the ping fails fast and
@@ -1051,39 +1070,71 @@ function enforceDeviceMac(ctx: HandleContext): void {
   }
 }
 
+/**
+ * Verify device identity + resolve merchant, while prewarming the datasets the
+ * analyzer needs downstream (ASN / auto-overlay / browser baselines) in one
+ * Promise.all. Each branch is phase-timed (id_verify / id_merchant / id_asn /
+ * id_overlay / id_baselines).
+ *
+ * Apple Relay is deliberately NOT prewarmed here. Loading it is ~7s of
+ * SYNCHRONOUS CPU (gunzip + JSON.parse ~10MB + compiling Apple's 287k-CIDR
+ * list), which freezes Node's single event loop — even fired with `void` it
+ * stalls whatever await is in flight (we watched the 7s jump from id_apple to
+ * id_asn). It's loaded ONLY by deepWarmup (heater / post-deploy ping, on their
+ * own invocations); a request finds it cached or degrades to "not relay" (the
+ * lookup fails open to the JA4 heuristic) but never runs the compile on-thread.
+ */
+async function loadIdentityAndPrewarm(ctx: HandleContext, pt: PhaseTimer) {
+  return Promise.all([
+    timeAsync(pt, "id_verify", verifyDeviceIdentity(ctx.payload)),
+    timeAsync(pt, "id_merchant", resolveMerchantId(ctx)),
+    timeAsync(
+      pt,
+      "id_asn",
+      prewarmAsnDataset().catch((err) => {
+        ctx.deps.logger.warn("ASN dataset prewarm failed", { error: err });
+      }),
+    ),
+    timeAsync(
+      pt,
+      "id_overlay",
+      prewarmAutoOverlay().catch((err) => {
+        ctx.deps.logger.warn("Auto-overlay prewarm failed", { error: err });
+      }),
+    ),
+    timeAsync(
+      pt,
+      "id_baselines",
+      prewarmBrowserBaselines().catch((err) => {
+        ctx.deps.logger.warn("Browser baselines prewarm failed", {
+          error: err,
+        });
+      }),
+    ),
+  ]);
+}
+
 async function handleIntegrity(
   ctx: HandleContext,
 ): Promise<APIGatewayProxyResultV2> {
+  const pt = makePhaseTimer();
   const hydratedPayload = await hydrateSigint(ctx.payload, ctx.deps, ctx.event);
+  pt.mark("hydrate");
   enforceDeviceMac(ctx);
   // Verify the client's device-identity sig against the raw (pre-hydration)
-  // payload so sigintH2Token is still available. Failures never block —
-  // the outcome is recorded on the row for analytics.
-  // Run identity verification and ASN-dataset prewarm in parallel — the
-  // dataset is needed by analyzeIpConsistency below; on cold start it costs
-  // ~50–100 ms (one S3 GET), warm calls are no-ops.
-  const [identity, merchantId] = await Promise.all([
-    verifyDeviceIdentity(ctx.payload),
-    resolveMerchantId(ctx),
-    prewarmAsnDataset().catch((err) => {
-      ctx.deps.logger.warn("ASN dataset prewarm failed", { error: err });
-    }),
-    prewarmAutoOverlay().catch((err) => {
-      ctx.deps.logger.warn("Auto-overlay prewarm failed", { error: err });
-    }),
-    prewarmAppleRelay().catch((err) => {
-      ctx.deps.logger.warn("Apple Relay prewarm failed", { error: err });
-    }),
-    prewarmBrowserBaselines().catch((err) => {
-      ctx.deps.logger.warn("Browser baselines prewarm failed", { error: err });
-    }),
-  ]);
+  // payload so sigintH2Token is still available; failures never block (the
+  // outcome is recorded for analytics). This also prewarms the analyzer's
+  // datasets in the same Promise.all — see loadIdentityAndPrewarm for why
+  // Apple Relay is excluded from the request path.
+  const [identity, merchantId] = await loadIdentityAndPrewarm(ctx, pt);
   emitIdentityMetrics(ctx.deps, identity);
+  pt.mark("identity");
 
   const { dh, analysis: deviceHistoryAnalysis } = runDeviceHistory(
     ctx,
     identity,
   );
+  pt.mark("device_history");
 
   const item = buildIntegrityItem({
     ctx,
@@ -1092,6 +1143,7 @@ async function handleIntegrity(
     merchantId,
     deviceHistory: deviceHistoryAnalysis,
   });
+  pt.mark("analysis");
 
   // Velocity first so the projection-builder can pull ip_velocity_1h
   // into MerchantSafeResponse (with derived block_rate +
@@ -1100,10 +1152,15 @@ async function handleIntegrity(
   const itemWithVelocity = await applyIpVelocitySnapshot(ctx, item, identity);
   const itemWithProjection = applyProjectionSnapshot(ctx, itemWithVelocity);
   await bumpIpVelocityBlocked(ctx, itemWithProjection);
+  pt.mark("velocity");
 
   const { duplicate } = await persistIntegrityRecord(ctx, itemWithProjection);
+  pt.mark("persist");
 
   emitIngestMetricsAndReturn(ctx, dh, duplicate);
+  if (phaseTimingEnabled()) {
+    ctx.deps.logger.info("phase_timing", pt.summary());
+  }
   return buildIntegrityResponse(ctx.sessionId, dh.outboundBlob);
 }
 
