@@ -391,6 +391,16 @@ const BENCH_REALM_HOT_US = 20;
 const BENCH_REALM_COLD_US = 12;
 
 /**
+ * Suspect tier for the prototype-chain Proxy `ownKeys` CDP-attach trap
+ * (`cdp_proto_proxy_trap`). Deliberately SUSPECT (≥30, <70), not block:
+ * the trap also fires for a real human with DevTools open, so a single
+ * hit is a strong weight, not a verdict. 60 leaves it well clear of the
+ * suspect floor while staying below BLOCK_THRESHOLD (70). See
+ * hasCdpProtoProxyTrap / cdpAutomationScore.
+ */
+const CDP_PROTO_PROXY_TRAP_TIER = 60;
+
+/**
  * One bench's output. The iframe bench (`consoleTiming`) and the worker
  * bench (`consoleTimingWorker`) share this shape — the same fields,
  * computed in different realms, submitted side-by-side.
@@ -434,6 +444,23 @@ interface ConsoleTimingFields {
   con_log_native?: boolean;
   /** `console.dir` is native in the bench realm. */
   con_dir_native?: boolean;
+  /**
+   * Prototype-chain `Proxy` `ownKeys` trap fired during this bench —
+   * direct evidence a CDP Runtime consumer (or open DevTools) built an
+   * object preview and walked the logged object's prototype chain.
+   *
+   * Unlike the `log_heavy_us` timing fields (which only separate when
+   * the CDP client keeps Runtime console serialization HOT), this is a
+   * binary tripwire that fires the moment a consumer enumerates — so it
+   * catches headed Playwright/MCP Chrome that reads byte-clean on every
+   * other axis. It does NOT catch stealth forks that `Runtime.disable`
+   * or use isolated worlds (patchright/Nodriver/rebrowser), and it
+   * ALSO fires for a real human with DevTools open — hence it scores at
+   * the SUSPECT tier (60), not block. Empirically validated 2026-06-15:
+   * clean real Chrome (DevTools closed) → false; headed Playwright-MCP
+   * Chrome → true. Blink-only (undefined on Gecko/WebKit).
+   */
+  cdp_proto_proxy_trap?: boolean;
   /**
    * Count of `console.*` methods (log/warn/error/info/debug/dir)
    * detected as wrapped/patched in the bench realm. Only the worker
@@ -821,6 +848,31 @@ function hasCdpTimingSignal(headless: HeadlessSignals | undefined): boolean {
 }
 
 /**
+ * Prototype-chain Proxy `ownKeys` CDP-attach trap. Fires when EITHER
+ * bench realm (iframe main-thread or blob worker) reports
+ * `cdp_proto_proxy_trap: true` — i.e. a CDP Runtime consumer (or open
+ * DevTools) enumerated a logged object's prototype chain.
+ *
+ * This is the binary-attach complement to `hasCdpTimingSignal`: the
+ * timing rule only separates when the CDP client keeps console
+ * serialization HOT (loud Selenium/puppeteer), whereas this fires the
+ * moment any consumer builds a preview — catching headed Playwright/MCP
+ * Chrome that's otherwise byte-clean. It does NOT catch stealth forks
+ * that `Runtime.disable` / use isolated worlds (patchright, Nodriver,
+ * rebrowser), and it ALSO fires for a human with DevTools open — so the
+ * caller scores it at SUSPECT (60), never block. Either-realm rather
+ * than both: a consumer attached to one realm only is still a consumer.
+ */
+function hasCdpProtoProxyTrap(headless: HeadlessSignals | undefined): boolean {
+  const cdp = headless?.cdp;
+  if (!cdp) return false;
+  return (
+    cdp.consoleTiming?.cdp_proto_proxy_trap === true ||
+    cdp.consoleTimingWorker?.cdp_proto_proxy_trap === true
+  );
+}
+
+/**
  * Hard CDP residue: globals or bindings that no legitimate browser
  * exposes. These are collected by the SDK's `detectCdp()` (headless/
  * index.ts).
@@ -1030,6 +1082,12 @@ function hasPristineLiftCompromised(
  *       realm toString divergence on Element/Canvas/Performance/Date/
  *       Navigator. Detects per-frame init-script patching footprint.
  *       → 75 (block-tier). See hasSoftCdpResidue.
+ *   2d. CDP-ATTACH TRAP — prototype-chain Proxy `ownKeys` tripwire fires
+ *       when a CDP Runtime consumer (or open DevTools) enumerates a
+ *       logged object's prototype. Catches headed Playwright/MCP Chrome
+ *       that scrubs every other tell; misses stealth forks that
+ *       `Runtime.disable`. Also trips on DevTools-open humans, so it's
+ *       → 60 (SUSPECT, not block). See hasCdpProtoProxyTrap.
  *   3. WEAK markers (`likeHeadlessRating`) — 11 environment signals
  *      (no Chrome object, no plugins, blank UA-CH, etc). Real but
  *      not damning on its own; the % maps directly into the score.
@@ -1075,6 +1133,12 @@ function cdpAutomationScore(
   // won't try this trick, but the ones who do trivially nullify every
   // pristine-routed defense — lock-on-the-door tier signal.
   if (hasPristineLiftCompromised(input.integrity)) return 75;
+  // CDP-attach trap (prototype-chain Proxy ownKeys). Lower than the 75
+  // tiers above because it also fires for a human with DevTools open —
+  // strong weight, not a verdict. Catches headed Playwright/MCP Chrome
+  // that scrubs every other tell (webdriver off, no residue, clean
+  // timing). Suspect tier (60), so it surfaces without auto-blocking.
+  if (hasCdpProtoProxyTrap(headless)) return CDP_PROTO_PROXY_TRAP_TIER;
   return 0;
 }
 
