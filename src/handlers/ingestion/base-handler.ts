@@ -566,6 +566,7 @@ function buildAnalysisBlock(inputs: AnalysisInputs) {
       requestHeaders,
       (hydratedPayload.sigint as { tcp_probe?: unknown } | undefined)
         ?.tcp_probe,
+      raw.device,
     ),
     proxy_waterfall: proxyWaterfall,
     ...(webrtcSigintField && { webrtc_sigint: webrtcSigintField }),

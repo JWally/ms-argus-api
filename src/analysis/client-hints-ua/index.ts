@@ -1,13 +1,17 @@
 /**
  * Client-hints / User-Agent cross-verification.
  *
- * Four cross-checks:
+ * Five cross-checks:
  *   1. sec-ch-ua-platform vs UA-inferred OS
  *   2. sec-ch-ua-mobile   vs UA-inferred mobile/desktop
  *   3. sec-ch-ua          vs UA-inferred browser family (Chrome/Edge/etc.)
  *   4. tcp_probe.client_hints vs request_headers.sec-ch-ua*  (twin capture)
+ *   5. browser MAJOR version agreement across UA string, Sec-CH-UA header,
+ *      and JS userAgentData (main navigator + every worker scope). Catches
+ *      a UA override that doesn't propagate to userAgentData (Playwright
+ *      Chromium-143 masquerading as Chrome 131).
  *
- * All four only apply to Chromium-family UAs. Firefox and Safari don't
+ * All only apply to Chromium-family UAs. Firefox and Safari don't
  * emit Sec-CH-UA* in most configurations; the "claims Chromium but no
  * Sec-CH-UA" case is already handled by detectUaFamilyHeaderMismatch in
  * merchant-projection.
@@ -149,10 +153,86 @@ function familyFromChBrands(brands: string[]): BrowserFamily {
   return "other";
 }
 
+const GREASE_RE = /^Not[^A-Za-z0-9]+A.?Brand/i;
+
+type Brand = { name: string; major: number | null };
+
+/** Leading-integer major from a version-ish string ("143", "149.0.7827.103"). */
+function majorInt(v: string | null | undefined): number | null {
+  if (!v) return null;
+  const m = String(v).match(/^\s*(\d+)/);
+  return m ? parseInt(m[1], 10) : null;
+}
+
+/** Chromium-base major from a UA string's `Chrome/NNN` token. This is the
+ *  engine version shared by Chrome, Chromium, Edge, Brave, Opera UAs. */
+function chromiumMajorFromUa(ua: string | null): number | null {
+  return majorInt(ua?.match(/Chrome\/(\d+)/)?.[1] ?? null);
+}
+
+/** Prefer the "Chromium" brand's major (the engine base); else first
+ *  non-GREASE brand's major. */
+function pickChromiumMajor(brands: Brand[]): number | null {
+  let fallback: number | null = null;
+  for (const b of brands) {
+    if (GREASE_RE.test(b.name)) continue;
+    if (/chromium/i.test(b.name)) return b.major;
+    if (fallback === null) fallback = b.major;
+  }
+  return fallback;
+}
+
+/** Parse a Sec-CH-UA header/probe string into brands with majors. */
+function brandsFromHeader(raw: string | null): Brand[] {
+  if (!raw) return [];
+  const out: Brand[] = [];
+  const re = /"([^"]+)";v="([^"]+)"/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(raw)) !== null)
+    out.push({ name: m[1], major: majorInt(m[2]) });
+  return out;
+}
+
+/** Parse JS `userAgentData` brands — handles both `brandsVersion`
+ *  ("Chromium 143" strings) and `brands` ([{brand,version}] objects). */
+function brandsFromJsUad(uad: Record<string, unknown>): Brand[] {
+  const bv = uad.brandsVersion;
+  if (Array.isArray(bv)) {
+    return bv.map((e) => {
+      const s = String(e);
+      return { name: s, major: majorInt(s.match(/(\d+)\s*$/)?.[1] ?? null) };
+    });
+  }
+  const brands = uad.brands;
+  if (Array.isArray(brands)) {
+    return brands.filter(isObj).map((b) => ({
+      name: str(b.brand) ?? "",
+      major: majorInt(str(b.version)),
+    }));
+  }
+  return [];
+}
+
+/** Chromium-base major from a Sec-CH-UA brand list (header or probe). */
+function chromiumMajorFromBrandHeader(raw: string | null): number | null {
+  return pickChromiumMajor(brandsFromHeader(raw));
+}
+
+/** Chromium-base major from JS `navigator.userAgentData`: `uaFullVersion`
+ *  first (e.g. "149.0.7827.103"), else the brand list. Null when the
+ *  browser exposes no UA-CH (Firefox/Safari). */
+function chromiumMajorFromJsUad(uad: unknown): number | null {
+  if (!isObj(uad)) return null;
+  return (
+    majorInt(str(uad.uaFullVersion)) ?? pickChromiumMajor(brandsFromJsUad(uad))
+  );
+}
+
 export type ClientHintsUaSignalCode =
   | "CH_UA_PLATFORM_MISMATCH"
   | "CH_UA_MOBILE_MISMATCH"
   | "CH_UA_BRAND_MISMATCH"
+  | "CH_UA_VERSION_MISMATCH"
   | "CH_DOUBLE_CAPTURE_MISMATCH";
 
 export interface ClientHintsUaSignal {
@@ -290,11 +370,81 @@ function checkDoubleCaptureMismatch(
   };
 }
 
+/** All UA-CH-bearing scopes: main navigator + each worker scope (workers
+ *  spin up their own `userAgentData`). Flat list keeps callers shallow. */
+function uadScopes(device: unknown): { label: string; uad: unknown }[] {
+  if (!isObj(device)) return [];
+  const out: { label: string; uad: unknown }[] = [];
+  if (isObj(device.navigator)) {
+    out.push({ label: "navigator", uad: device.navigator.userAgentData });
+  }
+  const ws = isObj(device.workerScope) ? device.workerScope : null;
+  const scopes = ws && isObj(ws.scopes) ? ws.scopes : null;
+  if (!scopes) return out;
+  for (const k of ["main", "web", "shared", "service"]) {
+    const sc = scopes[k];
+    if (isObj(sc)) out.push({ label: `worker.${k}`, uad: sc.userAgentData });
+  }
+  return out;
+}
+
+type VersionLevel = { label: string; major: number };
+
+function isChromiumFamily(ua: string | null): boolean {
+  const f = familyFromUa(ua);
+  return f === "chromium" || f === "edge";
+}
+
+function hasMajor(l: {
+  label: string;
+  major: number | null;
+}): l is VersionLevel {
+  return l.major !== null;
+}
+
+/**
+ * #5 — Browser MAJOR version must agree across every level that reports
+ * it: the UA string, the Sec-CH-UA header, and the JS `userAgentData`
+ * (main navigator + each worker scope). Chromium-only — Firefox/Safari
+ * expose no UA-CH. A real browser is internally consistent; a UA override
+ * that doesn't propagate to `userAgentData` (or vice-versa) disagrees.
+ * This is the Playwright-Chromium-143-wearing-a-Chrome-131-mask tell.
+ */
+function checkVersionConsistency(
+  sources: ChSources,
+  ua: string | null,
+  device: unknown,
+): ClientHintsUaSignal | null {
+  if (!isChromiumFamily(ua)) return null;
+
+  const levels: VersionLevel[] = [
+    { label: "ua-string", major: chromiumMajorFromUa(ua) },
+    {
+      label: "sec-ch-ua",
+      major: chromiumMajorFromBrandHeader(sources.headerUa),
+    },
+    { label: "probe-ch", major: chromiumMajorFromBrandHeader(sources.probeUa) },
+    ...uadScopes(device).map((s) => ({
+      label: s.label,
+      major: chromiumMajorFromJsUad(s.uad),
+    })),
+  ].filter(hasMajor);
+
+  if (levels.length < 2) return null;
+  if (new Set(levels.map((l) => l.major)).size <= 1) return null;
+  return {
+    code: "CH_UA_VERSION_MISMATCH",
+    severity: 0.9,
+    evidence: levels.map((l) => `${l.label}=${l.major}`).join(", "),
+  };
+}
+
 /** Main entry. */
 export function analyzeClientHintsUa(
   ua: string | null,
   requestHeaders: Record<string, string> | null,
   tcpProbe: unknown,
+  device?: unknown,
 ): ClientHintsUaAnalysisResult {
   const sources = readSources(requestHeaders, tcpProbe);
   const signals: ClientHintsUaSignal[] = [];
@@ -307,6 +457,8 @@ export function analyzeClientHintsUa(
   if (s3) signals.push(s3);
   const s4 = checkDoubleCaptureMismatch(sources);
   if (s4) signals.push(s4);
+  const s5 = checkVersionConsistency(sources, ua, device);
+  if (s5) signals.push(s5);
 
   return {
     signals,

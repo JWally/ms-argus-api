@@ -453,3 +453,81 @@ describe("real-session replays", () => {
     expect(r.hasStrongMismatch).toBe(true);
   });
 });
+
+describe("CH_UA_VERSION_MISMATCH (#5) — UA version vs UA-CH version", () => {
+  const CHROME131_UA =
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+  const CHROME149_UA =
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36";
+
+  it("fires when UA says Chrome 131 but userAgentData reports Chromium 143 (Playwright mask)", () => {
+    const r = analyzeClientHintsUa(
+      CHROME131_UA,
+      {
+        "sec-ch-ua":
+          '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
+      },
+      undefined,
+      {
+        navigator: {
+          userAgentData: {
+            brands: ["Chromium"],
+            brandsVersion: ["Chromium 143"],
+            uaFullVersion: "",
+          },
+        },
+      },
+    );
+    const s = r.signals.find((x) => x.code === "CH_UA_VERSION_MISMATCH");
+    expect(s).toBeDefined();
+    expect(s?.evidence).toContain("ua-string=131");
+    expect(s?.evidence).toContain("navigator=143");
+    expect(r.hasStrongMismatch).toBe(true);
+  });
+
+  it("does not fire when UA and userAgentData agree (real Chrome 149)", () => {
+    const r = analyzeClientHintsUa(
+      CHROME149_UA,
+      {
+        "sec-ch-ua":
+          '"Google Chrome";v="149", "Chromium";v="149", "Not_A Brand";v="24"',
+      },
+      undefined,
+      { navigator: { userAgentData: { uaFullVersion: "149.0.7827.103" } } },
+    );
+    expect(
+      r.signals.find((x) => x.code === "CH_UA_VERSION_MISMATCH"),
+    ).toBeUndefined();
+  });
+
+  it("fires when the main thread matches but a worker scope leaks the real version", () => {
+    const r = analyzeClientHintsUa(
+      CHROME131_UA,
+      { "sec-ch-ua": '"Chromium";v="131", "Not_A Brand";v="24"' },
+      undefined,
+      {
+        navigator: { userAgentData: { uaFullVersion: "131.0.0.0" } },
+        workerScope: {
+          scopes: {
+            web: { userAgentData: { brandsVersion: ["Chromium 143"] } },
+          },
+        },
+      },
+    );
+    const s = r.signals.find((x) => x.code === "CH_UA_VERSION_MISMATCH");
+    expect(s).toBeDefined();
+    expect(s?.evidence).toContain("worker.web=143");
+  });
+
+  it("does not fire on non-Chromium (Firefox) — no UA-CH to cross-check", () => {
+    const r = analyzeClientHintsUa(
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:151.0) Gecko/20100101 Firefox/151.0",
+      {},
+      undefined,
+      { navigator: {} },
+    );
+    expect(
+      r.signals.find((x) => x.code === "CH_UA_VERSION_MISMATCH"),
+    ).toBeUndefined();
+  });
+});
