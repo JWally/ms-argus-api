@@ -13,6 +13,8 @@
  *
  * This file owns the only network call in the PAT subsystem.
  */
+import { createHash } from "crypto";
+
 import type { Logger } from "@aws-lambda-powertools/logger";
 
 import { ISSUER_CONFIG } from "./issuer-config";
@@ -37,10 +39,30 @@ interface RawDirectory {
 interface CachedKey {
   /** Issuer SPKI public key, raw DER bytes — the input to verify.ts. */
   spkiDer: Buffer;
+  /** token_key_id = hex SHA-256(spkiDer). Pin-check + log handle. */
+  keyId: string;
   /** When the upstream directory said this key becomes valid (epoch s). */
   notBefore: number;
   /** When we fetched it; expiry = fetchedAt + cacheSeconds. */
   fetchedAt: number;
+}
+
+/**
+ * Issuer key pinning (#13). Returns true if this key id is trusted. When the
+ * allowlist is empty, pinning is off (everything trusted). Unrecognized keys
+ * are always WARN-logged (a rotation we didn't track, or a hijacked directory);
+ * the caller fail-closes only when ISSUER_CONFIG.enforceKeyPin is set.
+ */
+function isKeyRecognized(keyId: string, logger?: Logger): boolean {
+  const pins = ISSUER_CONFIG.knownTokenKeyIds;
+  if (pins.length === 0) return true;
+  if (pins.includes(keyId)) return true;
+  logger?.warn("PAT issuer key UNRECOGNIZED (rotation or hijack?)", {
+    keyId,
+    host: ISSUER_CONFIG.host,
+    enforced: ISSUER_CONFIG.enforceKeyPin,
+  });
+  return false;
 }
 
 let cache: CachedKey | null = null;
@@ -102,8 +124,16 @@ async function fetchDirectory(logger?: Logger): Promise<CachedKey | null> {
       logger?.warn("PAT issuer directory has no active key", { url });
       return null;
     }
+    const spkiDer = b64urlDecode(active[KEY_KEY]);
+    const keyId = createHash("sha256").update(spkiDer).digest("hex");
+    if (!isKeyRecognized(keyId, logger) && ISSUER_CONFIG.enforceKeyPin) {
+      // Fail-closed: an unrecognized key under enforcement is rejected, so a
+      // hijacked directory can't mint a key we'll trust. PAT goes dark (null).
+      return null;
+    }
     return {
-      spkiDer: b64urlDecode(active[KEY_KEY]),
+      spkiDer,
+      keyId,
       notBefore: active[KEY_NOT_BEFORE] ?? 0,
       fetchedAt: nowSec(),
     };
