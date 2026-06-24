@@ -316,6 +316,14 @@ export class LambdasConstruct extends Construct {
     });
     preserveLogicalId(logGroup, "HttpApiPatAttestLogGroup938E2A72");
 
+    // #13: VPC-attach (PRIVATE_WITH_EGRESS keeps the issuer-directory fetch
+    // working via NAT) + wire Valkey so the bound-challenge store can persist a
+    // per-request redemption context and consume it single-use at redemption.
+    // Only when the shared VPC + SG + Valkey endpoint are all present; otherwise
+    // the handler keeps issuing unbound challenges (fail-open). Mirrors
+    // makeIngestion's resolveValkeyAttach pattern.
+    const valkey = resolveValkeyAttach(props);
+
     const fn = new lambdaNode.NodejsFunction(this, "PatAttestFunction", {
       ...createBaseLambdaConfig(),
       functionName: `${stackName}-pat-attest`,
@@ -324,9 +332,18 @@ export class LambdasConstruct extends Construct {
       memorySize: 256,
       timeout: Duration.seconds(5),
       logGroup,
+      ...(valkey && {
+        vpc: valkey.vpc,
+        vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
+        securityGroups: [valkey.lambdaSecurityGroup],
+      }),
       environment: {
         ...createPowertoolsEnv("argus-pat-attest", `argus-${stage}`, stage),
         SIGINT_AES_KEY_SECRET_ARN: sigintAesKeySecretArn,
+        ...(valkey && {
+          VALKEY_ENDPOINT: valkey.endpoint,
+          VALKEY_PORT: "6379",
+        }),
       },
     });
     preserveLogicalId(fn, "HttpApiPatAttestFunction0CD14068");

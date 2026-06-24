@@ -35,6 +35,12 @@ import {
 } from "@aws-sdk/client-secrets-manager";
 
 import { encodeTokenChallenge } from "./challenge";
+import {
+  bindingEnabled,
+  newRedemptionContext,
+  storeChallenge,
+  consumeChallenge,
+} from "./challenge-store";
 import { ISSUER_CONFIG } from "./issuer-config";
 import { getActiveTokenKey } from "./issuer-directory";
 import {
@@ -42,7 +48,12 @@ import {
   CLIENT_REFRESH_SECONDS,
 } from "../../helpers/pat-signed-token";
 import { testPageResponse } from "./test-page";
-import { verifyPatToken } from "./verify";
+import { extractChallengeDigest, verifyPatToken } from "./verify";
+
+/** The static unbound challenge — the fallback when binding is unavailable. */
+function unboundChallenge(): Buffer {
+  return encodeTokenChallenge({ issuerName: ISSUER_CONFIG.host });
+}
 
 const SERVICE = "pat-attest";
 const logger = new Logger({ serviceName: SERVICE });
@@ -122,9 +133,21 @@ async function buildChallengeResponse(): Promise<APIGatewayProxyResultV2 | null>
   const key = await getActiveTokenKey(logger);
   if (!key) return null;
 
-  const challenge = encodeTokenChallenge({
+  // #13: bound challenge. Mint a fresh redemption context and persist the
+  // challenge so the token is single-use + fresh-per-request. If Valkey is
+  // unavailable, storeChallenge returns false and we fall back to the unbound
+  // (cacheable) challenge — PAT degrades, never breaks.
+  const bound = encodeTokenChallenge({
     issuerName: ISSUER_CONFIG.host,
+    redemptionContext: newRedemptionContext(),
   });
+  const stored = await storeChallenge(bound);
+  const challenge = stored ? bound : unboundChallenge();
+  metrics.addMetric(
+    stored ? "ChallengeBound" : "ChallengeUnbound",
+    MetricUnit.Count,
+    1,
+  );
   const challengeB64 = b64urlEncode(challenge);
   const tokenKeyB64 = b64urlEncode(key.spkiDer);
   const maxAge = ISSUER_CONFIG.directoryCacheSeconds;
@@ -169,9 +192,31 @@ async function buildRedemptionResponse(
   const key = await getActiveTokenKey(logger);
   if (!key) return null;
 
-  const challenge = encodeTokenChallenge({ issuerName: ISSUER_CONFIG.host });
+  // #13: single-use bound redemption. Look up + atomically consume (GETDEL) the
+  // challenge this token was minted for, keyed by its challenge_digest. If
+  // found → verify against the EXACT bytes we issued (bound, now consumed). If
+  // not found → fall back to the unbound challenge: this both (a) keeps working
+  // when Valkey was down at challenge time, and (b) rejects a REPLAYED bound
+  // token — its digest is gone from the store and won't match the unbound
+  // challenge either, so verify fails.
+  const digest = extractChallengeDigest(tokenBytes);
+  if (!digest) return rejectInvalidToken("MALFORMED_TOKEN");
+  const storedChallenge = await consumeChallenge(digest);
+  const challenge = storedChallenge ?? unboundChallenge();
   const result = verifyPatToken(tokenBytes, challenge, key.spkiDer);
-  if (!result.ok) return rejectInvalidToken(result.reason);
+  if (!result.ok) {
+    // A consumed/expired bound token lands here (digest no longer stored, and
+    // it isn't the unbound challenge) — that's the single-use rejection.
+    if (!storedChallenge && bindingEnabled()) {
+      metrics.addMetric("BoundReplayOrExpired", MetricUnit.Count, 1);
+    }
+    return rejectInvalidToken(result.reason);
+  }
+  metrics.addMetric(
+    storedChallenge ? "RedeemBound" : "RedeemUnbound",
+    MetricUnit.Count,
+    1,
+  );
 
   const aesKey = await getSigintAesKeyHex();
   if (!aesKey) return null;
