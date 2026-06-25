@@ -23,6 +23,21 @@ vi.mock("../../helpers/merchant-projection", () => ({
   buildMerchantResponse: (...args: unknown[]) => mockBuildMerchant(...args),
 }));
 
+const mockVerifySdkAttestation = vi.fn();
+vi.mock("../../helpers/sdk-attestation", () => ({
+  parseSdkAttestationHeaders: (headers: Record<string, string> | undefined) =>
+    headers?.["x-argus-attest-envelope"]
+      ? {
+          envelope: headers["x-argus-attest-envelope"],
+          signature: headers["x-argus-attest-signature"],
+          publicKey: headers["x-argus-attest-public-key"],
+          keyId: headers["x-argus-attest-key-id"],
+        }
+      : null,
+  verifySdkAttestation: (...args: unknown[]) =>
+    mockVerifySdkAttestation(...args),
+}));
+
 import { createBaseHandler } from "./base-handler";
 
 const logger = {
@@ -150,6 +165,143 @@ describe("session-get base handler", () => {
       verdict: "clean",
       creditsRemaining: 1999,
     });
+    expect(mockVerifySdkAttestation).not.toHaveBeenCalled();
+  });
+
+  it("verifies optional SDK attestation before returning a merchant verdict", async () => {
+    mockVerify.mockResolvedValueOnce({
+      merchantId: "m1",
+      cpi: validCpi,
+      keyId: "k1",
+      plan: "free",
+      iat: 0,
+    });
+    mockVerifySdkAttestation.mockReturnValueOnce({
+      ok: true,
+      keyId: "device-key-1",
+      publicKey: "pub",
+      payload: { cpi: validCpi, sessionId: "sid-1", checkoutNonce: "co-1" },
+    });
+    mockDecrement.mockResolvedValueOnce({ ok: true, remaining: 1998 });
+    mockFetchIntegrity.mockResolvedValueOnce({
+      created_at: 0,
+      identification: { pubkey: "pub", verified: true },
+    });
+    mockBuildMerchant.mockReturnValueOnce({
+      session_id: "sid-1",
+      verdict: "clean",
+    });
+
+    const result = (await handler(
+      makeEvent({
+        headers: {
+          "x-api-key": "k1",
+          "x-argus-token": "t1",
+          "x-argus-attest-envelope": "env",
+          "x-argus-attest-signature": "sig",
+          "x-argus-attest-public-key": "pub",
+          "x-argus-attest-key-id": "device-key-1",
+        },
+      }),
+    )) as { statusCode: number; body: string };
+
+    expect(result.statusCode).toBe(200);
+    expect(mockVerifySdkAttestation).toHaveBeenCalledWith(
+      {
+        envelope: "env",
+        signature: "sig",
+        publicKey: "pub",
+        keyId: "device-key-1",
+      },
+      {
+        expectedPurpose: "argus-session-get-v1",
+        expectedCpi: validCpi,
+        expectedSessionId: "sid-1",
+      },
+    );
+    expect(JSON.parse(result.body)).toMatchObject({
+      session_id: "sid-1",
+      verdict: "clean",
+      attestation: {
+        verified: true,
+        keyId: "device-key-1",
+        payload: { cpi: validCpi, sessionId: "sid-1", checkoutNonce: "co-1" },
+      },
+    });
+  });
+
+  it("rejects an invalid SDK attestation before burning merchant credit", async () => {
+    mockVerify.mockResolvedValueOnce({
+      merchantId: "m1",
+      cpi: validCpi,
+      keyId: "k1",
+      plan: "free",
+      iat: 0,
+    });
+    mockVerifySdkAttestation.mockReturnValueOnce({
+      ok: false,
+      reason: "session_mismatch",
+    });
+
+    const result = (await handler(
+      makeEvent({
+        headers: {
+          "x-api-key": "k1",
+          "x-argus-token": "t1",
+          "x-argus-attest-envelope": "env",
+          "x-argus-attest-signature": "sig",
+          "x-argus-attest-public-key": "pub",
+          "x-argus-attest-key-id": "device-key-1",
+        },
+      }),
+    )) as { statusCode: number; body: string };
+
+    expect(result.statusCode).toBe(400);
+    expect(JSON.parse(result.body)).toEqual({
+      error: "Invalid attestation",
+      reason: "session_mismatch",
+    });
+    expect(mockDecrement).not.toHaveBeenCalled();
+  });
+
+  it("rejects a valid SDK attestation from a different device key than the stored scan", async () => {
+    mockVerify.mockResolvedValueOnce({
+      merchantId: "m1",
+      cpi: validCpi,
+      keyId: "k1",
+      plan: "free",
+      iat: 0,
+    });
+    mockVerifySdkAttestation.mockReturnValueOnce({
+      ok: true,
+      keyId: "device-key-1",
+      publicKey: "pub-from-attestation",
+      payload: { cpi: validCpi, sessionId: "sid-1" },
+    });
+    mockDecrement.mockResolvedValueOnce({ ok: true, remaining: 1997 });
+    mockFetchIntegrity.mockResolvedValueOnce({
+      identification: { pubkey: "pub-from-scan", verified: true },
+    });
+
+    const result = (await handler(
+      makeEvent({
+        headers: {
+          "x-api-key": "k1",
+          "x-argus-token": "t1",
+          "x-argus-attest-envelope": "env",
+          "x-argus-attest-signature": "sig",
+          "x-argus-attest-public-key": "pub-from-attestation",
+          "x-argus-attest-key-id": "device-key-1",
+        },
+      }),
+    )) as { statusCode: number; body: string };
+
+    expect(result.statusCode).toBe(400);
+    expect(JSON.parse(result.body)).toEqual({
+      error: "Invalid attestation",
+      reason: "public_key_mismatch",
+    });
+    expect(mockBuildMerchant).not.toHaveBeenCalled();
   });
 
   it("returns 500 when PLATFORM_PUBKEY_SSM_PATH is missing", async () => {

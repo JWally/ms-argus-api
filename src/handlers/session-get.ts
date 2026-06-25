@@ -59,7 +59,8 @@ export const handler = middy(baseHandler)
   .use(
     corsMiddleware({
       methods: "GET, OPTIONS",
-      headers: "Content-Type, X-Api-Key",
+      headers:
+        "Content-Type, X-Api-Key, X-Argus-Token, X-Argus-Attest-Envelope, X-Argus-Attest-Signature, X-Argus-Attest-Public-Key, X-Argus-Attest-Key-Id",
     }),
   )
   .use(jsonErrorHandler({ logger }));
