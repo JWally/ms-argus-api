@@ -389,6 +389,9 @@ const BENCH_BOTH_HOT_US = 40;
  */
 const BENCH_REALM_HOT_US = 20;
 const BENCH_REALM_COLD_US = 12;
+const DEBUG_OVER_PERF_CDP_RATIO = 25;
+const WORKER_DEBUG_OVER_PERF_CDP_RATIO = 50;
+const ERROR_STACK_BURST_CDP_DELTA_MS = 30;
 
 /**
  * Suspect tier for the prototype-chain Proxy `ownKeys` CDP-attach trap
@@ -426,6 +429,11 @@ interface ConsoleTimingFields {
    * and on the same device they should agree closely.
    */
   math_loop_us?: number;
+  /** Self-calibrated console.debug("") / performance.now() ratio. */
+  debug_over_perf?: number;
+  debug_empty_us?: number;
+  perf_now_call_us?: number;
+  debug_iters?: number;
   /**
    * `Performance.prototype.now` toStrings as `[native code]` in the
    * bench realm. False = timing-oracle tampering. The lie scanner
@@ -461,6 +469,13 @@ interface ConsoleTimingFields {
    * Chrome → true. Blink-only (undefined on Gecko/WebKit).
    */
   cdp_proto_proxy_trap?: boolean;
+  /**
+   * Worker deep-stack Error console burst. Positive-only vanilla-CDP
+   * canary from signal-lab's worker-deep-stack-error-burst probe.
+   */
+  error_stack_burst_delta_ms?: number;
+  error_stack_burst_iters?: number;
+  error_stack_burst_depth?: number;
   /**
    * Count of `console.*` methods (log/warn/error/info/debug/dir)
    * detected as wrapped/patched in the bench realm. Only the worker
@@ -543,6 +558,9 @@ interface HeadlessSignals {
      * Treat as hard-residue evidence in itself.
      */
     ownPropsNative?: boolean;
+    workerModuleImportChain?: {
+      cdp_shaped?: boolean;
+    };
   };
 }
 
@@ -838,6 +856,9 @@ function hasCdpTimingSignal(headless: HeadlessSignals | undefined): boolean {
   if (benchPrimitiveTampered(iframe) || benchPrimitiveTampered(worker)) {
     return true;
   }
+  if (hasErrorStackBurstSignal(worker)) return true;
+  if (hasWorkerImportChainSignal(headless)) return true;
+  if (hasDebugOverPerfSignal(iframe, worker)) return true;
   // Magnitude clauses compare iframe against worker — both benches must
   // be present and report a numeric heavy time.
   if (!iframe || !worker) return false;
@@ -845,6 +866,31 @@ function hasCdpTimingSignal(headless: HeadlessSignals | undefined): boolean {
   const wh = worker.log_heavy_us;
   if (typeof ih !== "number" || typeof wh !== "number") return false;
   return magnitudeMatchesCdp(ih, wh);
+}
+
+function hasErrorStackBurstSignal(
+  worker: ConsoleTimingFields | undefined,
+): boolean {
+  const delta = worker?.error_stack_burst_delta_ms;
+  return typeof delta === "number" && delta >= ERROR_STACK_BURST_CDP_DELTA_MS;
+}
+
+function hasWorkerImportChainSignal(
+  headless: HeadlessSignals | undefined,
+): boolean {
+  return headless?.cdp?.workerModuleImportChain?.cdp_shaped === true;
+}
+
+function hasDebugOverPerfSignal(
+  iframe: ConsoleTimingFields | undefined,
+  worker: ConsoleTimingFields | undefined,
+): boolean {
+  const ih = iframe?.debug_over_perf;
+  const wh = worker?.debug_over_perf;
+  if (typeof ih === "number" && typeof wh === "number") {
+    return Math.min(ih, wh) >= DEBUG_OVER_PERF_CDP_RATIO;
+  }
+  return typeof wh === "number" && wh >= WORKER_DEBUG_OVER_PERF_CDP_RATIO;
 }
 
 /**

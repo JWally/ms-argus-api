@@ -94,7 +94,7 @@ import {
 /** Bump when merchant-projection.ts rules change in a way you want stamped on
  *  rows. Stored on the row so historical verdicts are traceable to the code
  *  that produced them. */
-const PROJECTION_VERSION = "v1";
+const PROJECTION_VERSION = "v2";
 
 /** API Gateway event extended with pre-parsed body from middleware. */
 export interface ExtendedEvent extends APIGatewayProxyEventV2 {
