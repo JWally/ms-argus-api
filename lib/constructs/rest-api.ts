@@ -100,7 +100,15 @@ export class RestApiConstruct extends Construct {
       defaultCorsPreflightOptions: {
         allowOrigins: apigateway.Cors.ALL_ORIGINS,
         allowMethods: ["GET", "OPTIONS"],
-        allowHeaders: ["Content-Type", "x-api-key", "x-argus-token"],
+        allowHeaders: [
+          "Content-Type",
+          "x-api-key",
+          "x-argus-token",
+          "x-argus-attest-envelope",
+          "x-argus-attest-signature",
+          "x-argus-attest-public-key",
+          "x-argus-attest-key-id",
+        ],
         maxAge: cdk.Duration.hours(1),
       },
     });

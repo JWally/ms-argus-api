@@ -27,6 +27,11 @@ import {
   verifyMerchantToken,
   type VerifiedClaims,
 } from "../../helpers/token-verifier";
+import {
+  parseSdkAttestationHeaders,
+  verifySdkAttestation,
+  type SdkAttestationVerifyResult,
+} from "../../helpers/sdk-attestation";
 import { buildMerchantResponse } from "../../helpers/merchant-projection";
 import { decrementCredit } from "../../helpers/credits";
 import type { IntegrityResultsData } from "../../helpers/payload-schema";
@@ -46,6 +51,7 @@ function buildIntegrityResponse(params: {
   sessionId: string;
   integrity: IntegrityResultsData;
   creditsRemaining: number;
+  attestation?: Extract<SdkAttestationVerifyResult, { ok: true }>;
 }): APIGatewayProxyResultV2 {
   const merchant = buildMerchantResponse({
     session_id: params.sessionId,
@@ -56,6 +62,15 @@ function buildIntegrityResponse(params: {
     headers: JSON_HEADERS,
     body: JSON.stringify({
       ...merchant,
+      ...(params.attestation
+        ? {
+            attestation: {
+              verified: true,
+              keyId: params.attestation.keyId,
+              payload: params.attestation.payload,
+            },
+          }
+        : {}),
       creditsRemaining: params.creditsRemaining,
     }),
   };
@@ -154,6 +169,10 @@ async function runTimedPipeline(
   if (!auth.ok) return auth.response;
   const tAuth = performance.now();
 
+  const attestation = verifyOptionalAttestation(cpi, sessionId, event, deps);
+  if (!attestation.ok) return attestation.response;
+  const tAttest = performance.now();
+
   const debit = await debitCreditOr402(auth.claims.merchantId, deps);
   if (!debit.ok) return debit.response;
   const tDebit = performance.now();
@@ -171,22 +190,110 @@ async function runTimedPipeline(
       body: JSON.stringify({ error: "Session not found" }),
     };
   }
+  const binding = verifyAttestationMatchesScan(attestation.result, integrity);
+  if (!binding.ok) return binding.response;
   deps.metrics.addMetric("IntegritySessionRetrieved", MetricUnit.Count, 1);
   const response = buildIntegrityResponse({
     sessionId,
     integrity,
     creditsRemaining: debit.remaining,
+    attestation: attestation.result,
   });
   const tProject = performance.now();
 
   deps.logger.info("session-get timing", {
     authMs: Math.round(tAuth - t0),
-    debitMs: Math.round(tDebit - tAuth),
+    attestMs: Math.round(tAttest - tAuth),
+    debitMs: Math.round(tDebit - tAttest),
     fetchMs: Math.round(tFetch - tDebit),
     projectMs: Math.round(tProject - tFetch),
     totalMs: Math.round(tProject - t0),
   });
   return response;
+}
+
+type OptionalAttestationResult =
+  | { ok: true; result?: Extract<SdkAttestationVerifyResult, { ok: true }> }
+  | { ok: false; response: APIGatewayProxyResultV2 };
+
+function verifyOptionalAttestation(
+  cpi: string,
+  sessionId: string,
+  event: APIGatewayProxyEvent,
+  deps: HandlerDeps,
+): OptionalAttestationResult {
+  const attestation = parseSdkAttestationHeaders(event.headers);
+  if (!attestation) return { ok: true };
+  const result = verifySdkAttestation(attestation, {
+    expectedPurpose: "argus-session-get-v1",
+    expectedCpi: cpi,
+    expectedSessionId: sessionId,
+  });
+  if (result.ok) {
+    deps.metrics.addMetric("SdkAttestationAccepted", MetricUnit.Count, 1);
+    return { ok: true, result };
+  }
+  deps.metrics.addMetric("SdkAttestationRejected", MetricUnit.Count, 1);
+  return {
+    ok: false,
+    response: {
+      statusCode: 400,
+      headers: JSON_HEADERS,
+      body: JSON.stringify({
+        error: "Invalid attestation",
+        reason: result.reason,
+      }),
+    },
+  };
+}
+
+function verifyAttestationMatchesScan(
+  attestation: Extract<SdkAttestationVerifyResult, { ok: true }> | undefined,
+  integrity: IntegrityResultsData,
+): { ok: true } | { ok: false; response: APIGatewayProxyResultV2 } {
+  if (!attestation) return { ok: true };
+  const storedPublicKey = getStoredPublicKey(integrity);
+  if (!storedPublicKey) return invalidAttestation("stored_public_key_missing");
+  if (storedPublicKey !== attestation.publicKey) {
+    return invalidAttestation("public_key_mismatch");
+  }
+  return { ok: true };
+}
+
+function getStoredPublicKey(integrity: IntegrityResultsData): string | null {
+  const identificationKey = integrity.identification?.pubkey;
+  if (typeof identificationKey === "string" && identificationKey.length > 0) {
+    return identificationKey;
+  }
+  const raw = integrity as unknown as {
+    identifiers?: { public_key?: unknown };
+    device_identity?: { pubkey?: unknown };
+  };
+  const identifiersKey = raw.identifiers?.public_key;
+  if (typeof identifiersKey === "string" && identifiersKey.length > 0) {
+    return identifiersKey;
+  }
+  const deviceIdentityKey = raw.device_identity?.pubkey;
+  return typeof deviceIdentityKey === "string" && deviceIdentityKey.length > 0
+    ? deviceIdentityKey
+    : null;
+}
+
+function invalidAttestation(reason: string): {
+  ok: false;
+  response: APIGatewayProxyResultV2;
+} {
+  return {
+    ok: false,
+    response: {
+      statusCode: 400,
+      headers: JSON_HEADERS,
+      body: JSON.stringify({
+        error: "Invalid attestation",
+        reason,
+      }),
+    },
+  };
 }
 
 export function createBaseHandler(deps: HandlerDeps) {
