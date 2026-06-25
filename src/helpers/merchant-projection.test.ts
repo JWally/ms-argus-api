@@ -2094,6 +2094,125 @@ describe("buildMerchantResponse", () => {
       });
     });
 
+    it("worker error-stack burst: Playwright-shaped delta → automation 75", () => {
+      // Ported from signal-lab's worker-deep-stack-error-burst probe:
+      // deployed HTTPS p50 was real≈2ms vs Playwright≈71ms at depth=120,
+      // N=180. This is a vanilla-CDP canary, not a quiet-CDP detector.
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: {
+          ...baseIntegrity(),
+          device: {
+            headless: {
+              headlessRating: 0,
+              cdp: {
+                consoleTimingWorker: {
+                  log_tiny_us: 9,
+                  log_heavy_us: 8,
+                  dir_heavy_us: 8,
+                  heavy_over_tiny: 0.89,
+                  error_stack_burst_delta_ms: 71,
+                  error_stack_burst_iters: 180,
+                  error_stack_burst_depth: 120,
+                },
+              },
+            },
+          },
+        },
+      });
+      expect(result.automation).toBe(75);
+    });
+
+    it("worker error-stack burst: real-shaped delta does not score", () => {
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: {
+          ...baseIntegrity(),
+          device: {
+            headless: {
+              headlessRating: 0,
+              cdp: {
+                consoleTimingWorker: {
+                  log_tiny_us: 9,
+                  log_heavy_us: 8,
+                  dir_heavy_us: 8,
+                  heavy_over_tiny: 0.89,
+                  error_stack_burst_delta_ms: 6,
+                  error_stack_burst_iters: 180,
+                  error_stack_burst_depth: 120,
+                },
+              },
+            },
+          },
+        },
+      });
+      expect(result.automation).toBe(0);
+    });
+
+    it("worker module import-chain cdp_shaped → automation 75", () => {
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: {
+          ...baseIntegrity(),
+          device: {
+            headless: {
+              headlessRating: 0,
+              cdp: {
+                workerModuleImportChain: {
+                  leaves: 20,
+                  reps: 15,
+                  classic_p50_ms: 8,
+                  module_p50_ms: 28,
+                  delta_ms: 20,
+                  per_import_us: 1000,
+                  ratio: 3.5,
+                  cdp_shaped: true,
+                },
+              },
+            },
+          },
+        },
+      });
+      expect(result.automation).toBe(75);
+    });
+
+    it("debug-over-perf both realms high → automation 75", () => {
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: {
+          ...baseIntegrity(),
+          device: {
+            headless: {
+              headlessRating: 0,
+              cdp: {
+                consoleTiming: {
+                  log_tiny_us: 9,
+                  log_heavy_us: 8,
+                  dir_heavy_us: 8,
+                  heavy_over_tiny: 0.89,
+                  debug_over_perf: 53,
+                  debug_empty_us: 20,
+                  perf_now_call_us: 0.38,
+                  debug_iters: 3000,
+                },
+                consoleTimingWorker: {
+                  log_tiny_us: 9,
+                  log_heavy_us: 8,
+                  dir_heavy_us: 8,
+                  heavy_over_tiny: 0.89,
+                  debug_over_perf: 61,
+                  debug_empty_us: 22,
+                  perf_now_call_us: 0.36,
+                  debug_iters: 3000,
+                },
+              },
+            },
+          },
+        },
+      });
+      expect(result.automation).toBe(75);
+    });
+
     it("desktop UA still uses likeHeadlessRating as before", () => {
       const base = baseIntegrity();
       const result = buildMerchantResponse({
