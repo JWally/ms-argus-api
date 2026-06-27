@@ -1155,12 +1155,17 @@ function cdpAutomationScore(
   input: MerchantProjectionInput,
   headless: HeadlessSignals | undefined,
 ): number {
+  const isMobile = isMobileBrowser(input.integrity);
   // Marionette-augmented runtimes (PW-FF, Camoufox, etc.) hang the
   // nested iframe's WebCrypto generateKey. No legitimate browser does
   // this. Full automation tier.
   if (hasIframeCryptoStuck(input.integrity)) return 100;
   if (hasHardCdpResidue(headless)) return 100;
-  if (hasCdpTimingSignal(headless)) return 75;
+  if (hasErrorStackBurstSignal(headless?.cdp?.consoleTimingWorker)) return 75;
+  // Scheduler/import timing probes are useful telemetry and strong
+  // corroborators, but real mobile Chrome can produce CDP-shaped timings
+  // under device/debug noise. Keep timing-only block-tier scoring desktop-only.
+  if (hasCdpTimingSignal(headless) && !isMobile) return 75;
   if (hasSoftCdpResidue(headless)) return 75;
   // Pristine-iframe lift state. The SDK's bytecode unpack, AES-GCM IV
   // generation, session token, signing envelope, etc. all route through

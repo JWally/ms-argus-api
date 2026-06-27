@@ -2149,6 +2149,36 @@ describe("buildMerchantResponse", () => {
       expect(result.automation).toBe(0);
     });
 
+    it("worker error-stack burst remains enforced on mobile", () => {
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: {
+          ...baseIntegrity({
+            user_agent:
+              "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 " +
+              "(KHTML, like Gecko) Chrome/148.0.0.0 Mobile Safari/537.36",
+          }),
+          device: {
+            headless: {
+              headlessRating: 0,
+              cdp: {
+                consoleTimingWorker: {
+                  log_tiny_us: 9,
+                  log_heavy_us: 8,
+                  dir_heavy_us: 8,
+                  heavy_over_tiny: 0.89,
+                  error_stack_burst_delta_ms: 71,
+                  error_stack_burst_iters: 180,
+                  error_stack_burst_depth: 120,
+                },
+              },
+            },
+          },
+        },
+      });
+      expect(result.automation).toBe(75);
+    });
+
     it("worker module import-chain cdp_shaped → automation 75", () => {
       const result = buildMerchantResponse({
         session_id: "s",
@@ -2174,6 +2204,69 @@ describe("buildMerchantResponse", () => {
         },
       });
       expect(result.automation).toBe(75);
+    });
+
+    it("real Android timing-only CDP shape stays telemetry", () => {
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: {
+          ...baseIntegrity({
+            user_agent:
+              "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 " +
+              "(KHTML, like Gecko) Chrome/148.0.0.0 Mobile Safari/537.36",
+          }),
+          device: {
+            headless: {
+              headlessRating: 0,
+              likeHeadlessRating: 36,
+              stealthRating: 13,
+              headless: {
+                webDriverIsOn: false,
+                hasHeadlessUA: false,
+                hasHeadlessWorkerUA: false,
+              },
+              cdp: {
+                cdcGlobals: false,
+                pwBindings: false,
+                phantomMismatch: false,
+                clientLitter: [],
+                automationGlobals: [],
+                crossRealmTampered: [],
+                ownPropsNative: true,
+                consoleTiming: {
+                  log_tiny_us: 18.6,
+                  log_heavy_us: 20.4,
+                  dir_heavy_us: 20.4,
+                  heavy_over_tiny: 1.1,
+                  debug_over_perf: 29.62,
+                  cdp_proto_proxy_trap: false,
+                },
+                consoleTimingWorker: {
+                  log_tiny_us: 13.1,
+                  log_heavy_us: 18.5,
+                  dir_heavy_us: 35.4,
+                  heavy_over_tiny: 1.41,
+                  debug_over_perf: 26.15,
+                  error_stack_burst_delta_ms: 8,
+                  cdp_proto_proxy_trap: false,
+                },
+                workerModuleImportChain: {
+                  leaves: 20,
+                  reps: 15,
+                  classic_p50_ms: 19.6,
+                  module_p50_ms: 38.7,
+                  delta_ms: 19.1,
+                  per_import_us: 955,
+                  ratio: 1.97,
+                  cdp_shaped: true,
+                },
+              },
+            },
+          },
+        },
+      });
+      expect(result.automation).toBe(0);
+      expect(result.tags).not.toContain("automation");
     });
 
     it("debug-over-perf both realms high → automation 75", () => {
