@@ -514,7 +514,7 @@ interface HeadlessSignals {
     hasHeadlessUA?: boolean;
     hasHeadlessWorkerUA?: boolean;
   };
-  likeHeadless?: { devToolsOpen?: boolean };
+  likeHeadless?: Record<string, unknown>;
   /**
    * CDP attach detector via console-serialization timing. When a CDP
    * client (Playwright, Puppeteer, patchright, etc.) has issued
@@ -632,8 +632,7 @@ function detectLanguageMismatch(input: MerchantProjectionInput): boolean {
  * Mobile-browser detection (iPhone/iPad/Android). Reads main-thread UA
  * and every captured worker-scope UA — if any one says iPhone we treat
  * the visitor as mobile. Used to carve out signals that are reliable on
- * desktop but legitimately absent on mobile (no plugins, no taskbar,
- * blank UA-CH, etc).
+ * desktop but legitimately absent on mobile (no plugins, blank UA-CH, etc).
  */
 const UA_HEADER_KEY = "user-agent";
 
@@ -652,6 +651,19 @@ function isMobileBrowser(integrity: IntegrityResultsData | undefined): boolean {
     if (typeof scope?.userAgent === "string") candidates.push(scope.userAgent);
   }
   return candidates.some((ua) => /iPhone|iPad|iPod|Android|Mobile/i.test(ua));
+}
+
+function weakHeadlessScore(headless: HeadlessSignals | undefined): number {
+  const likeHeadless = headless?.likeHeadless;
+  if (!likeHeadless) return headless?.likeHeadlessRating ?? 0;
+
+  const values = Object.entries(likeHeadless).filter(
+    ([key, value]) => key !== "noTaskbar" && typeof value === "boolean",
+  );
+  if (values.length === 0) return headless?.likeHeadlessRating ?? 0;
+
+  const trueCount = values.filter(([, value]) => value === true).length;
+  return +((trueCount / values.length) * 100).toFixed(0);
 }
 
 /**
@@ -1134,14 +1146,13 @@ function hasPristineLiftCompromised(
  *       that scrubs every other tell; misses stealth forks that
  *       `Runtime.disable`. Also trips on DevTools-open humans, so it's
  *       → 60 (SUSPECT, not block). See hasCdpProtoProxyTrap.
- *   3. WEAK markers (`likeHeadlessRating`) — 11 environment signals
+ *   3. WEAK markers (`likeHeadlessRating`) — 10 environment signals
  *      (no Chrome object, no plugins, blank UA-CH, etc). Real but
  *      not damning on its own; the % maps directly into the score.
  *      **Mobile carve-out:** these signals were calibrated for desktop
- *      browsers. iPhone Safari has no taskbar, no plugins, and blank
- *      UA-CH for legitimate reasons — every real iPhone visitor would
- *      otherwise floor at automation ≈ 10. We zero out weak markers
- *      when the UA (main or worker) shows mobile.
+ *      browsers. iPhone Safari has no plugins and blank UA-CH for
+ *      legitimate reasons. We zero out weak markers when the UA (main
+ *      or worker) shows mobile.
  *   4. STEALTH markers (`stealthRating`) — Function.toString proxy,
  *      bad WebGL, missing chrome runtime. +20 bonus when any fire.
  */
@@ -1280,7 +1291,7 @@ function botProbability(input: MerchantProjectionInput): number {
   // flat +20 automation tax. Match the likeHeadless carve-out below.
   const isMobile = isMobileBrowser(input.integrity);
   const stealth = isMobile ? 0 : (headless?.stealthRating ?? 0);
-  const weak = isMobile ? 0 : (headless?.likeHeadlessRating ?? 0);
+  const weak = isMobile ? 0 : weakHeadlessScore(headless);
   return roundProbability(weak + (stealth > 0 ? 20 : 0));
 }
 

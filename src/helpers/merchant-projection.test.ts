@@ -1310,6 +1310,39 @@ describe("buildMerchantResponse", () => {
       expect(result.automation).toBe(40);
     });
 
+    it("ignores legacy noTaskbar when recomputing weak headless score", () => {
+      const base = baseIntegrity();
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: {
+          ...base,
+          device: {
+            headless: {
+              headlessRating: 0,
+              // Legacy clients included noTaskbar in this emitted aggregate:
+              // noTaskbar + noPlugins = 2/11 => 18. The API should score the
+              // raw signal object without noTaskbar: noPlugins = 1/10 => 10.
+              likeHeadlessRating: 18,
+              likeHeadless: {
+                noChrome: false,
+                hasPermissionsBug: false,
+                noPlugins: true,
+                noMimeTypes: false,
+                notificationIsDenied: false,
+                uaDataIsBlank: false,
+                pdfIsDisabled: false,
+                noTaskbar: true,
+                hasVvpScreenRes: false,
+                hasSoftwareRenderer: false,
+                devToolsOpen: false,
+              },
+            },
+          },
+        },
+      });
+      expect(result.automation).toBe(10);
+    });
+
     it("automation gets +20 stealth bonus on top of weak markers", () => {
       const base = baseIntegrity();
       const result = buildMerchantResponse({
@@ -1330,9 +1363,8 @@ describe("buildMerchantResponse", () => {
     });
 
     it("mobile carve-out: iPhone UA zeroes likeHeadlessRating contribution", () => {
-      // Real-world floor on iPhone Safari: noTaskbar, noPlugins, blank UA-CH
-      // are legitimately absent and otherwise produce likeHeadlessRating ≈ 9
-      // → rounds to automation 10 on every real iPhone visitor. PAT is
+      // Real-world floor on iPhone Safari: noPlugins and blank UA-CH are
+      // legitimately absent and otherwise produce weak automation noise. PAT is
       // included because real iPhone Safari ships one — see PAT score
       // enforcement (`applyPatAdjustment`); a real iPhone WITHOUT PAT is a
       // different scenario covered by the apple_attestation_missing tests.

@@ -262,14 +262,14 @@ describe("§1 — verdict derivation", () => {
 //                             rating  > 0 → automation =  75  (block)
 //                             rating == 0 → fall through to weak markers
 //
-//   Tier 2 WEAK markers   — `headless.likeHeadlessRating`. 11 environment
+//   Tier 2 WEAK markers   — `headless.likeHeadlessRating`. 10 environment
 //                           signals (no Chrome object, no plugins, blank
-//                           UA-CH, dev tools open, no taskbar, ...). The
+//                           UA-CH, dev tools open, ...). The
 //                           % of weak markers maps directly into the score.
 //                           ⚠ MOBILE CARVE-OUT: zeroed for mobile UAs.
-//                           Real iPhones legitimately lack plugins, taskbar,
-//                           UA-CH; without the carve-out every iPhone
-//                           floors at automation ≈ 10.
+//                           Real iPhones legitimately lack plugins and
+//                           UA-CH; without the carve-out every iPhone still
+//                           picks up weak automation noise.
 //
 //   Tier 3 STEALTH bonus  — `headless.stealthRating`. Anti-detect markers
 //                           (Function.toString proxy, missing chrome.runtime,
@@ -336,7 +336,7 @@ describe("§3 — automation axis", () => {
   it("MOBILE CARVE-OUT: weak markers zeroed for iPhone UA", () => {
     // Same likeHeadlessRating=50 as above, but with iPhone UA → automation 0.
     // Real iPhones look "headless-y" by desktop standards (no plugins, no
-    // chrome runtime, no taskbar). Penalizing them for that would block
+    // chrome runtime). Penalizing them for that would block
     // every legit iPhone visitor. PAT included because real iPhone Safari
     // ships one (see PAT score enforcement in §3); without PAT the
     // apple_attestation_missing penalty would add +25 here.
