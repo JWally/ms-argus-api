@@ -14,6 +14,7 @@ import {
   decryptArgusPayload,
   decryptIntegrityPayload,
   decryptIntegrityPayloadV2,
+  decryptIntegrityPayloadV3,
 } from "../../helpers/ecdh-decrypt";
 
 const INTEGRITY_COLLECT_PATH = "/v1/integrity-collect";
@@ -54,6 +55,15 @@ async function decryptIntegrity(
   const body = event.body ?? "";
   const { isBase64Encoded } = event;
 
+  if (version === "3") {
+    return decryptIntegrityPayloadV3({
+      body,
+      isBase64Encoded,
+      clientPubKey,
+      keys,
+      sessionToken,
+    });
+  }
   if (version === "2") {
     return decryptIntegrityPayloadV2({
       body,

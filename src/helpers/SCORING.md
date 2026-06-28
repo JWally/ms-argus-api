@@ -75,7 +75,7 @@ Three thresholds, one rule. Any single axis saturating is enough to flag.
 
 ### Soft markers
 
-- `likeHeadlessRating >= 50` contributes — built from 11 environment flags (`noMimeTypes`, `noChrome`, `noPlugins`, `hasSoftwareRenderer`, `pdfIsDisabled`, etc.). Calibrated for desktop; mobile carve-out applies.
+- `likeHeadlessRating >= 50` contributes — built from 10 environment flags (`noMimeTypes`, `noChrome`, `noPlugins`, `hasSoftwareRenderer`, `pdfIsDisabled`, etc.). Calibrated for desktop; mobile carve-out applies.
 
 ### PAT (Apple Private Access Token) adjustments
 

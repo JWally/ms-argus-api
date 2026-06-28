@@ -6,8 +6,9 @@
  *   X-Argus-Origin: <raw P-256 client public key, base64, 88 chars>
  *   Body: base64([iv(12 bytes) | AES-GCM ciphertext+tag])
  *
- * After decryption, the plaintext is pako deflateRaw-compressed JSON.
- * inflateRawSync decompresses it to an ArgusPayload JSON string.
+ * v1/v2 clients send pako deflateRaw-compressed plaintext. v3 clients
+ * send the scrambled JSON bytes directly so the browser SDK does not need
+ * to ship a deflate implementation.
  *
  * Key derivation:
  *   ECDH(serverPriv, clientPub) → 256-bit shared secret
@@ -281,6 +282,60 @@ export async function decryptIntegrityPayloadV2(
         );
         const inflated = inflateRawSync(Buffer.from(decrypted));
         const unscrambled = deriveAndUnscramble(inflated, sessionToken);
+        return JSON.parse(unscrambled.toString("utf-8"));
+      } catch {
+        // try next key/date combo
+      }
+    }
+  }
+
+  return null;
+}
+
+/**
+ * v3: Decrypt integrity payload without transport compression.
+ *
+ * The VM still Fibonacci-scrambles the JSON string before ECDH encryption,
+ * but the browser sends those UTF-8 bytes directly instead of pako
+ * deflateRaw-compressing them. This keeps v1/v2 compatibility while letting
+ * the SDK drop the pako dependency.
+ */
+export async function decryptIntegrityPayloadV3(
+  opts: IntegrityDecryptV2Opts,
+): Promise<unknown | null> {
+  const { body, isBase64Encoded, clientPubKey, keys, sessionToken } = opts;
+  const packed = isBase64Encoded
+    ? Buffer.from(body, "base64")
+    : Buffer.from(body, "binary");
+
+  const iv = packed.subarray(0, 12);
+  const ciphertextWithTag = packed.subarray(12);
+
+  const keySets = [keys.current, keys.previous].filter(
+    (k): k is EcdhKeyData => k != null,
+  );
+  const today = new Date().toISOString().slice(0, 10);
+  const yesterday = new Date(Date.now() - 86_400_000)
+    .toISOString()
+    .slice(0, 10);
+
+  for (const keySet of keySets) {
+    for (const dateSalt of [today, yesterday]) {
+      try {
+        const aesKey = await deriveAesKey(
+          keySet.privateKey,
+          clientPubKey,
+          dateSalt,
+        );
+        const decrypted = await crypto.subtle.decrypt(
+          { name: "AES-GCM", iv },
+          aesKey,
+          ciphertextWithTag,
+        );
+        const unscrambled = deriveAndUnscramble(
+          Buffer.from(decrypted),
+          sessionToken,
+        );
         return JSON.parse(unscrambled.toString("utf-8"));
       } catch {
         // try next key/date combo
