@@ -78,8 +78,8 @@ describe("stage-config", () => {
         expect(dev.lambda.sessionGet.memorySize).toBe(1024);
       });
 
-      it("should keep dev warm with provisioned concurrency", () => {
-        expect(dev.lambda.provisionedConcurrency).toBe(2);
+      it("should use scheduled heaters instead of provisioned concurrency", () => {
+        expect(dev.lambda.provisionedConcurrency).toBe(0);
       });
 
       it("should have shorter retention periods", () => {
@@ -115,8 +115,8 @@ describe("stage-config", () => {
         expect(prod.lambda.sessionGet.memorySize).toBe(1024);
       });
 
-      it("should have provisioned concurrency", () => {
-        expect(prod.lambda.provisionedConcurrency).toBeGreaterThan(0);
+      it("should avoid provisioned concurrency by default", () => {
+        expect(prod.lambda.provisionedConcurrency).toBe(0);
       });
 
       it("should have longer retention periods", () => {

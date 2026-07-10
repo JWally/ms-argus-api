@@ -6,9 +6,6 @@ import * as route53 from "aws-cdk-lib/aws-route53";
 import * as acm from "aws-cdk-lib/aws-certificatemanager";
 import * as ssm from "aws-cdk-lib/aws-ssm";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
-import * as events from "aws-cdk-lib/aws-events";
-import * as targets from "aws-cdk-lib/aws-events-targets";
-import { Duration } from "aws-cdk-lib";
 import { Construct } from "constructs";
 
 import { SecretConstruct } from "../constructs/secrets";
@@ -20,6 +17,7 @@ import { LambdasConstruct } from "../constructs/lambdas";
 import { HttpApiConstruct } from "../constructs/http-api";
 import { RestApiConstruct } from "../constructs/rest-api";
 import { PostDeployWarmer } from "../constructs/post-deploy-warmer";
+import { RecurringAliasHeater } from "../constructs/recurring-alias-heater";
 import { CloudFrontWafConstruct } from "../constructs/cloudfront";
 import { getStageConfig } from "../config";
 
@@ -328,23 +326,16 @@ export class ArgusApiStack extends cdk.Stack {
       deployId: Date.now().toString(),
     });
 
-    // Heater: a second gap PC leaves is the stale keep-alive socket. PC holds
-    // the container, but a frozen container's downstream sockets (DDB, Firehose)
-    // still die on thaw — the ~7.5s dead-socket stall on the first integrity-
-    // collect after an idle gap. This 1-minute ping drives ingestion's
-    // deepWarmup(), which runs the happy-path downstreams READ-ONLY
-    // (DescribeTable + DescribeDeliveryStream + secret preload) so the real
-    // request's sockets never go stale. Nothing is written; no record is created.
-    new events.Rule(this, "IngestionSocketHeater", {
+    // Heater: EventBridge has one-minute resolution, so a tiny helper Lambda
+    // spaces async warmup invokes every 10s inside that minute. This keeps the
+    // ingestion path's downstream sockets and dataset caches warm without
+    // paying 24/7 Provisioned Concurrency.
+    new RecurringAliasHeater(this, "IngestionSocketHeater", {
       ruleName: `${stackName}-ingestion-heater`,
-      schedule: events.Schedule.rate(Duration.minutes(1)),
-      targets: [
-        new targets.LambdaFunction(lambdas.ingestionAlias, {
-          event: events.RuleTargetInput.fromObject({
-            source: "serverless-plugin-warmup",
-          }),
-        }),
-      ],
+      target: lambdas.ingestionAlias,
+      invokesPerMinute: 6,
+      spacingSeconds: 10,
+      ruleLogicalId: "IngestionSocketHeater7405AD4B",
     });
 
     // ── Edge layer ────────────────────────────────────────────────────

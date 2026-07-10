@@ -134,7 +134,7 @@ const devConfig: StageConfig = {
       // the captcha human-gate critical path, so its tail is user-felt.
       memorySize: 1024,
     },
-    provisionedConcurrency: 2, // Keep dev warm too — sparse traffic cold-starts the scan path otherwise
+    provisionedConcurrency: 0, // Use scheduled heaters for dev demos; avoid 24/7 idle PC cost.
     tracingEnabled: false, // see StageConfig.lambda.tracingEnabled
   },
 
@@ -216,7 +216,7 @@ const prodConfig: StageConfig = {
       // the captcha human-gate critical path, so its tail is user-felt.
       memorySize: 1024,
     },
-    provisionedConcurrency: 2, // Keep 2 warm in prod
+    provisionedConcurrency: 0, // Prefer scheduled/demo warmers unless prod traffic justifies PC.
     tracingEnabled: false, // see StageConfig.lambda.tracingEnabled
   },
 
