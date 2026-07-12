@@ -897,24 +897,31 @@ export async function persistIntegrityRecord(
   ctx: HandleContext,
   item: Record<string, unknown>,
 ): Promise<{ duplicate: boolean }> {
+  // Firehose archive is genuinely fire-and-forget: the client response depends
+  // only on the DDB write (the record is durable there), and archiveToFirehose
+  // swallows + meters its own errors. Awaiting it inside the Promise.all made
+  // response p99 = max(ddbPut, firehose) rather than just ddbPut — so it is
+  // dispatched here, unawaited, and the response gates on the PutItem alone.
+  // The extra .catch is belt-and-suspenders in case the helper ever throws
+  // synchronously (it currently cannot), so this never becomes an unhandled
+  // rejection.
+  void archiveToFirehose(item, {
+    streamName: INTEGRITY_FIREHOSE_STREAM,
+    logger: ctx.deps.logger,
+    metrics: ctx.deps.metrics,
+  }).catch(() => {});
+
   try {
-    await Promise.all([
-      ddbClient.send(
-        new PutItemCommand({
-          TableName: INTEGRITY_RESULTS_TABLE,
-          Item: marshall(item, { removeUndefinedValues: true }),
-          // Composite key is (cpi, session_id) — uniqueness enforced on the
-          // partition key; the sort key alone wouldn't catch cross-cpi reuse
-          // (which we don't want anyway, but defense in depth).
-          ConditionExpression: "attribute_not_exists(cpi)",
-        }),
-      ),
-      archiveToFirehose(item, {
-        streamName: INTEGRITY_FIREHOSE_STREAM,
-        logger: ctx.deps.logger,
-        metrics: ctx.deps.metrics,
+    await ddbClient.send(
+      new PutItemCommand({
+        TableName: INTEGRITY_RESULTS_TABLE,
+        Item: marshall(item, { removeUndefinedValues: true }),
+        // Composite key is (cpi, session_id) — uniqueness enforced on the
+        // partition key; the sort key alone wouldn't catch cross-cpi reuse
+        // (which we don't want anyway, but defense in depth).
+        ConditionExpression: "attribute_not_exists(cpi)",
       }),
-    ]);
+    );
     return { duplicate: false };
   } catch (err) {
     if (err instanceof ConditionalCheckFailedException) {

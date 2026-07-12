@@ -20,6 +20,7 @@
  */
 
 import { detectCrossFieldAnomalies } from "../../services/profile/anomaly/worker-scope-consistency";
+import { toResultSignals } from "../../services/profile/anomaly/types";
 import type { Fingerprint } from "../../types";
 
 const COMPARE_FIELDS = [
@@ -103,11 +104,7 @@ function findDivergences(
 function formatSignals(
   signals: ReturnType<typeof detectCrossFieldAnomalies>,
 ): WorkerAnalysisResult["signals"] {
-  return signals.map((s) => ({
-    code: s.code,
-    severity: s.severity,
-    evidence: s.evidence.actual,
-  }));
+  return toResultSignals(signals);
 }
 
 /**

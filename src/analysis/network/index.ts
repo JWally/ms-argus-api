@@ -24,7 +24,10 @@
 
 import type { AsnCategory } from "../ip-consistency/asn-catalog";
 import { detectNetworkProbeAnomalies } from "../../services/profile/anomaly/network-probe-detector";
-import { AnomalyCodes } from "../../services/profile/anomaly/types";
+import {
+  AnomalyCodes,
+  toResultSignals,
+} from "../../services/profile/anomaly/types";
 import type { AnomalyCode } from "../../services/profile/anomaly/types";
 import type { Fingerprint } from "../../types";
 
@@ -165,11 +168,7 @@ export function analyzeNetworkProbes(
   // independent indicators stack" and symmetric between p and v.
   const combined = 1 - (1 - proxyComponent) * (1 - vpnComponent);
 
-  const signals = legacySignals.map((s) => ({
-    code: s.code,
-    severity: s.severity,
-    evidence: s.evidence.actual as unknown,
-  }));
+  const signals = toResultSignals(legacySignals);
   if (categoryHit) {
     signals.push({
       code: categoryHit.code,
