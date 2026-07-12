@@ -692,25 +692,6 @@ function isAppleClaimedUA(
   return /iPhone|iPad|iPod|Macintosh/.test(ua);
 }
 
-/**
- * Narrower variant of `isAppleClaimedUA`: matches **iOS / iPadOS Safari
- * only**, not macOS Safari. macOS Safari rarely produces PAT in practice
- * (Apple's PrivacyPass issuer is iOS-tilted, and a lot of real desktop
- * Safari sessions on a normal home network legitimately come through
- * with `pat.attested: false`), so we don't apply the
- * `PAT_MISSING_AUTOMATION_PENALTY` to them. iPhone / iPad Safari, on
- * the other hand, should be able to produce one — absence there stays
- * meaningful.
- */
-function isAppleMobileClaimedUA(
-  integrity: IntegrityResultsData | undefined,
-): boolean {
-  if (!isAppleClaimedUA(integrity)) return false;
-  const headers = integrity?.request_headers?.headers ?? {};
-  const ua = integrity?.user_agent ?? headers[UA_HEADER_KEY] ?? "";
-  return /iPhone|iPad|iPod/.test(ua);
-}
-
 type TagPredicate = [MerchantTag, (i: MerchantProjectionInput) => boolean];
 
 function buildTags(
@@ -1202,65 +1183,6 @@ function cdpAutomationScore(
   // timing). Suspect tier (60), so it surfaces without auto-blocking.
   if (hasCdpProtoProxyTrap(headless)) return CDP_PROTO_PROXY_TRAP_TIER;
   return 0;
-}
-
-/**
- * Apple PAT score enforcement. Asymmetric:
- *
- *   - **Valid PAT → enhance.** Caps the automation score at
- *     `PAT_VALID_AUTOMATION_CAP` (25 — keeps room for "suspect" tier without
- *     reaching "block"). Does NOT override hard automation evidence:
- *     scores at or above `PAT_AUTOMATION_HARD_FLOOR` (webdriver, headless
- *     UA, CDP residue, pristine-lift compromised) pass through unchanged.
- *     A real Apple device can still be running WebDriver — PAT proves the
- *     hardware, not the behavior.
- *
- *   - **iOS / macOS Safari UA without PAT → penalize.** Adds
- *     `PAT_MISSING_AUTOMATION_PENALTY` (capped at 100). Penalty is
- *     Apple-only: those are the UAs that *should* be able to produce a PAT,
- *     so absence is meaningful. Every other UA fails open.
- *
- * Only touches the `automation` axis. `device_tampering` and
- * `network_tampering` compose independently — PAT proves the device is
- * real Apple hardware, not that it is behaving honestly, so cross-signal
- * tampering evidence still flows through unmodified.
- */
-const PAT_AUTOMATION_HARD_FLOOR = 75;
-const PAT_VALID_AUTOMATION_CAP = 25;
-const PAT_MISSING_AUTOMATION_PENALTY = 25;
-
-function applyPatAdjustment(
-  automation: number,
-  input: MerchantProjectionInput,
-): number {
-  const attested = input.integrity?.pat?.attested === true;
-  if (attested) {
-    if (automation >= PAT_AUTOMATION_HARD_FLOOR) return automation;
-    return Math.min(automation, PAT_VALID_AUTOMATION_CAP);
-  }
-  // PAT_MISSING penalty narrowed in two directions to kill false-
-  // positives on real corporate Mac Safari users:
-  //
-  //   1. iOS/iPadOS Safari ONLY. macOS Safari rarely produces PAT in
-  //      practice — Apple's PrivacyPass issuer is mobile-tilted, and
-  //      `pat.attested: false` from a desktop-Safari home user is
-  //      common enough that penalising it produces too much noise.
-  //      iPhone / iPad still get penalised since they're where PAT
-  //      *should* work.
-  //
-  //   2. Corporate-shield ASNs (Cisco Umbrella / Zscaler /
-  //      Cloudflare Access) bypass the penalty entirely. The shield
-  //      breaks the per-origin Privacy-Pass round-trip, so PAT
-  //      absence under a known corporate proxy is an architectural
-  //      fact, not an automation signal. The shield is already
-  //      surfaced as the `corporate_shield` tag.
-  if (
-    isAppleMobileClaimedUA(input.integrity) &&
-    !isCorporateShieldedAsn(input.integrity ?? ({} as IntegrityResultsData))
-  ) {
-    return Math.min(100, automation + PAT_MISSING_AUTOMATION_PENALTY);
-  }
-  return automation;
 }
 
 function botProbability(input: MerchantProjectionInput): number {
@@ -2538,7 +2460,9 @@ export function buildMerchantResponse(
   // networkTamperingScore() docstring for the double-count rationale.
   void networkIntegrityScore;
 
-  const automation = applyPatAdjustment(botProbability(input), input);
+  // PAT is positive metadata only. Availability is not reliable enough to
+  // penalize absence, and attestation must never erase automation evidence.
+  const automation = botProbability(input);
   const device_tampering = tamperingProbability(input);
   const network_tampering = networkTamperingScore(input);
   const verdict = deriveVerdict(

@@ -31,6 +31,8 @@ export interface RedeemPatCtx {
   /** The TLS-observed source IP at the ingestion request — must match the
    *  `src_ip` baked into the token at /v1/pat-attestation time. */
   expectedSrcIp: string;
+  expectedCpi: string;
+  expectedSessionId: string;
   /** First 32 bytes of SIGINT_AES_KEY in hex. */
   sigintAesKeyHex: string;
   logger?: Logger;
@@ -51,7 +53,11 @@ export function redeemPatToken(
 
   const result = verifyPatAttestation(
     token,
-    ctx.expectedSrcIp,
+    {
+      srcIp: ctx.expectedSrcIp,
+      cpi: ctx.expectedCpi,
+      sessionId: ctx.expectedSessionId,
+    },
     ctx.sigintAesKeyHex,
   );
 

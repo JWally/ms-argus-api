@@ -991,7 +991,7 @@ describe("buildMerchantResponse", () => {
       expect(result.tags).not.toContain("apple_attestation_missing");
     });
 
-    describe("PAT score enforcement (applyPatAdjustment)", () => {
+    describe("PAT score neutrality", () => {
       const iphoneSafariUA =
         "Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.5 Mobile/15E148 Safari/604.1";
       const validPat = {
@@ -1001,9 +1001,8 @@ describe("buildMerchantResponse", () => {
         redeemedAt: 1_700_000_000_000,
       };
 
-      it("valid PAT caps a soft automation score at 25", () => {
-        // likeHeadlessRating 50 on desktop normally → automation 50.
-        // PAT-valid caps it at 25 (suspect tier, not block).
+      it("valid PAT does not add automation", () => {
+        // Mobile weak-marker carve-outs apply independently of PAT.
         const base = baseIntegrity();
         const result = buildMerchantResponse({
           session_id: "s",
@@ -1021,9 +1020,7 @@ describe("buildMerchantResponse", () => {
             },
           },
         });
-        // Without PAT cap, this would be 50 (or with iPhone mobile carve-out
-        // would zero out anyway). With PAT it's capped at 25.
-        expect(result.automation).toBeLessThanOrEqual(25);
+        expect(result.automation).toBe(0);
       });
 
       it("valid PAT does NOT rescue webdriver=true (hard strict marker)", () => {
@@ -1048,7 +1045,7 @@ describe("buildMerchantResponse", () => {
         expect(result.automation).toBe(100);
       });
 
-      it("iOS Safari without PAT penalizes automation by +25", () => {
+      it("iOS Safari without PAT is score-neutral", () => {
         // Clean iPhone-claimed session → botProbability ≈ 0. PAT-missing
         // penalty pushes to 25 — surfaces as suspect, not block.
         const base = baseIntegrity();
@@ -1056,7 +1053,7 @@ describe("buildMerchantResponse", () => {
           session_id: "s",
           integrity: { ...base, user_agent: iphoneSafariUA },
         });
-        expect(result.automation).toBe(25);
+        expect(result.automation).toBe(0);
         expect(result.tags).toContain("apple_attestation_missing");
       });
 
@@ -1363,11 +1360,8 @@ describe("buildMerchantResponse", () => {
     });
 
     it("mobile carve-out: iPhone UA zeroes likeHeadlessRating contribution", () => {
-      // Real-world floor on iPhone Safari: noPlugins and blank UA-CH are
-      // legitimately absent and otherwise produce weak automation noise. PAT is
-      // included because real iPhone Safari ships one — see PAT score
-      // enforcement (`applyPatAdjustment`); a real iPhone WITHOUT PAT is a
-      // different scenario covered by the apple_attestation_missing tests.
+      // On iPhone Safari, noPlugins and blank UA-CH are legitimately absent and
+      // otherwise produce weak automation noise.
       const base = baseIntegrity();
       const result = buildMerchantResponse({
         session_id: "s",

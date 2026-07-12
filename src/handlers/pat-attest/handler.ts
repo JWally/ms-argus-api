@@ -12,17 +12,13 @@
  *
  * Mode 2 (Authorization: PrivateToken token=<b64url>):
  *   Verify the token. On success: HMAC-sign a self-contained attestation
- *   blob (`{type:"pat", issuer, src_ip, iat, exp, token_hash}`) and return
- *   it as `{ token }`. The client forwards that string in
- *   `payload.patToken`; ingestion verifies the HMAC, freshness, and IP
- *   binding without any DB round trip — see helpers/redeem-pat-token.ts.
+ *   blob bound to CPI, Argus session, source IP, and expiry. The raw PAT hash
+ *   is atomically claimed in Valkey before that wrapper is issued.
  *
  * Loose-coupling guarantees:
  *   - Issuer config in one file (issuer-config.ts).
  *   - All failures null-safe — disabled or directory-down → 503 with no-store.
- *   - Stateless: this Lambda holds no DB grants. Only IAM is read on the
- *     SIGINT_AES_KEY secret. Removing PAT = delete this directory + drop
- *     the SecretsManager grant.
+ *   - Replay-ledger failure denies PAT credit without failing integrity scans.
  */
 
 import { createHash } from "crypto";
@@ -35,12 +31,7 @@ import {
 } from "@aws-sdk/client-secrets-manager";
 
 import { encodeTokenChallenge } from "./challenge";
-import {
-  bindingEnabled,
-  newRedemptionContext,
-  storeChallenge,
-  consumeChallenge,
-} from "./challenge-store";
+import { claimPatTokenHash } from "./token-replay-store";
 import { ISSUER_CONFIG } from "./issuer-config";
 import { getActiveTokenKey } from "./issuer-directory";
 import {
@@ -48,7 +39,7 @@ import {
   CLIENT_REFRESH_SECONDS,
 } from "../../helpers/pat-signed-token";
 import { testPageResponse } from "./test-page";
-import { extractChallengeDigest, verifyPatToken } from "./verify";
+import { verifyPatToken } from "./verify";
 
 /** The static unbound challenge — the fallback when binding is unavailable. */
 function unboundChallenge(): Buffer {
@@ -133,21 +124,10 @@ async function buildChallengeResponse(): Promise<APIGatewayProxyResultV2 | null>
   const key = await getActiveTokenKey(logger);
   if (!key) return null;
 
-  // #13: bound challenge. Mint a fresh redemption context and persist the
-  // challenge so the token is single-use + fresh-per-request. If Valkey is
-  // unavailable, storeChallenge returns false and we fall back to the unbound
-  // (cacheable) challenge — PAT degrades, never breaks.
-  const bound = encodeTokenChallenge({
-    issuerName: ISSUER_CONFIG.host,
-    redemptionContext: newRedemptionContext(),
-  });
-  const stored = await storeChallenge(bound);
-  const challenge = stored ? bound : unboundChallenge();
-  metrics.addMetric(
-    stored ? "ChallengeBound" : "ChallengeUnbound",
-    MetricUnit.Count,
-    1,
-  );
+  // Apple's web flow interoperates reliably with the unbound challenge. Raw
+  // token replay is prevented after verification by the Valkey token ledger.
+  const challenge = unboundChallenge();
+  metrics.addMetric("ChallengeUnbound", MetricUnit.Count, 1);
   const challengeB64 = b64urlEncode(challenge);
   const tokenKeyB64 = b64urlEncode(key.spkiDer);
   const maxAge = ISSUER_CONFIG.directoryCacheSeconds;
@@ -188,43 +168,27 @@ function rejectInvalidToken(reason: string): APIGatewayProxyResultV2 {
 async function buildRedemptionResponse(
   tokenBytes: Buffer,
   clientIp: string,
+  cpi: string,
+  sessionId: string,
 ): Promise<APIGatewayProxyResultV2 | null> {
   const key = await getActiveTokenKey(logger);
   if (!key) return null;
 
-  // #13: single-use bound redemption. Look up + atomically consume (GETDEL) the
-  // challenge this token was minted for, keyed by its challenge_digest. If
-  // found → verify against the EXACT bytes we issued (bound, now consumed). If
-  // not found → fall back to the unbound challenge: this both (a) keeps working
-  // when Valkey was down at challenge time, and (b) rejects a REPLAYED bound
-  // token — its digest is gone from the store and won't match the unbound
-  // challenge either, so verify fails.
-  const digest = extractChallengeDigest(tokenBytes);
-  if (!digest) return rejectInvalidToken("MALFORMED_TOKEN");
-  const storedChallenge = await consumeChallenge(digest);
-  const challenge = storedChallenge ?? unboundChallenge();
-  const result = verifyPatToken(tokenBytes, challenge, key.spkiDer);
-  if (!result.ok) {
-    // A consumed/expired bound token lands here (digest no longer stored, and
-    // it isn't the unbound challenge) — that's the single-use rejection.
-    if (!storedChallenge && bindingEnabled()) {
-      metrics.addMetric("BoundReplayOrExpired", MetricUnit.Count, 1);
-    }
-    return rejectInvalidToken(result.reason);
-  }
-  metrics.addMetric(
-    storedChallenge ? "RedeemBound" : "RedeemUnbound",
-    MetricUnit.Count,
-    1,
-  );
+  const result = verifyPatToken(tokenBytes, unboundChallenge(), key.spkiDer);
+  if (!result.ok) return rejectInvalidToken(result.reason);
 
   const aesKey = await getSigintAesKeyHex();
   if (!aesKey) return null;
 
   const tokenHash = createHash("sha256").update(tokenBytes).digest("hex");
+  const claim = await claimPatTokenHash(tokenHash);
+  if (claim !== "claimed")
+    return rejectInvalidToken(`TOKEN_${claim.toUpperCase()}`);
   const signed = signPatAttestation({
     issuer: ISSUER_CONFIG.host,
     srcIp: clientIp,
+    cpi,
+    sessionId,
     tokenHash,
     sigintAesKeyHex: aesKey,
   });
@@ -236,10 +200,8 @@ async function buildRedemptionResponse(
     tokenHashPrefix: tokenHash.slice(0, 16),
   });
 
-  // `exp` here is the CLIENT refresh-trigger (45s), not the server-
-  // enforced hard-expiry (60s — baked into the signed token itself and
-  // checked by verifyPatAttestation). The SDK uses this to decide when
-  // to invalidate its sessionStorage cache and fetch fresh.
+  // `exp` is retained for response compatibility. The signed token carries
+  // the server-enforced 60-second expiry and is bound to this scan session.
   return {
     statusCode: 200,
     headers: {
@@ -271,7 +233,15 @@ export const baseHandler = async (
   let response: APIGatewayProxyResultV2 | null;
   if (tokenBytes) {
     const clientIp = event.requestContext.http.sourceIp;
-    response = await buildRedemptionResponse(tokenBytes, clientIp);
+    const cpi = event.queryStringParameters?.cpi;
+    const sessionId = event.queryStringParameters?.sessionId;
+    if (!cpi || !sessionId) return rejectInvalidToken("MISSING_BINDING");
+    response = await buildRedemptionResponse(
+      tokenBytes,
+      clientIp,
+      cpi,
+      sessionId,
+    );
   } else {
     response = await buildChallengeResponse();
   }

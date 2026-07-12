@@ -71,17 +71,6 @@ function parsePatToken(tokenBytes: Buffer): ParsedToken | null {
   };
 }
 
-/**
- * Extract the 32-byte challenge_digest (= SHA256(TokenChallenge)) from a PAT
- * token without verifying it. Used as the lookup key for the bound-challenge
- * store (#13) so a redeemed token can be matched to the exact challenge we
- * issued and consumed exactly once. Returns null on a structurally bad token.
- */
-export function extractChallengeDigest(tokenBytes: Buffer): Buffer | null {
-  const parsed = parsePatToken(tokenBytes);
-  return parsed ? parsed.challengeDigest : null;
-}
-
 /** Constant-time equality on equal-length buffers. */
 function ctEq(a: Buffer, b: Buffer): boolean {
   if (a.length !== b.length) return false;

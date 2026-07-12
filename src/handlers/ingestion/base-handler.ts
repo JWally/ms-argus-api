@@ -290,6 +290,7 @@ export async function hydrateSigint(
   payload: ArgusPayload,
   deps: BaseHandlerDeps,
   event: ExtendedEvent,
+  cpi: string = payload.identifiers.cpi ?? "",
 ): Promise<ArgusPayload> {
   const { sigintAesKey, probeTokensTable } = requireSigintEnv(deps);
 
@@ -356,6 +357,8 @@ export async function hydrateSigint(
   // the field silently inside redeemPatToken.
   return redeemPatToken(hydrated, {
     expectedSrcIp: event.requestContext.http.sourceIp,
+    expectedCpi: cpi,
+    expectedSessionId: hydrated.identifiers.session_id,
     sigintAesKeyHex: sigintAesKey,
     logger: deps.logger,
   });
@@ -1119,7 +1122,12 @@ async function handleIntegrity(
   ctx: HandleContext,
 ): Promise<APIGatewayProxyResultV2> {
   const pt = makePhaseTimer();
-  const hydratedPayload = await hydrateSigint(ctx.payload, ctx.deps, ctx.event);
+  const hydratedPayload = await hydrateSigint(
+    ctx.payload,
+    ctx.deps,
+    ctx.event,
+    ctx.cpi,
+  );
   pt.mark("hydrate");
   enforceDeviceMac(ctx);
   // Verify the client's device-identity sig against the raw (pre-hydration)

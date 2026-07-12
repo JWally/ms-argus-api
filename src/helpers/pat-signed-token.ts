@@ -3,9 +3,9 @@
  *
  * Replaces the previous DB-backed `{nonce}.{expiry}.{hmac}` flow: the PAT
  * Lambda packs all the signal we want to surface (`type`, `issuer`,
- * `attested`, `src_ip`, `iat`, `exp`, `token_hash`) into a JSON payload,
+ * `attested`, `src_ip`, `cpi`, `session_id`, `iat`, `exp`, `token_hash`) into a JSON payload,
  * base64url-encodes it, and HMACs it with the SIGINT_AES_KEY. The
- * ingestion Lambda verifies the HMAC, validates freshness + IP binding,
+ * ingestion Lambda verifies the HMAC, validates freshness and the exact scan binding,
  * and surfaces the contents on `payload.pat` — no DynamoDB round trip.
  *
  * Wire format (matches verify-cf-token's "self-contained signed string"
@@ -27,11 +27,8 @@ const TYPE = "pat" as const;
  *  (verifyPatAttestation rejects past this). Security boundary. */
 export const DEFAULT_TTL_MS = 60_000;
 
-/** When the SDK should consider a cached token stale and fetch a new
- *  one. Strictly less than DEFAULT_TTL_MS — leaves headroom for clock
- *  skew + network RTT + iOS PAT cooldown (~30s observed). Not enforced
- *  server-side; just surfaced to the client so it can manage its
- *  sessionStorage cache. */
+/** Compatibility field retained in the response contract. The SDK does not
+ * cache attestations because each one is bound to a single scan session. */
 export const CLIENT_REFRESH_SECONDS = 45;
 
 /** Inputs the PAT Lambda has after a successful PAT verify. */
@@ -39,6 +36,10 @@ export interface SignPatInput {
   issuer: string;
   /** Source IP observed at the PAT Lambda; binds the token to that network path. */
   srcIp: string;
+  /** Public merchant partition this proof may accompany. */
+  cpi: string;
+  /** Exact Argus integrity session this proof may accompany. */
+  sessionId: string;
   /** SHA-256 hex of the raw PAT token bytes — preserves Apple's unlinkability. */
   tokenHash: string;
   /** First 32 bytes (decoded) of SIGINT_AES_KEY, hex-encoded. */
@@ -56,6 +57,8 @@ export interface SignedPatPayload {
   issuer: string;
   attested: true;
   src_ip: string;
+  cpi: string;
+  session_id: string;
   iat: number; // epoch seconds
   exp: number; // epoch seconds
   token_hash: string;
@@ -67,7 +70,15 @@ export type VerifyFailureReason =
   | "BAD_PAYLOAD"
   | "WRONG_TYPE"
   | "EXPIRED"
-  | "WRONG_IP";
+  | "WRONG_IP"
+  | "WRONG_CPI"
+  | "WRONG_SESSION";
+
+export interface ExpectedPatBinding {
+  srcIp: string;
+  cpi: string;
+  sessionId: string;
+}
 
 export type VerifyResult =
   | { ok: true; payload: SignedPatPayload }
@@ -116,6 +127,8 @@ export function signPatAttestation(input: SignPatInput): string {
     issuer: input.issuer,
     attested: true,
     src_ip: input.srcIp,
+    cpi: input.cpi,
+    session_id: input.sessionId,
     iat,
     exp,
     token_hash: input.tokenHash,
@@ -132,13 +145,13 @@ export function signPatAttestation(input: SignPatInput): string {
  * Verify a signed PAT token. Returns the parsed payload on success.
  *
  * @param token         the `<b64url>.<hex>` string from `payload.patToken`
- * @param expectedSrcIp the request's TLS-observed source IP at ingestion
+ * @param expected       the request's server-observed scan binding
  * @param sigintAesKeyHex first 32 bytes of SIGINT_AES_KEY, hex-encoded
  * @param nowMs         clock for freshness check (default Date.now())
  */
 export function verifyPatAttestation(
   token: string,
-  expectedSrcIp: string,
+  expected: ExpectedPatBinding,
   sigintAesKeyHex: string,
   nowMs: number = Date.now(),
 ): VerifyResult {
@@ -149,48 +162,56 @@ export function verifyPatAttestation(
   const b64 = token.slice(0, sep);
   const mac = token.slice(sep + 1);
 
-  const expected = createHmac("sha256", hmacKey(sigintAesKeyHex))
+  const expectedMac = createHmac("sha256", hmacKey(sigintAesKeyHex))
     .update(b64)
     .digest("hex");
-  if (!ctEqHex(expected, mac)) {
+  if (!ctEqHex(expectedMac, mac)) {
     return { ok: false, reason: "BAD_HMAC" };
   }
 
-  let payload: SignedPatPayload;
-  try {
-    const parsed = JSON.parse(b64urlDecode(b64).toString("utf8")) as unknown;
-    if (!isSignedPatPayload(parsed)) {
-      return { ok: false, reason: "BAD_PAYLOAD" };
-    }
-    payload = parsed;
-  } catch {
-    return { ok: false, reason: "BAD_PAYLOAD" };
-  }
+  const payload = decodePayload(b64);
+  if (!payload) return { ok: false, reason: "BAD_PAYLOAD" };
 
-  if (payload.type !== TYPE || payload.attested !== true) {
-    return { ok: false, reason: "WRONG_TYPE" };
-  }
-  if (Math.floor(nowMs / 1000) > payload.exp) {
-    return { ok: false, reason: "EXPIRED" };
-  }
-  if (payload.src_ip !== expectedSrcIp) {
-    return { ok: false, reason: "WRONG_IP" };
-  }
+  const failure = validatePayload(payload, expected, nowMs);
+  if (failure) return { ok: false, reason: failure };
 
   return { ok: true, payload };
+}
+
+function decodePayload(encoded: string): SignedPatPayload | null {
+  try {
+    const parsed = JSON.parse(
+      b64urlDecode(encoded).toString("utf8"),
+    ) as unknown;
+    return isSignedPatPayload(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function validatePayload(
+  payload: SignedPatPayload,
+  expected: ExpectedPatBinding,
+  nowMs: number,
+): VerifyFailureReason | null {
+  if (payload.type !== TYPE || payload.attested !== true) return "WRONG_TYPE";
+  if (Math.floor(nowMs / 1000) > payload.exp) return "EXPIRED";
+  if (payload.src_ip !== expected.srcIp) return "WRONG_IP";
+  if (payload.cpi !== expected.cpi) return "WRONG_CPI";
+  if (payload.session_id !== expected.sessionId) return "WRONG_SESSION";
+  return null;
 }
 
 function isSignedPatPayload(x: unknown): x is SignedPatPayload {
   if (!x || typeof x !== "object") return false;
   const r = x as Record<string, unknown>;
+  const stringFields = ["issuer", "src_ip", "cpi", "session_id", "token_hash"];
+  const numberFields = ["iat", "exp"];
   return (
     r.v === VERSION &&
     r.type === TYPE &&
     r.attested === true &&
-    typeof r.issuer === "string" &&
-    typeof r.src_ip === "string" &&
-    typeof r.iat === "number" &&
-    typeof r.exp === "number" &&
-    typeof r.token_hash === "string"
+    stringFields.every((field) => typeof r[field] === "string") &&
+    numberFields.every((field) => typeof r[field] === "number")
   );
 }
