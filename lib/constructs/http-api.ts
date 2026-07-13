@@ -24,8 +24,8 @@ interface HttpApiConstructProps {
   /** Pre-built PAT-attestation Lambda. Routes only mount when present. */
   patAttestFunction?: lambda.Function;
 
-  /** `live` alias on the ingestion Lambda — the integration routes here
-   *  so requests land on the PC-warm version. */
+  /** `live` alias on the ingestion Lambda — the integration and recurring
+   *  heater target the same published version. */
   ingestionAlias: lambda.IFunction;
   /** `live` alias on the PAT Lambda (when patAttestFunction is set). */
   patAttestAlias?: lambda.IFunction;

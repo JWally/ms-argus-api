@@ -11,6 +11,7 @@
 import {
   AnomalyCodes,
   createSignal,
+  toResultSignals,
   type AnomalySignal,
 } from "../../services/profile/anomaly/types";
 
@@ -108,16 +109,6 @@ function checkWorkerOffset(
   return null;
 }
 
-function formatSignals(
-  signals: AnomalySignal[],
-): TimezoneAnalysisResult["signals"] {
-  return signals.map((s) => ({
-    code: s.code,
-    severity: s.severity,
-    evidence: s.evidence.actual,
-  }));
-}
-
 const EMPTY: TimezoneAnalysisResult = {
   lied: false,
   checks: {
@@ -210,6 +201,6 @@ export function analyzeTimezone(
     checks: buildChecks(signals, tz, cfTz),
     cfTimezone: cfTz,
     clientTimezone: str(tz.location),
-    signals: formatSignals(signals),
+    signals: toResultSignals(signals),
   };
 }

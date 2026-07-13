@@ -3,11 +3,8 @@
 // Fires a single async warmup invoke at each target on every deploy, so the
 // user-facing path isn't cold for the first real request after a release.
 //
-// Why this exists alongside Provisioned Concurrency: when a deploy publishes a
-// new Version, the alias's PC takes a few minutes to (re)provision the new
-// code; invokes during that ramp spill to cold on-demand containers. A
-// post-deploy ping pre-initializes a container immediately so the ramp window
-// is less likely to hand a real user a cold start.
+// The recurring heaters can take up to a minute to reach a newly published
+// alias version. This deployment-triggered ping closes that first-minute gap.
 //
 // Targets MUST short-circuit the warmup event as a no-op. The handlers use
 // @middy/warmup, whose default detector matches `source ===

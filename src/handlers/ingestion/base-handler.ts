@@ -897,24 +897,27 @@ export async function persistIntegrityRecord(
   ctx: HandleContext,
   item: Record<string, unknown>,
 ): Promise<{ duplicate: boolean }> {
+  // Firehose is best-effort archival. DynamoDB is the durable source of truth
+  // and the only write that should hold the client response. Lambda may freeze
+  // this work after the handler returns, so archive delivery is intentionally
+  // not part of the integrity-collect success contract.
+  void archiveToFirehose(item, {
+    streamName: INTEGRITY_FIREHOSE_STREAM,
+    logger: ctx.deps.logger,
+    metrics: ctx.deps.metrics,
+  }).catch(() => {});
+
   try {
-    await Promise.all([
-      ddbClient.send(
-        new PutItemCommand({
-          TableName: INTEGRITY_RESULTS_TABLE,
-          Item: marshall(item, { removeUndefinedValues: true }),
-          // Composite key is (cpi, session_id) — uniqueness enforced on the
-          // partition key; the sort key alone wouldn't catch cross-cpi reuse
-          // (which we don't want anyway, but defense in depth).
-          ConditionExpression: "attribute_not_exists(cpi)",
-        }),
-      ),
-      archiveToFirehose(item, {
-        streamName: INTEGRITY_FIREHOSE_STREAM,
-        logger: ctx.deps.logger,
-        metrics: ctx.deps.metrics,
+    await ddbClient.send(
+      new PutItemCommand({
+        TableName: INTEGRITY_RESULTS_TABLE,
+        Item: marshall(item, { removeUndefinedValues: true }),
+        // Composite key is (cpi, session_id) — uniqueness enforced on the
+        // partition key; the sort key alone wouldn't catch cross-cpi reuse
+        // (which we don't want anyway, but defense in depth).
+        ConditionExpression: "attribute_not_exists(cpi)",
       }),
-    ]);
+    );
     return { duplicate: false };
   } catch (err) {
     if (err instanceof ConditionalCheckFailedException) {
@@ -1088,7 +1091,7 @@ function enforceDeviceMac(ctx: HandleContext): void {
  * own invocations); a request finds it cached or degrades to "not relay" (the
  * lookup fails open to the JA4 heuristic) but never runs the compile on-thread.
  */
-async function loadIdentityAndPrewarm(ctx: HandleContext, pt: PhaseTimer) {
+function loadIdentityAndPrewarm(ctx: HandleContext, pt: PhaseTimer) {
   return Promise.all([
     timeAsync(pt, "id_verify", verifyDeviceIdentity(ctx.payload)),
     timeAsync(pt, "id_merchant", resolveMerchantId(ctx)),

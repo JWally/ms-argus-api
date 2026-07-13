@@ -26,6 +26,7 @@
 import {
   AnomalyCodes,
   createSignal,
+  toResultSignals,
   type AnomalySignal,
 } from "../../services/profile/anomaly/types";
 
@@ -127,10 +128,6 @@ export function analyzeKernelOs(
     tcpOptions: opts,
     uaOs,
     ecnNegotiated: ecn,
-    signals: signals.map((s) => ({
-      code: s.code,
-      severity: s.severity,
-      evidence: s.evidence.actual,
-    })),
+    signals: toResultSignals(signals),
   };
 }

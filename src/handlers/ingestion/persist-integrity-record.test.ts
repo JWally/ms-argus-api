@@ -16,6 +16,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const mockSend = vi.fn();
+const mockArchiveToFirehose = vi.hoisted(() => vi.fn());
 
 vi.mock("@aws-sdk/client-dynamodb", async () => {
   const actual = await vi.importActual<
@@ -33,7 +34,7 @@ vi.mock("@aws-sdk/client-dynamodb", async () => {
 // throws in prod (errors are logged inside the helper); stub it so the test
 // exercises only the DDB outcome.
 vi.mock("../../helpers/firehose-archive", () => ({
-  archiveToFirehose: vi.fn().mockResolvedValue(undefined),
+  archiveToFirehose: mockArchiveToFirehose,
 }));
 
 import { ConditionalCheckFailedException } from "@aws-sdk/client-dynamodb";
@@ -69,6 +70,7 @@ function metricNames(): string[] {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mockArchiveToFirehose.mockResolvedValue(true);
 });
 
 describe("persistIntegrityRecord", () => {
@@ -83,6 +85,23 @@ describe("persistIntegrityRecord", () => {
     // refactor can't silently turn the put into a blind overwrite.
     expect(put.input.ConditionExpression).toBe("attribute_not_exists(cpi)");
     expect(metricNames()).not.toContain("IntegrityIdempotentRetry");
+  });
+
+  it("does not hold the client response on best-effort Firehose archival", async () => {
+    let finishArchive!: (value: boolean) => void;
+    mockArchiveToFirehose.mockReturnValueOnce(
+      new Promise<boolean>((resolve) => {
+        finishArchive = resolve;
+      }),
+    );
+    mockSend.mockResolvedValueOnce({});
+
+    const pending = persistIntegrityRecord(makeCtx(), { foo: "bar" });
+    expect(mockSend).toHaveBeenCalledOnce();
+    await expect(pending).resolves.toEqual({ duplicate: false });
+
+    finishArchive(true);
+    await Promise.resolve();
   });
 
   it("duplicate (cpi, session_id): returns duplicate=true instead of throwing 409", async () => {

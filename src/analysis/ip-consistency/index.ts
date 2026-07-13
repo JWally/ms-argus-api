@@ -22,6 +22,7 @@
 import {
   AnomalyCodes,
   createSignal,
+  toResultSignals,
   type AnomalySignal,
 } from "../../services/profile/anomaly/types";
 import { lookupAsn, type AsnCategory } from "./asn-catalog";
@@ -417,16 +418,6 @@ function checkAsnCategory(asn: string | null): AnomalySignal | null {
   });
 }
 
-function formatSignals(
-  signals: AnomalySignal[],
-): IpConsistencyResult["signals"] {
-  return signals.map((s) => ({
-    code: s.code,
-    severity: s.severity,
-    evidence: s.evidence.actual,
-  }));
-}
-
 function collectWebrtcSignals(
   device: unknown,
   webrtcIp: string | null,
@@ -674,6 +665,6 @@ export function analyzeIpConsistency(
     checks: { probesConsistent, webrtcMatchesProbes },
     integrity,
     ip: surfaceIp,
-    signals: formatSignals(signals),
+    signals: toResultSignals(signals),
   };
 }

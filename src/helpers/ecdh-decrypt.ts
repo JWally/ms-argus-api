@@ -120,20 +120,56 @@ async function deriveAesKey(
 }
 
 /**
- * Decrypt an ECDH-encrypted argus-web payload.
+ * Hard cap on inflated plaintext size (zip-bomb defense).
  *
- * @param body - Raw request body string (may be base64 if isBase64Encoded)
- * @param isBase64Encoded - Whether API Gateway base64-encoded the body
- * @param clientPubKey - Client raw P-256 public key from X-Argus-Origin header (base64)
- * @param keys - Server ECDH key pair (current + optional previous)
- * @returns Parsed JSON payload, or null if all decryption attempts fail
+ * The /v1/integrity-collect endpoint is sealed to the ECDH path only (see
+ * middleware.enforceIntegrityCollectSeal), so this inflate — NOT the gzip
+ * path's streamingGunzip — is where an attacker-supplied deflate bomb lands.
+ * deriveAesKey accepts any X-Argus-Origin pubkey against the server key, so
+ * the decrypt itself is not an auth gate; the bound is what stops a validly
+ * encrypted 10MB body from expanding to hundreds of MB of heap. Mirrors the
+ * gzip path's maxDecompressedBytes. Overflow throws RangeError, which the
+ * per-key try/catch below already handles (falls through → null → HTTP 400).
  */
-export async function decryptArgusPayload(
-  body: string,
-  isBase64Encoded: boolean,
-  clientPubKey: string,
-  keys: EcdhKeys,
+const MAX_INFLATED_BYTES = Number(
+  process.env.MAX_DECOMPRESSED_BYTES ?? 2 * 1024 * 1024,
+);
+
+/** Bounded inflate — see MAX_INFLATED_BYTES. */
+function boundedInflate(b: Buffer): Buffer {
+  return inflateRawSync(b, { maxOutputLength: MAX_INFLATED_BYTES });
+}
+
+/**
+ * Reverses the client's post-ECDH-encryption transform (inflate and/or
+ * unscramble). Called INSIDE the per-key try/catch so a malformed unwrap on
+ * the wrong key/date falls through to the next combo, exactly as before.
+ */
+type Unwrap = (plaintext: Buffer) => Buffer;
+
+/** Transport inputs common to every ECDH decrypt variant. */
+interface EcdhDecryptInput {
+  body: string;
+  isBase64Encoded: boolean;
+  clientPubKey: string;
+  keys: EcdhKeys;
+}
+
+/**
+ * Core ECDH + AES-256-GCM decrypt with the standard current/previous ×
+ * today/yesterday key-trial loop. The per-version behavior (inflate, XOR
+ * unscramble, Fibonacci unscramble, or none) is supplied as `unwrap`.
+ *
+ * IMPORTANT: this is the shared implementation only. Version SELECTION stays
+ * in middleware (X-Argus-V switch) — do NOT collapse the four exported
+ * adapters into "try every unwrap until one parses", which would let a client
+ * downgrade to the weaker v1 XOR path.
+ */
+async function decryptEcdh(
+  input: EcdhDecryptInput,
+  unwrap: Unwrap,
 ): Promise<unknown | null> {
+  const { body, isBase64Encoded, clientPubKey, keys } = input;
   const packed = isBase64Encoded
     ? Buffer.from(body, "base64")
     : Buffer.from(body, "binary");
@@ -162,15 +198,35 @@ export async function decryptArgusPayload(
           aesKey,
           ciphertextWithTag,
         );
-        const inflated = inflateRawSync(Buffer.from(decrypted));
-        return JSON.parse(inflated.toString("utf-8"));
+        return JSON.parse(unwrap(Buffer.from(decrypted)).toString("utf-8"));
       } catch {
-        // try next key/date combo
+        // wrong key/date, malformed unwrap, or oversized inflate → next combo
       }
     }
   }
 
   return null;
+}
+
+/**
+ * Decrypt an ECDH-encrypted argus-web payload.
+ *
+ * @param body - Raw request body string (may be base64 if isBase64Encoded)
+ * @param isBase64Encoded - Whether API Gateway base64-encoded the body
+ * @param clientPubKey - Client raw P-256 public key from X-Argus-Origin header (base64)
+ * @param keys - Server ECDH key pair (current + optional previous)
+ * @returns Parsed JSON payload, or null if all decryption attempts fail
+ */
+export function decryptArgusPayload(
+  body: string,
+  isBase64Encoded: boolean,
+  clientPubKey: string,
+  keys: EcdhKeys,
+): Promise<unknown | null> {
+  return decryptEcdh(
+    { body, isBase64Encoded, clientPubKey, keys },
+    boundedInflate,
+  );
 }
 
 export interface IntegrityDecryptOpts {
@@ -189,48 +245,13 @@ export interface IntegrityDecryptOpts {
  * The inner scramble runs inside the client's VM bytecode, so an attacker
  * intercepting the ECDH bridge call sees garbage instead of plaintext JSON.
  */
-export async function decryptIntegrityPayload(
+export function decryptIntegrityPayload(
   opts: IntegrityDecryptOpts,
 ): Promise<unknown | null> {
   const { body, isBase64Encoded, clientPubKey, keys, innerKey } = opts;
-  const packed = isBase64Encoded
-    ? Buffer.from(body, "base64")
-    : Buffer.from(body, "binary");
-
-  const iv = packed.subarray(0, 12);
-  const ciphertextWithTag = packed.subarray(12);
-
-  const keySets = [keys.current, keys.previous].filter(
-    (k): k is EcdhKeyData => k != null,
+  return decryptEcdh({ body, isBase64Encoded, clientPubKey, keys }, (b) =>
+    xorUnscramble(boundedInflate(b), innerKey),
   );
-  const today = new Date().toISOString().slice(0, 10);
-  const yesterday = new Date(Date.now() - 86_400_000)
-    .toISOString()
-    .slice(0, 10);
-
-  for (const keySet of keySets) {
-    for (const dateSalt of [today, yesterday]) {
-      try {
-        const aesKey = await deriveAesKey(
-          keySet.privateKey,
-          clientPubKey,
-          dateSalt,
-        );
-        const decrypted = await crypto.subtle.decrypt(
-          { name: "AES-GCM", iv },
-          aesKey,
-          ciphertextWithTag,
-        );
-        const inflated = inflateRawSync(Buffer.from(decrypted));
-        const unscrambled = xorUnscramble(inflated, innerKey);
-        return JSON.parse(unscrambled.toString("utf-8"));
-      } catch {
-        // try next key/date combo
-      }
-    }
-  }
-
-  return null;
 }
 
 export interface IntegrityDecryptV2Opts {
@@ -248,48 +269,13 @@ export interface IntegrityDecryptV2Opts {
  * deriveAndUnscramble(sessionToken) instead of xorUnscramble(sessionToken + deploySecret).
  * No static secret required — the algorithm is the secret.
  */
-export async function decryptIntegrityPayloadV2(
+export function decryptIntegrityPayloadV2(
   opts: IntegrityDecryptV2Opts,
 ): Promise<unknown | null> {
   const { body, isBase64Encoded, clientPubKey, keys, sessionToken } = opts;
-  const packed = isBase64Encoded
-    ? Buffer.from(body, "base64")
-    : Buffer.from(body, "binary");
-
-  const iv = packed.subarray(0, 12);
-  const ciphertextWithTag = packed.subarray(12);
-
-  const keySets = [keys.current, keys.previous].filter(
-    (k): k is EcdhKeyData => k != null,
+  return decryptEcdh({ body, isBase64Encoded, clientPubKey, keys }, (b) =>
+    deriveAndUnscramble(boundedInflate(b), sessionToken),
   );
-  const today = new Date().toISOString().slice(0, 10);
-  const yesterday = new Date(Date.now() - 86_400_000)
-    .toISOString()
-    .slice(0, 10);
-
-  for (const keySet of keySets) {
-    for (const dateSalt of [today, yesterday]) {
-      try {
-        const aesKey = await deriveAesKey(
-          keySet.privateKey,
-          clientPubKey,
-          dateSalt,
-        );
-        const decrypted = await crypto.subtle.decrypt(
-          { name: "AES-GCM", iv },
-          aesKey,
-          ciphertextWithTag,
-        );
-        const inflated = inflateRawSync(Buffer.from(decrypted));
-        const unscrambled = deriveAndUnscramble(inflated, sessionToken);
-        return JSON.parse(unscrambled.toString("utf-8"));
-      } catch {
-        // try next key/date combo
-      }
-    }
-  }
-
-  return null;
 }
 
 /**
@@ -300,48 +286,11 @@ export async function decryptIntegrityPayloadV2(
  * deflateRaw-compressing them. This keeps v1/v2 compatibility while letting
  * the SDK drop the pako dependency.
  */
-export async function decryptIntegrityPayloadV3(
+export function decryptIntegrityPayloadV3(
   opts: IntegrityDecryptV2Opts,
 ): Promise<unknown | null> {
   const { body, isBase64Encoded, clientPubKey, keys, sessionToken } = opts;
-  const packed = isBase64Encoded
-    ? Buffer.from(body, "base64")
-    : Buffer.from(body, "binary");
-
-  const iv = packed.subarray(0, 12);
-  const ciphertextWithTag = packed.subarray(12);
-
-  const keySets = [keys.current, keys.previous].filter(
-    (k): k is EcdhKeyData => k != null,
+  return decryptEcdh({ body, isBase64Encoded, clientPubKey, keys }, (b) =>
+    deriveAndUnscramble(Buffer.from(b), sessionToken),
   );
-  const today = new Date().toISOString().slice(0, 10);
-  const yesterday = new Date(Date.now() - 86_400_000)
-    .toISOString()
-    .slice(0, 10);
-
-  for (const keySet of keySets) {
-    for (const dateSalt of [today, yesterday]) {
-      try {
-        const aesKey = await deriveAesKey(
-          keySet.privateKey,
-          clientPubKey,
-          dateSalt,
-        );
-        const decrypted = await crypto.subtle.decrypt(
-          { name: "AES-GCM", iv },
-          aesKey,
-          ciphertextWithTag,
-        );
-        const unscrambled = deriveAndUnscramble(
-          Buffer.from(decrypted),
-          sessionToken,
-        );
-        return JSON.parse(unscrambled.toString("utf-8"));
-      } catch {
-        // try next key/date combo
-      }
-    }
-  }
-
-  return null;
 }

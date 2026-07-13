@@ -20,6 +20,7 @@
  */
 
 import { detectCrossFieldAnomalies } from "../../services/profile/anomaly/worker-scope-consistency";
+import { toResultSignals } from "../../services/profile/anomaly/types";
 import type { Fingerprint } from "../../types";
 
 const COMPARE_FIELDS = [
@@ -100,16 +101,6 @@ function findDivergences(
   return result;
 }
 
-function formatSignals(
-  signals: ReturnType<typeof detectCrossFieldAnomalies>,
-): WorkerAnalysisResult["signals"] {
-  return signals.map((s) => ({
-    code: s.code,
-    severity: s.severity,
-    evidence: s.evidence.actual,
-  }));
-}
-
 /**
  * Code emitted when the cross-thread oracle is incomplete. Read by
  * `collectTamperingEvidence` in merchant-projection.ts to lift the
@@ -172,7 +163,7 @@ export function analyzeWorkerScopes(device: unknown): WorkerAnalysisResult {
     : [];
 
   const signals = [
-    ...formatSignals(anomalySignals),
+    ...toResultSignals(anomalySignals),
     ...(oracleSignal ? [oracleSignal] : []),
   ];
   const lied =

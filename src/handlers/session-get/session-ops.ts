@@ -51,6 +51,10 @@ export async function fetchIntegrityResultsByComposite(
     const result = await deps.dynamodb.send(
       new GetItemCommand({
         TableName: deps.integrityResultsTable,
+        // Pair redeems a scan immediately after ingestion returns. An eventual
+        // read can briefly miss that committed row and turn a valid scan into
+        // a fail-closed projection_lookup_failed verdict.
+        ConsistentRead: true,
         Key: {
           cpi: { S: cpi },
           session_id: { S: sessionId },

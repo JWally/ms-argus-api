@@ -40,6 +40,10 @@ import {
   probabilityFromUnit,
   type MerchantProjectionInput,
 } from "../scoring/shared";
+import {
+  deriveWorkerScopeEvidence,
+  type WorkerScopeEvidence,
+} from "./worker-scope-evidence";
 
 // Re-export so external test files and downstream consumers that import the
 // type from helpers/merchant-projection keep compiling unchanged.
@@ -274,6 +278,9 @@ export interface MerchantSafeResponse {
    *  for high-value flows where dev-tools open is a step-up-auth trigger. */
   developer_tools: { result: boolean };
 
+  /** Derived cross-realm consistency evidence. No raw navigator values. */
+  worker_scope_evidence: WorkerScopeEvidence | null;
+
   /** Categorical labels — composable with the threat axes. Useful for
    *  routing rules that need finer-grained context than the axis numbers. */
   tags: MerchantTag[];
@@ -389,8 +396,6 @@ const BENCH_BOTH_HOT_US = 40;
  */
 const BENCH_REALM_HOT_US = 20;
 const BENCH_REALM_COLD_US = 12;
-const DEBUG_OVER_PERF_CDP_RATIO = 25;
-const WORKER_DEBUG_OVER_PERF_CDP_RATIO = 50;
 const ERROR_STACK_BURST_CDP_DELTA_MS = 30;
 
 /**
@@ -429,7 +434,11 @@ interface ConsoleTimingFields {
    * and on the same device they should agree closely.
    */
   math_loop_us?: number;
-  /** Self-calibrated console.debug("") / performance.now() ratio. */
+  /**
+   * Collection-only console.debug("") / performance.now() ratio.
+   * Legitimate Chromium scheduler jitter crosses the observed CDP range,
+   * so this must not independently affect the merchant verdict.
+   */
   debug_over_perf?: number;
   debug_empty_us?: number;
   perf_now_call_us?: number;
@@ -692,6 +701,16 @@ function isAppleClaimedUA(
   return /iPhone|iPad|iPod|Macintosh/.test(ua);
 }
 
+/** PAT absence is scoreable only on iOS/iPadOS, where issuance is expected. */
+function isAppleMobileClaimedUA(
+  integrity: IntegrityResultsData | undefined,
+): boolean {
+  if (!isAppleClaimedUA(integrity)) return false;
+  const headers = integrity?.request_headers?.headers ?? {};
+  const ua = integrity?.user_agent ?? headers[UA_HEADER_KEY] ?? "";
+  return /iPhone|iPad|iPod/.test(ua);
+}
+
 type TagPredicate = [MerchantTag, (i: MerchantProjectionInput) => boolean];
 
 function buildTags(
@@ -851,7 +870,6 @@ function hasCdpTimingSignal(headless: HeadlessSignals | undefined): boolean {
   }
   if (hasErrorStackBurstSignal(worker)) return true;
   if (hasWorkerImportChainSignal(headless)) return true;
-  if (hasDebugOverPerfSignal(iframe, worker)) return true;
   // Magnitude clauses compare iframe against worker — both benches must
   // be present and report a numeric heavy time.
   if (!iframe || !worker) return false;
@@ -872,18 +890,6 @@ function hasWorkerImportChainSignal(
   headless: HeadlessSignals | undefined,
 ): boolean {
   return headless?.cdp?.workerModuleImportChain?.cdp_shaped === true;
-}
-
-function hasDebugOverPerfSignal(
-  iframe: ConsoleTimingFields | undefined,
-  worker: ConsoleTimingFields | undefined,
-): boolean {
-  const ih = iframe?.debug_over_perf;
-  const wh = worker?.debug_over_perf;
-  if (typeof ih === "number" && typeof wh === "number") {
-    return Math.min(ih, wh) >= DEBUG_OVER_PERF_CDP_RATIO;
-  }
-  return typeof wh === "number" && wh >= WORKER_DEBUG_OVER_PERF_CDP_RATIO;
 }
 
 /**
@@ -1183,6 +1189,33 @@ function cdpAutomationScore(
   // timing). Suspect tier (60), so it surfaces without auto-blocking.
   if (hasCdpProtoProxyTrap(headless)) return CDP_PROTO_PROXY_TRAP_TIER;
   return 0;
+}
+
+/**
+ * A verified PAT caps soft automation evidence but cannot erase hard residue.
+ * Missing PAT adds a suspect-tier penalty only for iOS/iPadOS outside known
+ * corporate shields, where the origin round trip is expected to work.
+ */
+const PAT_AUTOMATION_HARD_FLOOR = 75;
+const PAT_VALID_AUTOMATION_CAP = 25;
+const PAT_MISSING_AUTOMATION_PENALTY = 25;
+
+function applyPatAdjustment(
+  automation: number,
+  input: MerchantProjectionInput,
+): number {
+  if (input.integrity?.pat?.attested === true) {
+    if (automation >= PAT_AUTOMATION_HARD_FLOOR) return automation;
+    return Math.min(automation, PAT_VALID_AUTOMATION_CAP);
+  }
+
+  if (
+    isAppleMobileClaimedUA(input.integrity) &&
+    !isCorporateShieldedAsn(input.integrity ?? ({} as IntegrityResultsData))
+  ) {
+    return Math.min(100, automation + PAT_MISSING_AUTOMATION_PENALTY);
+  }
+  return automation;
 }
 
 function botProbability(input: MerchantProjectionInput): number {
@@ -2105,6 +2138,17 @@ function tamperingProbability(input: MerchantProjectionInput): number {
   );
 }
 
+function tamperingWithoutWorkerDivergence(
+  integrity: IntegrityResultsData,
+): number {
+  const evidence = collectTamperingEvidence(integrity);
+  return tamperingProbabilityFromEvidence({
+    ...evidence,
+    divergences: 0,
+    uaDivergence: false,
+  });
+}
+
 function parseAsnNumber(raw: string | null | undefined): number | null {
   if (!raw) return null;
   const cleaned = String(raw).replace(/^AS/i, "");
@@ -2460,9 +2504,7 @@ export function buildMerchantResponse(
   // networkTamperingScore() docstring for the double-count rationale.
   void networkIntegrityScore;
 
-  // PAT is positive metadata only. Availability is not reliable enough to
-  // penalize absence, and attestation must never erase automation evidence.
-  const automation = botProbability(input);
+  const automation = applyPatAdjustment(botProbability(input), input);
   const device_tampering = tamperingProbability(input);
   const network_tampering = networkTamperingScore(input);
   const verdict = deriveVerdict(
@@ -2498,6 +2540,12 @@ export function buildMerchantResponse(
 
     incognito: { result: detectIncognito(input) },
     developer_tools: { result: detectDeveloperTools(input) },
+    worker_scope_evidence: integrity
+      ? deriveWorkerScopeEvidence(
+          integrity,
+          tamperingWithoutWorkerDivergence(integrity),
+        )
+      : null,
 
     tags: buildTags(input, tagProbs),
 

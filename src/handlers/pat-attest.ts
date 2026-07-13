@@ -12,6 +12,7 @@ import { logMetrics } from "@aws-lambda-powertools/metrics/middleware";
 import { injectLambdaContext } from "@aws-lambda-powertools/logger/middleware";
 import middy from "@middy/core";
 import httpHeaderNormalizer from "@middy/http-header-normalizer";
+import warmup from "@middy/warmup";
 
 import { corsMiddleware } from "../helpers/cors-middleware";
 import { jsonErrorHandler } from "../helpers/error-middleware";
@@ -30,6 +31,7 @@ const CORS_CONFIG = {
 };
 
 export const handler = middy(baseHandler)
+  .use(warmup())
   .use(injectLambdaContext(logger))
   .use(logMetrics(metrics))
   .use(httpHeaderNormalizer())

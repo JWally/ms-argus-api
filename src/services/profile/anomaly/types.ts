@@ -172,3 +172,27 @@ export function createSignal(
     evidence,
   };
 }
+
+/** Public projection of a signal — the shape the analysis modules expose on
+ *  their `signals` field. Drops the internal `type` and `evidence.fields`,
+ *  flattening `evidence` to its human-readable `actual` string. */
+export interface ResultSignal {
+  code: string;
+  severity: number;
+  evidence: string;
+}
+
+/**
+ * Map internal AnomalySignals to the public `{code, severity, evidence}`
+ * result shape. Every analysis module (timezone, worker, ip-consistency,
+ * kernel-os, network) emitted a byte-identical version of this; this is the
+ * one copy. Modules that append their own extra signals (e.g. network's ASN
+ * category hit) push onto the returned mutable array.
+ */
+export function toResultSignals(signals: AnomalySignal[]): ResultSignal[] {
+  return signals.map((s) => ({
+    code: s.code,
+    severity: s.severity,
+    evidence: s.evidence.actual,
+  }));
+}
