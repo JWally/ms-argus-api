@@ -418,12 +418,6 @@ function checkAsnCategory(asn: string | null): AnomalySignal | null {
   });
 }
 
-function formatSignals(
-  signals: AnomalySignal[],
-): IpConsistencyResult["signals"] {
-  return toResultSignals(signals);
-}
-
 function collectWebrtcSignals(
   device: unknown,
   webrtcIp: string | null,
@@ -671,6 +665,6 @@ export function analyzeIpConsistency(
     checks: { probesConsistent, webrtcMatchesProbes },
     integrity,
     ip: surfaceIp,
-    signals: formatSignals(signals),
+    signals: toResultSignals(signals),
   };
 }

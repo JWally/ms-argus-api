@@ -94,7 +94,7 @@ async function loadHandler() {
   }));
   vi.doMock("@aws-sdk/client-secrets-manager", () => ({
     SecretsManagerClient: class {
-      async send() {
+      send() {
         return { SecretString: "00".repeat(32) };
       }
     },

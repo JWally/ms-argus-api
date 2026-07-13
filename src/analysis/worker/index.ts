@@ -101,12 +101,6 @@ function findDivergences(
   return result;
 }
 
-function formatSignals(
-  signals: ReturnType<typeof detectCrossFieldAnomalies>,
-): WorkerAnalysisResult["signals"] {
-  return toResultSignals(signals);
-}
-
 /**
  * Code emitted when the cross-thread oracle is incomplete. Read by
  * `collectTamperingEvidence` in merchant-projection.ts to lift the
@@ -169,7 +163,7 @@ export function analyzeWorkerScopes(device: unknown): WorkerAnalysisResult {
     : [];
 
   const signals = [
-    ...formatSignals(anomalySignals),
+    ...toResultSignals(anomalySignals),
     ...(oracleSignal ? [oracleSignal] : []),
   ];
   const lied =

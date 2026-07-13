@@ -1091,7 +1091,7 @@ function enforceDeviceMac(ctx: HandleContext): void {
  * own invocations); a request finds it cached or degrades to "not relay" (the
  * lookup fails open to the JA4 heuristic) but never runs the compile on-thread.
  */
-async function loadIdentityAndPrewarm(ctx: HandleContext, pt: PhaseTimer) {
+function loadIdentityAndPrewarm(ctx: HandleContext, pt: PhaseTimer) {
   return Promise.all([
     timeAsync(pt, "id_verify", verifyDeviceIdentity(ctx.payload)),
     timeAsync(pt, "id_merchant", resolveMerchantId(ctx)),

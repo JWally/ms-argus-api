@@ -109,12 +109,6 @@ function checkWorkerOffset(
   return null;
 }
 
-function formatSignals(
-  signals: AnomalySignal[],
-): TimezoneAnalysisResult["signals"] {
-  return toResultSignals(signals);
-}
-
 const EMPTY: TimezoneAnalysisResult = {
   lied: false,
   checks: {
@@ -207,6 +201,6 @@ export function analyzeTimezone(
     checks: buildChecks(signals, tz, cfTz),
     cfTimezone: cfTz,
     clientTimezone: str(tz.location),
-    signals: formatSignals(signals),
+    signals: toResultSignals(signals),
   };
 }
