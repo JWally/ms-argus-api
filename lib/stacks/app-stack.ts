@@ -17,7 +17,7 @@ import { LambdasConstruct } from "../constructs/lambdas";
 import { HttpApiConstruct } from "../constructs/http-api";
 import { RestApiConstruct } from "../constructs/rest-api";
 import { PostDeployWarmer } from "../constructs/post-deploy-warmer";
-import { RecurringAliasHeater } from "../constructs/recurring-alias-heater";
+import { addApiAliasHeaters } from "../constructs/api-alias-heaters";
 import { CloudFrontWafConstruct } from "../constructs/cloudfront";
 import { getStageConfig } from "../config";
 
@@ -288,9 +288,9 @@ export class ArgusApiStack extends cdk.Stack {
     integrityFirehose.grantDescribe(lambdas.ingestion);
 
     // ── API layer ─────────────────────────────────────────────────────
-    // Integrations route to the `live` aliases (PC-warm versions), not
-    // the raw $LATEST functions. The raw function refs still ride
-    // through for IAM grants and CloudWatch alarms.
+    // Integrations route to the heated `live` aliases, not the raw $LATEST
+    // functions. The raw function refs still ride through for IAM grants and
+    // CloudWatch alarms.
     const httpApi = new HttpApiConstruct(this, "HttpApi", {
       stackName,
       alarmsTopic,
@@ -310,32 +310,25 @@ export class ArgusApiStack extends cdk.Stack {
       sessionGetFunction: lambdas.sessionGetAlias,
     });
 
-    // Warmup EventBridge rules are gone. Provisioned Concurrency on the
-    // `live` aliases (set in LambdasConstruct) holds containers pre-
-    // initialized — the cron-ping pattern is obsolete and was paying
-    // for ~720 invocations/day per Lambda that did nothing.
-    //
-    // One gap PC leaves: the post-deploy ramp, where a freshly published
-    // Version's PC isn't ready yet and invokes spill to cold on-demand. A
-    // single warmup ping per deploy at the user-facing aliases pre-inits a
-    // container so the first real request after a release isn't cold. Only
-    // ingestion + session-get are pinged — they run @middy/warmup and no-op the
-    // serverless-plugin-warmup event; other handlers don't, so leave them to PC.
+    // Wake each request-path alias immediately after deployment instead of
+    // waiting for the first recurring heater tick.
     new PostDeployWarmer(this, "PostDeployWarmer", {
-      targets: [lambdas.ingestionAlias, lambdas.sessionGetAlias],
+      targets: [
+        lambdas.ingestionAlias,
+        lambdas.sessionGetAlias,
+        ...(lambdas.patAttestAlias ? [lambdas.patAttestAlias] : []),
+      ],
       deployId: Date.now().toString(),
     });
 
-    // Heater: EventBridge has one-minute resolution, so a tiny helper Lambda
-    // spaces async warmup invokes every 10s inside that minute. This keeps the
-    // ingestion path's downstream sockets and dataset caches warm without
-    // paying 24/7 Provisioned Concurrency.
-    new RecurringAliasHeater(this, "IngestionSocketHeater", {
-      ruleName: `${stackName}-ingestion-heater`,
-      target: lambdas.ingestionAlias,
-      invokesPerMinute: 6,
-      spacingSeconds: 10,
-      ruleLogicalId: "IngestionSocketHeater7405AD4B",
+    // EventBridge has one-minute resolution; each helper spaces six synthetic
+    // alias invokes across that minute. Keep this list centralized so a new
+    // request-path Lambda cannot silently end up with different warm coverage.
+    addApiAliasHeaters(this, {
+      stackName,
+      ingestion: lambdas.ingestionAlias,
+      sessionGet: lambdas.sessionGetAlias,
+      patAttest: lambdas.patAttestAlias,
     });
 
     // ── Edge layer ────────────────────────────────────────────────────

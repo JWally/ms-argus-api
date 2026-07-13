@@ -77,11 +77,12 @@ Three thresholds, one rule. Any single axis saturating is enough to flag.
 
 - `likeHeadlessRating >= 50` contributes — built from 10 environment flags (`noMimeTypes`, `noChrome`, `noPlugins`, `hasSoftwareRenderer`, `pdfIsDisabled`, etc.). Calibrated for desktop; mobile carve-out applies.
 
-### PAT (Apple Private Access Token)
+### PAT (Apple Private Access Token) adjustments
 
-PAT state is observational metadata only. A verified PAT adds the
-`apple_attested` tag; a missing or failed PAT on an Apple-claimed user agent adds
-`apple_attestation_missing`. Neither state changes an automation score.
+| condition                        | effect                                                                      |
+| -------------------------------- | --------------------------------------------------------------------------- |
+| PAT verified                     | automation capped at **25** (unless hard residue => floor 75 still applies) |
+| PAT missing on iOS/iPadOS Safari | **+25** automation penalty outside known corporate shields                  |
 
 ---
 
@@ -145,6 +146,7 @@ PAT state is observational metadata only. A verified PAT adds the
 - **iCloud Private Relay**: when confirmed, bypasses kernel-OS-mismatch rule (PR egress strips ECN).
 - **Mobile UA**: CDP-timing soft thresholds raised (`BENCH_*_MOBILE_US`) — real mobile Chrome roams 16-27µs naturally.
 - **Brave on iOS**: navigator-API gaps absorbed (Brave restricts certain APIs).
+- **PAT-verified Apple device**: cap soft automation evidence at 25; hard evidence remains authoritative.
 - **Same-NAT-pool probes** (drift < 256 IPs): suppress IP_PROBE_SCATTER (carrier-NAT carve-out, shipped 2026-05-28).
 
 ## Known sharp edges

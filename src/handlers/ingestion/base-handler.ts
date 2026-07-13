@@ -897,14 +897,10 @@ export async function persistIntegrityRecord(
   ctx: HandleContext,
   item: Record<string, unknown>,
 ): Promise<{ duplicate: boolean }> {
-  // Firehose archive is genuinely fire-and-forget: the client response depends
-  // only on the DDB write (the record is durable there), and archiveToFirehose
-  // swallows + meters its own errors. Awaiting it inside the Promise.all made
-  // response p99 = max(ddbPut, firehose) rather than just ddbPut — so it is
-  // dispatched here, unawaited, and the response gates on the PutItem alone.
-  // The extra .catch is belt-and-suspenders in case the helper ever throws
-  // synchronously (it currently cannot), so this never becomes an unhandled
-  // rejection.
+  // Firehose is best-effort archival. DynamoDB is the durable source of truth
+  // and the only write that should hold the client response. Lambda may freeze
+  // this work after the handler returns, so archive delivery is intentionally
+  // not part of the integrity-collect success contract.
   void archiveToFirehose(item, {
     streamName: INTEGRITY_FIREHOSE_STREAM,
     logger: ctx.deps.logger,

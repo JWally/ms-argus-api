@@ -206,6 +206,7 @@ describe("buildMerchantResponse", () => {
         },
         incognito: { result: false },
         developer_tools: { result: false },
+        worker_scope_evidence: null,
         tags: [],
         requestHeaders: null,
         ip_velocity_1h: null,
@@ -991,9 +992,11 @@ describe("buildMerchantResponse", () => {
       expect(result.tags).not.toContain("apple_attestation_missing");
     });
 
-    describe("PAT score neutrality", () => {
+    describe("PAT score enforcement (applyPatAdjustment)", () => {
       const iphoneSafariUA =
         "Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.5 Mobile/15E148 Safari/604.1";
+      const macSafariUA =
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.5 Safari/605.1.15";
       const validPat = {
         attested: true,
         issuer: "demo-issuer.private-access-tokens.fastly.com",
@@ -1001,14 +1004,13 @@ describe("buildMerchantResponse", () => {
         redeemedAt: 1_700_000_000_000,
       };
 
-      it("valid PAT does not add automation", () => {
-        // Mobile weak-marker carve-outs apply independently of PAT.
+      it("valid PAT caps a soft automation score at 25", () => {
         const base = baseIntegrity();
         const result = buildMerchantResponse({
           session_id: "s",
           integrity: {
             ...base,
-            user_agent: iphoneSafariUA,
+            user_agent: macSafariUA,
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             pat: validPat as any,
             device: {
@@ -1020,7 +1022,7 @@ describe("buildMerchantResponse", () => {
             },
           },
         });
-        expect(result.automation).toBe(0);
+        expect(result.automation).toBe(25);
       });
 
       it("valid PAT does NOT rescue webdriver=true (hard strict marker)", () => {
@@ -1045,7 +1047,7 @@ describe("buildMerchantResponse", () => {
         expect(result.automation).toBe(100);
       });
 
-      it("iOS Safari without PAT is score-neutral", () => {
+      it("iOS Safari without PAT penalizes automation by +25", () => {
         // Clean iPhone-claimed session → botProbability ≈ 0. PAT-missing
         // penalty pushes to 25 — surfaces as suspect, not block.
         const base = baseIntegrity();
@@ -1053,7 +1055,7 @@ describe("buildMerchantResponse", () => {
           session_id: "s",
           integrity: { ...base, user_agent: iphoneSafariUA },
         });
-        expect(result.automation).toBe(0);
+        expect(result.automation).toBe(25);
         expect(result.tags).toContain("apple_attestation_missing");
       });
 
@@ -1496,6 +1498,74 @@ describe("buildMerchantResponse", () => {
         },
       });
       expect(result.automation).toBe(75);
+    });
+
+    it("does not promote debug/perf telemetry inside an embed", () => {
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: {
+          ...baseIntegrity(),
+          meta: { page: { isTop: false } },
+          device: {
+            headless: {
+              headlessRating: 0,
+              likeHeadlessRating: 20,
+              likeHeadless: {
+                noMimeTypes: false,
+                noChrome: false,
+                notificationIsDenied: true,
+                noPlugins: false,
+                uaDataIsBlank: false,
+                hasVvpScreenRes: false,
+                hasSoftwareRenderer: false,
+                devToolsOpen: true,
+                hasPermissionsBug: false,
+                pdfIsDisabled: false,
+              },
+              cdp: {
+                consoleTiming: {
+                  log_tiny_us: 10,
+                  log_heavy_us: 11.3,
+                  tl_heavy_us: 11,
+                  dir_heavy_us: 11,
+                  heavy_over_tiny: 1.09,
+                  debug_over_perf: 51,
+                },
+                consoleTimingWorker: {
+                  log_tiny_us: 5.3,
+                  log_heavy_us: 6.1,
+                  tl_heavy_us: 6,
+                  dir_heavy_us: 5.1,
+                  heavy_over_tiny: 1.15,
+                  debug_over_perf: 31,
+                  error_stack_burst_delta_ms: 2,
+                },
+              },
+            },
+          },
+        } as IntegrityResultsData,
+      });
+
+      expect(result.automation).toBe(20);
+      expect(result.tags).not.toContain("automation");
+    });
+
+    it("still blocks hard automation residue inside an embed", () => {
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: {
+          ...baseIntegrity(),
+          meta: { page: { isTop: false } },
+          device: {
+            headless: {
+              headlessRating: 0,
+              cdp: { cdcGlobals: true },
+            },
+          },
+        } as IntegrityResultsData,
+      });
+
+      expect(result.automation).toBe(100);
     });
 
     it("CDP timing: real Android Chrome worker bench at heavy=27µs does not flag", () => {
@@ -2295,7 +2365,7 @@ describe("buildMerchantResponse", () => {
       expect(result.tags).not.toContain("automation");
     });
 
-    it("debug-over-perf both realms high → automation 75", () => {
+    it("debug-over-perf alone remains collection-only", () => {
       const result = buildMerchantResponse({
         session_id: "s",
         integrity: {
@@ -2309,9 +2379,9 @@ describe("buildMerchantResponse", () => {
                   log_heavy_us: 8,
                   dir_heavy_us: 8,
                   heavy_over_tiny: 0.89,
-                  debug_over_perf: 53,
+                  debug_over_perf: 61.8,
                   debug_empty_us: 20,
-                  perf_now_call_us: 0.38,
+                  perf_now_call_us: 0.324,
                   debug_iters: 3000,
                 },
                 consoleTimingWorker: {
@@ -2319,9 +2389,9 @@ describe("buildMerchantResponse", () => {
                   log_heavy_us: 8,
                   dir_heavy_us: 8,
                   heavy_over_tiny: 0.89,
-                  debug_over_perf: 61,
+                  debug_over_perf: 27,
                   debug_empty_us: 22,
-                  perf_now_call_us: 0.36,
+                  perf_now_call_us: 0.815,
                   debug_iters: 3000,
                 },
               },
@@ -2329,7 +2399,8 @@ describe("buildMerchantResponse", () => {
           },
         },
       });
-      expect(result.automation).toBe(75);
+      expect(result.automation).toBe(0);
+      expect(result.tags).not.toContain("automation");
     });
 
     it("desktop UA still uses likeHeadlessRating as before", () => {
@@ -3509,6 +3580,145 @@ describe("buildMerchantResponse", () => {
       expect(result.device_tampering).toBeLessThan(100);
     });
 
+    it("does not let a Brave label suppress structural worker divergence", () => {
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: baseIntegrity({
+          meta: { page: { isTop: false } },
+          device: {
+            shielding: { privacy: "Brave" },
+            lies: { totalLies: 0, data: {} },
+          },
+          analysis: {
+            ...baseIntegrity().analysis,
+            ja4_ua: { ua_browser_family: "chromium", signals: [] },
+            worker: {
+              lied: true,
+              divergences: [
+                {
+                  field: "hardwareConcurrency",
+                  main: 12,
+                  web: 12,
+                  shared: 5,
+                },
+              ],
+              signals: [],
+            },
+          },
+        } as Partial<IntegrityResultsData>),
+      });
+      expect(result.device_tampering).toBe(100);
+      expect(result.tags).toContain("browser_tampering");
+    });
+
+    it("projects a narrow Brave SharedWorker candidate without weakening the raw score", () => {
+      const brands = [{ brand: "Chromium" }, { brand: "Brave" }];
+      const main = {
+        hardwareConcurrency: 12,
+        deviceMemory: 32,
+        languages: "en-US,en",
+        userAgentData: { brands },
+      };
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: baseIntegrity({
+          meta: { page: { isTop: false } },
+          device: {
+            shielding: { privacy: "Brave", engine: "Blink" },
+            lies: { totalLies: 0, data: {} },
+            workerScope: {
+              scopes: {
+                main,
+                web: main,
+                shared: {
+                  hardwareConcurrency: 5,
+                  deviceMemory: 16,
+                  languages: "en-US",
+                  userAgentData: { brands },
+                },
+              },
+            },
+          },
+          analysis: {
+            ...baseIntegrity().analysis,
+            worker: {
+              lied: true,
+              divergences: [
+                {
+                  field: "hardwareConcurrency",
+                  main: 12,
+                  web: 12,
+                  shared: 5,
+                },
+                { field: "deviceMemory", main: 32, web: 32, shared: 16 },
+                {
+                  field: "languages",
+                  main: "en-US,en",
+                  web: "en-US,en",
+                  shared: "en-US",
+                },
+              ],
+              signals: [],
+            },
+          },
+        } as Partial<IntegrityResultsData>),
+      });
+
+      expect(result.device_tampering).toBe(100);
+      expect(result.worker_scope_evidence).toMatchObject({
+        all_scopes_consistent: false,
+        shared_partition_candidate: true,
+        brave_detected: true,
+        device_tampering_without_worker: 0,
+      });
+    });
+
+    it("preserves non-worker tampering in the Brave counterfactual score", () => {
+      const brands = [{ brand: "Chromium" }, { brand: "Brave" }];
+      const main = {
+        hardwareConcurrency: 12,
+        deviceMemory: 32,
+        languages: "en-US",
+        userAgentData: { brands },
+      };
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: baseIntegrity({
+          device: {
+            shielding: { privacy: "Brave", engine: "Blink" },
+            lies: { totalLies: 5, data: {} },
+            workerScope: {
+              scopes: {
+                main,
+                web: main,
+                shared: { ...main, hardwareConcurrency: 10 },
+              },
+            },
+          },
+          analysis: {
+            ...baseIntegrity().analysis,
+            worker: {
+              lied: true,
+              divergences: [
+                {
+                  field: "hardwareConcurrency",
+                  main: 12,
+                  web: 12,
+                  shared: 10,
+                },
+              ],
+              signals: [],
+            },
+          },
+        } as Partial<IntegrityResultsData>),
+      });
+
+      expect(result.worker_scope_evidence).toMatchObject({
+        shared_partition_candidate: true,
+        device_tampering_without_worker: 60,
+      });
+    });
+
     it("(E) UA claims Chrome but Sec-CH-UA missing → tampering.probability>=60", () => {
       const result = buildMerchantResponse({
         session_id: "s",
@@ -3983,7 +4193,7 @@ describe("buildMerchantResponse", () => {
   // Covers the full decision table:
   //   1. Corporate shield → 0 (wins over everything)
   //   2. Cellular / CGNAT → pass through (no uplift)
-  //   3. Ratio ≥ 5 → floor 0.95 (overrides damper)
+  //   3. Ratio >= 5 → floor 0.95 (overrides damper)
   //   4. WebRTC matches probes + ratio < 2.5 → cap 0.3 (damper)
   //   5. No WebRTC + component > 0.3 → floor 0.9 (GTFO uplift)
   //   6. Otherwise → pass through
@@ -4189,16 +4399,10 @@ describe("buildMerchantResponse", () => {
     });
 
     // -----------------------------------------------------------------
-    // Rule 3 — ratio ≥ 5 ceiling (overrides damper)
+    // Rule 3 — ratio >= 5 ceiling (overrides damper)
     // -----------------------------------------------------------------
     describe("extreme-ratio ceiling (rule 3)", () => {
-      it("floors proxy at 0.95 when ratio ≥ 5 even if WebRTC matches", () => {
-        // The motivated-attacker case: rented proxy exit in victim's /16,
-        // so WebRTC appears to match — but RTT ratio is physically impossible.
-        // Use a low raw component so the ceiling FLOOR is observable:
-        // damper would have pinned at 0.3; ceiling overrides to 0.95.
-        // Ceiling lifts BOTH vpn and proxy components — vpn surfaces in
-        // network_tampering (= max), even though proxy_waterfall is 0.
+      it("floors proxy at 0.95 when ratio >= 5 even if WebRTC matches", () => {
         const result = buildMerchantResponse(
           fusionInput({
             proxyComponent: 0.1,
@@ -4227,7 +4431,7 @@ describe("buildMerchantResponse", () => {
         expect(result.network_tampering).toBe(95);
       });
 
-      it("ratio 4.9 still falls into damper (everything sub-ceiling damps)", () => {
+      it("ratio 4.9 still falls into damper", () => {
         const result = buildMerchantResponse(
           fusionInput({
             proxyComponent: 1.0,
@@ -4238,20 +4442,13 @@ describe("buildMerchantResponse", () => {
             rttRefreshedUs: 10000,
           }),
         );
-        // ratio 4.9 — right under ceiling. WebRTC matches, damper applies
-        // (proxy → 0.3). vpn (raw 0) doesn't get lifted since ceiling
-        // doesn't fire. proxy_waterfall.threat_score is 0. So
-        // network_tampering = 0 — the residual false-negative the
-        // damper accepts on near-ceiling ratios.
         expect(result.network_tampering).toBe(0);
       });
 
-      it("ratio 90× on residential with no WebRTC → ceiling floor (not uplift)", () => {
-        // Ceiling takes precedence over uplift; lifts both vpn and proxy
-        // to 0.95 → network_tampering = 95.
+      it("ratio 90x on residential with no WebRTC gets the ceiling floor", () => {
         const result = buildMerchantResponse(
           fusionInput({
-            proxyComponent: 0.0,
+            proxyComponent: 0,
             webrtcIp: null,
             webrtcMatches: null,
             asnCategory: "residential",
@@ -4351,11 +4548,7 @@ describe("buildMerchantResponse", () => {
         expect(result.tags).not.toContain("proxy");
       });
 
-      it("cellular does NOT protect against physics ceiling (ratio ≥ 5)", () => {
-        // Physics ceiling runs before cellular carve-out. Cellular with a
-        // 10× ratio is either a weirdly broken mobile network or a mobile-
-        // carrier-ASN proxy service — either way, flag it. Ceiling lifts
-        // vpn → 0.95 → network_tampering = 95.
+      it("cellular does NOT protect against the physics ceiling", () => {
         const result = buildMerchantResponse(
           fusionInput({
             proxyComponent: 0.1,

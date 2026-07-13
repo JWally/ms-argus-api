@@ -124,13 +124,9 @@ export class LambdasConstruct extends Construct {
   public readonly sessionGet: lambdaNode.NodejsFunction;
   public readonly patAttest?: lambdaNode.NodejsFunction;
 
-  // API-attached — `live` aliases with Provisioned Concurrency. The
-  // HTTP API and REST API integrations route through these so cold
-  // starts disappear from the user-perceived path. Without PC the
-  // first concurrent invoke on each Lambda pays ~500ms init; on the
-  // pair flow that compounds (ingestion is hit by every scan).
-  // Replaces the 1-minute EventBridge warmup pings that used to ride
-  // alongside these Lambdas.
+  // API-attached `live` aliases. API integrations and recurring heaters target
+  // these aliases so every synthetic invoke warms the exact published version
+  // that receives user traffic. Provisioned concurrency remains stage-driven.
   public readonly ingestionAlias: lambda.Alias;
   public readonly sessionGetAlias: lambda.Alias;
   public readonly patAttestAlias?: lambda.Alias;
@@ -159,16 +155,10 @@ export class LambdasConstruct extends Construct {
       this.patAttest = this.makePatAttest(props);
     }
 
-    // `live` aliases with Provisioned Concurrency. PC=2 across the
-    // board: enough to absorb the natural concurrent burst of a pair
-    // flow (desktop scan + phone scan land within ~1s of each other)
-    // without paying for capacity that idles. Bump per-Lambda if a
-    // hotter endpoint warrants it. addAlias auto-publishes a new
-    // Version on every code-hash change, so PC stays pinned to the
-    // latest deploy without manual version juggling.
-    // PC is stage-driven (stage-config.lambda.provisionedConcurrency). CFN
-    // rejects ProvisionedConcurrentExecutions:0, so 0 → a plain alias (pure
-    // on-demand); >0 → that many pre-initialized containers.
+    // addAlias auto-publishes a new Version on every code-hash change. PC is
+    // stage-driven (stage-config.lambda.provisionedConcurrency): 0 creates a
+    // plain alias supported by the recurring heaters; >0 additionally reserves
+    // that many pre-initialized containers.
     const pc = props.config.lambda.provisionedConcurrency;
     const pcOpts = pc > 0 ? { provisionedConcurrentExecutions: pc } : {};
     this.ingestionAlias = this.ingestion.addAlias("live", pcOpts);
