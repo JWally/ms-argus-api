@@ -6,6 +6,7 @@ import * as route53 from "aws-cdk-lib/aws-route53";
 import * as acm from "aws-cdk-lib/aws-certificatemanager";
 import * as ssm from "aws-cdk-lib/aws-ssm";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
+import * as ddb from "aws-cdk-lib/aws-dynamodb";
 import { Construct } from "constructs";
 
 import { SecretConstruct } from "../constructs/secrets";
@@ -20,6 +21,7 @@ import { PostDeployWarmer } from "../constructs/post-deploy-warmer";
 import { addApiAliasHeaters } from "../constructs/api-alias-heaters";
 import { CloudFrontWafConstruct } from "../constructs/cloudfront";
 import { getStageConfig } from "../config";
+import { resolveSharedDataContracts } from "../config/shared-data-contracts";
 
 interface ArgusApiStackProps extends cdk.StackProps {
   environment: string;
@@ -28,19 +30,8 @@ interface ArgusApiStackProps extends cdk.StackProps {
   stage: string;
   region: string;
   account: string;
-  /**
-   * Optional: Secrets Manager ARN for the AES-256 key used to decrypt encrypted
-   * probe responses from ms-argus-sigint. Managed in ms-argus-platform.
-   * Prefer sigintPlatformEnvironment for automatic SSM lookup.
-   */
-  sigintAesKeySecretArn?: string;
-  /**
-   * ms-argus-platform environment name (e.g. "dev-jw") to auto-lookup the
-   * sigint AES key ARN, probe-tokens table, and merchants table from SSM
-   * at synth time (cached in cdk.context.json).
-   * SSM path base: /argus-platform/{sigintPlatformEnvironment}
-   */
-  sigintPlatformEnvironment?: string;
+  /** Shared data contract environment published by ms-argus-infra. */
+  sharedDataEnvironment: string;
 }
 
 /**
@@ -60,65 +51,6 @@ interface ArgusApiStackProps extends cdk.StackProps {
  * the CDN at the edge.
  */
 
-interface ResolvedSigintParams {
-  sigintSecretArn: string | undefined;
-  probeTokensTableName: string | undefined;
-  probeTokensTableArn: string | undefined;
-  merchantsTableName: string | undefined;
-  merchantsTableArn: string | undefined;
-  merchantKeysTableName: string | undefined;
-  merchantKeysTableArn: string | undefined;
-}
-
-function resolveSigintParams(
-  scope: cdk.Stack,
-  sigintPlatformEnvironment: string | undefined,
-  sigintAesKeySecretArn: string | undefined,
-): ResolvedSigintParams {
-  if (!sigintPlatformEnvironment) {
-    return {
-      sigintSecretArn: sigintAesKeySecretArn,
-      probeTokensTableName: undefined,
-      probeTokensTableArn: undefined,
-      merchantsTableName: undefined,
-      merchantsTableArn: undefined,
-      merchantKeysTableName: undefined,
-      merchantKeysTableArn: undefined,
-    };
-  }
-  const base = `/argus-platform/${sigintPlatformEnvironment}`;
-  return {
-    sigintSecretArn: ssm.StringParameter.valueFromLookup(
-      scope,
-      `${base}/sigint-aes-key-arn`,
-    ),
-    probeTokensTableName: ssm.StringParameter.valueFromLookup(
-      scope,
-      `${base}/probe-tokens-table-name`,
-    ),
-    probeTokensTableArn: ssm.StringParameter.valueFromLookup(
-      scope,
-      `${base}/probe-tokens-table-arn`,
-    ),
-    merchantsTableName: ssm.StringParameter.valueFromLookup(
-      scope,
-      `${base}/merchants-table-name`,
-    ),
-    merchantsTableArn: ssm.StringParameter.valueFromLookup(
-      scope,
-      `${base}/merchants-table-arn`,
-    ),
-    merchantKeysTableName: ssm.StringParameter.valueFromLookup(
-      scope,
-      `${base}/merchant-keys-table-name`,
-    ),
-    merchantKeysTableArn: ssm.StringParameter.valueFromLookup(
-      scope,
-      `${base}/merchant-keys-table-arn`,
-    ),
-  };
-}
-
 export class ArgusApiStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props: ArgusApiStackProps) {
     super(scope, id, props);
@@ -128,30 +60,11 @@ export class ArgusApiStack extends cdk.Stack {
       rootDomain,
       stage,
       region,
-      sigintAesKeySecretArn,
-      sigintPlatformEnvironment,
+      sharedDataEnvironment,
     } = props;
 
-    const sigint = resolveSigintParams(
-      this,
-      sigintPlatformEnvironment,
-      sigintAesKeySecretArn,
-    );
-    if (!sigint.merchantsTableName || !sigint.merchantsTableArn) {
-      throw new Error(
-        "merchants table SSM exports not found — ms-argus-platform must be deployed first to expose " +
-          `/argus-platform/${sigintPlatformEnvironment}/merchants-table-{name,arn}`,
-      );
-    }
-
-    const platformPubkeySsmPath = sigintPlatformEnvironment
-      ? `/argus-platform/${sigintPlatformEnvironment}/api-signing-pubkey`
-      : undefined;
-    if (!platformPubkeySsmPath) {
-      throw new Error(
-        "sigintPlatformEnvironment is required so the api can locate the platform Ed25519 pubkey",
-      );
-    }
+    const sharedData = resolveSharedDataContracts(this, sharedDataEnvironment);
+    const platformPubkeySsmPath = `/argus-platform/${sharedDataEnvironment}/api-signing-pubkey`;
 
     // ── DNS + cert ────────────────────────────────────────────────────
     const hostedZone = route53.HostedZone.fromLookup(this, "HostedZone", {
@@ -179,19 +92,29 @@ export class ArgusApiStack extends cdk.Stack {
     // ── Data layer ────────────────────────────────────────────────────
     const dynamodb = new DynamoDbConstruct(this, "DynamoDB", {
       stackName,
-      alarmsTopic,
       stage,
     });
+    // Consumer wiring uses the infra-owned contract even while the physical
+    // table is still retained in this stack. That makes the later ownership
+    // removal an infrastructure-only change.
+    const sharedIntegrityResultsTable = ddb.Table.fromTableAttributes(
+      this,
+      "SharedIntegrityResultsTable",
+      {
+        tableName: sharedData.integrityResultsTableName,
+        grantIndexPermissions: true,
+      },
+    );
 
     // Cross-stack export: ms-argus-platform's dashboard Lambda reads
     // these to enumerate recent sessions across CPIs.
     new ssm.StringParameter(this, "IntegrityResultsTableNameParam", {
       parameterName: `/argus-api/${environment}/integrity-results-table-name`,
-      stringValue: dynamodb.integrityResultsTable.tableName,
+      stringValue: sharedIntegrityResultsTable.tableName,
     });
     new ssm.StringParameter(this, "IntegrityResultsTableArnParam", {
       parameterName: `/argus-api/${environment}/integrity-results-table-arn`,
-      stringValue: dynamodb.integrityResultsTable.tableArn,
+      stringValue: sharedIntegrityResultsTable.tableArn,
     });
 
     const analytics = new AnalyticsConstruct(this, "Analytics", {
@@ -259,17 +182,18 @@ export class ArgusApiStack extends cdk.Stack {
     const lambdas = new LambdasConstruct(this, "Lambdas", {
       stackName,
       stage,
-      integrityResultsTable: dynamodb.integrityResultsTable,
+      integrityResultsTable: sharedIntegrityResultsTable,
       ipVelocityTable: dynamodb.ipVelocityTable,
       archiveBucket: analytics.integrityArchiveBucket,
       ipClassBucket: ipClass.bucket,
-      probeTokensTableName: sigint.probeTokensTableName,
-      probeTokensTableArn: sigint.probeTokensTableArn,
-      merchantsTableName: sigint.merchantsTableName,
-      merchantsTableArn: sigint.merchantsTableArn,
-      merchantKeysTableName: sigint.merchantKeysTableName,
-      merchantKeysTableArn: sigint.merchantKeysTableArn,
-      sigintAesKeySecretArn: sigint.sigintSecretArn,
+      probeTokensTableName: sharedData.probeTokensTableName,
+      probeTokensTableArn: sharedData.probeTokensTableArn,
+      merchantsTableName: sharedData.merchantsTableName,
+      merchantsTableArn: sharedData.merchantsTableArn,
+      merchantKeysTableName: sharedData.merchantKeysTableName,
+      merchantKeysTableArn: sharedData.merchantKeysTableArn,
+      sigintAesKeySecretId: sharedData.sigintSecretId,
+      sigintAesKeySecretArn: sharedData.sigintSecretArn,
       ecdhKeyParamName: `/${stackName}/ecdh-keypair`,
       platformPubkeySsmPath,
       integrityFirehoseStreamName: integrityFirehose.deliveryStreamName,
