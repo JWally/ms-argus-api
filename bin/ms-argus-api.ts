@@ -22,9 +22,9 @@ new ArgusApiStack(app, "ms-argus-api-dev-jw", {
   region: PIPELINE_HOME_REGION,
   account: AWS_ACCOUNT_ID,
   synthesizer,
-  // Read SIGINT AES key ARN from ms-argus-platform SSM exports at synth time.
-  // The key value is injected via CF dynamic reference — never in the template.
-  sigintPlatformEnvironment: "dev-jw",
+  // Shared tables and SIGINT secret are discovered from ms-argus-infra's
+  // deploy-time SSM contracts under /argus/dev-jw/data.
+  sharedDataEnvironment: "dev-jw",
 });
 
 // /////////////////////////////////

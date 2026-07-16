@@ -22,6 +22,8 @@ import {
 import { StageConfig } from "../config/stage-config";
 import { getStageConfig } from "../config";
 
+const SHARED_DATA_CONTRACT_VERSION = "2";
+
 /**
  * Lambdas — single-source-of-truth construct for every NodejsFunction in the
  * stack. Owns:
@@ -67,7 +69,9 @@ interface LambdasConstructProps {
   merchantKeysTableName?: string;
   /** Merchant-keys table ARN — for ingestion `dynamodb:Query` grant on the cpi-index. */
   merchantKeysTableArn?: string;
-  /** SIGINT AES key Secrets Manager ARN. Mounted as env var on ingestion + read at runtime by pat-attest via SecretsManager API. */
+  /** SIGINT AES key name or ARN used by Secrets Manager dynamic/runtime reads. */
+  sigintAesKeySecretId?: string;
+  /** SIGINT AES key ARN pattern used only for least-privilege IAM grants. */
   sigintAesKeySecretArn?: string;
   /** SSM SecureString param name holding the ECDH keypair (ingestion ECDH-decrypt). */
   ecdhKeyParamName?: string;
@@ -151,7 +155,7 @@ export class LambdasConstruct extends Construct {
 
     this.ingestion = this.makeIngestion(props);
     this.sessionGet = this.makeSessionGet(props);
-    if (props.sigintAesKeySecretArn) {
+    if (props.sigintAesKeySecretId && props.sigintAesKeySecretArn) {
       this.patAttest = this.makePatAttest(props);
     }
 
@@ -221,6 +225,7 @@ export class LambdasConstruct extends Construct {
       }),
       environment: {
         ...createPowertoolsEnv("argus-ingestion", `argus-${stage}`, stage),
+        SHARED_DATA_CONTRACT_VERSION,
         INTEGRITY_RESULTS_TABLE: props.integrityResultsTable.tableName,
         IP_VELOCITY_TABLE: props.ipVelocityTable.tableName,
         ...(valkey && {
@@ -238,9 +243,9 @@ export class LambdasConstruct extends Construct {
         ...(process.env.INTEGRITY_DEPLOY_SECRET && {
           INTEGRITY_DEPLOY_SECRET: process.env.INTEGRITY_DEPLOY_SECRET,
         }),
-        ...(props.sigintAesKeySecretArn && {
+        ...(props.sigintAesKeySecretId && {
           SIGINT_AES_KEY: SecretValue.secretsManager(
-            props.sigintAesKeySecretArn,
+            props.sigintAesKeySecretId,
           ).unsafeUnwrap(),
         }),
         ...(props.probeTokensTableName && {
@@ -280,6 +285,7 @@ export class LambdasConstruct extends Construct {
       logGroup,
       environment: {
         ...createPowertoolsEnv("argus-session-get", `argus-${stage}`, stage),
+        SHARED_DATA_CONTRACT_VERSION,
         INTEGRITY_RESULTS_TABLE: props.integrityResultsTable.tableName,
         STACK_NAME: stackName,
         PLATFORM_PUBKEY_SSM_PATH: props.platformPubkeySsmPath,
@@ -294,9 +300,10 @@ export class LambdasConstruct extends Construct {
     props: LambdasConstructProps,
   ): lambdaNode.NodejsFunction {
     const { stackName, stage } = props;
+    const sigintAesKeySecretId = props.sigintAesKeySecretId;
     const sigintAesKeySecretArn = props.sigintAesKeySecretArn;
-    if (!sigintAesKeySecretArn) {
-      throw new Error("makePatAttest called without sigintAesKeySecretArn");
+    if (!sigintAesKeySecretId || !sigintAesKeySecretArn) {
+      throw new Error("makePatAttest called without SIGINT secret contract");
     }
 
     const logGroup = new logs.LogGroup(this, "PatAttestLogGroup", {
@@ -329,7 +336,8 @@ export class LambdasConstruct extends Construct {
       }),
       environment: {
         ...createPowertoolsEnv("argus-pat-attest", `argus-${stage}`, stage),
-        SIGINT_AES_KEY_SECRET_ARN: sigintAesKeySecretArn,
+        SHARED_DATA_CONTRACT_VERSION,
+        SIGINT_AES_KEY_SECRET_ARN: sigintAesKeySecretId,
         ...(valkey && {
           VALKEY_ENDPOINT: valkey.endpoint,
           VALKEY_PORT: "6379",
