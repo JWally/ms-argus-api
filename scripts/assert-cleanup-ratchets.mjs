@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 const limits = new Map([
-  ["src/helpers/merchant-projection.ts", 874],
+  ["src/helpers/merchant-projection.ts", 627],
   ["src/handlers/ingestion/base-handler.ts", 480],
   ["src/handlers/ingestion/device-history-workflow.ts", 112],
   ["src/handlers/ingestion/integrity-record-builder.ts", 121],
@@ -14,6 +14,7 @@ const limits = new Map([
   ["src/scoring/device-tampering.ts", 321],
   ["src/scoring/identity.ts", 194],
   ["src/projections/activity.ts", 100],
+  ["src/projections/network.ts", 203],
 ]);
 
 function lineCount(path) {
