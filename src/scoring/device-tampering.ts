@@ -2,6 +2,7 @@
 
 import type { IntegrityResultsData } from "../helpers/payload-schema";
 import { hasIframeCryptoStuck } from "./automation";
+import { detectBraveIos } from "./brave-ios";
 import {
   detectUaFamilyHeaderMismatch,
   hasJa4UaMismatch,
@@ -13,7 +14,6 @@ import {
   readKernelOsSignals,
   readLocaleGeoSignals,
   readTzGeoMismatch,
-  readUaIdentity,
 } from "./identity";
 import type { MerchantProjectionInput } from "./shared";
 
@@ -32,6 +32,7 @@ interface TamperingEvidence {
   browserEngineSoft: boolean;
   kernelOsMismatchHard: boolean;
   kernelOsMismatchSoft: boolean;
+  kernelOsDarwinCorroborated: boolean;
   tzGeoMismatch: boolean;
   langGeoCrossContinent: boolean;
   langGeoCrossCountry: boolean;
@@ -43,65 +44,6 @@ interface TamperingEvidence {
   patAttestationFailed: boolean;
   deviceIdentitySigFailed: boolean;
   deviceHistoryTampered: boolean;
-}
-
-const BRAVE_IOS_AUDIO_KEYS = [
-  "AnalyserNode.getFloatFrequencyData",
-  "AnalyserNode.getByteFrequencyData",
-  "AnalyserNode.getFloatTimeDomainData",
-  "AnalyserNode.getByteTimeDomainData",
-  "AudioBuffer.getChannelData",
-] as const;
-
-const BRAVE_IOS_PLUGIN_KEYS = [
-  "PluginArray.item",
-  "PluginArray.namedItem",
-  "Navigator.plugins",
-] as const;
-
-const BRAVE_IOS_ALL_KEYS = new Set<string>([
-  ...BRAVE_IOS_AUDIO_KEYS,
-  ...BRAVE_IOS_PLUGIN_KEYS,
-  "Navigator.hardwareConcurrency",
-]);
-
-export interface BraveIosDetection {
-  matched: boolean;
-  attributedLies: number;
-}
-
-/** Attribute Brave iOS privacy API wraps without suppressing other evidence. */
-export function detectBraveIos(
-  integrity: IntegrityResultsData,
-): BraveIosDetection {
-  const identity = readUaIdentity(integrity);
-  if (identity.browserFamily !== "safari" || identity.os !== "iOS") {
-    return { matched: false, attributedLies: 0 };
-  }
-
-  const liesData =
-    (
-      integrity.device as
-        | { lies?: { data?: Record<string, string[]> } }
-        | undefined
-    )?.lies?.data ?? {};
-  const audioHits = BRAVE_IOS_AUDIO_KEYS.filter(
-    (key) => liesData[key] !== undefined,
-  ).length;
-  const pluginHits = BRAVE_IOS_PLUGIN_KEYS.filter(
-    (key) => liesData[key] !== undefined,
-  ).length;
-  if (audioHits < 4 || pluginHits < 1) {
-    return { matched: false, attributedLies: 0 };
-  }
-
-  let attributedLies = 0;
-  for (const [key, lies] of Object.entries(liesData)) {
-    if (BRAVE_IOS_ALL_KEYS.has(key) && Array.isArray(lies)) {
-      attributedLies += lies.length;
-    }
-  }
-  return { matched: true, attributedLies };
 }
 
 function readLieKeys(integrity: IntegrityResultsData): string[] {
@@ -155,6 +97,41 @@ function readDeviceHistoryTampered(integrity: IntegrityResultsData): boolean {
     }
   ).device_history;
   return history?.tampered === true;
+}
+
+function scoreablePathSignal(
+  signal: boolean,
+  shielded: boolean,
+  appleRelay: boolean,
+): boolean {
+  return signal && !shielded && !appleRelay;
+}
+
+function scoreableKernelEvidence(
+  kernelOs: ReturnType<typeof readKernelOsSignals>,
+  shielded: boolean,
+  appleRelay: boolean,
+): Pick<
+  TamperingEvidence,
+  "kernelOsMismatchHard" | "kernelOsMismatchSoft" | "kernelOsDarwinCorroborated"
+> {
+  return {
+    kernelOsMismatchHard: scoreablePathSignal(
+      kernelOs.hard,
+      shielded,
+      appleRelay,
+    ),
+    kernelOsMismatchSoft: scoreablePathSignal(
+      kernelOs.soft,
+      shielded,
+      appleRelay,
+    ),
+    kernelOsDarwinCorroborated: scoreablePathSignal(
+      kernelOs.corroboratedDarwin,
+      shielded,
+      appleRelay,
+    ),
+  };
 }
 
 function readCfTamperEvidence(integrity: IntegrityResultsData): {
@@ -219,8 +196,7 @@ function collectTamperingEvidence(
     tlsUaMismatch: hasTlsUaMismatch(integrity) && !shielded,
     browserEngineHardBreak: browserEngine.hard,
     browserEngineSoft: browserEngine.soft,
-    kernelOsMismatchHard: kernelOs.hard && !shielded && !appleRelay,
-    kernelOsMismatchSoft: kernelOs.soft && !shielded && !appleRelay,
+    ...scoreableKernelEvidence(kernelOs, shielded, appleRelay),
     tzGeoMismatch: readTzGeoMismatch(integrity) && !shielded,
     langGeoCrossContinent: locale.crossContinent,
     langGeoCrossCountry: locale.crossCountry,
@@ -280,7 +256,7 @@ function tamperingProbabilityFromEvidence(evidence: TamperingEvidence): number {
   ) {
     return 50;
   }
-  if (evidence.tzGeoMismatch) return 35;
+  if (evidence.kernelOsDarwinCorroborated || evidence.tzGeoMismatch) return 35;
   if (evidence.lies >= 1) return 25;
   return 0;
 }
