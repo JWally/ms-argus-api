@@ -9,13 +9,7 @@
 import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from "aws-lambda";
 import { Logger } from "@aws-lambda-powertools/logger";
 import { Metrics, MetricUnit } from "@aws-lambda-powertools/metrics";
-import {
-  ConditionalCheckFailedException,
-  DynamoDBClient,
-  PutItemCommand,
-  DescribeTableCommand,
-} from "@aws-sdk/client-dynamodb";
-import { marshall } from "@aws-sdk/util-dynamodb";
+import { DynamoDBClient, DescribeTableCommand } from "@aws-sdk/client-dynamodb";
 import { HttpError } from "../../helpers/http-error";
 import { verifyDeviceMac } from "../../helpers/device-mac";
 import {
@@ -48,21 +42,12 @@ import {
 import { prewarmAutoOverlay } from "../../services/network/auto-overlay";
 import { prewarmAppleRelay } from "../../services/network/apple-relay";
 import { prewarmBrowserBaselines } from "../../services/network/browser-baselines";
-import {
-  archiveToFirehose,
-  warmFirehose,
-} from "../../helpers/firehose-archive";
+import { warmFirehose } from "../../helpers/firehose-archive";
 import { getAwsSecrets } from "../../helpers/get-aws-secrets";
 import { getValkey } from "../../helpers/valkey-client";
 import { boundedRequestHandler } from "../../helpers/sdk-http-handler";
 import { buildMerchantResponse } from "../../helpers/merchant-projection";
 import { lookupAppleRelaySync } from "../../services/network/apple-relay";
-import {
-  updateIpVelocity,
-  bumpVelocityBlocked,
-  pickDeviceId,
-  type IpVelocitySnapshot,
-} from "../../helpers/ip-velocity";
 import { resolveIntegrityTtlSeconds } from "./ttl";
 import { hydrateSigint } from "./sigint-hydration";
 import {
@@ -78,6 +63,8 @@ import {
   timeAsync,
   type PhaseTimer,
 } from "../../helpers/phase-timer";
+import { persistIntegrityRecord } from "./persist-integrity-record";
+import { applyIpVelocitySnapshot, bumpIpVelocityBlocked } from "./ip-velocity";
 
 /** Bump when merchant-projection.ts rules change in a way you want stamped on
  *  rows. Stored on the row so historical verdicts are traceable to the code
@@ -128,6 +115,12 @@ const ddbClient = new DynamoDBClient({
 const INTEGRITY_RESULTS_TABLE = process.env.INTEGRITY_RESULTS_TABLE ?? "";
 const INTEGRITY_FIREHOSE_STREAM = process.env.INTEGRITY_FIREHOSE_STREAM;
 const INTEGRITY_TTL_SECONDS = resolveIntegrityTtlSeconds(process.env);
+const integrityRecordPersistenceDeps = {
+  dynamo: ddbClient,
+  tableName: INTEGRITY_RESULTS_TABLE,
+  firehoseStreamName: INTEGRITY_FIREHOSE_STREAM,
+};
+const ipVelocityEnrichmentDeps = { dynamo: ddbClient };
 
 // cpi → merchantId resolver. Lambda-scope so the cache lives across requests
 // for the container's lifetime; the mapping is immutable per-cpi, so once
@@ -399,154 +392,6 @@ function applyProjectionSnapshot(
 }
 
 /**
- * Phase 1 of velocity wiring: hits + HLL update + stamp. Runs BEFORE
- * the projection so buildMerchantResponse can pull ip_velocity_1h into
- * MerchantSafeResponse. `blocked` counter is NOT incremented here —
- * verdict isn't known yet. bumpIpVelocityBlocked handles that
- * atomically after the projection. Non-fatal on any failure.
- */
-async function applyIpVelocitySnapshot(
-  ctx: HandleContext,
-  item: Record<string, unknown>,
-  identity: IdentityOutcome,
-): Promise<Record<string, unknown>> {
-  const ip = (item as { client_ip?: string }).client_ip;
-  if (!ip) return item;
-  const clientUuid =
-    (ctx.payload as { device?: { client_uuid?: string } }).device
-      ?.client_uuid ?? null;
-  const deviceId = pickDeviceId(identity.pubkey, clientUuid);
-  if (!deviceId) return item;
-  try {
-    // Hard deadline: IP-velocity is non-critical enrichment, and its Valkey
-    // path (ioredis) is NOT covered by the SDK bounded handler — a stale
-    // keep-alive socket across a PC freeze makes ioredis reconnect/retry stack
-    // toward the 10s Lambda timeout (the intermittent integrity-collect hang).
-    // Cap it and fail open fast: score without velocity rather than hang.
-    const velocityPromise = updateIpVelocity({ ip, deviceId, ddb: ddbClient });
-    // Mark handled so a late rejection (after the race times out) isn't an
-    // unhandled rejection; a fast rejection still propagates to the catch below.
-    velocityPromise.catch(() => {});
-    const snap: IpVelocitySnapshot | null = await Promise.race([
-      velocityPromise,
-      new Promise<null>((resolve) => setTimeout(() => resolve(null), 1500)),
-    ]);
-    if (!snap) return item;
-    return { ...item, ip_velocity_1h: snap };
-  } catch (err) {
-    ctx.deps.logger.warn(
-      "ip-velocity snapshot failed; persisting row without it",
-      {
-        error: err,
-        session_id: ctx.sessionId,
-      },
-    );
-    return item;
-  }
-}
-
-/**
- * Phase 2 of velocity wiring: atomic ADD blocked :1 on the velocity
- * bucket when the projection's verdict is "block". Non-fatal — verdicts
- * are never blocked by a failed velocity bump.
- */
-async function bumpIpVelocityBlocked(
-  ctx: HandleContext,
-  item: Record<string, unknown>,
-): Promise<void> {
-  const proj = (item as { merchant_projection?: { verdict?: string } })
-    .merchant_projection;
-  if (proj?.verdict !== "block") return;
-  const vel = (item as { ip_velocity_1h?: { ip?: string; bucket?: string } })
-    .ip_velocity_1h;
-  if (!vel?.ip || !vel?.bucket) return;
-  try {
-    await bumpVelocityBlocked({
-      ip: vel.ip,
-      bucket: vel.bucket,
-      ddb: ddbClient,
-    });
-  } catch (err) {
-    ctx.deps.logger.warn("ip-velocity blocked bump failed", {
-      error: err,
-      session_id: ctx.sessionId,
-    });
-  }
-}
-
-/**
- * Dual-write the integrity record. DDB is required (its result drives the
- * HTTP response). Firehose archive runs in parallel and never throws —
- * errors are logged + metered inside the helper. Shadow mode: the existing
- * DDB-stream → integrity-archiver path keeps writing per-session JSON
- * until Firehose is validated.
- *
- * Returns `{ duplicate }`. A `ConditionalCheckFailedException` means a row
- * already exists for this (cpi, session_id) — i.e. the SAME scan was already
- * processed under the SAME session_id. That is the idempotent-retry path,
- * NOT a distinct replay: the SDK mints one session_id per scan and shares it
- * across its worker submission and the in-iframe fallback submission (and
- * API Gateway / network layers may retry), so the second write is a
- * duplicate of an already-committed session. We surface `duplicate:true` and
- * let the caller return the same 200 response (the same session_id it already
- * holds) instead of a 409. This mirrors the STUN single-use claim, which
- * already accepts a same-session re-claim as idempotent
- * (`stun-nonce-tracker` `existing.sessionId === sessionId`). It is also safe
- * against a genuine replay attacker: they cannot mutate the committed row
- * (the condition still blocks the overwrite) and only get back the original
- * session's response.
- */
-export async function persistIntegrityRecord(
-  ctx: HandleContext,
-  item: Record<string, unknown>,
-): Promise<{ duplicate: boolean }> {
-  // Firehose is best-effort archival. DynamoDB is the durable source of truth
-  // and the only write that should hold the client response. Lambda may freeze
-  // this work after the handler returns, so archive delivery is intentionally
-  // not part of the integrity-collect success contract.
-  void archiveToFirehose(item, {
-    streamName: INTEGRITY_FIREHOSE_STREAM,
-    logger: ctx.deps.logger,
-    metrics: ctx.deps.metrics,
-  }).catch(() => {});
-
-  try {
-    await ddbClient.send(
-      new PutItemCommand({
-        TableName: INTEGRITY_RESULTS_TABLE,
-        Item: marshall(item, { removeUndefinedValues: true }),
-        // Composite key is (cpi, session_id) — uniqueness enforced on the
-        // partition key; the sort key alone wouldn't catch cross-cpi reuse
-        // (which we don't want anyway, but defense in depth).
-        ConditionExpression: "attribute_not_exists(cpi)",
-      }),
-    );
-    return { duplicate: false };
-  } catch (err) {
-    if (err instanceof ConditionalCheckFailedException) {
-      // Idempotent same-session retry — see docstring. Not an error.
-      ctx.deps.metrics.addMetric(
-        "IntegrityIdempotentRetry",
-        MetricUnit.Count,
-        1,
-      );
-      ctx.deps.logger.info(
-        "integrity same-session retry — returning existing session",
-        { cpi: ctx.cpi, session_id: ctx.sessionId },
-      );
-      return { duplicate: true };
-    }
-    ctx.deps.logger.error("Integrity DynamoDB write failed", {
-      error: err,
-      cpi: ctx.cpi,
-      session_id: ctx.sessionId,
-    });
-    ctx.deps.metrics.addMetric("IntegrityWriteFailed", MetricUnit.Count, 1);
-    throw new HttpError(503, "Service temporarily unavailable");
-  }
-}
-
-/**
  * Resolve merchantId for the row via the cpi-keyed resolver cache. Never
  * throws — a failed lookup yields null and the row is written without the
  * GSI key (sparse). Cache hit is free; cache miss is one Query on the
@@ -724,6 +569,26 @@ function loadIdentityAndPrewarm(ctx: HandleContext, pt: PhaseTimer) {
   ]);
 }
 
+async function applyVelocityAndProjection(
+  ctx: HandleContext,
+  item: Record<string, unknown>,
+  identity: IdentityOutcome,
+): Promise<Record<string, unknown>> {
+  const itemWithVelocity = await applyIpVelocitySnapshot({
+    ctx,
+    item,
+    identity,
+    deps: ipVelocityEnrichmentDeps,
+  });
+  const itemWithProjection = applyProjectionSnapshot(ctx, itemWithVelocity);
+  await bumpIpVelocityBlocked({
+    ctx,
+    item: itemWithProjection,
+    deps: ipVelocityEnrichmentDeps,
+  });
+  return itemWithProjection;
+}
+
 async function handleIntegrity(
   ctx: HandleContext,
 ): Promise<APIGatewayProxyResultV2> {
@@ -764,12 +629,18 @@ async function handleIntegrity(
   // into MerchantSafeResponse (with derived block_rate +
   // residential_proxy_suspect). Then bump blocked counter post-projection
   // once the verdict is known.
-  const itemWithVelocity = await applyIpVelocitySnapshot(ctx, item, identity);
-  const itemWithProjection = applyProjectionSnapshot(ctx, itemWithVelocity);
-  await bumpIpVelocityBlocked(ctx, itemWithProjection);
+  const itemWithProjection = await applyVelocityAndProjection(
+    ctx,
+    item,
+    identity,
+  );
   pt.mark("velocity");
 
-  const { duplicate } = await persistIntegrityRecord(ctx, itemWithProjection);
+  const { duplicate } = await persistIntegrityRecord(
+    ctx,
+    itemWithProjection,
+    integrityRecordPersistenceDeps,
+  );
   pt.mark("persist");
 
   emitIngestMetricsAndReturn(ctx, dh, duplicate);
