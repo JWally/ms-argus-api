@@ -20,6 +20,10 @@ pre-push:
   commands:
     test:
       run: npm run test:coverage
+    e2e:
+      run: npm run test:e2e
+    cleanup-ratchets:
+      run: npm run test:cleanup-ratchets
     typecheck:
       run: npm run build
     deps:
