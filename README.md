@@ -88,6 +88,7 @@ src/
     ingestion.ts                 # browser HTTP adapter + Middy stack
     ingestion/
       base-handler.ts            # collect use-case orchestration
+      device-history-workflow.ts # encrypted client-carried history round trip
       integrity-analysis.ts      # trusted analysis + safe request evidence
       sigint-hydration.ts        # fail-closed probe/PAT verification boundary
       ip-velocity.ts             # bounded velocity enrichment + block accounting
@@ -178,7 +179,8 @@ Cruiser rejects cycles and layer inversions. The cleanup ratchet currently
 prevents the remaining primary hotspots from growing:
 
 - `src/helpers/merchant-projection.ts` — 874 lines maximum;
-- `src/handlers/ingestion/base-handler.ts` — 707 lines maximum.
+- `src/handlers/ingestion/base-handler.ts` — 599 lines maximum.
+- `src/handlers/ingestion/device-history-workflow.ts` — 112 lines maximum.
 - `src/handlers/ingestion/ip-velocity.ts` — 103 lines maximum.
 - `src/handlers/ingestion/persist-integrity-record.ts` — 80 lines maximum.
 

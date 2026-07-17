@@ -3,7 +3,8 @@ import { fileURLToPath } from "node:url";
 
 const limits = new Map([
   ["src/helpers/merchant-projection.ts", 874],
-  ["src/handlers/ingestion/base-handler.ts", 707],
+  ["src/handlers/ingestion/base-handler.ts", 599],
+  ["src/handlers/ingestion/device-history-workflow.ts", 112],
   ["src/handlers/ingestion/integrity-analysis.ts", 242],
   ["src/handlers/ingestion/ip-velocity.ts", 103],
   ["src/handlers/ingestion/persist-integrity-record.ts", 80],
