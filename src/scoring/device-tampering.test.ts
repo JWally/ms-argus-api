@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { IntegrityResultsData } from "../helpers/payload-schema";
+import { detectBraveIos } from "./brave-ios";
 import {
-  detectBraveIos,
   detectLanguageMismatch,
   detectLocationMismatch,
   deviceTamperingProbability,

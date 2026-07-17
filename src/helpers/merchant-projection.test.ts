@@ -12,6 +12,7 @@ import {
   computeNetworkIntegrityScore,
   type MerchantProjectionInput,
 } from "./merchant-projection";
+import { proxyScore } from "../scoring/network-tampering";
 import type { IntegrityResultsData } from "./payload-schema";
 
 /** Compute the (now-internal) network integrity score for an input — same
@@ -642,14 +643,15 @@ describe("buildMerchantResponse", () => {
       expect(result.tags).toContain("corporate_shield");
     });
 
-    it("KERNEL_OS_MISMATCH_DARWIN demotes to soft tier-60 when JA4+H2+UA all corroborate Safari (e.g. AT&T residential ECN strip)", () => {
+    it("KERNEL_OS_MISMATCH_DARWIN demotes to low-confidence tier-35 when JA4+H2+UA all corroborate Safari (e.g. AT&T residential ECN strip)", () => {
       // Real AT&T residential iPhone Safari with tcpi_options=7 (no ECN bit
       // — CGNAT or ECN-incompatible middlebox on the path strips it). The
       // Darwin TCP-mismatch rule would fire tier-100, but JA4/H2 are
       // BoringSSL Safari and UA says iOS, so the wire fingerprints
-      // corroborate the UA. Demote to tier-60 (suspect) instead of
-      // tier-100 (block). Calibration: 14 of 119 AT&T residential iPhones
-      // in dev-jw 7-day window produced options=7.
+      // corroborate the UA. Demote to tier-35 (low confidence) instead of
+      // tier-60/100; this signal is path-sensitive and should not fail SSO
+      // continuity by itself. Calibration: 14 of 119 AT&T residential
+      // iPhones in dev-jw 7-day window produced options=7.
       const base = baseIntegrity();
       const result = buildMerchantResponse({
         session_id: "s",
@@ -675,7 +677,51 @@ describe("buildMerchantResponse", () => {
           } as any,
         },
       });
-      expect(result.device_tampering).toBe(60);
+      expect(result.device_tampering).toBe(35);
+      expect(result.tags).not.toContain("browser_tampering");
+    });
+
+    it("keeps corroborated iOS Chrome ECN stripping below SSO continuity cutoff", () => {
+      const base = baseIntegrity();
+      const result = buildMerchantResponse({
+        session_id: "s",
+        integrity: {
+          ...base,
+          user_agent:
+            "Mozilla/5.0 (iPhone; CPU iPhone OS 26_6_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/150.0.7871.113 Mobile/15E148 Safari/604.1",
+          request_headers: {
+            headers: {
+              "user-agent":
+                "Mozilla/5.0 (iPhone; CPU iPhone OS 26_6_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/150.0.7871.113 Mobile/15E148 Safari/604.1",
+            },
+            cookie_names: [],
+          },
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          analysis: {
+            ...base.analysis,
+            ja4_ua: {
+              ja4_browser_family: "safari",
+              h2_browser_family: "safari",
+              ua_browser_family: "safari",
+              ua_os: "iOS",
+              signals: [],
+            },
+            kernel_os: {
+              signals: [
+                {
+                  code: "KERNEL_OS_MISMATCH_DARWIN",
+                  severity: 0.85,
+                  evidence:
+                    "ua_os=iOS, tcpi_options=7 (no ECN — Linux-typical)",
+                },
+              ],
+            },
+          } as any,
+        },
+      });
+      expect(Math.max(result.automation, result.device_tampering)).toBe(35);
+      expect(result.device_tampering).toBe(35);
+      expect(result.tags).not.toContain("browser_tampering");
     });
 
     it("KERNEL_OS_MISMATCH_DARWIN stays hard tier-100 when JA4 disagrees (real Linux→iOS spoof)", () => {
@@ -1047,15 +1093,16 @@ describe("buildMerchantResponse", () => {
         expect(result.automation).toBe(100);
       });
 
-      it("iOS Safari without PAT penalizes automation by +25", () => {
-        // Clean iPhone-claimed session → botProbability ≈ 0. PAT-missing
-        // penalty pushes to 25 — surfaces as suspect, not block.
+      it("iOS Safari without PAT is score-neutral", () => {
+        // PAT issuance is opportunistic and can fail between consecutive
+        // scans on the same physical device. Preserve the diagnostic tag,
+        // but absence alone must not manufacture automation evidence.
         const base = baseIntegrity();
         const result = buildMerchantResponse({
           session_id: "s",
           integrity: { ...base, user_agent: iphoneSafariUA },
         });
-        expect(result.automation).toBe(25);
+        expect(result.automation).toBe(0);
         expect(result.tags).toContain("apple_attestation_missing");
       });
 
@@ -4402,33 +4449,34 @@ describe("buildMerchantResponse", () => {
     // Rule 3 — ratio >= 5 ceiling (overrides damper)
     // -----------------------------------------------------------------
     describe("extreme-ratio ceiling (rule 3)", () => {
-      it("floors proxy at 0.95 when ratio >= 5 even if WebRTC matches", () => {
-        const result = buildMerchantResponse(
-          fusionInput({
-            proxyComponent: 0.1,
-            webrtcIp: "1.2.3.4",
-            webrtcMatches: true,
-            asnCategory: "residential",
-            rcvRttUs: 180000,
-            rttRefreshedUs: 20000,
-          }),
-        );
-        expect(result.network_tampering).toBe(95);
+      it("keeps the ratio >= 5 floor on the proxy sub-score without manufacturing VPN evidence", () => {
+        const input = fusionInput({
+          proxyComponent: 0.1,
+          webrtcIp: "1.2.3.4",
+          webrtcMatches: true,
+          asnCategory: "residential",
+          rcvRttUs: 180000,
+          rttRefreshedUs: 20000,
+        });
+        const result = buildMerchantResponse(input);
+        expect(proxyScore(input)).toBe(0.95);
+        expect(result.network_tampering).toBe(0);
+        expect(result.tags).not.toContain("vpn");
         expect(result.tags).not.toContain("proxy");
       });
 
-      it("ratio=5.0 exactly triggers ceiling (boundary inclusive)", () => {
-        const result = buildMerchantResponse(
-          fusionInput({
-            proxyComponent: 0.1,
-            webrtcIp: "1.2.3.4",
-            webrtcMatches: true,
-            asnCategory: "residential",
-            rcvRttUs: 50000,
-            rttRefreshedUs: 10000,
-          }),
-        );
-        expect(result.network_tampering).toBe(95);
+      it("ratio=5.0 exactly triggers the proxy-only ceiling", () => {
+        const input = fusionInput({
+          proxyComponent: 0.1,
+          webrtcIp: "1.2.3.4",
+          webrtcMatches: true,
+          asnCategory: "residential",
+          rcvRttUs: 50000,
+          rttRefreshedUs: 10000,
+        });
+        const result = buildMerchantResponse(input);
+        expect(proxyScore(input)).toBe(0.95);
+        expect(result.network_tampering).toBe(0);
       });
 
       it("ratio 4.9 still falls into damper", () => {
@@ -4445,18 +4493,19 @@ describe("buildMerchantResponse", () => {
         expect(result.network_tampering).toBe(0);
       });
 
-      it("ratio 90x on residential with no WebRTC gets the ceiling floor", () => {
-        const result = buildMerchantResponse(
-          fusionInput({
-            proxyComponent: 0,
-            webrtcIp: null,
-            webrtcMatches: null,
-            asnCategory: "residential",
-            rcvRttUs: 900000,
-            rttRefreshedUs: 10000,
-          }),
-        );
-        expect(result.network_tampering).toBe(95);
+      it("ratio 90x with no WebRTC still cannot become VPN evidence", () => {
+        const input = fusionInput({
+          proxyComponent: 0,
+          webrtcIp: null,
+          webrtcMatches: null,
+          asnCategory: "residential",
+          rcvRttUs: 900000,
+          rttRefreshedUs: 10000,
+        });
+        const result = buildMerchantResponse(input);
+        expect(proxyScore(input)).toBe(0.95);
+        expect(result.network_tampering).toBe(0);
+        expect(result.tags).not.toContain("vpn");
       });
     });
 
@@ -4548,18 +4597,19 @@ describe("buildMerchantResponse", () => {
         expect(result.tags).not.toContain("proxy");
       });
 
-      it("cellular does NOT protect against the physics ceiling", () => {
-        const result = buildMerchantResponse(
-          fusionInput({
-            proxyComponent: 0.1,
-            webrtcIp: null,
-            webrtcMatches: null,
-            asnCategory: "mobile",
-            rcvRttUs: 100000,
-            rttRefreshedUs: 10000,
-          }),
-        );
-        expect(result.network_tampering).toBe(95);
+      it("cellular RTT ceiling remains proxy-only", () => {
+        const input = fusionInput({
+          proxyComponent: 0.1,
+          webrtcIp: null,
+          webrtcMatches: null,
+          asnCategory: "mobile",
+          rcvRttUs: 100000,
+          rttRefreshedUs: 10000,
+        });
+        const result = buildMerchantResponse(input);
+        expect(proxyScore(input)).toBe(0.95);
+        expect(result.network_tampering).toBe(0);
+        expect(result.tags).not.toContain("vpn");
         expect(result.tags).not.toContain("proxy");
       });
     });

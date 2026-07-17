@@ -28,9 +28,9 @@ import {
 // Constants
 // ---------------------------------------------------------------------------
 
-/** rcv_rtt/rtt_refreshed at or above this is structurally impossible for
- *  direct/CGNAT/jittery networks. Overrides both the WebRTC damper and
- *  the cellular carve-out — physics wins. */
+/** rcv_rtt/rtt_refreshed at or above this is strong RTT-derived proxy
+ *  evidence. It belongs only to the proxy sub-scorer; it must never create
+ *  MSS-derived VPN evidence when vpn_component is zero. */
 const RTT_RATIO_CEILING = 5.0;
 
 /** Component above this counts as "elevated" for the no-webrtc uplift.
@@ -40,7 +40,7 @@ const COMPONENT_ELEVATED_THRESHOLD = 0.3;
 /** Floor applied when no WebRTC + elevated RTT ("GTFO" rule). */
 const NO_WEBRTC_UPLIFT_FLOOR = 0.9;
 
-/** Floor applied when ratio >= RTT_RATIO_CEILING. Above any damper. */
+/** Proxy floor applied when ratio >= RTT_RATIO_CEILING. Above any damper. */
 const CEILING_UPLIFT_FLOOR = 0.95;
 
 /** Ceiling applied when WebRTC is present and matches probes — caps proxy
@@ -82,12 +82,9 @@ function isTunneledAsn(input: MerchantProjectionInput): boolean {
 }
 
 /**
- * Apply the WebRTC-anchored fusion rules on top of a raw network component
- * score. The damper only fires when `applyDamper` is true, which is proxy-
- * only: proxy_component is RTT-derived (noise-prone) and benefits from
- * WebRTC context. vpn_component is MSS-derived — a physical-layer
- * fingerprint of tunnel encapsulation — and should pass through
- * regardless of WebRTC match state.
+ * Apply the WebRTC-anchored fusion rules on top of the raw RTT-derived proxy
+ * component. vpn_component is MSS-derived and deliberately bypasses this
+ * function so RTT jitter cannot manufacture VPN evidence.
  *
  * Rules (in precedence order):
  *   1. Corporate shield → 0. Strongest carve-out; benign enterprise egress.
@@ -96,7 +93,7 @@ function isTunneledAsn(input: MerchantProjectionInput): boolean {
  *      cellular carve-out AND WebRTC match (covers the motivated-attacker
  *      case who rents a proxy exit in the victim's /16 to fake a match).
  *   3. Cellular / CGNAT → pass through.
- *   4. (proxy only) WebRTC matches probes at /16 AND ASN is NOT
+ *   4. WebRTC matches probes at /16 AND ASN is NOT
  *      datacenter/vpn_proxy → cap at 0.3. Suspect but not damning.
  *      Damper is scoped in two dimensions: (a) proxy component only —
  *      MSS/vpn signal stays authoritative; (b) non-tunneled ASNs only —
@@ -105,10 +102,9 @@ function isTunneledAsn(input: MerchantProjectionInput): boolean {
  *   5. No WebRTC submitted and component elevated (> 0.3) → floor at 0.9.
  *   6. Otherwise → pass through.
  */
-function applyWebrtcFusion(
+function applyProxyWebrtcFusion(
   input: MerchantProjectionInput,
   rawComponent: number,
-  applyDamper: boolean,
 ): number {
   if (detectCorporateShield(input)) return 0;
 
@@ -121,7 +117,7 @@ function applyWebrtcFusion(
 
   if (detectCellular(input)) return rawComponent;
 
-  if (applyDamper && webrtcMatchesNetwork(input) && !isTunneledAsn(input)) {
+  if (webrtcMatchesNetwork(input) && !isTunneledAsn(input)) {
     return Math.min(rawComponent, WEBRTC_MATCH_DAMPER_CAP);
   }
 
@@ -138,12 +134,12 @@ function applyWebrtcFusion(
 
 export function vpnScore(input: MerchantProjectionInput): number {
   const raw = input.integrity?.analysis.network.vpn_component ?? 0;
-  return applyWebrtcFusion(input, raw, false);
+  return detectCorporateShield(input) ? 0 : raw;
 }
 
 export function proxyScore(input: MerchantProjectionInput): number {
   const raw = input.integrity?.analysis.network.proxy_component ?? 0;
-  return applyWebrtcFusion(input, raw, true);
+  return applyProxyWebrtcFusion(input, raw);
 }
 
 /**

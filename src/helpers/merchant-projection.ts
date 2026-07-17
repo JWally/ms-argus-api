@@ -61,8 +61,8 @@ import {
   automationProbability,
   detectDeveloperTools,
 } from "../scoring/automation";
+import { detectBraveIos } from "../scoring/brave-ios";
 import {
-  detectBraveIos,
   detectLanguageMismatch,
   detectLocationMismatch,
   deviceTamperingProbability,
@@ -312,8 +312,8 @@ const UA_HEADER_KEY = "user-agent";
 /**
  * Heuristic: does the visitor's UA claim an Apple platform (iOS Safari or
  * macOS Safari)? Used to gate the apple_attestation_missing tag — we only
- * surface "no attestation" as informational on UAs that *should* be able
- * to produce one. Excludes Chrome/Firefox/Edge on Mac (those don't
+ * surface "no attestation" as informational on UAs where the platform PAT
+ * path may be available. Excludes Chrome/Firefox/Edge on Mac (those don't
  * trigger PAT regardless of OS) by requiring AppleWebKit + Safari without
  * the Chrom* / Firefox / Edg fingerprints.
  */
@@ -333,16 +333,6 @@ function isAppleClaimedUA(
   // Apple-claimed since it runs on top of WKWebView and the OS handles
   // PAT for it the same way.
   return /iPhone|iPad|iPod|Macintosh/.test(ua);
-}
-
-/** PAT absence is scoreable only on iOS/iPadOS, where issuance is expected. */
-function isAppleMobileClaimedUA(
-  integrity: IntegrityResultsData | undefined,
-): boolean {
-  if (!isAppleClaimedUA(integrity)) return false;
-  const headers = integrity?.request_headers?.headers ?? {};
-  const ua = integrity?.user_agent ?? headers[UA_HEADER_KEY] ?? "";
-  return /iPhone|iPad|iPod/.test(ua);
 }
 
 type TagPredicate = [MerchantTag, (i: MerchantProjectionInput) => boolean];
@@ -388,12 +378,11 @@ function buildTags(
 
 /**
  * A verified PAT caps soft automation evidence but cannot erase hard residue.
- * Missing PAT adds a suspect-tier penalty only for iOS/iPadOS outside known
- * corporate shields, where the origin round trip is expected to work.
+ * PAT absence is score-neutral: issuance is opportunistic and can differ
+ * between consecutive scans on the same physical Apple device.
  */
 const PAT_AUTOMATION_HARD_FLOOR = 75;
 const PAT_VALID_AUTOMATION_CAP = 25;
-const PAT_MISSING_AUTOMATION_PENALTY = 25;
 
 function applyPatAdjustment(
   automation: number,
@@ -402,13 +391,6 @@ function applyPatAdjustment(
   if (input.integrity?.pat?.attested === true) {
     if (automation >= PAT_AUTOMATION_HARD_FLOOR) return automation;
     return Math.min(automation, PAT_VALID_AUTOMATION_CAP);
-  }
-
-  if (
-    isAppleMobileClaimedUA(input.integrity) &&
-    !detectCorporateShield(input)
-  ) {
-    return Math.min(100, automation + PAT_MISSING_AUTOMATION_PENALTY);
   }
   return automation;
 }

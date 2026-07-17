@@ -1,5 +1,4 @@
 /** Typed readers for identity, browser-engine, locale, and wire evidence. */
-
 import type { IntegrityResultsData } from "../helpers/payload-schema";
 
 interface Signal {
@@ -105,6 +104,7 @@ export function readBrowserEngineSignals(integrity: IntegrityResultsData): {
 export function readKernelOsSignals(integrity: IntegrityResultsData): {
   hard: boolean;
   soft: boolean;
+  corroboratedDarwin: boolean;
 } {
   const kernelOs = readAnalysisBlock<{ signals?: Signal[] }>(
     integrity,
@@ -120,17 +120,17 @@ export function readKernelOsSignals(integrity: IntegrityResultsData): {
   const corroborated = darwinMismatch && isSafariDarwin(readJa4Ua(integrity));
   return {
     hard: darwinMismatch && !corroborated,
-    soft: linuxMismatch || corroborated,
+    soft: linuxMismatch,
+    corroboratedDarwin: corroborated,
   };
 }
 
 function hasBodyClientHints(integrity: IntegrityResultsData): boolean {
-  const navigator = (
+  const brands = (
     integrity.device as
       | { navigator?: { userAgentData?: { brands?: unknown } } }
       | undefined
-  )?.navigator;
-  const brands = navigator?.userAgentData?.brands;
+  )?.navigator?.userAgentData?.brands;
   return Array.isArray(brands) && brands.length > 0;
 }
 

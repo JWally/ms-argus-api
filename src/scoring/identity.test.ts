@@ -59,7 +59,11 @@ describe("identity evidence readers", () => {
     expect(hasJa4UaMismatch(row)).toBe(false);
     expect(hasTlsUaMismatch(row)).toBe(false);
     expect(readBrowserEngineSignals(row)).toEqual({ hard: false, soft: false });
-    expect(readKernelOsSignals(row)).toEqual({ hard: false, soft: false });
+    expect(readKernelOsSignals(row)).toEqual({
+      hard: false,
+      soft: false,
+      corroboratedDarwin: false,
+    });
     expect(readLocaleGeoSignals(row)).toEqual({
       localeTamper: false,
       crossContinent: false,
@@ -118,7 +122,11 @@ describe("identity evidence readers", () => {
         signals: [{ code: "KERNEL_OS_MISMATCH_DARWIN" }],
       },
     });
-    expect(readKernelOsSignals(row)).toEqual({ hard: false, soft: true });
+    expect(readKernelOsSignals(row)).toEqual({
+      hard: false,
+      soft: false,
+      corroboratedDarwin: true,
+    });
   });
 
   it("requires body client hints when a Chrome UA lacks the header", () => {

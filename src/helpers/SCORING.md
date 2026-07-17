@@ -32,6 +32,10 @@ Three thresholds, one rule. Any single axis saturating is enough to flag.
 | 2.0×               | 0.35     |
 | 1.5×               | 0.15     |
 
+RTT ratio is proxy evidence only. It cannot create or raise the MSS-derived
+`vpn_component`; transient receive-side RTT samples are left to the integrated
+proxy waterfall for corroboration.
+
 ### ASN category
 
 | category        | severity | code                    |
@@ -55,6 +59,8 @@ Three thresholds, one rule. Any single axis saturating is enough to flag.
 ### Axis composition
 
 `nt = max(vpn_component, proxy_threat, ip_scatter_penalty)` — pure winner-take-all today.
+The raw RTT-derived `proxy_component` is diagnostic input to `proxy_threat`, not
+a substitute for a zero `vpn_component`.
 
 ---
 
@@ -79,10 +85,10 @@ Three thresholds, one rule. Any single axis saturating is enough to flag.
 
 ### PAT (Apple Private Access Token) adjustments
 
-| condition                        | effect                                                                      |
-| -------------------------------- | --------------------------------------------------------------------------- |
-| PAT verified                     | automation capped at **25** (unless hard residue => floor 75 still applies) |
-| PAT missing on iOS/iPadOS Safari | **+25** automation penalty outside known corporate shields                  |
+| condition                  | effect                                                                      |
+| -------------------------- | --------------------------------------------------------------------------- |
+| PAT verified               | automation capped at **25** (unless hard residue => floor 75 still applies) |
+| PAT missing on an Apple UA | score-neutral; emits the `apple_attestation_missing` diagnostic tag         |
 
 ---
 
@@ -111,10 +117,10 @@ Three thresholds, one rule. Any single axis saturating is enough to flag.
 ### Tier-35
 
 - Single weak corroborator (incognito-claimed + device-history mismatch, etc.)
+- `kernel_os.KERNEL_OS_MISMATCH_DARWIN` (severity 0.85): claimed iOS/macOS but TCP options indicate Linux kernel; if JA4/H2/UA all corroborate Safari/WebKit, this is treated as low-confidence path evidence
 
 ### Tier-25
 
-- `kernel_os.KERNEL_OS_MISMATCH_DARWIN` (severity 0.85): claimed iOS/macOS but TCP options indicate Linux kernel
 - Worker hardwareConcurrency / UA divergence (severity 0.7-0.8)
 
 ---
