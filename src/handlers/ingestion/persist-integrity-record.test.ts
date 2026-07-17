@@ -15,30 +15,19 @@
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-const mockSend = vi.fn();
 const mockArchiveToFirehose = vi.hoisted(() => vi.fn());
 
-vi.mock("@aws-sdk/client-dynamodb", async () => {
-  const actual = await vi.importActual<
-    typeof import("@aws-sdk/client-dynamodb")
-  >("@aws-sdk/client-dynamodb");
-  return {
-    ...actual,
-    DynamoDBClient: class {
-      send = (...args: unknown[]) => mockSend(...args);
-    },
-  };
-});
-
-// Firehose archive runs in the same Promise.all as the DDB put. It never
-// throws in prod (errors are logged inside the helper); stub it so the test
-// exercises only the DDB outcome.
+// Firehose archive is started before the DDB put but does not gate it. Stub it
+// so the tests can control archival independently from the durable write.
 vi.mock("../../helpers/firehose-archive", () => ({
   archiveToFirehose: mockArchiveToFirehose,
 }));
 
 import { ConditionalCheckFailedException } from "@aws-sdk/client-dynamodb";
-import { persistIntegrityRecord } from "./base-handler";
+import {
+  persistIntegrityRecord,
+  type PersistIntegrityRecordDeps,
+} from "./persist-integrity-record";
 import { HttpError } from "../../helpers/http-error";
 import type { Logger } from "@aws-lambda-powertools/logger";
 import type { Metrics } from "@aws-lambda-powertools/metrics";
@@ -55,6 +44,12 @@ const mockMetrics = {
 } as unknown as Metrics;
 
 type Ctx = Parameters<typeof persistIntegrityRecord>[0];
+const mockSend = vi.fn();
+const persistDeps = {
+  dynamo: { send: mockSend },
+  tableName: "integrity-results-test",
+  firehoseStreamName: "integrity-firehose-test",
+} as PersistIntegrityRecordDeps;
 
 function makeCtx(): Ctx {
   return {
@@ -77,13 +72,22 @@ describe("persistIntegrityRecord", () => {
   it("fresh write: returns duplicate=false and issues a conditional PutItem", async () => {
     mockSend.mockResolvedValueOnce({});
 
-    const result = await persistIntegrityRecord(makeCtx(), { foo: "bar" });
+    const result = await persistIntegrityRecord(
+      makeCtx(),
+      { foo: "bar" },
+      persistDeps,
+    );
 
     expect(result).toEqual({ duplicate: false });
     const put = mockSend.mock.calls[0][0];
     // Idempotency hinges on this condition — assert it's still here so a
     // refactor can't silently turn the put into a blind overwrite.
     expect(put.input.ConditionExpression).toBe("attribute_not_exists(cpi)");
+    expect(put.input.TableName).toBe("integrity-results-test");
+    expect(mockArchiveToFirehose).toHaveBeenCalledWith(
+      { foo: "bar" },
+      expect.objectContaining({ streamName: "integrity-firehose-test" }),
+    );
     expect(metricNames()).not.toContain("IntegrityIdempotentRetry");
   });
 
@@ -96,12 +100,25 @@ describe("persistIntegrityRecord", () => {
     );
     mockSend.mockResolvedValueOnce({});
 
-    const pending = persistIntegrityRecord(makeCtx(), { foo: "bar" });
+    const pending = persistIntegrityRecord(
+      makeCtx(),
+      { foo: "bar" },
+      persistDeps,
+    );
     expect(mockSend).toHaveBeenCalledOnce();
     await expect(pending).resolves.toEqual({ duplicate: false });
 
     finishArchive(true);
     await Promise.resolve();
+  });
+
+  it("still succeeds when best-effort Firehose archival rejects", async () => {
+    mockArchiveToFirehose.mockRejectedValueOnce(new Error("firehose down"));
+    mockSend.mockResolvedValueOnce({});
+
+    await expect(
+      persistIntegrityRecord(makeCtx(), { foo: "bar" }, persistDeps),
+    ).resolves.toEqual({ duplicate: false });
   });
 
   it("duplicate (cpi, session_id): returns duplicate=true instead of throwing 409", async () => {
@@ -113,7 +130,11 @@ describe("persistIntegrityRecord", () => {
     );
 
     // The bug this guards: a same-session re-submit must NOT 409.
-    const result = await persistIntegrityRecord(makeCtx(), { foo: "bar" });
+    const result = await persistIntegrityRecord(
+      makeCtx(),
+      { foo: "bar" },
+      persistDeps,
+    );
 
     expect(result).toEqual({ duplicate: true });
     expect(metricNames()).toContain("IntegrityIdempotentRetry");
@@ -125,7 +146,7 @@ describe("persistIntegrityRecord", () => {
       new ConditionalCheckFailedException({ $metadata: {}, message: "dup" }),
     );
 
-    await persistIntegrityRecord(makeCtx(), { foo: "bar" });
+    await persistIntegrityRecord(makeCtx(), { foo: "bar" }, persistDeps);
 
     expect(metricNames()).not.toContain("IntegrityWriteFailed");
   });
@@ -139,7 +160,7 @@ describe("persistIntegrityRecord", () => {
 
     let caught: unknown;
     try {
-      await persistIntegrityRecord(makeCtx(), { foo: "bar" });
+      await persistIntegrityRecord(makeCtx(), { foo: "bar" }, persistDeps);
     } catch (e) {
       caught = e;
     }

@@ -90,6 +90,7 @@ src/
       base-handler.ts            # collect use-case orchestration
       integrity-analysis.ts      # trusted analysis + safe request evidence
       sigint-hydration.ts        # fail-closed probe/PAT verification boundary
+      ip-velocity.ts             # bounded velocity enrichment + block accounting
       middleware.ts              # encrypted request transport
       persist-integrity-record.ts # archive/storage helpers
     session-get.ts               # merchant REST adapter + Middy stack
@@ -177,7 +178,9 @@ Cruiser rejects cycles and layer inversions. The cleanup ratchet currently
 prevents the remaining primary hotspots from growing:
 
 - `src/helpers/merchant-projection.ts` — 874 lines maximum;
-- `src/handlers/ingestion/base-handler.ts` — 836 lines maximum.
+- `src/handlers/ingestion/base-handler.ts` — 707 lines maximum.
+- `src/handlers/ingestion/ip-velocity.ts` — 103 lines maximum.
+- `src/handlers/ingestion/persist-integrity-record.ts` — 80 lines maximum.
 
 Extracted scoring, projection, hydration, and analysis modules also carry exact
 ceilings, preventing a god-file from simply being recreated under a new name.
