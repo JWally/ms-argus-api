@@ -51,6 +51,13 @@ import {
   type MerchantDeviceHistory,
 } from "../projections/activity";
 import {
+  computeNetworkIntegrityScore,
+  deriveNetworkProjection,
+  readAwsCf,
+  type MerchantIpInfo,
+  type MerchantIpLocation,
+} from "../projections/network";
+import {
   automationProbability,
   detectDeveloperTools,
 } from "../scoring/automation";
@@ -61,7 +68,6 @@ import {
   deviceTamperingProbability,
   tamperingWithoutWorkerDivergence,
 } from "../scoring/device-tampering";
-import { readJa4UaSignals } from "../scoring/identity";
 
 // Re-export so external test files and downstream consumers that import the
 // type from helpers/merchant-projection keep compiling unchanged.
@@ -70,6 +76,8 @@ export type {
   MerchantDeviceHistory,
   MerchantProjectionInput,
 };
+export type { MerchantIpInfo, MerchantIpLocation };
+export { computeNetworkIntegrityScore };
 
 /** Truncated SHA-256 length (hex chars). 40 bits of entropy — ample for
  *  cross-session correlation at merchant scale; compact enough to read. */
@@ -167,66 +175,6 @@ export interface MerchantIdentification {
   network_id: string | null;
   network_id_source: "category_residential" | "asn_fallback" | "none";
   browserDetails: BrowserDetails;
-}
-
-export interface MerchantIpLocation {
-  city: string | null;
-  country: string | null;
-  latitude: number | null;
-  longitude: number | null;
-  timezone: string | null;
-}
-
-export interface MerchantIpInfo {
-  asn: {
-    number: number | null;
-    organization: string | null;
-    /**
-     * Legacy 5-value categorization (datacenter / vpn_proxy / corporate_proxy
-     * / privacy_relay / mobile). Kept for backwards compatibility with
-     * pre-existing integrations. New consumers should prefer `network_class`
-     * (broader, 12-value taxonomy) and the convenience booleans below.
-     */
-    category: string | null;
-    /**
-     * Broader consumer-network class derived from the IPtoASN+regex dataset
-     * (mobile / residential / datacenter / vpn_proxy / hosting_proxy / cdn /
-     * satellite / privacy_relay / security_filter / business / education /
-     * government). Distinguishes residential vs cellular within mixed-use
-     * ASNs (notably AT&T 7018). Null when the ASN isn't in the dataset.
-     */
-    network_class: string | null;
-    /**
-     * Optional enrichment from the RDAP auto-overlay (registrant operator +
-     * sub-allocated customer when ARIN records one) and PeeringDB (operator-
-     * self-declared type + IX presence count). Coverage is sparse: present
-     * only when at least one field is known for this session's IP/ASN.
-     * PeeringDB values are operator-self-declared and may shift between
-     * weekly rebuilds — treat as a hint, not a contract.
-     */
-    metadata: {
-      parent_org?: string;
-      customer_org?: string;
-      pdb_type?: string;
-      ix_count?: number;
-    } | null;
-  };
-  /** Convenience booleans for routing — all derived from `asn.network_class`. */
-  datacenter: { result: boolean };
-  /** True when network_class is mobile. Useful for stable-ID branching. */
-  mobile: { result: boolean };
-  /** True when network_class is residential. */
-  residential: { result: boolean };
-  /** True when network_class is vpn_proxy (declared VPN provider). */
-  vpn: { result: boolean };
-  /** True when network_class is hosting_proxy (residential proxy networks
-   *  resold by Bright Data, SOAX, etc.). */
-  hosting: { result: boolean };
-  /** True when network_class is privacy_relay (Apple iCloud Private Relay). */
-  privacy_relay: { result: boolean };
-  /** True when network_class is security_filter (Cisco Umbrella, Zscaler,
-   *  Cloudflare Access — corporate cloud-egress shields). */
-  corporate_shield: { result: boolean };
 }
 
 export interface MerchantRequestHeaders {
@@ -465,112 +413,6 @@ function applyPatAdjustment(
   return automation;
 }
 
-function parseAsnNumber(raw: string | null | undefined): number | null {
-  if (!raw) return null;
-  const cleaned = String(raw).replace(/^AS/i, "");
-  const n = Number(cleaned);
-  return Number.isFinite(n) && n > 0 ? n : null;
-}
-
-interface AwsCfSigint {
-  asn?: string | null;
-  country?: string | null;
-  city?: string | null;
-  lat?: string | null;
-  lon?: string | null;
-  tz?: string | null;
-  ip?: string | null;
-  ts?: number | null;
-  /** Opaque id stamped into the third-party cookie at TLS edge. */
-  id?: string | null;
-  /** Unix seconds when the cookie was minted. */
-  issuedAt?: number | null;
-  /** True when the submitted cookie didn't verify (absent counts as tampered). */
-  cookieTampered?: boolean | null;
-  /** True when the cookie's id+issuedAt match the current TLS token. */
-  cookieMatchesToken?: boolean | null;
-}
-
-function readAwsCf(input: MerchantProjectionInput): AwsCfSigint | undefined {
-  return (input.integrity?.sigint as { aws_cf?: AwsCfSigint } | undefined)
-    ?.aws_cf;
-}
-
-function toFloat(raw: string | number | null | undefined): number | null {
-  if (raw === null || raw === undefined || raw === "") return null;
-  const n = typeof raw === "number" ? raw : Number(raw);
-  return Number.isFinite(n) ? n : null;
-}
-
-function deriveIpLocation(input: MerchantProjectionInput): MerchantIpLocation {
-  const awsCf = readAwsCf(input);
-  return {
-    city: awsCf?.city ?? null,
-    country: awsCf?.country ?? null,
-    latitude: toFloat(awsCf?.lat),
-    longitude: toFloat(awsCf?.lon),
-    timezone: awsCf?.tz ?? null,
-  };
-}
-
-/**
- * All convenience-boolean flags derive from `network_class` (the broader
- * 12-value taxonomy) so the `category` field can stay legacy without
- * influencing routing. `datacenter` previously read from `category` —
- * standardized here so all booleans share one source of truth.
- */
-function deriveNetworkFlags(networkClass: string | null): {
-  datacenter: { result: boolean };
-  mobile: { result: boolean };
-  residential: { result: boolean };
-  vpn: { result: boolean };
-  hosting: { result: boolean };
-  privacy_relay: { result: boolean };
-  corporate_shield: { result: boolean };
-} {
-  return {
-    datacenter: { result: networkClass === "datacenter" },
-    mobile: { result: networkClass === "mobile" },
-    residential: { result: networkClass === "residential" },
-    vpn: { result: networkClass === "vpn_proxy" },
-    hosting: { result: networkClass === "hosting_proxy" },
-    privacy_relay: { result: networkClass === "privacy_relay" },
-    corporate_shield: { result: networkClass === "security_filter" },
-  };
-}
-
-function deriveIpInfo(input: MerchantProjectionInput): MerchantIpInfo {
-  const asnFromIntegrity = input.integrity?.analysis.ip.asn;
-  if (asnFromIntegrity) {
-    const networkClass = asnFromIntegrity.network_class ?? null;
-    return {
-      asn: {
-        number: parseAsnNumber(asnFromIntegrity.number),
-        organization: asnFromIntegrity.org,
-        category: asnFromIntegrity.category,
-        network_class: networkClass,
-        metadata: asnFromIntegrity.metadata ?? null,
-      },
-      ...deriveNetworkFlags(networkClass),
-    };
-  }
-  const awsCf = readAwsCf(input);
-  return {
-    asn: {
-      number: parseAsnNumber(awsCf?.asn),
-      organization: null,
-      category: null,
-      network_class: null,
-      metadata: null,
-    },
-    ...deriveNetworkFlags(null),
-  };
-}
-
-function deriveIp(input: MerchantProjectionInput): string | null {
-  return input.integrity?.analysis.ip.ip ?? readAwsCf(input)?.ip ?? null;
-}
-
 interface NavigatorShape {
   userAgent?: string;
   userAgentParsed?: string;
@@ -617,94 +459,6 @@ const TPC_EMPTY: TpcFields = {
   tpc_created: null,
   tpc_verified: null,
 };
-
-function hasSignalCode(
-  signals: Array<{ code: string }> | undefined,
-  code: string,
-): boolean {
-  return !!signals?.some((s) => s.code === code);
-}
-
-function readAsnCategory(
-  input: MerchantProjectionInput,
-): string | null | undefined {
-  return input.integrity?.analysis.ip.asn.category;
-}
-
-/**
- * Compose the merchant-facing networkIntegrity score from:
- *   - raw probe-consistency score (ip-consistency/index.ts tiers)
- *   - corp-shield clamp (residential-ish footprint: probe scatter expected)
- *   - JA4/H2 browser-family mismatch clamp (C): strong TLS forgery evidence
- *   - compound proxy/VPN noisy-OR downgrade (B): multiple hiding signals stack
- *   - webrtc-blocked on non-residential ASN (F): privacy excuse doesn't fit
- *
- * Forgery evidence (raw=0) is never up-rated — crypto failures can't be
- * masked by ASN category or tier math.
- */
-/** (F) Non-residential ASN categories where "webrtc blocked" is suspicious. */
-const NON_PRIVACY_CATEGORIES = new Set([
-  "datacenter",
-  "hosting",
-  "proxy",
-  "vpn",
-]);
-
-function applyProxyVpnDowngrade(
-  input: MerchantProjectionInput,
-  score: number,
-): number {
-  const proxyP = input.integrity?.analysis.network.proxy_component ?? 0;
-  const vpnP = input.integrity?.analysis.network.vpn_component ?? 0;
-  return score * (1 - proxyP) * (1 - vpnP);
-}
-
-function applyWebrtcBlockedPenalty(
-  input: MerchantProjectionInput,
-  score: number,
-): number {
-  const webrtcBlocked = hasSignalCode(
-    input.integrity?.analysis.ip.signals,
-    "WEBRTC_BLOCKED",
-  );
-  if (!webrtcBlocked) return score;
-  const category = readAsnCategory(input);
-  if (!category || !NON_PRIVACY_CATEGORIES.has(category)) return score;
-  return score * 0.5;
-}
-
-/**
- * @internal — exported only for unit tests of the network-integrity tiers.
- * Not part of the merchant API surface; the score is folded into
- * `network_tampering` in the projected response. Do not depend on it from
- * other modules.
- */
-export function computeNetworkIntegrityScore(
-  input: MerchantProjectionInput,
-  rawScore: number,
-): number {
-  if (rawScore === 0) return 0; // forgery — do not override
-
-  // Corp-shield clamp. Known corporate gateway → probe scatter is expected
-  // and the tier's 0.1 floor is a false positive for that context.
-  const corpShield = detectCorporateShield(input);
-  let score = corpShield ? 1.0 : rawScore;
-
-  // (C) JA4/H2 mismatch at sev >= 0.9 is strong TLS-layer forgery — clamp
-  // aggressively even under corp shield (still spoofing your TLS stack).
-  if (input.integrity && readJa4UaSignals(input.integrity).strongMismatch) {
-    score = Math.min(score, 0.2);
-  }
-
-  // (B + F) Noisy-OR proxy/VPN downgrade + webrtc-blocked-on-non-residential
-  // penalty. Skipped on corp shield since the ASN is a known-benign gateway.
-  if (!corpShield) {
-    score = applyProxyVpnDowngrade(input, score);
-    score = applyWebrtcBlockedPenalty(input, score);
-  }
-
-  return Math.max(0, Math.min(1, score));
-}
 
 /**
  * Derive the third-party-cookie identification fields from aws_cf sigint.
@@ -813,6 +567,7 @@ export function buildMerchantResponse(
     input,
     rawNetworkScore,
   );
+  const networkProjection = deriveNetworkProjection(input);
 
   // networkIntegrityScore stays computed (used by `analysis.ip.integrity`-
   // dependent paths upstream and for any future internal consumer); it is
@@ -850,9 +605,7 @@ export function buildMerchantResponse(
 
     identification: deriveIdentification(input),
 
-    ip: deriveIp(input),
-    ipLocation: deriveIpLocation(input),
-    ipInfo: deriveIpInfo(input),
+    ...networkProjection,
 
     incognito: { result: detectIncognito(input) },
     developer_tools: { result: detectDeveloperTools(input) },

@@ -111,6 +111,7 @@ src/
     network-tampering.ts         # network verdict axis
   projections/
     activity.ts                  # velocity + device-history public views
+    network.ts                   # IP, geo, ASN + network-integrity view
   services/network/              # ASN, relay, overlay, RDAP, CIDR data
   helpers/
     merchant-projection.ts       # projection orchestrator; being drained
@@ -179,12 +180,13 @@ nesting at 3, and parameters at 4 (CDK has a narrow exception). Dependency
 Cruiser rejects cycles and layer inversions. The cleanup ratchet currently
 prevents the remaining primary hotspots from growing:
 
-- `src/helpers/merchant-projection.ts` — 874 lines maximum;
+- `src/helpers/merchant-projection.ts` — 627 lines maximum;
 - `src/handlers/ingestion/base-handler.ts` — 480 lines maximum.
 - `src/handlers/ingestion/device-history-workflow.ts` — 112 lines maximum.
 - `src/handlers/ingestion/integrity-record-builder.ts` — 121 lines maximum.
 - `src/handlers/ingestion/ip-velocity.ts` — 103 lines maximum.
 - `src/handlers/ingestion/persist-integrity-record.ts` — 80 lines maximum.
+- `src/projections/network.ts` — 203 lines maximum.
 
 Extracted scoring, projection, hydration, and analysis modules also carry exact
 ceilings, preventing a god-file from simply being recreated under a new name.
