@@ -17,18 +17,11 @@ import {
   resolveCpi,
   type ArgusPayload,
 } from "../../helpers/payload-schema";
-import { claimStunNonce } from "../../helpers/stun-nonce-tracker";
 import { CpiMerchantResolver } from "../../helpers/cpi-merchant-resolver";
-import {
-  buildWebrtcSigintField,
-  decodeWebrtcSigintCandidates,
-  type SigintCandidateDecodeResult,
-} from "../../helpers/sigint-v6-decode";
 import {
   verifyDeviceIdentity,
   type IdentityOutcome,
 } from "../../helpers/device-identity";
-import type { DeviceHistoryAnalysis } from "../../analysis/device-history";
 import type { ProcessDeviceHistoryResult } from "../../helpers/device-history";
 import { prewarmAsnDataset } from "../../services/network/asn-classifier";
 import { prewarmAutoOverlay } from "../../services/network/auto-overlay";
@@ -39,16 +32,8 @@ import { getAwsSecrets } from "../../helpers/get-aws-secrets";
 import { getValkey } from "../../helpers/valkey-client";
 import { boundedRequestHandler } from "../../helpers/sdk-http-handler";
 import { buildMerchantResponse } from "../../helpers/merchant-projection";
-import { lookupAppleRelaySync } from "../../services/network/apple-relay";
 import { resolveIntegrityTtlSeconds } from "./ttl";
 import { hydrateSigint } from "./sigint-hydration";
-import {
-  buildAnalysisBlock,
-  buildIdentificationField,
-  buildPatFields,
-  captureRequestHeaders,
-  sigintSummary,
-} from "./integrity-analysis";
 import {
   makePhaseTimer,
   phaseTimingEnabled,
@@ -58,6 +43,7 @@ import {
 import { persistIntegrityRecord } from "./persist-integrity-record";
 import { applyIpVelocitySnapshot, bumpIpVelocityBlocked } from "./ip-velocity";
 import { runDeviceHistoryWorkflow } from "./device-history-workflow";
+import { buildIntegrityRecord } from "./integrity-record-builder";
 
 /** Bump when merchant-projection.ts rules change in a way you want stamped on
  *  rows. Stored on the row so historical verdicts are traceable to the code
@@ -220,9 +206,6 @@ interface HandleContext {
   start: number;
 }
 
-const UA_HEADER = "user-agent";
-const XFF_HEADER = "x-forwarded-for";
-
 function emitIdentityMetrics(
   deps: BaseHandlerDeps,
   outcome: IdentityOutcome,
@@ -240,110 +223,6 @@ function emitIdentityMetrics(
     reason: outcome.reason,
     sig_present: outcome.sig_present,
   });
-}
-
-/**
- * Single-use enforcement for STUN attestation candidates. The sigint
- * STUN server's HMAC binds (clientIPv4, epoch, nonce) — not session_id —
- * so a captured candidate is replayable across sessions for the 300s
- * freshness window unless the API enforces consume-on-use. See
- * stun-nonce-tracker for the (deliberate) multi-container caveat.
- *
- * No-op when no candidate decoded (`reason !== "ok"`); analyzer already
- * has contingencies for that path. Throws HttpError(409) on cross-session
- * reclaim — same shape as the existing session-replay block.
- */
-function enforceStunCandidateSingleUse(
-  webrtcSigint: SigintCandidateDecodeResult,
-  ctx: HandleContext,
-): void {
-  if (webrtcSigint.reason !== "ok" || !webrtcSigint.decoded) return;
-  const claim = claimStunNonce(
-    webrtcSigint.decoded.cipherB64,
-    ctx.sessionId,
-    ctx.cpi,
-    webrtcSigint.decoded.ip,
-  );
-  if (claim.accepted) return;
-  ctx.deps.metrics.addMetric("WebrtcStunReplay", MetricUnit.Count, 1);
-  ctx.deps.logger.warn("WebRTC STUN candidate replay rejected", {
-    session_id: ctx.sessionId,
-    cpi: ctx.cpi,
-    attested_ip: webrtcSigint.decoded.ip,
-    first_claimed_by: claim.firstClaimedBy.sessionId,
-    first_claimed_at: claim.firstClaimedBy.claimedAt,
-  });
-  throw new HttpError(409, "webrtc attestation already redeemed");
-}
-
-interface BuildIntegrityItemArgs {
-  ctx: HandleContext;
-  hydratedPayload: ArgusPayload;
-  identity: IdentityOutcome;
-  merchantId: string | null;
-  deviceHistory: DeviceHistoryAnalysis;
-}
-
-function buildIntegrityItem(args: BuildIntegrityItemArgs) {
-  const { ctx, hydratedPayload, identity, merchantId, deviceHistory } = args;
-  const now = Date.now();
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const raw = ctx.payload as any;
-  const clientIp = ctx.event.headers[XFF_HEADER]?.split(",")[0]?.trim() ?? "";
-  const ua = ctx.event.headers[UA_HEADER] ?? "";
-  const acceptLanguage = ctx.event.headers["accept-language"] ?? null;
-
-  const identification = buildIdentificationField(identity);
-  const webrtcSigint = decodeWebrtcSigintCandidates(
-    raw.device,
-    process.env.SIGINT_AES_KEY,
-  );
-  enforceStunCandidateSingleUse(webrtcSigint, ctx);
-  const webrtcSigintField = buildWebrtcSigintField(webrtcSigint);
-  const requestHeaders = captureRequestHeaders(ctx.event);
-
-  return {
-    cpi: ctx.cpi,
-    session_id: ctx.sessionId,
-    // Sparse GSI key: omitted when the resolver couldn't map cpi → merchantId
-    // (unknown cpi, MERCHANT_KEYS_TABLE unset, etc.). DDB excludes rows
-    // without the key from the merchantId-createdAt-index, which is the
-    // correct behavior — we don't pollute someone else's merchant listing
-    // with an unowned row.
-    ...(merchantId ? { merchant_id: merchantId } : {}),
-    device: raw.device ?? {},
-    meta: raw.meta ?? {},
-    sigint: hydratedPayload.sigint ?? sigintSummary(ctx.payload),
-    ...(identification ? { identification } : {}),
-    ...buildPatFields(hydratedPayload),
-    analysis: buildAnalysisBlock({
-      raw,
-      hydratedPayload,
-      clientIp,
-      ua,
-      acceptLanguage,
-      requestHeaders: requestHeaders?.headers ?? null,
-      webrtcSigint,
-      webrtcSigintField,
-      deviceHistory,
-    }),
-    client_ip: clientIp,
-    user_agent: ua,
-    request_headers: requestHeaders,
-    // Apple iCloud Private Relay egress check — Apple's published egress
-    // CIDR list (mask-api.icloud.com) is ground truth for "real Apple
-    // device." When present, the projection treats the row as
-    // PAT-equivalent trust evidence and suppresses signals whose root
-    // cause is the Fastly/Cloudflare/Akamai Linux egress terminator
-    // (KERNEL_OS_MISMATCH_DARWIN, etc.). Field absent on non-match,
-    // empty list, or pre-prewarm cold start.
-    ...((): { apple_relay_egress?: object } => {
-      const m = lookupAppleRelaySync(clientIp);
-      return m ? { apple_relay_egress: m } : {};
-    })(),
-    created_at: now,
-    ttl: Math.floor(now / 1000) + INTEGRITY_TTL_SECONDS,
-  };
 }
 
 /**
@@ -532,12 +411,14 @@ async function handleIntegrity(
   });
   pt.mark("device_history");
 
-  const item = buildIntegrityItem({
+  const item = buildIntegrityRecord({
     ctx,
     hydratedPayload,
     identity,
     merchantId,
     deviceHistory: deviceHistoryAnalysis,
+    sigintAesKey: process.env.SIGINT_AES_KEY,
+    ttlSeconds: INTEGRITY_TTL_SECONDS,
   });
   pt.mark("analysis");
 
