@@ -49,6 +49,9 @@ jobs:
       - name: Run tests with coverage
         run: npm run test:coverage
 
+      - name: Run service end-to-end tests
+        run: npm run test:e2e
+
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v4
         with:
@@ -88,6 +91,9 @@ jobs:
 
       - name: Duplication detection (copy-paste)
         run: npm run duplication
+
+      - name: Cleanup size ratchets
+        run: npm run test:cleanup-ratchets
 
   semgrep:
     name: Semgrep Anti-Pattern Scan

@@ -19,12 +19,13 @@ vi.mock("../../helpers/redeem-sigint-tokens", () => ({
   isAwsCfAuthenticallyHydrated: () => false,
 }));
 
-import { hydrateSigint } from "./base-handler";
+import { hydrateSigint as hydrateSigintWithDynamo } from "./sigint-hydration";
 import { redeemSigintTokens } from "../../helpers/redeem-sigint-tokens";
 import { HttpError } from "../../helpers/http-error";
 import type { ArgusPayload } from "../../helpers/payload-schema";
 import type { Logger } from "@aws-lambda-powertools/logger";
 import type { Metrics } from "@aws-lambda-powertools/metrics";
+import type { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 
 const mockLogger = {
   warn: vi.fn(),
@@ -36,6 +37,18 @@ const mockLogger = {
 const mockMetrics = {
   addMetric: vi.fn(),
 } as unknown as Metrics;
+
+const mockDynamo = {} as DynamoDBClient;
+
+function hydrateSigint(
+  payload: ArgusPayload,
+  deps: { logger: Logger; metrics: Metrics },
+  event: ReturnType<typeof makeEvent>,
+) {
+  return hydrateSigintWithDynamo(payload, deps, event, {
+    dynamo: mockDynamo,
+  });
+}
 
 function makeEvent(): {
   headers: Record<string, string>;
@@ -222,25 +235,47 @@ describe("hydrateSigint catch arm — ARGUS_URGENT_FIXES #4 layer-1-bypass", () 
     expect(returned).toBeNull();
   });
 
-  it("happy path: when redeemSigintTokens resolves, hydrateSigint runs through (sanity)", async () => {
-    // Layer-2's anyHydrated check will throw HttpError(400) because the
-    // mock returns a payload with no hydrated probes, but the IMPORTANT
-    // assertion is: it does NOT throw 503. The function got past the
-    // catch arm. Different error → different code path.
-    vi.mocked(redeemSigintTokens).mockResolvedValueOnce(makePayload());
+  it("returns redeemed probe evidence and passes the shared DynamoDB client", async () => {
+    const redeemed = makePayload();
+    vi.mocked(redeemSigintTokens).mockResolvedValueOnce(redeemed);
 
-    const deps = { logger: mockLogger, metrics: mockMetrics };
-    let caught: unknown;
-    try {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      await hydrateSigint(makePayload(), deps, makeEvent() as any);
-    } catch (e) {
-      caught = e;
-    }
-    if (caught instanceof HttpError) {
-      // Layer-2 path or downstream — anything BUT 503 is acceptable here.
-      expect(caught.statusCode).not.toBe(503);
-    }
-    // Either way: no 503 → catch arm correctly didn't fire.
+    const result = await hydrateSigint(
+      makePayload(),
+      { logger: mockLogger, metrics: mockMetrics },
+      makeEvent(),
+    );
+
+    expect(result.sigint?.tcp_probe).toBeTruthy();
+    expect(result.patAttempt).toEqual({ attempted: false, verified: false });
+    expect(redeemSigintTokens).toHaveBeenCalledWith(
+      expect.any(Object),
+      expect.objectContaining({
+        dynamo: mockDynamo,
+        requestSourceIp: "203.0.113.7",
+      }),
+    );
+  });
+
+  it("rejects clean-by-omission when no probe redeems", async () => {
+    vi.mocked(redeemSigintTokens).mockResolvedValueOnce({
+      ...makePayload(),
+      sigint: {},
+    });
+
+    await expect(
+      hydrateSigint(
+        makePayload(),
+        { logger: mockLogger, metrics: mockMetrics },
+        makeEvent(),
+      ),
+    ).rejects.toMatchObject({
+      statusCode: 400,
+      message: "sigint probe redemption failed",
+    });
+    expect(mockMetrics.addMetric).toHaveBeenCalledWith(
+      "SigintRedeemAllFailed",
+      expect.any(String),
+      1,
+    );
   });
 });

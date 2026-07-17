@@ -5,17 +5,16 @@
  * helpers/merchant-projection.ts needs to call) goes here, so we never
  * import upward from scoring/ back into helpers/.
  *
- * Current contents are the absolute minimum needed by the network-tampering
- * extraction:
+ * Current contents are the primitives shared by multiple verdict axes:
  *   - MerchantProjectionInput  (the projection input shape)
  *   - probabilityFromUnit      (unit [0,1] → percentage-of-5 mapper)
  *   - detectCellular           (cellular carve-out predicate)
  *   - detectCorporateShield    (Cisco-Umbrella-style carve-out)
  *   - detectNoWebrtc           (no-WebRTC-uplift predicate)
  *
- * Subsequent PRs (automation, device-tampering) move more of the cross-axis
- * helpers here as they come up: detectHyperscaler, isCorporateShieldedAsn,
- * isVerifiedAppleRelay, readHeadless, readJa4UaSignals, etc.
+ * Axis-specific readers stay with their owner: automation.ts owns headless
+ * payloads, identity.ts owns identity/protocol views, and device-tampering.ts
+ * composes the device evidence ladder.
  */
 
 import type { IntegrityResultsData } from "../helpers/payload-schema";

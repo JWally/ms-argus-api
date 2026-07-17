@@ -9,9 +9,12 @@
     "prepare": "lefthook install",
     "build": "tsc -p tsconfig.typecheck.json",
     "watch": "tsc -p tsconfig.typecheck.json -w",
-    "test": "vitest run --silent",
+    "test": "npm run test:unit && npm run test:e2e",
+    "test:unit": "vitest run --silent",
+    "test:e2e": "vitest run --config vitest.e2e.config.ts",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
+    "test:cleanup-ratchets": "node scripts/assert-cleanup-ratchets.mjs",
     "test:ui": "vitest --ui",
     "format": "prettier --write \"**/*.{ts,json,md,yaml,yml}\"",
     "format:check": "prettier --check \"**/*.{ts,json,md,yaml,yml}\"",
@@ -21,7 +24,7 @@
     "dead-code": "knip",
     "duplication": "jscpd src lib",
     "mutate": "stryker run",
-    "quality": "npm run lint:test && npm run deps && npm run dead-code && npm run duplication",
+    "quality": "npm run lint:test && npm run deps && npm run dead-code && npm run duplication && npm run test:cleanup-ratchets",
     "docs": "typedoc",
     "cdk": "cdk",
     "synth": "cdk synth",
@@ -200,7 +203,8 @@
       "cmd/",
       "coverage/",
       "scripts/",
-      "vitest.config.ts"
+      "vitest.config.ts",
+      "vitest.e2e.config.ts"
     ]
   },
   "knip": {
