@@ -86,7 +86,12 @@ Returns `{ "status": "healthy" }` through the ingestion Lambda.
 src/
   handlers/
     ingestion.ts                 # browser HTTP adapter + Middy stack
-    ingestion/                   # collect use case, middleware, persistence
+    ingestion/
+      base-handler.ts            # collect use-case orchestration
+      integrity-analysis.ts      # trusted analysis + safe request evidence
+      sigint-hydration.ts        # fail-closed probe/PAT verification boundary
+      middleware.ts              # encrypted request transport
+      persist-integrity-record.ts # archive/storage helpers
     session-get.ts               # merchant REST adapter + Middy stack
     session-get/                 # auth/debit/read/project orchestration
     pat-attest.ts                # PAT HTTP adapter
@@ -97,6 +102,8 @@ src/
   analysis/                      # browser/network consistency analyzers
   scoring/
     automation.ts               # automation/CDP verdict axis
+    device-tampering.ts         # device evidence + tampering tiers
+    identity.ts                 # typed identity/protocol evidence readers
     shared.ts                    # cross-axis types and predicates
     network-tampering.ts         # network verdict axis
   projections/
@@ -167,10 +174,13 @@ npm run synth            # CDK synth
 ESLint caps production functions at 50 non-comment lines, complexity at 10,
 nesting at 3, and parameters at 4 (CDK has a narrow exception). Dependency
 Cruiser rejects cycles and layer inversions. The cleanup ratchet currently
-prevents either primary hotspot from growing:
+prevents the remaining primary hotspots from growing:
 
-- `src/helpers/merchant-projection.ts` — 1,791 lines maximum;
-- `src/handlers/ingestion/base-handler.ts` — 1,233 lines maximum.
+- `src/helpers/merchant-projection.ts` — 874 lines maximum;
+- `src/handlers/ingestion/base-handler.ts` — 836 lines maximum.
+
+Extracted scoring, projection, hydration, and analysis modules also carry exact
+ceilings, preventing a god-file from simply being recreated under a new name.
 
 These are ceilings, not targets. Tighten them after each extraction.
 

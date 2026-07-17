@@ -23,14 +23,8 @@ import {
   resolveCpi,
   type ArgusPayload,
 } from "../../helpers/payload-schema";
-import {
-  redeemSigintTokens,
-  isAwsCfAuthenticallyHydrated,
-} from "../../helpers/redeem-sigint-tokens";
 import { claimStunNonce } from "../../helpers/stun-nonce-tracker";
-import { redeemPatToken } from "../../helpers/redeem-pat-token";
 import { CpiMerchantResolver } from "../../helpers/cpi-merchant-resolver";
-import { extractFpidCookie } from "../../helpers/verify-cf-token";
 import {
   buildWebrtcSigintField,
   decodeWebrtcSigintCandidates,
@@ -40,19 +34,6 @@ import {
   verifyDeviceIdentity,
   type IdentityOutcome,
 } from "../../helpers/device-identity";
-import {
-  analyzeNetworkProbes,
-  analyzeWorkerScopes,
-  analyzeTimezone,
-  analyzeIpConsistency,
-  analyzeJa4Ua,
-  analyzeKernelOs,
-  analyzeBrowserEngine,
-  analyzeLocaleGeo,
-  analyzeClientHintsUa,
-  classifyProxy,
-  type WebrtcSigintStatus,
-} from "../../analysis";
 import { computeDeviceHistoryAnalysis } from "../../analysis/device-history";
 import type { DeviceHistoryAnalysis } from "../../analysis/device-history";
 import {
@@ -60,7 +41,6 @@ import {
   hashUserAgent,
   type ProcessDeviceHistoryResult,
 } from "../../helpers/device-history";
-import type { AsnCategory } from "../../analysis/ip-consistency/asn-catalog";
 import {
   prewarmAsnDataset,
   classifyAsnSync,
@@ -84,6 +64,14 @@ import {
   type IpVelocitySnapshot,
 } from "../../helpers/ip-velocity";
 import { resolveIntegrityTtlSeconds } from "./ttl";
+import { hydrateSigint } from "./sigint-hydration";
+import {
+  buildAnalysisBlock,
+  buildIdentificationField,
+  buildPatFields,
+  captureRequestHeaders,
+  sigintSummary,
+} from "./integrity-analysis";
 import {
   makePhaseTimer,
   phaseTimingEnabled,
@@ -249,177 +237,6 @@ interface HandleContext {
 const UA_HEADER = "user-agent";
 const XFF_HEADER = "x-forwarded-for";
 
-/**
- * Validate that the sigint verification env is configured. Missing env
- * has the same Layer-1-bypass property as the catch arm below — if we
- * skip redeemSigintTokens we skip its inline-data strip and inline
- * attacker blobs would survive to Layer-2's anyHydrated check. Refuse
- * with 503 rather than fall back to the original payload. Distinct
- * metric (SigintNotConfigured) so ops can alert at zero threshold —
- * unlike SigintHydrationError, this should never be non-zero in a
- * healthy deployment.
- */
-function requireSigintEnv(deps: BaseHandlerDeps): {
-  sigintAesKey: string;
-  probeTokensTable: string;
-} {
-  const sigintAesKey = process.env.SIGINT_AES_KEY;
-  const probeTokensTable = process.env.PROBE_TOKENS_TABLE_NAME;
-  if (sigintAesKey && probeTokensTable) {
-    return { sigintAesKey, probeTokensTable };
-  }
-  deps.logger.error(
-    "Sigint env not configured — refusing rather than green-lighting original payload",
-    {
-      sigintAesKeyPresent: !!sigintAesKey,
-      probeTokensTablePresent: !!probeTokensTable,
-    },
-  );
-  deps.metrics.addMetric("SigintNotConfigured", MetricUnit.Count, 1);
-  throw new HttpError(503, "sigint verification not configured");
-}
-
-/**
- * Exported for unit testing of the catch arm — the "throw out of
- * redeemSigintTokens means refuse with 503, not silently fall back to
- * the original payload" semantic is structurally important and worth
- * direct coverage. Production callers use it via handleIntegrity
- * unchanged.
- */
-export async function hydrateSigint(
-  payload: ArgusPayload,
-  deps: BaseHandlerDeps,
-  event: ExtendedEvent,
-  cpi: string = payload.identifiers.cpi ?? "",
-): Promise<ArgusPayload> {
-  const { sigintAesKey, probeTokensTable } = requireSigintEnv(deps);
-
-  let hydrated: ArgusPayload;
-  try {
-    hydrated = await redeemSigintTokens(payload, {
-      sigintAesKeyHex: sigintAesKey,
-      probeTokensTableName: probeTokensTable,
-      dynamo: ddbClient,
-      logger: deps.logger,
-      fpidCookie: extractFpidCookie(event.cookies),
-      requestSourceIp: event.requestContext.http.sourceIp,
-    });
-    deps.metrics.addMetric("IntegritySigintRedeemed", MetricUnit.Count, 1);
-  } catch (err) {
-    // Refuse the request rather than fall back to the *original* payload.
-    // Returning `payload` here would silently restore the attacker-controlled
-    // inline `sigint.tcp_probe` / `sigint.h2` / `sigint.aws_cf` blobs that
-    // Layer-1 strips inside redeemSigintTokens. Layer-2's anyHydrated check
-    // would then see those inline objects as "hydrated" and let the row
-    // through. Any throw out of redeemSigintTokens (DDB throttle, AWS SDK
-    // transient, unexpected crypto error) is therefore a structural reopen
-    // of ARGUS_URGENT_FIXES finding #1. 503 is the right semantic: this is
-    // server-side transient unavailability, not a client error, so retries
-    // are appropriate.
-    deps.logger.warn(
-      "Sigint token redemption threw — refusing rather than green-lighting original payload",
-      {
-        error: err,
-      },
-    );
-    deps.metrics.addMetric("SigintHydrationError", MetricUnit.Count, 1);
-    throw new HttpError(503, "sigint verification temporarily unavailable");
-  }
-
-  // Layer 2: require at least one probe to redeem successfully. Combined
-  // with Layer 1 (inline data cleared before redemption), zero hydrated
-  // probes means the submission carries NO trustworthy network evidence:
-  // every authoritative field was either absent, forged, replayed, or
-  // mismatched-IP. A real SDK execution always redeems all three. Reject
-  // here rather than write a row that will analyze as clean-by-omission.
-  //
-  // aws_cf is special: applyTlsJson writes it for any parseable sigintTls
-  // (stamping tampered/expired flags when the SipHash sig fails). A bare
-  // `!!sigint?.aws_cf` therefore accepts a record the server already
-  // flagged as forged — fully-junk sigintTcp/H2 tokens + a forged
-  // sigintTls would pass this gate and analyze SAFE via the
-  // proxy_waterfall rule-8 (ratio:null) clean fallback. Consult the
-  // flags via isAwsCfAuthenticallyHydrated so only a verified CF probe
-  // counts. tcp_probe / h2 are set ONLY after HMAC verification in
-  // redeem-sigint-tokens, so truthiness is sufficient there.
-  const anyHydrated =
-    !!hydrated.sigint?.tcp_probe ||
-    !!hydrated.sigint?.h2 ||
-    isAwsCfAuthenticallyHydrated(hydrated.sigint);
-  if (!anyHydrated) {
-    deps.metrics.addMetric("SigintRedeemAllFailed", MetricUnit.Count, 1);
-    throw new HttpError(400, "sigint probe redemption failed");
-  }
-
-  // PAT redemption is independent of sigint probe redemption — its token
-  // is self-contained (HMAC-signed at /v1/pat-attestation, verified inline
-  // here), so it shares the AES key but no DB infra. Failure modes drop
-  // the field silently inside redeemPatToken.
-  return redeemPatToken(hydrated, {
-    expectedSrcIp: event.requestContext.http.sourceIp,
-    expectedCpi: cpi,
-    expectedSessionId: hydrated.identifiers.session_id,
-    sigintAesKeyHex: sigintAesKey,
-    logger: deps.logger,
-  });
-}
-
-function sigintSummary(payload: ArgusPayload): Record<string, string> {
-  const present = (v: unknown) => (v ? "present" : "absent");
-  return {
-    tls: present(payload.sigintTls),
-    tcp_token: present(payload.sigintTcpToken),
-    h2_token: present(payload.sigintH2Token),
-  };
-}
-
-/**
- * Build the `identification` column value from a verify outcome. Returns
- * undefined when the payload had no device_identity at all — saves a column on
- * legacy-bundle rows and keeps schemaless consumers unambiguous.
- */
-function buildIdentificationField(
-  outcome: IdentityOutcome,
-): Record<string, unknown> | undefined {
-  if (!outcome.present) return undefined;
-  return {
-    pubkey: outcome.pubkey,
-    verified: outcome.verified,
-    reason: outcome.verified ? null : outcome.reason,
-    sig_present: outcome.sig_present,
-  };
-}
-
-/**
- * Translate the sigint decode result into the evidence shape
- * analyzeIpConsistency wants. IP is populated only on the "ok" path;
- * forgery fires when candidates were submitted and none MAC-verified.
- */
-function webrtcSigintEvidence(result: SigintCandidateDecodeResult): {
-  ip: string | null;
-  forgery: boolean;
-} {
-  return {
-    ip: result.reason === "ok" ? (result.decoded?.ip ?? null) : null,
-    forgery: result.reason === "forgery",
-  };
-}
-
-function extractRttRatio(sigint: unknown): number | null {
-  const tcp = (sigint as Record<string, unknown> | undefined)?.tcp_probe as
-    | Record<string, unknown>
-    | undefined;
-  const fp = tcp?.rtt_fingerprint as Record<string, unknown> | undefined;
-  const rtt =
-    typeof fp?.rtt_refreshed === "number" ? fp.rtt_refreshed : undefined;
-  const rcv =
-    typeof fp?.rcv_rtt_refreshed === "number"
-      ? fp.rcv_rtt_refreshed
-      : undefined;
-  if (!rtt || rtt <= 0 || !rcv || rcv <= 0) return null;
-  return rcv / rtt;
-}
-
 function emitIdentityMetrics(
   deps: BaseHandlerDeps,
   outcome: IdentityOutcome,
@@ -437,220 +254,6 @@ function emitIdentityMetrics(
     reason: outcome.reason,
     sig_present: outcome.sig_present,
   });
-}
-
-// Request headers we preserve on the integrity record. Curated — not a blanket
-// dump — because (a) DDB item size budget and (b) a few headers leak session
-// state (Authorization, actual cookie values) and must not be archived.
-const CAPTURED_REQUEST_HEADER_NAMES: readonly string[] = [
-  "user-agent",
-  "accept",
-  "accept-language",
-  "accept-encoding",
-  "referer",
-  "origin",
-  "dnt",
-  "sec-ch-ua",
-  "sec-ch-ua-mobile",
-  "sec-ch-ua-platform",
-  "sec-ch-ua-platform-version",
-  "sec-ch-ua-full-version-list",
-  "sec-fetch-site",
-  "sec-fetch-mode",
-  "sec-fetch-dest",
-  "sec-fetch-user",
-  "cloudfront-viewer-country",
-  "cloudfront-viewer-country-region",
-  "cloudfront-viewer-city",
-  "cloudfront-viewer-asn",
-  "cloudfront-viewer-time-zone",
-  "cloudfront-viewer-tls",
-  "cloudfront-viewer-http-version",
-  "cloudfront-viewer-address",
-  "cloudfront-is-mobile-viewer",
-  "cloudfront-is-tablet-viewer",
-  "cloudfront-is-desktop-viewer",
-  "cloudfront-is-smarttv-viewer",
-];
-
-interface CapturedRequestHeaders {
-  headers: Record<string, string>;
-  /** Cookie *names* the client sent (values deliberately discarded). */
-  cookie_names: string[];
-}
-
-function captureRequestHeaders(event: ExtendedEvent): CapturedRequestHeaders {
-  const out: Record<string, string> = {};
-  for (const name of CAPTURED_REQUEST_HEADER_NAMES) {
-    const v = event.headers[name];
-    if (typeof v === "string" && v.length > 0) out[name] = v;
-  }
-  // API GW V2 surfaces cookies as a separate array of raw "name=value" pairs,
-  // not in the `headers` map. Pull the names only so we can show presence
-  // without ever persisting values.
-  const cookieNames = (event.cookies ?? [])
-    .map((pair) => pair.split("=", 1)[0]?.trim())
-    .filter((n): n is string => Boolean(n));
-  return { headers: out, cookie_names: cookieNames };
-}
-
-interface AnalysisInputs {
-  raw: { device?: unknown };
-  hydratedPayload: ArgusPayload;
-  clientIp: string;
-  ua: string;
-  acceptLanguage: string | null;
-  requestHeaders: Record<string, string> | null;
-  webrtcSigint: SigintCandidateDecodeResult;
-  webrtcSigintField: ReturnType<typeof buildWebrtcSigintField>;
-  /** Recurrence/stability signals from the device-history blob. See
-   *  helpers/device-history + analysis/device-history. */
-  deviceHistory: DeviceHistoryAnalysis;
-}
-
-/**
- * Network-axis analyses (ip + network + proxy_waterfall). Pulled out of
- * `buildAnalysisBlock` to keep that function under the per-function line
- * cap. ip runs first so its asn.category can feed analyzeNetworkProbes'
- * VPN-category override.
- */
-function runNetworkAnalyses(inputs: AnalysisInputs) {
-  const { raw, hydratedPayload, clientIp, ua, webrtcSigint } = inputs;
-  const ip = analyzeIpConsistency(
-    raw.device,
-    hydratedPayload.sigint,
-    clientIp,
-    webrtcSigintEvidence(webrtcSigint),
-    ua,
-  );
-  const network = analyzeNetworkProbes(
-    hydratedPayload.sigint,
-    ip.asn.category as AsnCategory | null,
-  );
-  const proxyWaterfall = runProxyWaterfall(ip, hydratedPayload, webrtcSigint);
-  return { ip, network, proxyWaterfall };
-}
-
-function buildAnalysisBlock(inputs: AnalysisInputs) {
-  const {
-    raw,
-    hydratedPayload,
-    ua,
-    acceptLanguage,
-    requestHeaders,
-    webrtcSigintField,
-  } = inputs;
-  const { ip, network, proxyWaterfall } = runNetworkAnalyses(inputs);
-  const ja4Ua = analyzeJa4Ua(
-    hydratedPayload.sigint,
-    ua,
-    requestHeaders?.["sec-ch-ua"] ?? null,
-  );
-  return {
-    network,
-    worker: analyzeWorkerScopes(raw.device),
-    timezone: analyzeTimezone(raw.device, hydratedPayload.sigint),
-    ip,
-    ja4_ua: ja4Ua,
-    kernel_os: analyzeKernelOs(hydratedPayload.sigint, ja4Ua.ua_os),
-    browser_engine: runBrowserEngineAnalysis(
-      raw.device,
-      hydratedPayload.sigint,
-      ua,
-      requestHeaders,
-    ),
-    locale_geo: analyzeLocaleGeo(
-      raw.device,
-      acceptLanguage,
-      extractCfCountry(hydratedPayload.sigint),
-    ),
-    client_hints_ua: analyzeClientHintsUa(
-      ua,
-      requestHeaders,
-      (hydratedPayload.sigint as { tcp_probe?: unknown } | undefined)
-        ?.tcp_probe,
-      raw.device,
-    ),
-    proxy_waterfall: proxyWaterfall,
-    ...(webrtcSigintField && { webrtc_sigint: webrtcSigintField }),
-    device_history: inputs.deviceHistory,
-  };
-}
-
-/**
- * Compose the proxy-waterfall classifier inputs from the ip-analysis result
- * and decoded sigint. Pulled out to keep buildAnalysisBlock under the
- * per-function line cap.
- */
-function runProxyWaterfall(
-  ip: ReturnType<typeof analyzeIpConsistency>,
-  hydratedPayload: ArgusPayload,
-  webrtcSigint: SigintCandidateDecodeResult,
-) {
-  return classifyProxy({
-    tcpIp: ip.ips.tcp,
-    webrtcIp: ip.ips.webrtc,
-    // Read reason from the decoder result, not the stored field —
-    // buildWebrtcSigintField() omits the entire field when reason is
-    // "no_candidates", so the stored status would be undefined.
-    webrtcStatus: webrtcSigint.reason as WebrtcSigintStatus,
-    rttRatio: extractRttRatio(hydratedPayload.sigint),
-  });
-}
-
-function isIncognito(device: unknown): boolean {
-  if (!device || typeof device !== "object") return false;
-  const incog = (device as { incognito?: { isPrivate?: unknown } }).incognito;
-  return incog?.isPrivate === true;
-}
-
-/**
- * Browser-engine consistency check: claimed (UA + sec-ch-ua + incognito)
- * vs observed engine-invariant fields, scored against per-version baselines
- * built daily by browser-baseline-builder. Cold-start safe — returns no
- * signal when baseline is missing.
- */
-function runBrowserEngineAnalysis(
-  device: unknown,
-  sigint: unknown,
-  ua: string,
-  requestHeaders: Record<string, string> | null,
-) {
-  return analyzeBrowserEngine({
-    device,
-    sigint,
-    ua,
-    secChUa: requestHeaders?.["sec-ch-ua"] ?? null,
-    incognito: isIncognito(device),
-  });
-}
-
-function extractCfCountry(sigint: unknown): string | null {
-  const cf = (sigint as { aws_cf?: { country?: unknown } } | undefined)?.aws_cf;
-  const c = cf?.country;
-  return typeof c === "string" && c.length > 0 ? c : null;
-}
-
-/**
- * Pull the PAT-related fields off the hydrated payload for persistence.
- * patToken is intentionally NOT persisted (sensitive even though
- * HMAC-signed). patDiag is forensic-only — JS-side observation of what
- * `fetch()` actually saw, used to debug the cross-origin OS handoff.
- */
-function buildPatFields(hydratedPayload: ArgusPayload): {
-  pat?: ArgusPayload["pat"];
-  patAttempt?: ArgusPayload["patAttempt"];
-  patDiag?: string;
-} {
-  const out: {
-    pat?: ArgusPayload["pat"];
-    patAttempt?: ArgusPayload["patAttempt"];
-    patDiag?: string;
-  } = {};
-  if (hydratedPayload.pat) out.pat = hydratedPayload.pat;
-  if (hydratedPayload.patAttempt) out.patAttempt = hydratedPayload.patAttempt;
-  if (hydratedPayload.patDiag) out.patDiag = hydratedPayload.patDiag;
-  return out;
 }
 
 /**
@@ -1129,7 +732,7 @@ async function handleIntegrity(
     ctx.payload,
     ctx.deps,
     ctx.event,
-    ctx.cpi,
+    { dynamo: ddbClient, cpi: ctx.cpi },
   );
   pt.mark("hydrate");
   enforceDeviceMac(ctx);
