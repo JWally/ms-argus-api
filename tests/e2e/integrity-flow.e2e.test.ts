@@ -45,6 +45,7 @@ vi.mock("../../src/helpers/token-verifier", () => ({
 
 import { handler as collectHandler } from "../../src/handlers/ingestion";
 import { handler as sessionGetHandler } from "../../src/handlers/session-get";
+import { verifyDeviceMac } from "../../src/helpers/device-mac";
 import type { ArgusPayload } from "../../src/helpers/payload-schema";
 
 const subtle = webcrypto.subtle;
@@ -141,7 +142,7 @@ async function sealV3(payload: ArgusPayload): Promise<string> {
 }
 
 function payload(sessionId = SESSION_ID): ArgusPayload {
-  return {
+  const currentPayload: ArgusPayload = {
     identifiers: { session_id: sessionId, cpi: CPI },
     hashes: { stable: "stable-e2e", fuzzy: "fuzzy-e2e" },
     device: {
@@ -150,11 +151,27 @@ function payload(sessionId = SESSION_ID): ArgusPayload {
         userAgentParsed: "Chrome 140",
         system: "Windows 11",
       },
+      worker_attest: {
+        ua: "Mozilla/5.0 Chrome/140.0.0.0",
+        platform: "Win32",
+        hardwareConcurrency: 8,
+        getRandomValuesNative: true,
+      },
     },
     sigintTcpToken: "tcp-token-e2e",
     sigintH2Token: "h2-token-e2e",
     sigintTls: "tls-token-e2e",
   };
+  const device = currentPayload.device as Record<string, unknown>;
+  device.mac = "00000000000000000000000000000000";
+  const outcome = verifyDeviceMac(currentPayload, {
+    sessionToken: SESSION_TOKEN,
+  });
+  if (outcome.kind !== "mismatch") {
+    throw new Error(`could not construct current device MAC: ${outcome.kind}`);
+  }
+  device.mac = outcome.expected;
+  return currentPayload;
 }
 
 async function collectEvent(sessionId = SESSION_ID) {

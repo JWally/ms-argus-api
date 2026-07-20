@@ -11,7 +11,10 @@ import { Logger } from "@aws-lambda-powertools/logger";
 import { Metrics, MetricUnit } from "@aws-lambda-powertools/metrics";
 import { DynamoDBClient, DescribeTableCommand } from "@aws-sdk/client-dynamodb";
 import { HttpError } from "../../helpers/http-error";
-import { verifyDeviceMac } from "../../helpers/device-mac";
+import {
+  deviceMacRejectionReason,
+  verifyDeviceMac,
+} from "../../helpers/device-mac";
 import {
   getSessionId,
   resolveCpi,
@@ -287,14 +290,9 @@ async function resolveMerchantId(ctx: HandleContext): Promise<string | null> {
 }
 
 /**
- * Verify the SDK's device.mac chain (HMAC-MD5 over the device slices,
- * keyed by session-bound material — see helpers/device-mac.ts and the
- * ms-argus-web-integrity defense/hmac-chain branch). Three outcomes:
- *   - 'absent'   → old cached SDK bundle without device.mac. Skip
- *                  (rollout grace window so cached clients keep working).
- *   - 'ok'       → payload integrity confirmed. Proceed.
- *   - 'mismatch' → cleartext was tampered between SDK collection and
- *                  the wire. Hard reject with HttpError(400).
+ * Verify the SDK's device.mac chain (see helpers/device-mac.ts). Only the
+ * current 23-slice MAC is accepted;
+ * missing and mismatched MACs both fail closed.
  */
 function enforceDeviceMac(ctx: HandleContext): void {
   const sessionToken =
@@ -302,6 +300,11 @@ function enforceDeviceMac(ctx: HandleContext): void {
     ctx.event.headers["X-Argus-Session"] ??
     "";
   const macOutcome = verifyDeviceMac(ctx.payload, { sessionToken });
+  const rejection = deviceMacRejectionReason(macOutcome);
+  if (!rejection) {
+    ctx.deps.metrics.addMetric("DeviceMacOk", MetricUnit.Count, 1);
+    return;
+  }
   if (macOutcome.kind === "mismatch") {
     ctx.deps.metrics.addMetric("DeviceMacMismatch", MetricUnit.Count, 1);
     ctx.deps.logger.warn("device.mac mismatch — rejecting", {
@@ -310,13 +313,10 @@ function enforceDeviceMac(ctx: HandleContext): void {
       expected_prefix: macOutcome.expected.slice(0, 16),
       received_prefix: macOutcome.received.slice(0, 16),
     });
-    throw new HttpError(400, "device_mac_mismatch");
-  }
-  if (macOutcome.kind === "absent") {
-    ctx.deps.metrics.addMetric("DeviceMacAbsent", MetricUnit.Count, 1);
   } else {
-    ctx.deps.metrics.addMetric("DeviceMacOk", MetricUnit.Count, 1);
+    ctx.deps.metrics.addMetric("DeviceMacAbsent", MetricUnit.Count, 1);
   }
+  throw new HttpError(400, rejection);
 }
 
 /**
