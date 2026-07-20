@@ -47,6 +47,39 @@ describe("automationProbability", () => {
     expect(automationProbability(input)).toBe(75);
   });
 
+  it("keeps a one-sided Edge timing outlier at suspect tier 60", () => {
+    const input = withDevice(
+      {
+        headless: {
+          headlessRating: 0,
+          likeHeadless: { devToolsOpen: true },
+          cdp: {
+            consoleTiming: {
+              log_heavy_us: 37,
+              tl_heavy_us: 37,
+              cdp_proto_proxy_trap: true,
+              perf_now_native: true,
+              date_now_native: true,
+              con_log_native: true,
+              con_dir_native: true,
+            },
+            consoleTimingWorker: {
+              log_heavy_us: 3.5,
+              tl_heavy_us: 3,
+              cdp_proto_proxy_trap: false,
+              perf_now_native: true,
+              date_now_native: true,
+              con_log_native: true,
+              con_dir_native: true,
+            },
+          },
+        },
+      },
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/150.0.0.0 Safari/537.36 Edg/150.0.0.0",
+    );
+    expect(automationProbability(input)).toBe(60);
+  });
+
   it("keeps the DevTools-compatible proxy trap at suspect tier 60", () => {
     const input = withDevice({
       headless: {

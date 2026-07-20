@@ -74,10 +74,15 @@ a substitute for a zero `vpn_component`.
 - `headlessRating >= 100`
 - `iframe_created && !responsive` ⇒ automation 100 + tampering 50 (Marionette hang)
 
-### CDP-timing magnitude (⇒ 75)
+### CDP-timing magnitude
 
 - **Clause A** (desktop CDP / DevTools-emu): `min(iframe.log_heavy_us, worker.log_heavy_us) > 40µs`
-- **Clause B** (mobile-emu / one-sided): `max > 20µs && min < 12µs`
+- **Clause B** (one-sided): `max > 20µs && min < 12µs`
+
+Clause A is corroborated across two realms and scores **75**. Clause B is a
+single-realm timing outlier and scores **60** unless another strong CDP signal
+independently raises the score. This keeps the evidence visible without making
+one noisy desktop sample a blocking automation verdict.
 
 ### Soft markers
 

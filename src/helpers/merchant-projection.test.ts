@@ -1512,7 +1512,7 @@ describe("buildMerchantResponse", () => {
       expect(result.automation).toBe(75);
     });
 
-    it("CDP timing: asymmetric realms (iframe hot, worker cold) → automation 75", () => {
+    it("CDP timing: asymmetric realms alone stay at suspect tier 60", () => {
       // Calibration row from BrowserStack Pixel 10 Pro XL (May 2026):
       // iframe heavy 29.3 (inspector hooked the iframe realm), worker
       // heavy 7.4 (blob worker survived unhooked). Mobile-emulator harness
@@ -1544,7 +1544,7 @@ describe("buildMerchantResponse", () => {
           },
         },
       });
-      expect(result.automation).toBe(75);
+      expect(result.automation).toBe(60);
     });
 
     it("does not promote debug/perf telemetry inside an embed", () => {
@@ -1720,10 +1720,11 @@ describe("buildMerchantResponse", () => {
       expect(result.automation).toBe(0);
     });
 
-    it("worker bench: trips on its own when iframe bench was stubbed", () => {
+    it("worker bench: one-sided hot timing stays at suspect tier 60", () => {
       // page.route rewrote the iframe bench to return clean numbers, but
       // can't intercept the worker's blob URL. Worker still measures
-      // real CDP overhead → automation must fire on the worker alone.
+      // real CDP overhead. A single hot realm remains useful evidence, but
+      // does not block without independent corroboration.
       const base = baseIntegrity();
       const result = buildMerchantResponse({
         session_id: "s",
@@ -1754,7 +1755,7 @@ describe("buildMerchantResponse", () => {
           },
         },
       });
-      expect(result.automation).toBe(75);
+      expect(result.automation).toBe(60);
     });
 
     it("worker bench: clean numbers on both → no automation", () => {
@@ -1822,12 +1823,12 @@ describe("buildMerchantResponse", () => {
       expect(result.automation).toBe(75);
     });
 
-    it("worker bench: disagreement > 0.5 → automation 75 (stub-one attack)", () => {
+    it("worker bench: a possible stub-one attack stays at suspect tier 60", () => {
       // Attacker stubbed the worker bench (rare — would require wrapping
       // Worker / URL.createObjectURL), leaving the iframe bench intact.
       // Iframe sees real CDP ratio 2.1, worker reports 1.05. Gap = 1.05.
-      // Neither bench may trip on its own depending on which side was
-      // stubbed; the disagreement itself is the tell.
+      // The one-sided magnitude is suspicious but not independently
+      // corroborated inside this sample.
       const base = baseIntegrity();
       const result = buildMerchantResponse({
         session_id: "s",
@@ -1862,7 +1863,7 @@ describe("buildMerchantResponse", () => {
           },
         },
       });
-      expect(result.automation).toBe(75);
+      expect(result.automation).toBe(60);
     });
 
     it("worker bench: small disagreement within tolerance → no automation", () => {
@@ -2202,12 +2203,12 @@ describe("buildMerchantResponse", () => {
         expect(result.automation).toBe(75);
       });
 
-      it("stubbed iframe (heavy 8) + real-CDP worker (heavy 63) → 75 via asymmetric clause", () => {
+      it("stubbed iframe (heavy 8) + hot worker (heavy 63) → suspect tier 60", () => {
         // Bundle-rewrite attack: attacker stubbed the iframe bench to a
         // baseline-clean number, but `page.route` can't intercept the
         // blob-URL worker — the worker still measures real CDP at 63 µs.
         // max(8, 63)=63 > BENCH_REALM_HOT_US, min=8 < BENCH_REALM_COLD_US
-        // → asymmetric clause fires.
+        // → asymmetric clause remains visible without becoming a block.
         const result = buildMerchantResponse({
           session_id: "s",
           integrity: {
@@ -2233,7 +2234,7 @@ describe("buildMerchantResponse", () => {
             },
           },
         });
-        expect(result.automation).toBe(75);
+        expect(result.automation).toBe(60);
       });
     });
 
