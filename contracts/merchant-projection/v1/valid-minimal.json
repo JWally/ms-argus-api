@@ -1,0 +1,59 @@
+{
+  "schema_version": 1,
+  "session_id": "s-1",
+  "created_at": null,
+  "ttl": null,
+  "automation": 0,
+  "device_tampering": 0,
+  "network_tampering": 0,
+  "verdict": "clean",
+  "identification": {
+    "crypto_device_id": null,
+    "crypto_verified": null,
+    "client_uuid": null,
+    "tpc_id": null,
+    "tpc_created": null,
+    "tpc_verified": null,
+    "network_id": null,
+    "network_id_source": "none",
+    "browserDetails": {
+      "browserName": null,
+      "browserVersion": null,
+      "os": null,
+      "osVersion": null,
+      "device": null,
+      "userAgent": null
+    }
+  },
+  "ip": null,
+  "ipLocation": {
+    "city": null,
+    "country": null,
+    "latitude": null,
+    "longitude": null,
+    "timezone": null
+  },
+  "ipInfo": {
+    "asn": {
+      "number": null,
+      "organization": null,
+      "category": null,
+      "network_class": null,
+      "metadata": null
+    },
+    "datacenter": { "result": false },
+    "mobile": { "result": false },
+    "residential": { "result": false },
+    "vpn": { "result": false },
+    "hosting": { "result": false },
+    "privacy_relay": { "result": false },
+    "corporate_shield": { "result": false }
+  },
+  "incognito": { "result": false },
+  "developer_tools": { "result": false },
+  "worker_scope_evidence": null,
+  "tags": [],
+  "requestHeaders": null,
+  "ip_velocity_1h": null,
+  "device_history": null
+}

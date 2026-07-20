@@ -27,6 +27,10 @@
  */
 
 import { createHash } from "node:crypto";
+import {
+  MERCHANT_PROJECTION_SCHEMA_VERSION,
+  type MerchantProjectionSchemaVersion,
+} from "../contracts/merchant-projection";
 import type { IntegrityResultsData } from "./payload-schema";
 import {
   networkTamperingScore,
@@ -212,6 +216,7 @@ const BLOCK_THRESHOLD = 70;
  * separately as a tag, not on the network_tampering axis.
  */
 export interface MerchantSafeResponse {
+  schema_version: MerchantProjectionSchemaVersion;
   session_id: string;
   /** Epoch ms. Null when the record pre-dates the field. */
   created_at: number | null;
@@ -576,6 +581,7 @@ export function buildMerchantResponse(
   };
 
   return {
+    schema_version: MERCHANT_PROJECTION_SCHEMA_VERSION,
     session_id,
     created_at: integrity?.created_at ?? null,
     ttl: (integrity as { ttl?: number } | undefined)?.ttl ?? null,

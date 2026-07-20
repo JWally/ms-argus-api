@@ -28,6 +28,8 @@ pre-push:
       run: npm run build
     deps:
       run: npm run deps
+    architecture:
+      run: npm run test:architecture
     dead-code:
       run: npm run dead-code
     duplication:

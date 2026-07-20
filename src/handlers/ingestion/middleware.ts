@@ -12,10 +12,9 @@ import { decompressPayload } from "./gzip";
 import { getEcdhKeys } from "../../helpers/get-ecdh-keys";
 import {
   decryptArgusPayload,
-  decryptIntegrityPayload,
-  decryptIntegrityPayloadV2,
   decryptIntegrityPayloadV3,
 } from "../../helpers/ecdh-decrypt";
+import { requireV3IntegrityTransport } from "../../contracts/integrity-collect";
 
 const INTEGRITY_COLLECT_PATH = "/v1/integrity-collect";
 
@@ -50,36 +49,13 @@ async function decryptIntegrity(
   clientPubKey: string,
   keys: Awaited<ReturnType<typeof getEcdhKeys>> & {},
 ): Promise<unknown | null> {
-  const sessionToken = event.headers["x-argus-session"] ?? "";
-  const version = event.headers["x-argus-v"] ?? "1";
-  const body = event.body ?? "";
-  const { isBase64Encoded } = event;
-
-  if (version === "3") {
-    return decryptIntegrityPayloadV3({
-      body,
-      isBase64Encoded,
-      clientPubKey,
-      keys,
-      sessionToken,
-    });
-  }
-  if (version === "2") {
-    return decryptIntegrityPayloadV2({
-      body,
-      isBase64Encoded,
-      clientPubKey,
-      keys,
-      sessionToken,
-    });
-  }
-  const deploySecret = process.env.INTEGRITY_DEPLOY_SECRET ?? "";
-  return decryptIntegrityPayload({
-    body,
-    isBase64Encoded,
+  const sessionToken = requireV3IntegrityTransport(event.headers);
+  return decryptIntegrityPayloadV3({
+    body: event.body ?? "",
+    isBase64Encoded: event.isBase64Encoded,
     clientPubKey,
     keys,
-    innerKey: sessionToken + deploySecret,
+    sessionToken,
   });
 }
 

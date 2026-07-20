@@ -240,9 +240,6 @@ export class LambdasConstruct extends Construct {
         ...(props.ecdhKeyParamName && {
           ECDH_KEY_PARAM: props.ecdhKeyParamName,
         }),
-        ...(process.env.INTEGRITY_DEPLOY_SECRET && {
-          INTEGRITY_DEPLOY_SECRET: process.env.INTEGRITY_DEPLOY_SECRET,
-        }),
         ...(props.sigintAesKeySecretId && {
           SIGINT_AES_KEY: SecretValue.secretsManager(
             props.sigintAesKeySecretId,
