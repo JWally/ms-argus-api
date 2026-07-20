@@ -7,26 +7,15 @@
  */
 
 import type { IntegrityResultsData } from "../helpers/payload-schema";
+import {
+  CDP_SUSPECT_TIER,
+  desktopCdpTimingScore,
+  hasErrorStackBurstSignal,
+  type ConsoleTimingFields,
+} from "./cdp-timing";
 import type { MerchantProjectionInput } from "./shared";
 
-const BENCH_BOTH_HOT_US = 40;
-const BENCH_REALM_HOT_US = 20;
-const BENCH_REALM_COLD_US = 12;
-const ERROR_STACK_BURST_CDP_DELTA_MS = 30;
-const CDP_PROTO_PROXY_TRAP_TIER = 60;
 const UA_HEADER_KEY = "user-agent";
-
-interface ConsoleTimingFields {
-  log_heavy_us?: number;
-  tl_heavy_us?: number;
-  perf_now_native?: boolean;
-  date_now_native?: boolean;
-  con_log_native?: boolean;
-  con_dir_native?: boolean;
-  cdp_proto_proxy_trap?: boolean;
-  error_stack_burst_delta_ms?: number;
-  console_lies?: number;
-}
 
 interface HeadlessSignals {
   headlessRating?: number;
@@ -92,75 +81,6 @@ function weakHeadlessScore(headless: HeadlessSignals | undefined): number {
 
   const trueCount = values.filter(([, value]) => value === true).length;
   return +((trueCount / values.length) * 100).toFixed(0);
-}
-
-function hasBenchDependencyTamper(timing: ConsoleTimingFields): boolean {
-  return (
-    timing.perf_now_native === false ||
-    timing.date_now_native === false ||
-    timing.con_log_native === false ||
-    timing.con_dir_native === false
-  );
-}
-
-function hasCrossClockDivergence(timing: ConsoleTimingFields): boolean {
-  const heavy = timing.log_heavy_us;
-  const timelineHeavy = timing.tl_heavy_us;
-  if (typeof heavy !== "number" || typeof timelineHeavy !== "number") {
-    return false;
-  }
-  return Math.abs(timelineHeavy - heavy) > 3;
-}
-
-function benchPrimitiveTampered(
-  timing: ConsoleTimingFields | undefined,
-): boolean {
-  if (!timing) return false;
-  return hasBenchDependencyTamper(timing) || hasCrossClockDivergence(timing);
-}
-
-function magnitudeMatchesCdp(
-  iframeHeavy: number,
-  workerHeavy: number,
-): boolean {
-  if (Math.min(iframeHeavy, workerHeavy) > BENCH_BOTH_HOT_US) return true;
-  return (
-    Math.max(iframeHeavy, workerHeavy) > BENCH_REALM_HOT_US &&
-    Math.min(iframeHeavy, workerHeavy) < BENCH_REALM_COLD_US
-  );
-}
-
-function hasErrorStackBurstSignal(
-  worker: ConsoleTimingFields | undefined,
-): boolean {
-  const delta = worker?.error_stack_burst_delta_ms;
-  return typeof delta === "number" && delta >= ERROR_STACK_BURST_CDP_DELTA_MS;
-}
-
-function hasWorkerImportChainSignal(
-  headless: HeadlessSignals | undefined,
-): boolean {
-  return headless?.cdp?.workerModuleImportChain?.cdp_shaped === true;
-}
-
-/**
- * Timing evidence is either a compromised timing primitive or a calibrated
- * two-realm magnitude shape: both realms hot, or one hot and one floor-cold.
- */
-function hasCdpTimingSignal(headless: HeadlessSignals | undefined): boolean {
-  const iframe = headless?.cdp?.consoleTiming;
-  const worker = headless?.cdp?.consoleTimingWorker;
-  if (benchPrimitiveTampered(iframe) || benchPrimitiveTampered(worker)) {
-    return true;
-  }
-  if (hasErrorStackBurstSignal(worker)) return true;
-  if (hasWorkerImportChainSignal(headless)) return true;
-  const iframeHeavy = iframe?.log_heavy_us;
-  const workerHeavy = worker?.log_heavy_us;
-  if (typeof iframeHeavy !== "number" || typeof workerHeavy !== "number") {
-    return false;
-  }
-  return magnitudeMatchesCdp(iframeHeavy, workerHeavy);
 }
 
 function hasCdpProtoProxyTrap(headless: HeadlessSignals | undefined): boolean {
@@ -243,14 +163,15 @@ function cdpAutomationScore(
   headless: HeadlessSignals | undefined,
 ): number {
   const isMobile = isMobileBrowser(input.integrity);
+  const timingScore = desktopCdpTimingScore(headless, isMobile);
   if (hasIframeCryptoStuck(input.integrity)) return 100;
   if (hasHardCdpResidue(headless)) return 100;
   if (hasErrorStackBurstSignal(headless?.cdp?.consoleTimingWorker)) return 75;
-  if (hasCdpTimingSignal(headless) && !isMobile) return 75;
+  if (timingScore === 75) return 75;
   if (hasSoftCdpResidue(headless)) return 75;
   if (hasPristineLiftCompromised(input.integrity)) return 75;
-  if (hasCdpProtoProxyTrap(headless)) return CDP_PROTO_PROXY_TRAP_TIER;
-  return 0;
+  if (hasCdpProtoProxyTrap(headless)) return CDP_SUSPECT_TIER;
+  return timingScore;
 }
 
 /** Return the raw automation-axis percentage before PAT trust adjustment. */
