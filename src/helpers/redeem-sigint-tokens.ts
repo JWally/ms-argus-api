@@ -118,7 +118,7 @@ interface RedeemCtx {
  * returns a token rather than raw data. This helper detects that shape so the
  * token can be redeemed even when no top-level `sigintTcpToken` field is set.
  */
-export function extractInlineToken(probe: unknown): string | undefined {
+function extractInlineToken(probe: unknown): string | undefined {
   if (
     probe !== null &&
     typeof probe === "object" &&

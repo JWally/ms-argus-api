@@ -6,9 +6,8 @@
  *   X-Argus-Origin: <raw P-256 client public key, base64, 88 chars>
  *   Body: base64([iv(12 bytes) | AES-GCM ciphertext+tag])
  *
- * v1/v2 clients send pako deflateRaw-compressed plaintext. v3 clients
- * send the scrambled JSON bytes directly so the browser SDK does not need
- * to ship a deflate implementation.
+ * Generic collect clients send deflateRaw-compressed plaintext. Integrity
+ * collect clients send Fibonacci-scrambled JSON bytes directly.
  *
  * Key derivation:
  *   ECDH(serverPriv, clientPub) → 256-bit shared secret
@@ -28,26 +27,13 @@ import type { EcdhKeys, EcdhKeyData } from "./get-ecdh-keys";
 const HKDF_INFO = new TextEncoder().encode("argus-web-v1");
 
 /**
- * v1 XOR-unscramble: repeating key = sessionToken + deploySecret.
- * Kept for backwards compatibility with clients that don't send X-Argus-V: 2.
- */
-export function xorUnscramble(data: Buffer, key: string): Buffer {
-  const keyBuf = Buffer.from(key, "utf-8");
-  const result = Buffer.alloc(data.length);
-  for (let i = 0; i < data.length; i++) {
-    result[i] = data[i] ^ keyBuf[i % keyBuf.length];
-  }
-  return result;
-}
-
-/**
- * v2 Fibonacci-modulated unscramble using sessionToken as sole seed.
+ * Fibonacci-modulated unscramble using sessionToken as the seed.
  *
  * The client VM XORs the JSON **string** char-by-char before TextEncoder.encode
  * converts it to UTF-8. We must reverse this at the string level, not byte level,
  * because XOR'd characters > 127 become multi-byte in UTF-8.
  *
- * Flow: inflate → decode UTF-8 to string → XOR chars → encode back to UTF-8 bytes.
+ * Flow: decode UTF-8 to string → XOR chars → encode back to UTF-8 bytes.
  * Fibonacci resets at 1M to match the client's integer overflow prevention.
  */
 export function deriveAndUnscramble(
@@ -157,13 +143,8 @@ interface EcdhDecryptInput {
 
 /**
  * Core ECDH + AES-256-GCM decrypt with the standard current/previous ×
- * today/yesterday key-trial loop. The per-version behavior (inflate, XOR
- * unscramble, Fibonacci unscramble, or none) is supplied as `unwrap`.
- *
- * IMPORTANT: this is the shared implementation only. Version SELECTION stays
- * in middleware (X-Argus-V switch) — do NOT collapse the four exported
- * adapters into "try every unwrap until one parses", which would let a client
- * downgrade to the weaker v1 XOR path.
+ * today/yesterday key-trial loop. The endpoint-specific transform is supplied
+ * as `unwrap`; callers never try alternate transforms as a fallback.
  */
 async function decryptEcdh(
   input: EcdhDecryptInput,
@@ -229,32 +210,7 @@ export function decryptArgusPayload(
   );
 }
 
-export interface IntegrityDecryptOpts {
-  body: string;
-  isBase64Encoded: boolean;
-  clientPubKey: string;
-  keys: EcdhKeys;
-  innerKey: string;
-}
-
-/**
- * Decrypt an ECDH-encrypted integrity payload with inner XOR unscramble.
- *
- * Same as decryptArgusPayload but after ECDH decrypt + inflate, applies
- * XOR unscramble with (h2Token + deploySecret) before JSON parsing.
- * The inner scramble runs inside the client's VM bytecode, so an attacker
- * intercepting the ECDH bridge call sees garbage instead of plaintext JSON.
- */
-export function decryptIntegrityPayload(
-  opts: IntegrityDecryptOpts,
-): Promise<unknown | null> {
-  const { body, isBase64Encoded, clientPubKey, keys, innerKey } = opts;
-  return decryptEcdh({ body, isBase64Encoded, clientPubKey, keys }, (b) =>
-    xorUnscramble(boundedInflate(b), innerKey),
-  );
-}
-
-export interface IntegrityDecryptV2Opts {
+export interface IntegrityDecryptV3Opts {
   body: string;
   isBase64Encoded: boolean;
   clientPubKey: string;
@@ -263,31 +219,13 @@ export interface IntegrityDecryptV2Opts {
 }
 
 /**
- * v2: Decrypt integrity payload with Fibonacci-modulated sessionToken derivation.
- *
- * Same ECDH decrypt + inflate as v1, but the inner unscramble uses
- * deriveAndUnscramble(sessionToken) instead of xorUnscramble(sessionToken + deploySecret).
- * No static secret required — the algorithm is the secret.
- */
-export function decryptIntegrityPayloadV2(
-  opts: IntegrityDecryptV2Opts,
-): Promise<unknown | null> {
-  const { body, isBase64Encoded, clientPubKey, keys, sessionToken } = opts;
-  return decryptEcdh({ body, isBase64Encoded, clientPubKey, keys }, (b) =>
-    deriveAndUnscramble(boundedInflate(b), sessionToken),
-  );
-}
-
-/**
  * v3: Decrypt integrity payload without transport compression.
  *
- * The VM still Fibonacci-scrambles the JSON string before ECDH encryption,
- * but the browser sends those UTF-8 bytes directly instead of pako
- * deflateRaw-compressing them. This keeps v1/v2 compatibility while letting
- * the SDK drop the pako dependency.
+ * The VM Fibonacci-scrambles the JSON string before ECDH encryption and the
+ * browser sends those UTF-8 bytes directly.
  */
 export function decryptIntegrityPayloadV3(
-  opts: IntegrityDecryptV2Opts,
+  opts: IntegrityDecryptV3Opts,
 ): Promise<unknown | null> {
   const { body, isBase64Encoded, clientPubKey, keys, sessionToken } = opts;
   return decryptEcdh({ body, isBase64Encoded, clientPubKey, keys }, (b) =>

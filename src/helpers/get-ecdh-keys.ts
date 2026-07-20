@@ -96,18 +96,3 @@ export async function getEcdhKeys(): Promise<EcdhKeys | null> {
   }
   return inFlightFetch;
 }
-
-/**
- * Return the raw public key string for the current key.
- * Used by GET /v1/handshake to embed in the opaque session token.
- */
-export async function getCurrentRawPublicKey(): Promise<string | null> {
-  const keys = await getEcdhKeys();
-  return keys?.current.rawPublicKey ?? null;
-}
-
-/** Clear cache — for testing only */
-export function clearEcdhCache(): void {
-  cachedKeys = null;
-  cacheTimestamp = 0;
-}

@@ -16,7 +16,7 @@ export interface CorsConfig {
 /**
  * Creates CORS headers object from configuration
  */
-export function buildCorsHeaders(config: CorsConfig): Record<string, string> {
+function buildCorsHeaders(config: CorsConfig): Record<string, string> {
   return {
     "Access-Control-Allow-Methods": config.methods,
     "Access-Control-Allow-Headers": config.headers,

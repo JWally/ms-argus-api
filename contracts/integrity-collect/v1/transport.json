@@ -1,0 +1,63 @@
+{
+  "contract_schema_version": 1,
+  "owner": "ms-argus-api",
+  "method": "POST",
+  "path": "/v1/integrity-collect",
+  "content_type": "application/octet-stream",
+  "body_encoding": "base64(iv[12] || aes-256-gcm-ciphertext-and-tag)",
+  "current_client_version": "3",
+  "required_headers": [
+    "Content-Type",
+    "X-Argus-Origin",
+    "X-Argus-Session",
+    "X-Argus-V"
+  ],
+  "versions": [
+    {
+      "value": "3",
+      "compression": "none",
+      "scramble": "fibonacci-xor(session-token)"
+    }
+  ],
+  "negative_cases": [
+    {
+      "name": "json-content-type",
+      "mutation": "content-type",
+      "value": "application/json",
+      "expected_status": 415
+    },
+    {
+      "name": "missing-client-origin",
+      "mutation": "remove-origin",
+      "expected_status": 415
+    },
+    {
+      "name": "missing-session-token",
+      "mutation": "remove-session",
+      "expected_status": 400
+    },
+    {
+      "name": "missing-transport-version",
+      "mutation": "remove-version",
+      "expected_status": 400
+    },
+    {
+      "name": "retired-transport-version-1",
+      "mutation": "version",
+      "value": "1",
+      "expected_status": 400
+    },
+    {
+      "name": "retired-transport-version-2",
+      "mutation": "version",
+      "value": "2",
+      "expected_status": 400
+    },
+    {
+      "name": "unknown-transport-version",
+      "mutation": "version",
+      "value": "99",
+      "expected_status": 400
+    }
+  ]
+}

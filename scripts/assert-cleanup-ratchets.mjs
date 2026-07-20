@@ -2,7 +2,9 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 const limits = new Map([
+  ["src/helpers/payload-schema.ts", 466],
   ["src/helpers/merchant-projection.ts", 627],
+  ["src/contracts/integrity-collect.ts", 20],
   ["src/handlers/ingestion/base-handler.ts", 480],
   ["src/handlers/ingestion/device-history-workflow.ts", 112],
   ["src/handlers/ingestion/integrity-record-builder.ts", 121],
@@ -10,6 +12,8 @@ const limits = new Map([
   ["src/handlers/ingestion/ip-velocity.ts", 103],
   ["src/handlers/ingestion/persist-integrity-record.ts", 80],
   ["src/handlers/ingestion/sigint-hydration.ts", 111],
+  ["src/handlers/ingestion/middleware.ts", 316],
+  ["src/helpers/ecdh-decrypt.ts", 234],
   ["src/scoring/automation.ts", 190],
   ["src/scoring/cdp-timing.ts", 100],
   ["src/scoring/device-tampering.ts", 321],

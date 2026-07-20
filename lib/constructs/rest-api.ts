@@ -169,6 +169,26 @@ export class RestApiConstruct extends Construct {
     );
     this.exportUsagePlanId("Pro", "pro", environment, this.proUsagePlan);
 
+    // The live contract suite needs a stable gateway identity because newly
+    // created REST API keys can remain unusable at edge caches for minutes.
+    // The value is still useless without a correctly signed, CPI-bound token;
+    // the test mints that token for an isolated two-credit merchant and
+    // removes the merchant after every run. Never create this fixture in prod.
+    if (environment === "dev-jw") {
+      const e2eApiKey = this.api.addApiKey("MerchantProjectionE2eApiKey", {
+        apiKeyName: `${stackName}-merchant-projection-e2e`,
+        description:
+          "Stable dev-jw gateway key for the deployed projection contract suite",
+      });
+      this.starterUsagePlan.addApiKey(e2eApiKey);
+      new ssm.StringParameter(this, "MerchantProjectionE2eApiKeyIdParam", {
+        parameterName: `/argus-api/${environment}/merchant-projection-e2e-api-key-id`,
+        stringValue: e2eApiKey.keyId,
+        description:
+          "API Gateway key id read by the dev-jw projection E2E role",
+      });
+    }
+
     this.endpoint = `https://${apiDomainName}`;
 
     new cdk.CfnOutput(this, "MerchantApiEndpoint", {

@@ -1,43 +1,13 @@
 import { describe, it, expect, beforeAll } from "vitest";
 import { deflateRawSync } from "node:zlib";
 import { webcrypto } from "node:crypto";
-import {
-  xorUnscramble,
-  deriveAndUnscramble,
-  decryptArgusPayload,
-} from "./ecdh-decrypt";
+import { deriveAndUnscramble, decryptArgusPayload } from "./ecdh-decrypt";
 import type { EcdhKeys } from "./get-ecdh-keys";
 
 const subtle = webcrypto.subtle;
 const HKDF_INFO = new TextEncoder().encode("argus-web-v1");
 
-describe("xorUnscramble (v1)", () => {
-  it("round-trips with repeating key", () => {
-    const plaintext = "hello world, this is a test payload";
-    const key = "session-token-abc" + "deploy-secret-xyz";
-    const keyBuf = Buffer.from(key, "utf-8");
-
-    // Scramble (same logic the client uses)
-    const data = Buffer.from(plaintext, "utf-8");
-    const scrambled = Buffer.alloc(data.length);
-    for (let i = 0; i < data.length; i++) {
-      scrambled[i] = data[i] ^ keyBuf[i % keyBuf.length];
-    }
-
-    const result = xorUnscramble(scrambled, key);
-    expect(result.toString("utf-8")).toBe(plaintext);
-  });
-
-  it("returns original data when key is empty", () => {
-    const data = Buffer.from("test");
-    // XOR with 0 is identity, but empty key means keyBuf.length=0 → modulo by 0 → NaN
-    // The function should handle this edge, but let's verify behavior
-    const result = xorUnscramble(data, "a");
-    expect(result.length).toBe(4);
-  });
-});
-
-describe("deriveAndUnscramble (v2 Fibonacci)", () => {
+describe("deriveAndUnscramble (v3 Fibonacci)", () => {
   /**
    * Mirror of the client VM's Fibonacci-modulated XOR scramble.
    * Client XORs at the string character level, then TextEncoder.encode produces UTF-8.
@@ -76,22 +46,6 @@ describe("deriveAndUnscramble (v2 Fibonacci)", () => {
     const scrambled = scramble(plaintext, token);
     const result = deriveAndUnscramble(scrambled, token);
     expect(result.toString("utf-8")).toBe(plaintext);
-  });
-
-  it("produces different output than v1 for same input", () => {
-    const token = "session-token-12345";
-    const plaintext = '{"fingerprint":"data","signals":[]}';
-    const scrambledV2 = scramble(plaintext, token);
-
-    // v1 scramble with same token as key
-    const data = Buffer.from(plaintext, "utf-8");
-    const keyBuf = Buffer.from(token, "utf-8");
-    const scrambledV1 = Buffer.alloc(data.length);
-    for (let i = 0; i < data.length; i++) {
-      scrambledV1[i] = data[i] ^ keyBuf[i % keyBuf.length];
-    }
-
-    expect(scrambledV2.equals(scrambledV1)).toBe(false);
   });
 
   it("handles Fibonacci reset at 1M boundary", () => {
@@ -158,8 +112,7 @@ describe("decryptArgusPayload — bounded inflate (zip-bomb defense)", () => {
     );
   }
 
-  /** Pack a plaintext string the way a v1 argus-web client does: deflateRaw →
-   *  AES-GCM → base64(iv | ciphertext+tag). */
+  /** Pack a generic collect payload: deflateRaw → AES-GCM → base64. */
   async function seal(plaintext: string): Promise<string> {
     const aesKey = await deriveClientAesKey(todaySalt());
     const iv = webcrypto.getRandomValues(new Uint8Array(12));

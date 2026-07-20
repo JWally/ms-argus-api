@@ -10,16 +10,12 @@ vi.mock("../../helpers/get-ecdh-keys", () => ({
 
 vi.mock("../../helpers/ecdh-decrypt", () => ({
   decryptArgusPayload: vi.fn(),
-  decryptIntegrityPayload: vi.fn(),
-  decryptIntegrityPayloadV2: vi.fn(),
   decryptIntegrityPayloadV3: vi.fn(),
 }));
 
 import { getEcdhKeys } from "../../helpers/get-ecdh-keys";
 import {
   decryptArgusPayload,
-  decryptIntegrityPayload,
-  decryptIntegrityPayloadV2,
   decryptIntegrityPayloadV3,
 } from "../../helpers/ecdh-decrypt";
 import { binaryGzipBodyParser, sigintTokenValidator } from "./middleware";
@@ -47,8 +43,6 @@ describe("binaryGzipBodyParser — ECDH path", () => {
   beforeEach(() => {
     vi.mocked(getEcdhKeys).mockReset();
     vi.mocked(decryptArgusPayload).mockReset();
-    vi.mocked(decryptIntegrityPayload).mockReset();
-    vi.mocked(decryptIntegrityPayloadV2).mockReset();
     vi.mocked(decryptIntegrityPayloadV3).mockReset();
     vi.mocked(mockMetrics.addMetric).mockReset();
   });
@@ -141,8 +135,6 @@ describe("binaryGzipBodyParser — /v1/integrity-collect seal (Layer 6)", () => 
   beforeEach(() => {
     vi.mocked(getEcdhKeys).mockReset();
     vi.mocked(decryptArgusPayload).mockReset();
-    vi.mocked(decryptIntegrityPayload).mockReset();
-    vi.mocked(decryptIntegrityPayloadV2).mockReset();
     vi.mocked(decryptIntegrityPayloadV3).mockReset();
     vi.mocked(mockMetrics.addMetric).mockReset();
   });
@@ -172,30 +164,6 @@ describe("binaryGzipBodyParser — /v1/integrity-collect seal (Layer 6)", () => 
     );
   });
 
-  it("permits integrity-collect POST with octet-stream + X-Argus-Origin (falls through to ECDH)", async () => {
-    vi.mocked(getEcdhKeys).mockResolvedValue({
-      current: {} as any,
-      previous: undefined,
-    });
-    // /v1/integrity-collect dispatches by x-argus-v. Default header value
-    // here is absent → v1 deflate path.
-    vi.mocked(decryptIntegrityPayload).mockResolvedValue({
-      identifiers: { session_id: "s" },
-      device: {},
-    });
-    const mw = binaryGzipBodyParser(config, mockMetrics);
-    const req = makeCollectRequest({
-      "content-type": "application/octet-stream",
-      "x-argus-origin": "fakepubkey",
-    });
-    await mw.before!(req); // does not throw
-    expect(mockMetrics.addMetric).not.toHaveBeenCalledWith(
-      "UnencryptedSubmissionRejected",
-      expect.any(String),
-      expect.any(Number),
-    );
-  });
-
   it("uses the v3 uncompressed ECDH decrypt path for X-Argus-V: 3", async () => {
     vi.mocked(getEcdhKeys).mockResolvedValue({
       current: {} as any,
@@ -209,6 +177,7 @@ describe("binaryGzipBodyParser — /v1/integrity-collect seal (Layer 6)", () => 
     const req = makeCollectRequest({
       "content-type": "application/octet-stream",
       "x-argus-origin": "fakepubkey",
+      "x-argus-session": "test-session-token",
       "x-argus-v": "3",
     });
 
@@ -219,11 +188,9 @@ describe("binaryGzipBodyParser — /v1/integrity-collect seal (Layer 6)", () => 
         body: "body",
         isBase64Encoded: false,
         clientPubKey: "fakepubkey",
-        sessionToken: "",
+        sessionToken: "test-session-token",
       }),
     );
-    expect(decryptIntegrityPayloadV2).not.toHaveBeenCalled();
-    expect(decryptIntegrityPayload).not.toHaveBeenCalled();
     expect(req.event.body).toBe(
       JSON.stringify({ identifiers: { session_id: "s" }, device: {} }),
     );

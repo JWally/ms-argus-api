@@ -22,8 +22,8 @@
 import { createHash } from "node:crypto";
 
 const VERSION = 1;
-export const HLL_P = 12;
-export const HLL_M = 1 << HLL_P; // 4096
+const HLL_P = 12;
+const HLL_M = 1 << HLL_P; // 4096
 const REGISTER_BITS = 6;
 
 /** Header bytes before the packed register array. */

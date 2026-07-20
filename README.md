@@ -38,9 +38,10 @@ fit than web-framework MVC:
 - `lib/` contains CDK configuration, constructs, and stack composition.
 
 The current cleanup direction is incremental: extract one cohesive concern at
-a time, keep the public response stable, and lower the source-size ratchets
-after every successful move. See [SIMPLIFICATION_REVIEW.md](SIMPLIFICATION_REVIEW.md)
-for the audited backlog and security constraints.
+a time, keep the public response stable, and lower the source-size and coverage
+ratchets after every successful move. See
+[CLEANUP_DEEP_DIVE.md](CLEANUP_DEEP_DIVE.md) for the measured cross-repository
+architecture, test gaps, stakeholder contracts, and execution order.
 
 ## Request paths
 
@@ -68,6 +69,12 @@ Ed25519-signed Argus merchant token. It verifies optional SDK attestation,
 atomically burns a merchant credit, performs a strongly consistent row read,
 and returns only the merchant-safe projection. A valid attestation is also
 bound to the device public key stored on the scan.
+
+The `dev-jw` stack also provisions a gateway-only identity for the deployed
+API-to-Pair contract suite and exports its API Gateway resource id at
+`/argus-api/dev-jw/merchant-projection-e2e-api-key-id`. It is never created in
+production and grants no merchant access by itself: the Lambda still requires
+a valid platform-signed token bound to the exact key value, CPI, and merchant.
 
 ### PAT endpoints
 

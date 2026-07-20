@@ -14,6 +14,7 @@ import {
 } from "./merchant-projection";
 import { proxyScore } from "../scoring/network-tampering";
 import type { IntegrityResultsData } from "./payload-schema";
+import validMerchantProjectionV1 from "../../contracts/merchant-projection/v1/valid-minimal.json";
 
 /** Compute the (now-internal) network integrity score for an input — same
  *  default-raw-score logic as buildMerchantResponse. Used by the tier tests
@@ -155,7 +156,9 @@ describe("buildMerchantResponse", () => {
   describe("shape contract", () => {
     it("returns the documented shape with nulls where we don't have data", () => {
       const result = buildMerchantResponse({ session_id: "s-1" });
+      expect(result).toEqual(validMerchantProjectionV1);
       expect(result).toEqual({
+        schema_version: 1,
         session_id: "s-1",
         created_at: null,
         ttl: null,
