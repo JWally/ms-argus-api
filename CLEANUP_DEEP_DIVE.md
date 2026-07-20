@@ -429,6 +429,14 @@ contract cases. The smaller validator, middleware, and decrypt helper are now
 cleanup-ratcheted. The `/v1/integrity-collect` route name remains the current
 endpoint namespace; it is not legacy wire-version support.
 
+The device-attestation contract is current-only as well. Web Integrity now
+signs `h2Token|stableHash|fuzzyHash`, emits the signed hashes, and always sends
+the worker-attestation slice. API rejects the retired XOR signature, the
+retired 22-slice MAC, missing `device.mac`, and missing `worker_attest` instead
+of retaining rollout branches. Executable VM, API unit, service E2E, deployed
+browser, and adversarial regressions cover both accepted and rejected shapes;
+the identity and MAC helpers are cleanup-ratcheted at their smaller sizes.
+
 The broad browser/adversarial suite remains runtime evidence rather than being
 duplicated in the small contract suite.
 

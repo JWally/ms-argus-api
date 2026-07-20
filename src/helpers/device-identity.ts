@@ -6,41 +6,18 @@
  *
  *   payload.device_identity = { pubkey, sig }
  *
- * where `sig` is the ECDSA signature over `xor(sigintH2Token, KEY)`. Signing an
- * XOR'd server-issued token (instead of a plain timestamp) gives us:
+ * where `sig` is the ECDSA signature over a canonical string containing the
+ * H2 probe token and the payload's stable and fuzzy hashes. Signing a
+ * server-issued token (instead of a plain timestamp) gives us:
  *   - Freshness: the h2-probe token has a 90s HMAC'd TTL
  *   - Unpredictability: attackers can't pre-compute sigs — token is server-chosen
- *   - Opacity: reversers hooking crypto.subtle.sign see XOR'd bytes, not an
- *     obviously-HMAC'd-token format
- *
- * The XOR key is NOT a secret. It's a cheap obfuscation layer to burn lazy
- * reversers; its value is inline on both sides.
+ *   - Payload binding: a signature cannot be replayed with different hashes
  *
  * Failures are non-fatal — we record the outcome on the DDB row so it shows up
  * in analytics, but ingestion always succeeds.
  */
 
 import type { ArgusPayload } from "./payload-schema";
-
-/**
- * XOR obfuscation key shared between client (bytecode) and server. NOT a
- * secret — obfuscation only. If you change it here, change the matching
- * constant in `ms-argus-web-integrity/scripts/vm-src/main.ts` (and regenerate
- * the bytecode) or all client sigs will fail verification.
- */
-const DEVICE_IDENTITY_XOR_KEY = new Uint8Array([
-  0x5a, 0x3f, 0x91, 0x2c, 0xb7, 0x44, 0x68, 0xe1, 0xd0, 0x0a, 0x7d, 0x59, 0x13,
-  0xee, 0x82, 0xbc,
-]);
-
-/** Repeating-key XOR. Output length matches input. */
-function xorBytes(data: Uint8Array, key: Uint8Array): Uint8Array {
-  const out = new Uint8Array(data.length);
-  for (let i = 0; i < data.length; i++) {
-    out[i] = data[i] ^ key[i % key.length];
-  }
-  return out;
-}
 
 /** Reason codes surfaced on `identification.reason` when verification fails. */
 export type IdentityFailReason =
@@ -142,7 +119,7 @@ function extractIdentity(payload: ArgusPayload): Extracted {
 }
 
 /**
- * Canonical v2 signing input for device_identity.
+ * Canonical signing input for device_identity.
  *
  * Binds the signature to:
  *   - The h2-probe token (per-session unique, IP-bound, 90s TTL)
@@ -152,31 +129,16 @@ function extractIdentity(payload: ArgusPayload): Extracted {
  * h2Token (it's `nonce.expiry.hmac`, all hex+dot) or hashes (all base64).
  * Encoded as UTF-8.
  *
- * Pre-2026-05-26 the signing input was `xor(h2Token, DEVICE_IDENTITY_XOR_KEY)`
- * — see deviceIdentityXorInputLegacy below. That construction was both
- * trivially mintable (XOR key was a public constant) AND replay-able
- * across payloads (no hash binding). The v2 input closes the replay
- * primitive: a (pubkey, sig) pair from one submission no longer
- * verifies against a different submission's hashes.
+ * A (pubkey, sig) pair from one submission therefore cannot verify against a
+ * different submission's hashes.
  */
-function deviceIdentitySignedInputV2(
+function deviceIdentitySignedInput(
   h2Token: string,
   stableHash: string,
   fuzzyHash: string,
 ): Uint8Array {
   const canonical = `${h2Token}|${stableHash}|${fuzzyHash}`;
   return new TextEncoder().encode(canonical);
-}
-
-/**
- * Legacy v1 signing input — kept ONLY for backward compatibility during
- * the SDK rollout window. Delete after the bytecode update has fully
- * propagated and metrics show no v1-format verifications.
- *
- * @deprecated remove after SDK rollout
- */
-function deviceIdentityXorInputLegacy(h2Token: string): Uint8Array {
-  return xorBytes(new TextEncoder().encode(h2Token), DEVICE_IDENTITY_XOR_KEY);
 }
 
 interface VerifyInputs {
@@ -209,10 +171,7 @@ async function verifyAgainst(
 }
 
 /**
- * Verify the device-identity signature against the payload-binding input
- * (v2). Falls back to the legacy XOR input (v1) ONLY during the SDK
- * rollout window so older bundles continue to verify. Both paths
- * produce the same IdentityOutcome from the analyzer's POV.
+ * Verify the device-identity signature against the payload-binding input.
  */
 async function verifySignature(
   inputs: VerifyInputs,
@@ -227,27 +186,16 @@ async function verifySignature(
     return "malformed";
   }
 
-  // v2 first — payload-bound input.
-  const v2Ok = await verifyAgainst(
+  const isValid = await verifyAgainst(
     key,
     sigBytes,
-    deviceIdentitySignedInputV2(
+    deviceIdentitySignedInput(
       inputs.h2Token,
       inputs.stableHash,
       inputs.fuzzyHash,
     ),
   );
-  if (v2Ok) return null;
-
-  // v1 fallback — legacy XOR input. To be removed after SDK rollout.
-  const v1Ok = await verifyAgainst(
-    key,
-    sigBytes,
-    deviceIdentityXorInputLegacy(inputs.h2Token),
-  );
-  if (v1Ok) return null;
-
-  return "sig_invalid";
+  return isValid ? null : "sig_invalid";
 }
 
 /** Map a non-"ok" extraction result to its IdentityOutcome. */

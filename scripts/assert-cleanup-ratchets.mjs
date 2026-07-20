@@ -4,6 +4,8 @@ import { fileURLToPath } from "node:url";
 const limits = new Map([
   ["src/helpers/payload-schema.ts", 466],
   ["src/helpers/merchant-projection.ts", 627],
+  ["src/helpers/device-identity.ts", 267],
+  ["src/helpers/device-mac.ts", 252],
   ["src/contracts/integrity-collect.ts", 20],
   ["src/handlers/ingestion/base-handler.ts", 480],
   ["src/handlers/ingestion/device-history-workflow.ts", 112],

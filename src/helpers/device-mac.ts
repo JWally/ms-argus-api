@@ -8,7 +8,7 @@
  *   material = sessionToken \0 sigintTls \0 sigintTcpToken \0 sigintH2Token
  *              \0 devicePubkey               (empty parts omitted)
  *   key      = HMAC-MD5(BUILD_SALT, material)
- *   absorb   = for each of 22 slices in fixed order:
+ *   absorb   = for each of 23 slices in fixed order:
  *                buf += BE32(sliceId) || stringify(device[name])
  *   mac      = HMAC-MD5(key, absorb)   → 32-hex string in device.mac
  *
@@ -18,9 +18,8 @@
  * so RFC 6151 §2 "still suitable for HMAC" applies.
  *
  * This module replays the same chain over a received payload and returns
- * 'absent' | 'ok' | 'mismatch'. The caller (base-handler) rejects on
- * 'mismatch' and skips on 'absent' so the rollout doesn't break old
- * cached SDK bundles.
+ * 'absent' | 'ok' | 'mismatch'. The caller rejects both missing and invalid
+ * MACs; only the current 23-slice chain is accepted.
  *
  * BUILD_SALT, slice order, key material order, and skip-empty rule MUST
  * stay in lockstep with the SDK. Rotate them per release.
@@ -120,11 +119,6 @@ function strToLowByteBuffer(s: string): Buffer {
   return out;
 }
 
-// buildAbsorbBuffer was inlined into computeMac when the rollout-compat
-// dual-MAC was added (need to vary slice order per attempt). Same
-// algorithm — per-slice 4-byte BE id prefix + canonicalStringify
-// truncated via strToLowByteBuffer.
-
 /**
  * Build the MAC-key material in the fixed (bytecode-private) order:
  *   sessionToken, sigintTls, sigintTcpToken, sigintH2Token, devicePubkey
@@ -151,12 +145,25 @@ export type DeviceMacOutcome =
   | { kind: "ok" }
   | { kind: "mismatch"; expected: string; received: string };
 
+export type DeviceMacRejectionReason =
+  | "device_mac_required"
+  | "device_mac_mismatch";
+
+/** Map verification into the ingestion boundary's fail-closed policy. */
+export function deviceMacRejectionReason(
+  outcome: DeviceMacOutcome,
+): DeviceMacRejectionReason | null {
+  if (outcome.kind === "absent") return "device_mac_required";
+  if (outcome.kind === "mismatch") return "device_mac_mismatch";
+  return null;
+}
+
 /**
  * Verify the device.mac field on a received integrity payload.
  *
  * Three outcomes:
- *  - 'absent'   — device or device.mac not present. Old SDK bundle.
- *                 Caller should NOT reject (rollout grace period).
+ *  - 'absent'   — device, worker attestation, or device.mac not present.
+ *                 Caller rejects.
  *  - 'ok'       — MAC matches expected. Payload integrity confirmed.
  *  - 'mismatch' — MAC present but doesn't match. Tampering. Caller
  *                 should reject hard (tier-100 device_tampering).
@@ -170,7 +177,8 @@ export type DeviceMacOutcome =
  * Extract the parts of the payload that feed the MAC computation. Split
  * out of verifyDeviceMac to keep that function under the complexity cap.
  * Returns null when the payload shape disqualifies it from verification
- * (no device object, no device.mac field) — caller maps to 'absent'.
+ * (no current worker attestation or device.mac field) — caller maps to
+ * 'absent'.
  */
 interface MacInputs {
   device: Record<string, unknown>;
@@ -190,6 +198,9 @@ function extractMacInputs(payload: unknown): MacInputs | null {
   const p = payload as Record<string, unknown>;
   const device = p.device as Record<string, unknown> | undefined;
   if (!device || typeof device !== "object") return null;
+  if (!device.worker_attest || typeof device.worker_attest !== "object") {
+    return null;
+  }
   const received = device.mac;
   if (typeof received !== "string" || received.length === 0) return null;
   const deviceIdentity = p.device_identity as { pubkey?: unknown } | undefined;
@@ -203,13 +214,9 @@ function extractMacInputs(payload: unknown): MacInputs | null {
   };
 }
 
-function computeMac(
-  device: Record<string, unknown>,
-  key: Buffer,
-  order: ReadonlyArray<{ id: number; name: string }>,
-): string {
+function computeMac(device: Record<string, unknown>, key: Buffer): string {
   const chunks: Buffer[] = [];
-  for (const { id, name } of order) {
+  for (const { id, name } of SLICE_ORDER) {
     const idBuf = Buffer.alloc(4);
     idBuf.writeUInt32BE(id, 0);
     chunks.push(idBuf);
@@ -238,17 +245,8 @@ export function verifyDeviceMac(
   const key = createHmac("md5", BUILD_SALT).update(material).digest();
   const received = inputs.received.toLowerCase();
 
-  // Primary order: the current 23-slice chain (post worker-isolation).
-  const expected = computeMac(inputs.device, key, SLICE_ORDER);
+  const expected = computeMac(inputs.device, key);
   if (expected === received) return { kind: "ok" };
-
-  // Rollout compat: try the legacy 22-slice order (without
-  // SLICE_WORKER_ATTEST at 0x66). Old SDK bundles cached in browsers
-  // continue to verify during the migration window. Remove this
-  // fallback once the bundle TTL has fully expired across all clients.
-  const legacyOrder = SLICE_ORDER.filter((s) => s.id !== 0x66);
-  const expectedLegacy = computeMac(inputs.device, key, legacyOrder);
-  if (expectedLegacy === received) return { kind: "ok" };
 
   return { kind: "mismatch", expected, received };
 }
