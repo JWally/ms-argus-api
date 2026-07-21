@@ -1,27 +1,43 @@
-import { describe, it, expect } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { sleep } from "./sleep";
 
 describe("sleep", () => {
-  it("should resolve immediately for sleep(0)", async () => {
-    const start = Date.now();
-    await sleep(0);
-    const elapsed = Date.now() - start;
-    // Should complete within a reasonable tolerance (< 50ms)
-    expect(elapsed).toBeLessThan(50);
+  beforeEach(() => {
+    vi.useFakeTimers();
   });
 
-  it("should resolve after approximately the specified duration", async () => {
-    const start = Date.now();
-    await sleep(50);
-    const elapsed = Date.now() - start;
-    // Should be at least 40ms (allowing for timer imprecision)
-    expect(elapsed).toBeGreaterThanOrEqual(40);
-    // Should not take excessively long (< 200ms)
-    expect(elapsed).toBeLessThan(200);
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
-  it("should return a Promise", () => {
-    const result = sleep(10);
-    expect(result).toBeInstanceOf(Promise);
+  it("resolves on the next timer turn for sleep(0)", async () => {
+    let resolved = false;
+    const pending = sleep(0).then(() => {
+      resolved = true;
+      return undefined;
+    });
+
+    expect(resolved).toBe(false);
+    await vi.advanceTimersByTimeAsync(0);
+    await pending;
+    expect(resolved).toBe(true);
+  });
+
+  it("does not resolve before the specified duration", async () => {
+    let resolved = false;
+    const pending = sleep(50).then(() => {
+      resolved = true;
+      return undefined;
+    });
+
+    await vi.advanceTimersByTimeAsync(49);
+    expect(resolved).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    await pending;
+    expect(resolved).toBe(true);
+  });
+
+  it("returns a Promise", () => {
+    expect(sleep(10)).toBeInstanceOf(Promise);
   });
 });

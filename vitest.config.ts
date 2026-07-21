@@ -30,14 +30,11 @@ export default defineConfig({
         "cdk.out",
         "src/types/**",
         "**/index.ts",
-        // Lambda entry-point shells (middy config + env wiring only — actual
-        // logic lives in handlers/*/base-handler.ts). Integration tests for
-        // these paths were removed with the matching pipeline.
+        // Lambda entry-point shells (middy config + env wiring only). Their
+        // application cores and HTTP adapters remain in the denominator.
         "src/handlers/ingestion.ts",
         "src/handlers/session-get.ts",
         "src/handlers/ingestion/base-handler.ts",
-        "src/handlers/session-get/base-handler.ts",
-        "src/handlers/session-get/session-ops.ts",
         "src/handlers/integrity-archiver.ts",
         // ECDH / ingestion middleware paths exercised only via integration
         // tests which were dropped with the /v1/collect pipeline.
@@ -73,10 +70,28 @@ export default defineConfig({
         "src/services/network/asn-overrides.ts",
       ],
       thresholds: {
-        statements: 93,
-        branches: 87,
-        functions: 95,
-        lines: 93,
+        statements: 93.5,
+        branches: 88.5,
+        functions: 96,
+        lines: 93.5,
+        "src/application/session-get.ts": {
+          statements: 100,
+          branches: 100,
+          functions: 100,
+          lines: 100,
+        },
+        "src/handlers/session-get/base-handler.ts": {
+          statements: 100,
+          branches: 100,
+          functions: 100,
+          lines: 100,
+        },
+        "src/handlers/session-get/session-ops.ts": {
+          statements: 100,
+          branches: 100,
+          functions: 100,
+          lines: 100,
+        },
       },
     },
   },
