@@ -24,6 +24,14 @@ module.exports = {
       to: { path: "^src/(handlers|services|helpers)/" },
     },
     {
+      name: "application-no-handler-imports",
+      severity: "error",
+      comment:
+        "Application use cases expose ports and must not reach transport adapters.",
+      from: { path: "^src/application/", pathNot: "\\.test\\.ts$" },
+      to: { path: "^src/handlers/" },
+    },
+    {
       name: "helpers-no-handler-or-service-imports",
       severity: "error",
       comment:

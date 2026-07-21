@@ -23,7 +23,7 @@ import type { IntegrityResultsData } from "../../helpers/payload-schema";
  */
 export function extractSessionId(
   event: APIGatewayProxyEvent,
-  metrics: Metrics,
+  metrics: Pick<Metrics, "addMetric">,
 ): string {
   const sessionId = event.pathParameters?.session_id;
   if (!sessionId) {
@@ -43,8 +43,8 @@ export async function fetchIntegrityResultsByComposite(
   deps: {
     dynamodb: DynamoDBClient;
     integrityResultsTable: string;
-    logger: Logger;
-    metrics: Metrics;
+    logger: Pick<Logger, "warn">;
+    metrics: Pick<Metrics, "addMetric">;
   },
 ): Promise<IntegrityResultsData | undefined> {
   try {

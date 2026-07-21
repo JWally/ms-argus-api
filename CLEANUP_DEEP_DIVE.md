@@ -447,7 +447,26 @@ statements, 28% branches, 25% functions, 33% lines) without changing the
 coverage denominator, plus 100% per-file floors for the extracted transport
 builder. The broader application-handler work below remains.
 
-- API: progressively include application handlers/loaders currently excluded;
+Progress 2026-07-20: API session retrieval is the first formerly excluded
+application path restored to the coverage denominator. The 319-line
+module-mocked handler became a 195-line application use case behind explicit
+verification, billing, persistence, projection, clock, metric, and logging
+ports plus a 102-line HTTP adapter. Nine application tests prove ordering and
+fail-closed behavior without module mocks; nine adapter tests prove request
+and response mapping. Seven command-level tests cover the 82-line DynamoDB and
+session-ID adapter, which also rejoined the denominator. All three files report
+100% statement, branch, function, and line coverage. Global measured coverage
+is 93.94% statements/lines, 88.64% branches, and 96.64% functions; enforced
+floors are now 93.5%, 88.5%, and 96%. Dependency rules prevent application
+modules from importing handlers, and size ratchets prevent the extracted files
+from regrowing. The suite also replaced a wall-clock `sleep(0)` assertion with
+fake-timer scheduling checks after the full parallel run exposed its flake.
+Build, quality, 1,287 unit/contract tests, and six service E2E cases pass. The
+API stack reached `UPDATE_COMPLETE` in `dev-jw`; a direct deployed merchant
+request returned HTTP 200 with projection schema v1 and the expected session,
+while the same valid API key with an invalid signed token returned HTTP 401.
+
+- API: continue with ingestion application handlers/loaders currently excluded;
   add integration tests through injected ports before raising the denominator.
 - Pair: add per-file floors for newly extracted core modules; raise the global
   floor after every route extraction.

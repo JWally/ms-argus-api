@@ -1,5 +1,5 @@
 import { Logger } from "@aws-lambda-powertools/logger";
-import { Metrics } from "@aws-lambda-powertools/metrics";
+import { Metrics, MetricUnit } from "@aws-lambda-powertools/metrics";
 import { logMetrics } from "@aws-lambda-powertools/metrics/middleware";
 import { injectLambdaContext } from "@aws-lambda-powertools/logger/middleware";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
@@ -12,6 +12,12 @@ import { jsonErrorHandler } from "../helpers/error-middleware";
 import { onWarmup } from "../helpers/middy-helpers";
 import { createBaseHandler } from "./session-get/base-handler";
 import { primeSessionGet } from "./session-get/prime";
+import { createSessionGet } from "../application/session-get";
+import { verifyMerchantToken } from "../helpers/token-verifier";
+import { verifySdkAttestation } from "../helpers/sdk-attestation";
+import { decrementCredit } from "../helpers/credits";
+import { fetchIntegrityResultsByComposite } from "./session-get/session-ops";
+import { buildMerchantResponse } from "../helpers/merchant-projection";
 
 interface SessionGetEnvConfig {
   INTEGRITY_RESULTS_TABLE: string;
@@ -44,12 +50,34 @@ const metrics = new Metrics({
 // sdk-http-handler.ts) — fail fast and retry instead of a ~7.5s blackhole.
 const dynamodb = new DynamoDBClient({ requestHandler: boundedRequestHandler });
 
+const getSession = createSessionGet({
+  ssmPubkeyPath: process.env.PLATFORM_PUBKEY_SSM_PATH,
+  ports: {
+    verifyMerchant: verifyMerchantToken,
+    verifyAttestation: verifySdkAttestation,
+    debitCredit: (merchantId) =>
+      decrementCredit(merchantId, {
+        ddb: dynamodb,
+        table: envConfig.MERCHANTS_TABLE_NAME,
+      }),
+    fetchIntegrity: (cpi, sessionId) =>
+      fetchIntegrityResultsByComposite(cpi, sessionId, {
+        dynamodb,
+        integrityResultsTable: envConfig.INTEGRITY_RESULTS_TABLE,
+        logger,
+        metrics,
+      }),
+    buildProjection: buildMerchantResponse,
+    now: () => performance.now(),
+    recordMetric: (name) => metrics.addMetric(name, MetricUnit.Count, 1),
+    logTiming: (timing) => logger.info("session-get timing", { ...timing }),
+  },
+});
+
 const baseHandler = createBaseHandler({
-  dynamodb,
-  integrityResultsTable: envConfig.INTEGRITY_RESULTS_TABLE,
-  merchantsTable: envConfig.MERCHANTS_TABLE_NAME,
   logger,
   metrics,
+  getSession,
 });
 
 export const handler = middy(baseHandler)
