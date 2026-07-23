@@ -264,7 +264,7 @@ describe("analyzeNetworkProbes — real-world session replays", () => {
     expect(r.vpn_component).toBeCloseTo((1440 - 1340) / 140, 2); // ~0.71
   });
 
-  it("Mullvad catalogued (198093 is vpn_proxy) forces 1.0", () => {
+  it("Mullvad provider network (AS216025 is vpn_proxy) forces 1.0", () => {
     const r = analyzeNetworkProbes(sigint({ sndMss: 1340 }), "vpn_proxy");
     expect(r.vpn_component).toBe(1.0);
   });

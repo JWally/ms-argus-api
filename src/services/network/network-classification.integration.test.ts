@@ -196,12 +196,12 @@ describe("Other-carrier classification via dataset / overlay", () => {
     expect(r.asn.network_class).toBe("datacenter");
   });
 
-  it("NordVPN backbone (149.22.84.135 ASN 212238) → vpn_proxy via legacy catalog", () => {
+  it("Mullvad-owned network (45.92.0.1 ASN 216025) → vpn_proxy via legacy catalog", () => {
     const r = analyze({
-      cfIp: "149.22.84.135",
-      tcpIp: "149.22.84.135",
-      webrtcIp: "149.22.84.135",
-      asn: "212238",
+      cfIp: "45.92.0.1",
+      tcpIp: "45.92.0.1",
+      webrtcIp: "45.92.0.1",
+      asn: "216025",
     });
     expect(r.asn.network_class).toBe("vpn_proxy");
   });

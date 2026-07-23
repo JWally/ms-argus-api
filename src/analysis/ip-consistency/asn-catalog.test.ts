@@ -71,36 +71,31 @@ describe("asn-catalog — lookupAsn()", () => {
   });
 
   describe("vpn_proxy", () => {
-    it("NordVPN AS212238 (Datacamp) is vpn_proxy", () => {
-      const e = lookupAsn("212238");
+    it.each([
+      ["199218", "ProtonVPN"],
+      ["203619", "IVPN"],
+      ["209103", "ProtonVPN"],
+      ["214879", "SkyVPN"],
+      ["216025", "Mullvad"],
+      ["57138", "Mullvad"],
+      ["397282", "Castle VPN"],
+      ["397540", "Windscribe"],
+    ])("provider-owned AS%s (%s) is vpn_proxy", (asn, provider) => {
+      const e = lookupAsn(asn);
       expect(e?.category).toBe("vpn_proxy");
-      expect(e?.org).toContain("NordVPN");
+      expect(e?.org).toContain(provider);
     });
-    it("NordVPN AS57523 (Datacamp) is vpn_proxy", () => {
-      expect(lookupAsn("57523")?.category).toBe("vpn_proxy");
-    });
-    it("ExpressVPN AS394711 (Kape) is vpn_proxy", () => {
-      const e = lookupAsn("394711");
-      expect(e?.category).toBe("vpn_proxy");
-      expect(e?.org).toContain("ExpressVPN");
-    });
-    it("Mullvad AS198093 is vpn_proxy", () => {
-      expect(lookupAsn("198093")?.category).toBe("vpn_proxy");
-    });
-    it("Surfshark AS212029 is vpn_proxy", () => {
-      expect(lookupAsn("212029")?.category).toBe("vpn_proxy");
-    });
-    it("ProtonVPN AS209103 is vpn_proxy", () => {
-      const e = lookupAsn("209103");
-      expect(e?.category).toBe("vpn_proxy");
-      expect(e?.org).toBe("Proton AG");
-    });
-    it("IPVanish AS33438 is vpn_proxy", () => {
-      expect(lookupAsn("33438")?.category).toBe("vpn_proxy");
-    });
+
     it("M247 AS9009 is vpn_proxy", () => {
       expect(lookupAsn("9009")?.category).toBe("vpn_proxy");
     });
+
+    it.each(["212238", "57523", "394711", "198093", "212029", "33438"])(
+      "does not hard-block stale provider assignment AS%s",
+      (asn) => {
+        expect(lookupAsn(asn)).toBeNull();
+      },
+    );
   });
 
   describe("corporate_proxy", () => {

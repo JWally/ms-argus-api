@@ -91,6 +91,30 @@ describe("categorize — datacenter / proxy / cdn", () => {
   });
 });
 
+describe("categorize — provider-owned VPN networks", () => {
+  it.each([
+    "PROTONVPN",
+    "PROTONVPN-2",
+    "IVPN",
+    "MULLVAD-AS",
+    "WINDSCRIBE",
+    "CASTLEVPN",
+    "SKYVPN",
+  ])("%s → vpn_proxy", (org) => {
+    expect(categorize(org)).toBe("vpn_proxy");
+  });
+
+  it.each([
+    "PROTON",
+    "PROTON66",
+    "NRI-IVPN Nomura Research Institute,Ltd.",
+    "NORDUNET",
+    "NORDICOM",
+  ])("does not treat lookalike or mixed-use org %s as a VPN", (org) => {
+    expect(categorize(org)).toBeNull();
+  });
+});
+
 describe("categorize — multi-candidate fallback (LACNIC/non-English RIRs)", () => {
   it("falls through name → org → nameservers in order", () => {
     // BR LACNIC: name is just a numeric handle, but nameserver carries Vivo

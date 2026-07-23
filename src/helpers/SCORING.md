@@ -16,13 +16,13 @@ Three thresholds, one rule. Any single axis saturating is enough to flag.
 
 ## Network tampering — "is the path lying about itself?"
 
-### MSS encapsulation (LIKELY_VPN)
+### MSS / path-MTU telemetry (diagnostic only)
 
-| `snd_mss <` | severity | meaning                   |
-| ----------- | -------- | ------------------------- |
-| 1300        | 0.7      | heavy tunnel              |
-| 1380        | 0.5      | WireGuard / OpenVPN range |
-| 1440        | 0.25     | slightly reduced          |
+Reduced `snd_mss` and path MTU remain stored as internal path telemetry. They
+can result from VPN encapsulation, but also from ordinary carrier, CGNAT,
+PPPoE, IPv6-transition, and other access-network overhead. Therefore neither
+the historical `network.vpn_component` field nor its legacy `LIKELY_VPN`
+signal can originate a merchant verdict or `vpn` tag.
 
 ### RTT ratio (LIKELY_PROXY)
 
@@ -32,18 +32,29 @@ Three thresholds, one rule. Any single axis saturating is enough to flag.
 | 2.0×               | 0.35     |
 | 1.5×               | 0.15     |
 
-RTT ratio is proxy evidence only. It cannot create or raise the MSS-derived
-`vpn_component`; transient receive-side RTT samples are left to the integrated
-proxy waterfall for corroboration.
+RTT ratio is proxy evidence only. It cannot create VPN evidence; transient
+receive-side RTT samples are left to the integrated proxy waterfall for
+corroboration.
 
 ### ASN category
 
-| category        | severity | code                    |
-| --------------- | -------- | ----------------------- |
-| datacenter      | 1.0      | CATEGORY_VPN            |
-| vpn_proxy       | 0.6      | CATEGORY_VPN            |
-| corporate_proxy | 0.15     | CATEGORY_VPN            |
-| mobile          | —        | (context, not a threat) |
+The broader local `network_class` wins when present; the legacy ASN `category`
+is the fallback for historical rows.
+
+Runtime classification is an in-memory lookup from the gzipped ASN database in
+S3. The weekly/on-deploy builder joins the full IPtoASN routing table with
+conservative name rules and current provider-owned overrides; there is no
+request-time reputation REST call. Broad hosting networks remain covered by
+the datacenter policy, while residential proxies stay with the separate proxy
+waterfall because ASN ownership alone cannot identify them safely.
+
+| ASN class                         | VPN/network score | policy                                  |
+| --------------------------------- | ----------------- | --------------------------------------- |
+| datacenter                        | 1.0               | block + `hyperscaler` tag               |
+| vpn_proxy                         | 1.0               | block + `vpn` tag                       |
+| privacy_relay                     | 0                 | tag-only; legitimate consumer privacy   |
+| corporate_proxy / security_filter | 0                 | tag-only corporate-shield carve-out     |
+| mobile / residential / other      | 0                 | no VPN score from path-shape heuristics |
 
 ### Probe consistency
 
@@ -58,9 +69,9 @@ proxy waterfall for corroboration.
 
 ### Axis composition
 
-`nt = max(vpn_component, proxy_threat, ip_scatter_penalty)` — pure winner-take-all today.
-The raw RTT-derived `proxy_component` is diagnostic input to `proxy_threat`, not
-a substitute for a zero `vpn_component`.
+`nt = max(asn_network_score, proxy_threat, ip_scatter_penalty)` — pure winner-take-all today.
+The raw RTT-derived `proxy_component` and MSS-derived `vpn_component` are
+diagnostic inputs, not substitutes for a zero ASN score.
 
 ---
 
@@ -162,6 +173,6 @@ one noisy desktop sample a blocking automation verdict.
 
 ## Known sharp edges
 
-- Single soft signal can saturate an axis (MSS=1374 alone → nt=45; MSS=1350 → nt=65; MSS=1280 → nt=100). Real iPhones behind hospitality WiFi / DS-Lite / self-installed VPN get blocked on MSS alone, even when every corroborating signal says "real device on real network."
+- ASN classification is deliberately coarse. A mixed-use ASN can still need a CIDR override, while VPN endpoints on residential ISPs need the separate proxy waterfall or an IP-level reputation dataset.
 - `max()` aggregation across the three axes means no amount of negative evidence on axes B and C can wash out a single saturating signal on axis A.
 - Tor exit nodes (e.g. `185.220.101.0/24` Zwiebelfreunde) are not currently tagged as Tor — they get caught via headless detection, not anonymity-network classification.

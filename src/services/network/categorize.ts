@@ -228,7 +228,7 @@ const RULES: CategoryRule[] = [
   { pattern: /\bDATAPACKET\b|\bDATACAMP\b|\bCDNEXT\b/i, category: "vpn_proxy" },
   {
     pattern:
-      /\bPRIVATE-?INTERNET-?ACCESS\b|\bMULLVAD\b|\bEXPRESSVPN\b|\bSURFSHARK\b/i,
+      /\bPRIVATE-?INTERNET-?ACCESS\b|\bMULLVAD\b|\bEXPRESSVPN\b|\bSURFSHARK\b|\bPROTONVPN(?:-\d+)?\b|\bWINDSCRIBE\b|\bCASTLEVPN\b|^\s*(?:IVPN|SKYVPN)\s*$/i,
     category: "vpn_proxy",
   },
   { pattern: /\bHIVELOCITY\b|\bHVC-AS\b/i, category: "hosting_proxy" },

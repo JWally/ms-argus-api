@@ -1,8 +1,8 @@
 /**
  * Network probe analysis for integrity ingestion.
  *
- * Produces continuous 0-1 scores from raw TCP probe measurements and
- * fuses them via noisy-OR into a single merchant-facing `proxy_score`.
+ * Produces continuous 0-1 diagnostics from raw TCP probe measurements and
+ * fuses them via noisy-OR into the legacy internal `proxy_score`.
  *
  * Why continuous over the old threshold-bucket approach:
  *   1. No sharp cliffs — a bot can no longer infer "caught at MSS=1380"
@@ -13,13 +13,13 @@
  *      vs. the old max-of-two approach that would have returned 60%.
  *
  * Storage shape (what lands in DDB / S3):
- *   proxy_score       — merchant-facing noisy-OR combined score [0,1]
+ *   proxy_score       — legacy noisy-OR combined diagnostic [0,1]
  *   proxy_component   — raw RTT-ratio-derived score [0,1]
- *   vpn_component     — raw MSS-derived score [0,1]
+ *   vpn_component     — legacy-named MSS/path telemetry [0,1]
  *   signals           — detailed internal signals (not exposed to merchants)
  *
- * The future response-shaping pass (see TODO(merchant-response-shaping)
- * in session-get handler) projects this to `{proxy_score}` only.
+ * Merchant VPN/network enforcement reads local ASN classification directly;
+ * it does not consume MSS-derived `vpn_component` values.
  */
 
 import type { AsnCategory } from "../ip-consistency/asn-catalog";

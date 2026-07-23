@@ -181,9 +181,8 @@ describe("§1 — verdict derivation", () => {
   });
 
   it("the worst axis decides — even if the other two are 0", () => {
-    // Pure network signal: datacenter ASN with the network analyzer's
-    // VPN component set (real ingestion sets this when ASN category is
-    // datacenter or vpn_proxy). network_tampering = 100 → BLOCK.
+    // Pure network signal: local ASN classification says datacenter.
+    // network_tampering = 100 → BLOCK without MSS evidence.
     const base = cleanSession();
     const r = project({
       ...base,
@@ -200,7 +199,7 @@ describe("§1 — verdict derivation", () => {
         },
         network: {
           ...base.analysis.network,
-          vpn_component: 1.0,
+          vpn_component: 0,
           signals: [
             {
               code: "CATEGORY_VPN",
@@ -567,20 +566,18 @@ describe("§4 — device_tampering axis", () => {
 //
 // Source: `networkTamperingScore`. Computed as:
 //
-//   max(vpnScore, proxy_waterfall.threat_score)
+//   max(asnNetworkScore, proxy_waterfall.threat_score, ipScatterPenalty)
 //
 // Where:
-//   - vpnScore considers ASN category (datacenter / vpn_proxy → up to
-//     100), MSS-based VPN detection (network.vpn_component, derived from
-//     stripped MSS values that indicate tunnel encapsulation), and
-//     WebRTC vs probe-IP consensus (mismatch → suspect).
+//   - vpnScore considers only the local ASN classification
+//     (datacenter / vpn_proxy → 100). `network.vpn_component` retains
+//     MSS-path telemetry for old records but cannot originate a verdict.
 //   - proxy_waterfall.threat_score is computed in a separate analyzer
 //     (proxy waterfall rules) and ranges 0/50/100.
 //
 // Carve-outs:
-//   - corporate_proxy ASN → vpnScore zeroed (the shield's MSS reduction
-//     is benign tunnel encapsulation, not a VPN). proxy_waterfall has
-//     its own carve-out logic.
+//   - corporate_proxy/security_filter ASN → no ASN VPN score.
+//     proxy_waterfall has its own carve-out logic.
 //   - WebRTC-matches-probes damper: when WebRTC IP matches probe IPs at
 //     /16, the proxy_component gets capped (not zeroed) — see
 //     applyWebrtcFusion comment in projector.
@@ -590,11 +587,9 @@ describe("§5 — network_tampering axis", () => {
     expect(project(cleanSession()).network_tampering).toBe(0);
   });
 
-  it("datacenter ASN + vpn_component=1.0 → network_tampering 100", () => {
-    // The network analyzer at ingestion time sets vpn_component=1.0 when
-    // ASN category is datacenter or vpn_proxy (CATEGORY_VPN signal).
-    // The projector reads vpn_component into vpnScore — that's what
-    // produces network_tampering for datacenter sessions.
+  it("datacenter ASN + vpn_component=0 → network_tampering 100", () => {
+    // The projector reads local ASN classification directly. This also
+    // makes historical rows safe when vpn_component contains MSS telemetry.
     const base = cleanSession();
     const r = project({
       ...base,
@@ -611,7 +606,7 @@ describe("§5 — network_tampering axis", () => {
         },
         network: {
           ...base.analysis.network,
-          vpn_component: 1.0,
+          vpn_component: 0,
           signals: [
             {
               code: "CATEGORY_VPN",
@@ -627,8 +622,8 @@ describe("§5 — network_tampering axis", () => {
   });
 
   it("CARVE-OUT: corporate_proxy ASN → 0 (Umbrella/Zscaler look like VPNs but aren't)", () => {
-    // The shield's MSS reduction (snd_mss=1298 typical) trips LIKELY_VPN
-    // and would normally set vpn_component=1.0. Carve-out zeros it.
+    // The shield's reduced MSS (snd_mss=1298 typical) remains telemetry
+    // and cannot create a VPN score.
     const base = cleanSession();
     const r = project({
       ...base,
@@ -645,7 +640,7 @@ describe("§5 — network_tampering axis", () => {
         },
         network: {
           ...base.analysis.network,
-          vpn_component: 1.0, // LIKELY_VPN fired
+          vpn_component: 1.0, // historical MSS-derived telemetry
           signals: [
             { code: "LIKELY_VPN", severity: 0.7, evidence: "snd_mss=1298" },
           ],
@@ -688,8 +683,8 @@ describe("§5 — network_tampering axis", () => {
 //   satellite          | 0
 //   cdn                | 0  (rare in merchant traffic)
 //   datacenter         | 100 (BLOCK — real iPhones don't originate here)
-//   vpn_proxy          | up to 100 via vpnScore
-//   hosting_proxy      | up to 100 via vpnScore (residential proxy networks
+//   vpn_proxy          | 100 via local ASN classification
+//   hosting_proxy      | proxy-waterfall policy (residential proxy networks
 //                      |     resold by Bright Data, SOAX, etc.)
 //   privacy_relay      | tag-only, no score (Apple iCloud Private Relay —
 //                      |     legitimate consumer privacy product)
@@ -737,10 +732,8 @@ describe("§6 — network classification → verdict impact", () => {
     expect(r.ipInfo.mobile.result).toBe(true);
   });
 
-  it("datacenter → BLOCK, datacenter+hyperscaler tags fire (with network analyzer's vpn_component)", () => {
-    const r = withNetworkClass("datacenter", "datacenter", {
-      vpn_component: 1.0,
-    });
+  it("datacenter → BLOCK, vpn+hyperscaler tags fire without MSS evidence", () => {
+    const r = withNetworkClass("datacenter", "datacenter");
     expect(r.verdict).toBe("block");
     expect(r.ipInfo.datacenter.result).toBe(true);
     expect(r.tags).toContain("hyperscaler");
@@ -1021,7 +1014,7 @@ describe("§9 — end-to-end realistic scenarios", () => {
     // every Fortune 500 employee blocks because:
     //   - TLS interception → TLS_UA_MISMATCH (carve-out)
     //   - PoP egress timezone ≠ user TZ → TZ_GEOLOCATION_MISMATCH (carve-out)
-    //   - MSS reduction by tunnel → LIKELY_VPN (carve-out via vpnScore)
+    //   - MSS reduction by tunnel → telemetry only
     const r = project(
       cleanSession({
         analysis: {
@@ -1067,8 +1060,8 @@ describe("§9 — end-to-end realistic scenarios", () => {
   });
 
   it("WebDriver-driven Chrome on a hosting provider → BLOCK on automation", () => {
-    // Hosting/datacenter ASNs feed `vpnScore` via category, BUT only when
-    // category is `datacenter` or `vpn_proxy`. `hosting_proxy` (Bright
+    // Hosting/datacenter ASNs feed `vpnScore` via local classification,
+    // but only `datacenter` and `vpn_proxy` score. `hosting_proxy` (Bright
     // Data, SOAX, residential-proxy networks) is its own bucket and the
     // current scoring routes it through the proxy_waterfall threat_score
     // rather than vpnScore. Demonstrating the automation block here.
@@ -1100,7 +1093,7 @@ describe("§9 — end-to-end realistic scenarios", () => {
           },
           network: {
             ...cleanSession().analysis.network,
-            vpn_component: 1.0, // network analyzer sets this for datacenter ASNs
+            vpn_component: 0, // ASN classification is sufficient
           },
         },
       }),

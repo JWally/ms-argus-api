@@ -358,7 +358,7 @@ export interface IntegrityResultsData {
       proxy_score: number;
       /** Continuous RTT-ratio-derived score [0,1] — internal. */
       proxy_component: number;
-      /** Continuous MSS-derived score [0,1] — internal. */
+      /** Legacy-named MSS/path telemetry [0,1] — internal, non-verdict. */
       vpn_component: number;
       signals: Array<{ code: string; severity: number; evidence: unknown }>;
     };

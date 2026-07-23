@@ -242,7 +242,7 @@ describe("buildMerchantResponse", () => {
       expect(json).not.toContain("hamming");
     });
 
-    it("rounds probabilities to the nearest 5, never exposes raw component", () => {
+    it("ignores and never exposes the raw MSS-derived component", () => {
       const base = baseIntegrity();
       const result = buildMerchantResponse({
         session_id: "s",
@@ -256,9 +256,8 @@ describe("buildMerchantResponse", () => {
               vpn_component: 0.73,
               signals: [],
             },
-            // WebRTC present but IPs disagree — no damper, no uplift,
-            // raw vpn_component flows through so the rounding assertion
-            // is about the rounding step, not the fusion rule.
+            // WebRTC present but IPs disagree. The stored MSS-derived
+            // component is telemetry only and cannot originate a verdict.
             ip: {
               ...base.analysis.ip,
               ips: { ...base.analysis.ip.ips, webrtc: "8.8.8.8" },
@@ -267,17 +266,14 @@ describe("buildMerchantResponse", () => {
           },
         },
       });
-      // 0.73 → 73% → rounds to 75, not 73
-      expect(result.network_tampering).toBe(75);
-      expect(result.network_tampering % 5).toBe(0);
+      expect(result.network_tampering).toBe(0);
       const json = JSON.stringify(result);
       expect(json).not.toContain("0.73");
-      expect(json).not.toContain("73,"); // raw 73% must not leak
     });
   });
 
   describe("product blocks", () => {
-    it("vpn tag fires when probability >= 50, proxy stays 0", () => {
+    it("vpn tag fires for a locally classified VPN ASN, proxy stays 0", () => {
       const base = baseIntegrity();
       const result = buildMerchantResponse({
         session_id: "s",
@@ -286,20 +282,26 @@ describe("buildMerchantResponse", () => {
           analysis: {
             ...base.analysis,
             network: {
-              proxy_score: 0.5,
+              proxy_score: 0,
               proxy_component: 0,
-              vpn_component: 0.85,
+              vpn_component: 0,
               signals: [],
             },
             ip: {
               ...base.analysis.ip,
               ips: { ...base.analysis.ip.ips, webrtc: "8.8.8.8" },
               checks: { probesConsistent: true, webrtcMatchesProbes: false },
+              asn: {
+                number: "216025",
+                org: "Mullvad VPN",
+                category: "vpn_proxy",
+                network_class: "vpn_proxy",
+              },
             },
           },
         },
       });
-      expect(result.network_tampering).toBe(85);
+      expect(result.network_tampering).toBe(100);
       expect(result.tags).toContain("vpn");
       expect(result.tags).not.toContain("proxy");
     });
@@ -3327,7 +3329,7 @@ describe("buildMerchantResponse", () => {
       expect(networkIntegrityScoreFor(input)).toBe(0);
     });
 
-    it("still surfaces vpn/proxy probabilities for non-corporate ASNs", () => {
+    it("still surfaces VPN risk for a classified non-corporate VPN ASN", () => {
       const base = baseIntegrity();
       const input: MerchantProjectionInput = {
         session_id: "s",
@@ -3345,7 +3347,12 @@ describe("buildMerchantResponse", () => {
               ...base.analysis.ip,
               ips: { ...base.analysis.ip.ips, webrtc: "8.8.8.8" },
               checks: { probesConsistent: true, webrtcMatchesProbes: false },
-              asn: { number: "7018", org: "AT&T", category: "residential" },
+              asn: {
+                number: "216025",
+                org: "Mullvad VPN",
+                category: "vpn_proxy",
+                network_class: "vpn_proxy",
+              },
             },
           },
         },
@@ -4351,11 +4358,9 @@ describe("buildMerchantResponse", () => {
         expect(result.tags).not.toContain("proxy");
       });
 
-      it("does NOT damp vpn even when WebRTC matches — MSS reduction is a structural tunnel fingerprint, not jitter", () => {
-        // Residential user on Mullvad/WireGuard tunneling everything,
-        // including WebRTC, through the VPN → WebRTC srflx matches the
-        // tunnel exit IP → old damper fired → vpn silenced. MSS
-        // reduction proves the tunnel regardless of WebRTC.
+      it("does not turn MSS reduction into VPN evidence when WebRTC matches", () => {
+        // Reduced MSS is common on legitimate carrier and encapsulated paths.
+        // Without an ASN classification it remains telemetry only.
         const result = buildMerchantResponse(
           fusionInput({
             vpnComponent: 0.7,
@@ -4364,8 +4369,8 @@ describe("buildMerchantResponse", () => {
             asnCategory: "residential",
           }),
         );
-        expect(result.network_tampering).toBe(70);
-        expect(result.tags).toContain("vpn");
+        expect(result.network_tampering).toBe(0);
+        expect(result.tags).not.toContain("vpn");
       });
 
       it("leaves low components alone (nothing to cap)", () => {
@@ -4403,13 +4408,12 @@ describe("buildMerchantResponse", () => {
     // -----------------------------------------------------------------
     describe("GTFO uplift (rule 5)", () => {
       it("floors proxy at 0.9 when no WebRTC and component > 0.3", () => {
-        // The 54.166 AWS session we've been tracking.
         const result = buildMerchantResponse(
           fusionInput({
             proxyComponent: 0.467,
             webrtcIp: null,
             webrtcMatches: null,
-            asnCategory: "datacenter",
+            asnCategory: "residential",
             rcvRttUs: 36000,
             rttRefreshedUs: 18614,
           }),
@@ -4622,8 +4626,7 @@ describe("buildMerchantResponse", () => {
     // Hyperscaler interaction — orthogonal to fusion, both can tag.
     // -----------------------------------------------------------------
     describe("hyperscaler interaction", () => {
-      it("datacenter ASN with no WebRTC + elevated RTT → proxy tag AND hyperscaler tag", () => {
-        // The 54.166 AWS session — both signals legitimately fire.
+      it("datacenter ASN with no WebRTC remains ASN-blocked and hyperscaler-tagged", () => {
         const result = buildMerchantResponse(
           fusionInput({
             proxyComponent: 0.467,
@@ -4634,13 +4637,13 @@ describe("buildMerchantResponse", () => {
             rttRefreshedUs: 18614,
           }),
         );
-        expect(result.network_tampering).toBe(0);
+        expect(result.network_tampering).toBe(100);
         expect(result.tags).not.toContain("proxy");
+        expect(result.tags).toContain("vpn");
         expect(result.tags).toContain("hyperscaler");
       });
 
-      it("datacenter ASN with WebRTC match + clean RTT → hyperscaler only, no proxy", () => {
-        // The 52.32 session — legit headless Chrome on EC2.
+      it("datacenter ASN with WebRTC match + clean RTT remains ASN-blocked", () => {
         const result = buildMerchantResponse(
           fusionInput({
             proxyComponent: 0.0,
@@ -4651,20 +4654,20 @@ describe("buildMerchantResponse", () => {
             rttRefreshedUs: 127000,
           }),
         );
-        expect(result.network_tampering).toBe(0);
+        expect(result.network_tampering).toBe(100);
         expect(result.tags).not.toContain("proxy");
+        expect(result.tags).toContain("vpn");
         expect(result.tags).toContain("hyperscaler");
       });
 
       it("datacenter ASN with WebRTC match is NOT damped — WebRTC + HTTP ride the same tunnel so matching is tunnel uniformity, not non-proxy-ness", () => {
-        // The 52.32.41.53 archive pattern: user's own VPN on AWS with
-        // WebRTC leaking through the same tunnel. MSS reduction in
-        // vpn_component correctly flags the tunnel; damper used to
-        // silence it. Scoped fix: damper skipped on datacenter ASNs.
+        // The 52.32.41.53 archive pattern: WebRTC and HTTP can share the
+        // same tunnel. The datacenter ASN remains authoritative even when
+        // MSS telemetry is absent.
         const result = buildMerchantResponse(
           fusionInput({
             proxyComponent: 0.6,
-            vpnComponent: 1.0,
+            vpnComponent: 0,
             webrtcIp: "52.32.41.53",
             webrtcMatches: true,
             asnCategory: "datacenter",
@@ -4672,8 +4675,7 @@ describe("buildMerchantResponse", () => {
             rttRefreshedUs: 18614,
           }),
         );
-        // Raw proxy component flows through; damper is scoped out.
-        // vpn=100 dominates the network_tampering max.
+        // ASN score 100 dominates the network_tampering max.
         expect(result.network_tampering).toBe(100);
         expect(result.tags).not.toContain("proxy");
         expect(result.tags).toContain("vpn");
@@ -4683,7 +4685,7 @@ describe("buildMerchantResponse", () => {
       it("vpn_proxy ASN category also skips the damper", () => {
         const result = buildMerchantResponse(
           fusionInput({
-            vpnComponent: 1.0,
+            vpnComponent: 0,
             webrtcIp: "1.2.3.4",
             webrtcMatches: true,
             asnCategory: "vpn_proxy",
@@ -4785,9 +4787,8 @@ describe("buildMerchantResponse", () => {
             rttRefreshedUs: 18614,
           }),
         );
-        // vpnComponent 0.075 → vpn probability 10. proxy_waterfall is 0
-        // in this synthetic input. network_tampering = max(10, 0) = 10.
-        expect(result.network_tampering).toBe(10);
+        // Stored MSS telemetry is ignored; datacenter ASN classification wins.
+        expect(result.network_tampering).toBe(100);
         expect(result.tags).not.toContain("proxy");
         expect(result.tags).toContain("hyperscaler");
       });
@@ -4839,7 +4840,7 @@ describe("buildMerchantResponse", () => {
         expect(result.tags).not.toContain("proxy");
       });
 
-      it("52.32.41.53 AWS + WebRTC match + clean RTT → hyperscaler only", () => {
+      it("52.32.41.53 AWS + WebRTC match + clean RTT → ASN block", () => {
         const result = buildMerchantResponse(
           fusionInput({
             proxyComponent: 0.0,
@@ -4850,7 +4851,7 @@ describe("buildMerchantResponse", () => {
             rttRefreshedUs: 127000,
           }),
         );
-        expect(result.network_tampering).toBe(0);
+        expect(result.network_tampering).toBe(100);
         expect(result.tags).toContain("hyperscaler");
         expect(result.tags).not.toContain("proxy");
       });

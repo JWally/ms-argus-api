@@ -60,20 +60,17 @@ const ASN_CATALOG: Record<string, AsnEntry> = {
   // Hostinger
   "47583": { category: "datacenter", org: "Hostinger" },
 
-  // ── VPN / Proxy Providers ─────────────────────────────────────
-  // NordVPN (operates under Datacamp Limited)
-  "212238": { category: "vpn_proxy", org: "Datacamp Limited (NordVPN)" },
-  "57523": { category: "vpn_proxy", org: "Datacamp Limited (NordVPN)" },
-  // ExpressVPN (Kape Technologies)
-  "394711": { category: "vpn_proxy", org: "Kape Technologies (ExpressVPN)" },
-  // Mullvad
-  "198093": { category: "vpn_proxy", org: "Mullvad VPN" },
-  // Surfshark
-  "212029": { category: "vpn_proxy", org: "Surfshark" },
-  // ProtonVPN
-  "209103": { category: "vpn_proxy", org: "Proton AG" },
-  // IPVanish
-  "33438": { category: "vpn_proxy", org: "Highwinds Network Group (IPVanish)" },
+  // ── Provider-owned VPN Networks ───────────────────────────────
+  // Current RIR registrations validated 2026-07-22. Do not put rented or
+  // mixed-use hosting ASNs here: this catalog is a hard-verdict fallback.
+  "199218": { category: "vpn_proxy", org: "ProtonVPN" },
+  "203619": { category: "vpn_proxy", org: "IVPN Limited" },
+  "209103": { category: "vpn_proxy", org: "ProtonVPN" },
+  "214879": { category: "vpn_proxy", org: "SkyVPN" },
+  "216025": { category: "vpn_proxy", org: "Mullvad VPN AB" },
+  "57138": { category: "vpn_proxy", org: "Mullvad VPN AB" },
+  "397282": { category: "vpn_proxy", org: "Castle VPN" },
+  "397540": { category: "vpn_proxy", org: "Windscribe" },
   // M247 (hosts NordVPN, CyberGhost, and many others)
   "9009": { category: "vpn_proxy", org: "M247 Ltd" },
 

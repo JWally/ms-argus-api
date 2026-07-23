@@ -286,7 +286,7 @@ function ja4CipherHash(ja4: unknown): string | null {
  *   "drop"  — session contributes nothing. Indicates one of:
  *     - device tampering (lies, worker.lied, JA4 mismatch, etc.)
  *     - automation (WebDriver / headless markers)
- *     - network-level proxy/VPN detection (threat_score, vpn_component)
+ *     - network-level proxy detection and legacy MSS-path telemetry
  *     - ASN category is vpn_proxy / hosting_proxy / datacenter / unknown
  *       (residential proxies, declared VPNs, hyperscalers — sessions
  *       originating here are predominantly bots, NOT representative of
