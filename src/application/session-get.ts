@@ -1,5 +1,5 @@
 import type { DecrementResult } from "../helpers/credits";
-import type { MerchantSafeResponse } from "../helpers/merchant-projection";
+import type { MerchantProjectionResponse } from "../helpers/merchant-projection";
 import type { IntegrityResultsData } from "../helpers/payload-schema";
 import type {
   SdkAttestation,
@@ -38,7 +38,7 @@ export interface SessionGetPorts {
   buildProjection: (input: {
     session_id: string;
     integrity: IntegrityResultsData;
-  }) => MerchantSafeResponse;
+  }) => MerchantProjectionResponse;
   now: () => number;
   recordMetric: (name: string) => void;
   logTiming: (timing: SessionGetTiming) => void;
@@ -69,7 +69,7 @@ export type SessionGetResult =
   | { kind: "not_found" }
   | {
       kind: "ok";
-      projection: MerchantSafeResponse;
+      projection: MerchantProjectionResponse;
       creditsRemaining: number;
       attestation?: VerifiedAttestation;
     };

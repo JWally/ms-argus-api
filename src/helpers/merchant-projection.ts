@@ -72,6 +72,11 @@ import {
   deviceTamperingProbability,
   tamperingWithoutWorkerDivergence,
 } from "../scoring/device-tampering";
+import {
+  buildProxyMerchantResponse,
+  type ProxyMerchantSafeResponse,
+} from "./proxy-merchant-projection";
+export type { ProxyMerchantSafeResponse } from "./proxy-merchant-projection";
 
 // Re-export so external test files and downstream consumers that import the
 // type from helpers/merchant-projection keep compiling unchanged.
@@ -199,8 +204,9 @@ const SUSPECT_THRESHOLD = 30;
 const BLOCK_THRESHOLD = 70;
 
 /**
- * The merchant-safe response shape. Returned as the top-level body of
- * `GET /v1/session/{cpi}/{session_id}` (spread, not wrapped).
+ * The full-integrity merchant-safe response shape. Returned as the top-level
+ * body of `GET /v1/session/{cpi}/{session_id}` for standard scans. Proxy-only
+ * scans use the allow-listed `ProxyMerchantSafeResponse` instead.
  *
  * Three threat axes — all 0–100, all "lower is better":
  *   - automation:        is an automation framework driving this?
@@ -280,6 +286,10 @@ export interface MerchantSafeResponse {
    */
   device_history: MerchantDeviceHistory | null;
 }
+
+export type MerchantProjectionResponse =
+  | MerchantSafeResponse
+  | ProxyMerchantSafeResponse;
 
 // --- Tag derivation helpers (pure, testable) ---
 
@@ -539,15 +549,32 @@ function deriveVerdict(
   return "clean";
 }
 
+function workerScopeEvidence(
+  integrity: IntegrityResultsData | undefined,
+): WorkerScopeEvidence | null {
+  return integrity
+    ? deriveWorkerScopeEvidence(
+        integrity,
+        tamperingWithoutWorkerDivergence(integrity),
+      )
+    : null;
+}
+
 /**
- * Project the internal session / integrity record down to the merchant-
- * safe shape. Safe to call with partial inputs — missing data yields
- * conservative defaults.
+ * Project the internal session / integrity record to its product-specific
+ * merchant-safe shape. Standard scans retain conservative defaults; proxy_v1
+ * scans dispatch to a strict network-only allow-list.
  */
 export function buildMerchantResponse(
   input: MerchantProjectionInput,
-): MerchantSafeResponse {
+): MerchantSafeResponse;
+export function buildMerchantResponse(
+  input: MerchantProjectionInput,
+): MerchantProjectionResponse {
   const { session_id, integrity } = input;
+  if (integrity?.product === "proxy_v1") {
+    return buildProxyMerchantResponse(input);
+  }
 
   const rawNetworkScore = integrity?.analysis.ip.integrity ?? 0.5;
   const networkIntegrityScore = computeNetworkIntegrityScore(
@@ -597,12 +624,7 @@ export function buildMerchantResponse(
 
     incognito: { result: detectIncognito(input) },
     developer_tools: { result: detectDeveloperTools(input) },
-    worker_scope_evidence: integrity
-      ? deriveWorkerScopeEvidence(
-          integrity,
-          tamperingWithoutWorkerDivergence(integrity),
-        )
-      : null,
+    worker_scope_evidence: workerScopeEvidence(integrity),
 
     tags: buildTags(input, tagProbs),
 

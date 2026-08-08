@@ -75,6 +75,140 @@ function baseIntegrity(
 }
 
 describe("buildMerchantResponse", () => {
+  describe("proxy_v1 product", () => {
+    it("returns only the network product projection", () => {
+      const base = baseIntegrity();
+      const integrity = {
+        ...base,
+        product: "proxy_v1",
+        analysis: {
+          ...base.analysis,
+          network: {
+            proxy_score: 0.8,
+            proxy_component: 0,
+            vpn_component: 0.8,
+            signals: [],
+          },
+        },
+      } as IntegrityResultsData;
+
+      const result = buildMerchantResponse({
+        session_id: "proxy-session",
+        integrity,
+      });
+
+      expect(result).toEqual({
+        schema_version: 1,
+        product: "proxy_v1",
+        session_id: "proxy-session",
+        created_at: 0,
+        ttl: null,
+        network_tampering: 80,
+        verdict: "block",
+        identification: {
+          client_uuid: null,
+          network_id: null,
+          network_id_source: "none",
+        },
+        ip: "1.2.3.4",
+        ipLocation: {
+          city: null,
+          country: null,
+          latitude: null,
+          longitude: null,
+          timezone: null,
+        },
+        ipInfo: {
+          asn: {
+            number: null,
+            organization: null,
+            category: null,
+            network_class: null,
+            metadata: null,
+          },
+          datacenter: { result: false },
+          mobile: { result: false },
+          residential: { result: false },
+          vpn: { result: false },
+          hosting: { result: false },
+          privacy_relay: { result: false },
+          corporate_shield: { result: false },
+        },
+        tags: ["vpn"],
+        ip_velocity_1h: null,
+      });
+    });
+
+    it("returns a cautious suspect verdict and the reduced proxy identifiers", () => {
+      const base = baseIntegrity();
+      const integrity = {
+        ...base,
+        product: "proxy_v1",
+        ttl: 1_800_000_000,
+        device: { client_uuid: "client-1" },
+        analysis: {
+          ...base.analysis,
+          proxy_waterfall: { threat_score: 50 },
+          ip: {
+            ...base.analysis.ip,
+            network_id: "network-1",
+            network_id_source: "asn_fallback",
+          },
+        },
+      } as unknown as IntegrityResultsData;
+
+      const result = buildMerchantResponse({ session_id: "proxy", integrity });
+
+      expect(result).toMatchObject({
+        ttl: 1_800_000_000,
+        network_tampering: 50,
+        verdict: "suspect",
+        identification: {
+          client_uuid: "client-1",
+          network_id: "network-1",
+          network_id_source: "asn_fallback",
+        },
+        tags: ["proxy"],
+      });
+    });
+
+    it.each([
+      ["datacenter", "hyperscaler"],
+      ["security_filter", "corporate_shield"],
+      ["privacy_relay", "privacy_relay"],
+      ["mobile", "cellular"],
+    ] as const)(
+      "maps the %s network class to the %s tag",
+      (networkClass, expectedTag) => {
+        const base = baseIntegrity();
+        const integrity = {
+          ...base,
+          product: "proxy_v1",
+          analysis: {
+            ...base.analysis,
+            ip: {
+              ...base.analysis.ip,
+              ips: { ...base.analysis.ip.ips, webrtc: null },
+              asn: {
+                ...base.analysis.ip.asn,
+                network_class: networkClass,
+              },
+            },
+          },
+        } as IntegrityResultsData;
+
+        const result = buildMerchantResponse({
+          session_id: "proxy",
+          integrity,
+        });
+
+        expect(result.verdict).toBe("clean");
+        expect(result.tags).toContain(expectedTag);
+        expect(result.tags).toContain("no_webrtc");
+      },
+    );
+  });
+
   describe("ip_velocity_1h projection", () => {
     it("returns null when the row carries no velocity stamp", () => {
       const r = buildMerchantResponse({
