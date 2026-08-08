@@ -75,6 +75,40 @@ function baseIntegrity(
 }
 
 describe("buildMerchantResponse", () => {
+  describe("proxy_v1 product", () => {
+    it("preserves the normal response shape while marking unmeasured axes", () => {
+      const base = baseIntegrity();
+      const integrity = {
+        ...base,
+        product: "proxy_v1",
+        analysis: {
+          ...base.analysis,
+          network: {
+            proxy_score: 0.8,
+            proxy_component: 0,
+            vpn_component: 0.8,
+            signals: [],
+          },
+        },
+      } as IntegrityResultsData;
+
+      const result = buildMerchantResponse({
+        session_id: "proxy-session",
+        integrity,
+      });
+
+      expect(result.automation).toBe(0);
+      expect(result.device_tampering).toBe(0);
+      expect(result.network_tampering).toBe(80);
+      expect(result.verdict).toBe("block");
+      expect(result.assessment).toEqual({
+        product: "proxy_v1",
+        evaluated: ["network_tampering"],
+        not_evaluated: ["automation", "device_tampering"],
+      });
+    });
+  });
+
   describe("ip_velocity_1h projection", () => {
     it("returns null when the row carries no velocity stamp", () => {
       const r = buildMerchantResponse({

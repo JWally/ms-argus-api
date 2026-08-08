@@ -73,6 +73,10 @@ function appleRelayField(clientIp: string): { apple_relay_egress?: object } {
   return match ? { apple_relay_egress: match } : {};
 }
 
+function productField(payload: ArgusPayload): { product?: "proxy_v1" } {
+  return payload.product ? { product: payload.product } : {};
+}
+
 export function buildIntegrityRecord(
   args: BuildIntegrityRecordArgs,
 ): Record<string, unknown> {
@@ -94,6 +98,7 @@ export function buildIntegrityRecord(
   return {
     cpi: ctx.cpi,
     session_id: ctx.sessionId,
+    ...productField(ctx.payload),
     ...(merchantId ? { merchant_id: merchantId } : {}),
     device: raw.device ?? {},
     meta: raw.meta ?? {},

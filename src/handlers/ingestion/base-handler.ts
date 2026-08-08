@@ -47,6 +47,8 @@ import { persistIntegrityRecord } from "./persist-integrity-record";
 import { applyIpVelocitySnapshot, bumpIpVelocityBlocked } from "./ip-velocity";
 import { runDeviceHistoryWorkflow } from "./device-history-workflow";
 import { buildIntegrityRecord } from "./integrity-record-builder";
+import { assertProxyEvidenceHydrated, isProxyProduct } from "./proxy-product";
+import { handleProxyIntegrity } from "./proxy-ingestion";
 
 /** Bump when merchant-projection.ts rules change in a way you want stamped on
  *  rows. Stored on the row so historical verdicts are traceable to the code
@@ -383,17 +385,41 @@ async function applyVelocityAndProjection(
   return itemWithProjection;
 }
 
+function hydrateIntegrityPayload(ctx: HandleContext): Promise<ArgusPayload> {
+  return hydrateSigint(ctx.payload, ctx.deps, ctx.event, {
+    dynamo: ddbClient,
+    cpi: ctx.cpi,
+  });
+}
+
+function handleProxyProduct(
+  ctx: HandleContext,
+  hydratedPayload: ArgusPayload,
+  phaseTimer: PhaseTimer,
+): Promise<APIGatewayProxyResultV2> {
+  assertProxyEvidenceHydrated(hydratedPayload);
+  return handleProxyIntegrity({
+    ctx,
+    hydratedPayload,
+    phaseTimer,
+    ttlSeconds: INTEGRITY_TTL_SECONDS,
+    resolveMerchantId: () => resolveMerchantId(ctx),
+    enrichAndProject: (item, identity) =>
+      applyVelocityAndProjection(ctx, item, identity),
+    persist: (item) =>
+      persistIntegrityRecord(ctx, item, integrityRecordPersistenceDeps),
+  });
+}
+
 async function handleIntegrity(
   ctx: HandleContext,
 ): Promise<APIGatewayProxyResultV2> {
   const pt = makePhaseTimer();
-  const hydratedPayload = await hydrateSigint(
-    ctx.payload,
-    ctx.deps,
-    ctx.event,
-    { dynamo: ddbClient, cpi: ctx.cpi },
-  );
+  const hydratedPayload = await hydrateIntegrityPayload(ctx);
   pt.mark("hydrate");
+  if (isProxyProduct(ctx.payload)) {
+    return handleProxyProduct(ctx, hydratedPayload, pt);
+  }
   enforceDeviceMac(ctx);
   // Verify the client's device-identity sig against the raw (pre-hydration)
   // payload so sigintH2Token is still available; failures never block (the

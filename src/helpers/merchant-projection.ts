@@ -233,6 +233,13 @@ export interface MerchantSafeResponse {
   /** Routing convenience: derived from the three axes via fixed thresholds. */
   verdict: Verdict;
 
+  /** Present for reduced-surface products so zero does not imply evaluated-clean. */
+  assessment?: {
+    product: "proxy_v1";
+    evaluated: ["network_tampering"];
+    not_evaluated: ["automation", "device_tampering"];
+  };
+
   identification: MerchantIdentification;
 
   /** Representative client IP. MAC-verified WebRTC IP when available, else
@@ -279,6 +286,20 @@ export interface MerchantSafeResponse {
    * `freshDevice: true` inside `null`-equivalent counters; see field flags).
    */
   device_history: MerchantDeviceHistory | null;
+}
+
+function proxyAssessment(proxyOnly: boolean): {
+  assessment?: MerchantSafeResponse["assessment"];
+} {
+  return proxyOnly
+    ? {
+        assessment: {
+          product: "proxy_v1",
+          evaluated: ["network_tampering"],
+          not_evaluated: ["automation", "device_tampering"],
+        },
+      }
+    : {};
 }
 
 // --- Tag derivation helpers (pure, testable) ---
@@ -539,6 +560,17 @@ function deriveVerdict(
   return "clean";
 }
 
+function workerScopeEvidence(
+  integrity: IntegrityResultsData | undefined,
+): WorkerScopeEvidence | null {
+  return integrity
+    ? deriveWorkerScopeEvidence(
+        integrity,
+        tamperingWithoutWorkerDivergence(integrity),
+      )
+    : null;
+}
+
 /**
  * Project the internal session / integrity record down to the merchant-
  * safe shape. Safe to call with partial inputs — missing data yields
@@ -548,6 +580,7 @@ export function buildMerchantResponse(
   input: MerchantProjectionInput,
 ): MerchantSafeResponse {
   const { session_id, integrity } = input;
+  const proxyOnly = integrity?.product === "proxy_v1";
 
   const rawNetworkScore = integrity?.analysis.ip.integrity ?? 0.5;
   const networkIntegrityScore = computeNetworkIntegrityScore(
@@ -562,8 +595,10 @@ export function buildMerchantResponse(
   // networkTamperingScore() docstring for the double-count rationale.
   void networkIntegrityScore;
 
-  const automation = applyPatAdjustment(automationProbability(input), input);
-  const device_tampering = deviceTamperingProbability(input);
+  const automation = proxyOnly
+    ? 0
+    : applyPatAdjustment(automationProbability(input), input);
+  const device_tampering = proxyOnly ? 0 : deviceTamperingProbability(input);
   const network_tampering = networkTamperingScore(input);
   const verdict = deriveVerdict(
     automation,
@@ -591,18 +626,15 @@ export function buildMerchantResponse(
     network_tampering,
     verdict,
 
+    ...proxyAssessment(proxyOnly),
+
     identification: deriveIdentification(input),
 
     ...networkProjection,
 
     incognito: { result: detectIncognito(input) },
     developer_tools: { result: detectDeveloperTools(input) },
-    worker_scope_evidence: integrity
-      ? deriveWorkerScopeEvidence(
-          integrity,
-          tamperingWithoutWorkerDivergence(integrity),
-        )
-      : null,
+    worker_scope_evidence: workerScopeEvidence(integrity),
 
     tags: buildTags(input, tagProbs),
 

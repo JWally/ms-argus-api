@@ -204,6 +204,8 @@ export interface PayloadPatAttempt {
 }
 
 export interface ArgusPayload {
+  /** Optional collection product. Absence means the full integrity product. */
+  product?: "proxy_v1";
   identifiers: PayloadIdentifiers;
   hashes: PayloadHashes;
   device: PayloadDevice;
@@ -323,6 +325,8 @@ export function resolveCpi(
  * fields; new writes omit them.
  */
 export interface IntegrityResultsData {
+  /** Collection product used to build this row. Absence means full integrity. */
+  product?: "proxy_v1";
   session_id: string;
   device: Record<string, unknown>;
   meta: Record<string, unknown>;
