@@ -76,7 +76,7 @@ function baseIntegrity(
 
 describe("buildMerchantResponse", () => {
   describe("proxy_v1 product", () => {
-    it("preserves the normal response shape while marking unmeasured axes", () => {
+    it("returns only the network product projection", () => {
       const base = baseIntegrity();
       const integrity = {
         ...base,
@@ -97,14 +97,45 @@ describe("buildMerchantResponse", () => {
         integrity,
       });
 
-      expect(result.automation).toBe(0);
-      expect(result.device_tampering).toBe(0);
-      expect(result.network_tampering).toBe(80);
-      expect(result.verdict).toBe("block");
-      expect(result.assessment).toEqual({
+      expect(result).toEqual({
+        schema_version: 1,
         product: "proxy_v1",
-        evaluated: ["network_tampering"],
-        not_evaluated: ["automation", "device_tampering"],
+        session_id: "proxy-session",
+        created_at: 0,
+        ttl: null,
+        network_tampering: 80,
+        verdict: "block",
+        identification: {
+          client_uuid: null,
+          network_id: null,
+          network_id_source: "none",
+        },
+        ip: "1.2.3.4",
+        ipLocation: {
+          city: null,
+          country: null,
+          latitude: null,
+          longitude: null,
+          timezone: null,
+        },
+        ipInfo: {
+          asn: {
+            number: null,
+            organization: null,
+            category: null,
+            network_class: null,
+            metadata: null,
+          },
+          datacenter: { result: false },
+          mobile: { result: false },
+          residential: { result: false },
+          vpn: { result: false },
+          hosting: { result: false },
+          privacy_relay: { result: false },
+          corporate_shield: { result: false },
+        },
+        tags: ["vpn"],
+        ip_velocity_1h: null,
       });
     });
   });

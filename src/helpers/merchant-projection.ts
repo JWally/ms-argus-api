@@ -72,6 +72,11 @@ import {
   deviceTamperingProbability,
   tamperingWithoutWorkerDivergence,
 } from "../scoring/device-tampering";
+import {
+  buildProxyMerchantResponse,
+  type ProxyMerchantSafeResponse,
+} from "./proxy-merchant-projection";
+export type { ProxyMerchantSafeResponse } from "./proxy-merchant-projection";
 
 // Re-export so external test files and downstream consumers that import the
 // type from helpers/merchant-projection keep compiling unchanged.
@@ -199,8 +204,9 @@ const SUSPECT_THRESHOLD = 30;
 const BLOCK_THRESHOLD = 70;
 
 /**
- * The merchant-safe response shape. Returned as the top-level body of
- * `GET /v1/session/{cpi}/{session_id}` (spread, not wrapped).
+ * The full-integrity merchant-safe response shape. Returned as the top-level
+ * body of `GET /v1/session/{cpi}/{session_id}` for standard scans. Proxy-only
+ * scans use the allow-listed `ProxyMerchantSafeResponse` instead.
  *
  * Three threat axes — all 0–100, all "lower is better":
  *   - automation:        is an automation framework driving this?
@@ -232,13 +238,6 @@ export interface MerchantSafeResponse {
   network_tampering: number;
   /** Routing convenience: derived from the three axes via fixed thresholds. */
   verdict: Verdict;
-
-  /** Present for reduced-surface products so zero does not imply evaluated-clean. */
-  assessment?: {
-    product: "proxy_v1";
-    evaluated: ["network_tampering"];
-    not_evaluated: ["automation", "device_tampering"];
-  };
 
   identification: MerchantIdentification;
 
@@ -288,19 +287,9 @@ export interface MerchantSafeResponse {
   device_history: MerchantDeviceHistory | null;
 }
 
-function proxyAssessment(proxyOnly: boolean): {
-  assessment?: MerchantSafeResponse["assessment"];
-} {
-  return proxyOnly
-    ? {
-        assessment: {
-          product: "proxy_v1",
-          evaluated: ["network_tampering"],
-          not_evaluated: ["automation", "device_tampering"],
-        },
-      }
-    : {};
-}
+export type MerchantProjectionResponse =
+  | MerchantSafeResponse
+  | ProxyMerchantSafeResponse;
 
 // --- Tag derivation helpers (pure, testable) ---
 
@@ -572,15 +561,20 @@ function workerScopeEvidence(
 }
 
 /**
- * Project the internal session / integrity record down to the merchant-
- * safe shape. Safe to call with partial inputs — missing data yields
- * conservative defaults.
+ * Project the internal session / integrity record to its product-specific
+ * merchant-safe shape. Standard scans retain conservative defaults; proxy_v1
+ * scans dispatch to a strict network-only allow-list.
  */
 export function buildMerchantResponse(
   input: MerchantProjectionInput,
-): MerchantSafeResponse {
+): MerchantSafeResponse;
+export function buildMerchantResponse(
+  input: MerchantProjectionInput,
+): MerchantProjectionResponse {
   const { session_id, integrity } = input;
-  const proxyOnly = integrity?.product === "proxy_v1";
+  if (integrity?.product === "proxy_v1") {
+    return buildProxyMerchantResponse(input);
+  }
 
   const rawNetworkScore = integrity?.analysis.ip.integrity ?? 0.5;
   const networkIntegrityScore = computeNetworkIntegrityScore(
@@ -595,10 +589,8 @@ export function buildMerchantResponse(
   // networkTamperingScore() docstring for the double-count rationale.
   void networkIntegrityScore;
 
-  const automation = proxyOnly
-    ? 0
-    : applyPatAdjustment(automationProbability(input), input);
-  const device_tampering = proxyOnly ? 0 : deviceTamperingProbability(input);
+  const automation = applyPatAdjustment(automationProbability(input), input);
+  const device_tampering = deviceTamperingProbability(input);
   const network_tampering = networkTamperingScore(input);
   const verdict = deriveVerdict(
     automation,
@@ -625,8 +617,6 @@ export function buildMerchantResponse(
     device_tampering,
     network_tampering,
     verdict,
-
-    ...proxyAssessment(proxyOnly),
 
     identification: deriveIdentification(input),
 
