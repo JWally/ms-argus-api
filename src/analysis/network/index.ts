@@ -2,24 +2,25 @@
  * Network probe analysis for integrity ingestion.
  *
  * Produces continuous 0-1 scores from raw TCP probe measurements and
- * fuses them via noisy-OR into a single merchant-facing `proxy_score`.
+ * fuses them via noisy-OR into a legacy internal `proxy_score` diagnostic.
  *
  * Why continuous over the old threshold-bucket approach:
  *   1. No sharp cliffs — a bot can no longer infer "caught at MSS=1380"
  *      vs "safe at 1400" by probing. Score transitions smoothly.
- *   2. Merchant sees one number; they set their own threshold for
- *      action. No arbitrary internal [LOW/MED/HIGH] buckets baked in.
+ *   2. Analysis retains one smooth diagnostic rather than arbitrary internal
+ *      [LOW/MED/HIGH] buckets.
  *   3. Evidence stacks properly. RTT-ratio 40% + MSS 60% → combined 76%,
  *      vs. the old max-of-two approach that would have returned 60%.
  *
  * Storage shape (what lands in DDB / S3):
- *   proxy_score       — merchant-facing noisy-OR combined score [0,1]
+ *   proxy_score       — legacy internal noisy-OR combined score [0,1]
  *   proxy_component   — raw RTT-ratio-derived score [0,1]
- *   vpn_component     — raw MSS-derived score [0,1]
+ *   vpn_component     — MSS/path telemetry, category-overridden when known
  *   signals           — detailed internal signals (not exposed to merchants)
  *
- * The future response-shaping pass (see TODO(merchant-response-shaping)
- * in session-get handler) projects this to `{proxy_score}` only.
+ * Merchant projection treats MSS-only `vpn_component` as observational. It
+ * contributes to a verdict only alongside an analyzer-issued ASN/category
+ * signal; proxy-waterfall and IP-scatter evidence remain independent.
  */
 
 import type { AsnCategory } from "../ip-consistency/asn-catalog";
@@ -156,7 +157,7 @@ export function analyzeNetworkProbes(
   // Category override: when the ASN is in a known-VPN class, override
   // the MSS-derived score. A tuned-MTU WG on AWS shows MSS ~1400 and
   // would score 0.29 on MSS alone, but the datacenter ASN is ground
-  // truth — use the max of the two signals so we never under-score.
+  // categorical evidence — use the max so the stored diagnostic preserves it.
   const categoryHit = vpnByCategory(asnCategory);
   const vpnComponent = categoryHit
     ? Math.max(categoryHit.score, mssVpnComponent)

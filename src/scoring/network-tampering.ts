@@ -4,7 +4,7 @@
  * Composes `network_tampering` (0-100) from three independent signals on the
  * `integrity` projection input:
  *
- *   - vpn_component:  MSS-derived tunnel encapsulation fingerprint
+ *   - ASN class:      known VPN and datacenter networks
  *   - proxy_threat:   proxy_waterfall's integrated analyzer (consumes WebRTC
  *                     consensus, RTT jitter, ASN class)
  *   - ip_scatter:     probe-IP disagreement penalty (gated on network_class
@@ -30,7 +30,7 @@ import {
 
 /** rcv_rtt/rtt_refreshed at or above this is strong RTT-derived proxy
  *  evidence. It belongs only to the proxy sub-scorer; it must never create
- *  MSS-derived VPN evidence when vpn_component is zero. */
+ *  ASN-derived VPN evidence. */
 const RTT_RATIO_CEILING = 5.0;
 
 /** Component above this counts as "elevated" for the no-webrtc uplift.
@@ -71,11 +71,9 @@ function webrtcMatchesNetwork(input: MerchantProjectionInput): boolean {
   return input.integrity?.analysis.ip.checks.webrtcMatchesProbes === true;
 }
 
-/** Datacenter / declared-VPN ASNs — both run traffic through explicit
- *  tunnels. WebRTC matching on these ASNs proves tunnel uniformity
- *  (HTTP and WebRTC ride the same tunnel → same egress IP), not
- *  non-proxy-ness. The damper must not fire here or it silences the
- *  MSS-reduction signal that catches AWS-VPN / WireGuard-over-TLS. */
+/** Datacenter / declared-VPN ASNs are outside the residential WebRTC damper.
+ *  Their categorical classification is evaluated separately from RTT proxy
+ *  evidence; matching WebRTC can simply mean uniform egress. */
 function isTunneledAsn(input: MerchantProjectionInput): boolean {
   const cat = input.integrity?.analysis.ip.asn.category;
   return cat === "datacenter" || cat === "vpn_proxy";
@@ -83,8 +81,8 @@ function isTunneledAsn(input: MerchantProjectionInput): boolean {
 
 /**
  * Apply the WebRTC-anchored fusion rules on top of the raw RTT-derived proxy
- * component. vpn_component is MSS-derived and deliberately bypasses this
- * function so RTT jitter cannot manufacture VPN evidence.
+ * component. The separately authorized VPN score bypasses this function so
+ * RTT jitter cannot manufacture categorical VPN evidence.
  *
  * Rules (in precedence order):
  *   1. Corporate shield → 0. Strongest carve-out; benign enterprise egress.
@@ -95,10 +93,9 @@ function isTunneledAsn(input: MerchantProjectionInput): boolean {
  *   3. Cellular / CGNAT → pass through.
  *   4. WebRTC matches probes at /16 AND ASN is NOT
  *      datacenter/vpn_proxy → cap at 0.3. Suspect but not damning.
- *      Damper is scoped in two dimensions: (a) proxy component only —
- *      MSS/vpn signal stays authoritative; (b) non-tunneled ASNs only —
- *      a VPN on AWS tunnels WebRTC through the same exit so matching is
- *      tunnel uniformity, not non-proxy-ness.
+ *      Damper is scoped in two dimensions: (a) proxy component only;
+ *      (b) non-tunneled ASNs only. Category evidence is evaluated by
+ *      `vpnScore` and MSS-only telemetry is never authoritative.
  *   5. No WebRTC submitted and component elevated (> 0.3) → floor at 0.9.
  *   6. Otherwise → pass through.
  */
@@ -133,8 +130,17 @@ function applyProxyWebrtcFusion(
 // ---------------------------------------------------------------------------
 
 export function vpnScore(input: MerchantProjectionInput): number {
-  const raw = input.integrity?.analysis.network.vpn_component ?? 0;
-  return detectCorporateShield(input) ? 0 : raw;
+  if (detectCorporateShield(input)) return 0;
+  const network = input.integrity?.analysis.network;
+  const hasCategoryEvidence = (network?.signals ?? []).some(
+    (signal) =>
+      signal.code === "CATEGORY_VPN" ||
+      signal.code === "CATEGORY_PRIVACY_RELAY",
+  );
+  // `vpn_component` remains stored as continuous MSS/path telemetry. It may
+  // affect merchants only when the analyzer explicitly attached independent
+  // ASN/category evidence; MSS-derived legacy signals do not qualify.
+  return hasCategoryEvidence ? (network?.vpn_component ?? 0) : 0;
 }
 
 export function proxyScore(input: MerchantProjectionInput): number {
@@ -176,7 +182,7 @@ function ipScatterPenalty(input: MerchantProjectionInput): number {
 
 /**
  * Compose `network_tampering` from the merchant-facing network signals:
- *   - vpn_component (MSS-derived tunnel encapsulation fingerprint)
+ *   - ASN-owned VPN/datacenter classification
  *   - proxy waterfall threat (the integrated analyzer; itself already
  *     factors WebRTC consensus / RTT jitter / ASN class)
  *   - ip_scatter penalty (probe-IP disagreement, gated on network_class
