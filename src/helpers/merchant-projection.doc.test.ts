@@ -704,6 +704,8 @@ describe("§6 — network classification → verdict impact", () => {
     extraNetwork: Partial<{ vpn_component: number }> = {},
   ) {
     const base = cleanSession();
+    const categoryEvidence =
+      category === "datacenter" || category === "vpn_proxy";
     return project({
       ...base,
       analysis: {
@@ -720,6 +722,15 @@ describe("§6 — network classification → verdict impact", () => {
         network: {
           ...base.analysis.network,
           ...extraNetwork,
+          signals: categoryEvidence
+            ? [
+                {
+                  code: "CATEGORY_VPN",
+                  severity: 1,
+                  evidence: `asn.category=${category}`,
+                },
+              ]
+            : base.analysis.network.signals,
         },
       },
     });
@@ -1101,6 +1112,13 @@ describe("§9 — end-to-end realistic scenarios", () => {
           network: {
             ...cleanSession().analysis.network,
             vpn_component: 1.0, // network analyzer sets this for datacenter ASNs
+            signals: [
+              {
+                code: "CATEGORY_VPN",
+                severity: 1,
+                evidence: "asn.category=datacenter",
+              },
+            ],
           },
         },
       }),

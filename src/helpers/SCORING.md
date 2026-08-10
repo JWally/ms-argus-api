@@ -16,13 +16,19 @@ Three thresholds, one rule. Any single axis saturating is enough to flag.
 
 ## Network tampering — "is the path lying about itself?"
 
-### MSS encapsulation (LIKELY_VPN)
+### MSS encapsulation telemetry (LIKELY_VPN)
 
 | `snd_mss <` | severity | meaning                   |
 | ----------- | -------- | ------------------------- |
 | 1300        | 0.7      | heavy tunnel              |
 | 1380        | 0.5      | WireGuard / OpenVPN range |
 | 1440        | 0.25     | slightly reduced          |
+
+The analyzer retains this continuous value in `vpn_component` for research and
+explanation. MSS by itself is **observational only**: it cannot raise
+`network_tampering` or add the merchant-facing `vpn` tag. Encapsulation,
+PPPoE/DS-Lite, carrier networks, and deliberately configured tunnels can share
+the same MSS, so enforcement requires independent ASN/category corroboration.
 
 ### RTT ratio (LIKELY_PROXY)
 
@@ -38,12 +44,13 @@ proxy waterfall for corroboration.
 
 ### ASN category
 
-| category        | severity | code                    |
-| --------------- | -------- | ----------------------- |
-| datacenter      | 1.0      | CATEGORY_VPN            |
-| vpn_proxy       | 0.6      | CATEGORY_VPN            |
-| corporate_proxy | 0.15     | CATEGORY_VPN            |
-| mobile          | —        | (context, not a threat) |
+| category        | severity | code                      |
+| --------------- | -------- | ------------------------- |
+| datacenter      | 1.0      | CATEGORY_VPN              |
+| vpn_proxy       | 1.0      | CATEGORY_VPN              |
+| privacy_relay   | 0.5      | CATEGORY_PRIVACY_RELAY    |
+| corporate_proxy | —        | (corporate-shield bypass) |
+| mobile          | —        | (context, not a threat)   |
 
 ### Probe consistency
 
@@ -58,9 +65,11 @@ proxy waterfall for corroboration.
 
 ### Axis composition
 
-`nt = max(vpn_component, proxy_threat, ip_scatter_penalty)` — pure winner-take-all today.
-The raw RTT-derived `proxy_component` is diagnostic input to `proxy_threat`, not
-a substitute for a zero `vpn_component`.
+`nt = max(corroborated_vpn_component, proxy_threat, ip_scatter_penalty)` — pure
+winner-take-all today. `vpn_component` participates only when the analyzer also
+emits `CATEGORY_VPN` or `CATEGORY_PRIVACY_RELAY`; MSS-only legacy signals do not
+qualify. The raw RTT-derived `proxy_component` is diagnostic input to
+`proxy_threat`, not a substitute for categorical evidence.
 
 ---
 
@@ -162,6 +171,8 @@ one noisy desktop sample a blocking automation verdict.
 
 ## Known sharp edges
 
-- Single soft signal can saturate an axis (MSS=1374 alone → nt=45; MSS=1350 → nt=65; MSS=1280 → nt=100). Real iPhones behind hospitality WiFi / DS-Lite / self-installed VPN get blocked on MSS alone, even when every corroborating signal says "real device on real network."
+- MSS remains a useful path feature but is not an identity claim: reduced MSS
+  can reflect ordinary encapsulation as well as a deliberately configured
+  tunnel. It remains stored for analysis and future corroborated models.
 - `max()` aggregation across the three axes means no amount of negative evidence on axes B and C can wash out a single saturating signal on axis A.
 - Tor exit nodes (e.g. `185.220.101.0/24` Zwiebelfreunde) are not currently tagged as Tor — they get caught via headless detection, not anonymity-network classification.

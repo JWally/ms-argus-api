@@ -76,7 +76,7 @@ function baseIntegrity(
 
 describe("buildMerchantResponse", () => {
   describe("proxy_v1 product", () => {
-    it("returns only the network product projection", () => {
+    it("keeps MSS-only telemetry out of the network product projection", () => {
       const base = baseIntegrity();
       const integrity = {
         ...base,
@@ -103,8 +103,8 @@ describe("buildMerchantResponse", () => {
         session_id: "proxy-session",
         created_at: 0,
         ttl: null,
-        network_tampering: 80,
-        verdict: "block",
+        network_tampering: 0,
+        verdict: "clean",
         identification: {
           client_uuid: null,
           network_id: null,
@@ -134,7 +134,7 @@ describe("buildMerchantResponse", () => {
           privacy_relay: { result: false },
           corporate_shield: { result: false },
         },
-        tags: ["vpn"],
+        tags: [],
         ip_velocity_1h: null,
       });
     });
@@ -388,11 +388,17 @@ describe("buildMerchantResponse", () => {
               proxy_score: 0.73,
               proxy_component: 0,
               vpn_component: 0.73,
-              signals: [],
+              signals: [
+                {
+                  code: "CATEGORY_VPN",
+                  severity: 0.73,
+                  evidence: "independent ASN classification",
+                },
+              ],
             },
             // WebRTC present but IPs disagree — no damper, no uplift,
-            // raw vpn_component flows through so the rounding assertion
-            // is about the rounding step, not the fusion rule.
+            // Categorical corroboration allows vpn_component through so the
+            // assertion remains about quantization, not MSS authority.
             ip: {
               ...base.analysis.ip,
               ips: { ...base.analysis.ip.ips, webrtc: "8.8.8.8" },
@@ -423,7 +429,13 @@ describe("buildMerchantResponse", () => {
               proxy_score: 0.5,
               proxy_component: 0,
               vpn_component: 0.85,
-              signals: [],
+              signals: [
+                {
+                  code: "CATEGORY_VPN",
+                  severity: 0.85,
+                  evidence: "independent ASN classification",
+                },
+              ],
             },
             ip: {
               ...base.analysis.ip,
@@ -3461,7 +3473,7 @@ describe("buildMerchantResponse", () => {
       expect(networkIntegrityScoreFor(input)).toBe(0);
     });
 
-    it("still surfaces vpn/proxy probabilities for non-corporate ASNs", () => {
+    it("does not surface MSS-only vpn probability for a residential ASN", () => {
       const base = baseIntegrity();
       const input: MerchantProjectionInput = {
         session_id: "s",
@@ -3485,8 +3497,10 @@ describe("buildMerchantResponse", () => {
         },
       };
       const result = buildMerchantResponse(input);
-      // vpn=100 dominates; proxy_waterfall.threat_score is 0 in this test.
-      expect(result.network_tampering).toBe(100);
+      // Stored MSS telemetry is observational; no category or proxy-waterfall
+      // evidence authorizes a merchant-facing network verdict.
+      expect(result.network_tampering).toBe(0);
+      expect(result.tags).not.toContain("vpn");
     });
   });
 
@@ -4445,6 +4459,8 @@ describe("buildMerchantResponse", () => {
     /** Build an integrity record with explicit fusion inputs. */
     function fusionInput(opts: FusionOpts): MerchantProjectionInput {
       const base = baseIntegrity();
+      const categoryEvidence =
+        opts.asnCategory === "datacenter" || opts.asnCategory === "vpn_proxy";
       return {
         session_id: "s",
         integrity: {
@@ -4456,7 +4472,15 @@ describe("buildMerchantResponse", () => {
               proxy_score: 0,
               proxy_component: opts.proxyComponent ?? 0,
               vpn_component: opts.vpnComponent ?? 0,
-              signals: [],
+              signals: categoryEvidence
+                ? [
+                    {
+                      code: "CATEGORY_VPN",
+                      severity: 1,
+                      evidence: `asn.category=${opts.asnCategory}`,
+                    },
+                  ]
+                : [],
             },
             ip: buildIpAnalysis(opts, base.analysis.ip),
           },
@@ -4485,11 +4509,10 @@ describe("buildMerchantResponse", () => {
         expect(result.tags).not.toContain("proxy");
       });
 
-      it("does NOT damp vpn even when WebRTC matches — MSS reduction is a structural tunnel fingerprint, not jitter", () => {
-        // Residential user on Mullvad/WireGuard tunneling everything,
-        // including WebRTC, through the VPN → WebRTC srflx matches the
-        // tunnel exit IP → old damper fired → vpn silenced. MSS
-        // reduction proves the tunnel regardless of WebRTC.
+      it("keeps MSS observational even when WebRTC matches", () => {
+        // Reduced MSS can come from many encapsulated access paths. Preserve
+        // it in analysis, but do not turn it into a merchant VPN verdict
+        // without independent category evidence.
         const result = buildMerchantResponse(
           fusionInput({
             vpnComponent: 0.7,
@@ -4498,8 +4521,8 @@ describe("buildMerchantResponse", () => {
             asnCategory: "residential",
           }),
         );
-        expect(result.network_tampering).toBe(70);
-        expect(result.tags).toContain("vpn");
+        expect(result.network_tampering).toBe(0);
+        expect(result.tags).not.toContain("vpn");
       });
 
       it("leaves low components alone (nothing to cap)", () => {
